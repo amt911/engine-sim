@@ -109,15 +109,29 @@ pub struct Pipe1d {
     pub dx: f64,
     pub left: Boundary,
     pub right: Boundary,
+    /// Scratch buffers (no allocation per step): primitive states with ghosts, face fluxes,
+    /// stage-1 copy, and the right-hand sides of both RK stages.
+    w: Vec<Prim>,
+    fluxes: Vec<Cons>,
+    u0: Vec<Cons>,
+    rhs: Vec<Cons>,
+    /// Flux through the left and right end faces in the last step (RK-averaged), per area.
+    pub end_flux: (Cons, Cons),
 }
 
 impl Pipe1d {
     pub fn new(length: f64, n: usize, init: Prim) -> Self {
+        let n = n.max(1);
         Self {
-            cells: vec![init.to_cons(); n.max(1)],
-            dx: length / n.max(1) as f64,
+            cells: vec![init.to_cons(); n],
+            dx: length / n as f64,
             left: Boundary::Wall,
             right: Boundary::Wall,
+            w: Vec::with_capacity(n + 4),
+            fluxes: vec![Cons::default(); n + 1],
+            u0: vec![Cons::default(); n],
+            rhs: vec![Cons::default(); n],
+            end_flux: (Cons::default(), Cons::default()),
         }
     }
     /// Largest stable step for Courant number `cfl`.
@@ -134,13 +148,15 @@ impl Pipe1d {
     }
     /// Advance by `dt` (SSP-RK2 with MUSCL-minmod reconstruction).
     pub fn step(&mut self, dt: f64) {
-        let r1 = self.rhs();
-        let u0 = self.cells.clone();
-        for (c, d) in self.cells.iter_mut().zip(&r1) {
+        self.u0.copy_from_slice(&self.cells);
+        self.eval_rhs();
+        let (l1, r1) = (self.fluxes[0], self.fluxes[self.cells.len()]);
+        for (c, d) in self.cells.iter_mut().zip(&self.rhs) {
             *c = add(*c, *d, dt);
         }
-        let r2 = self.rhs();
-        for ((c, d), c0) in self.cells.iter_mut().zip(&r2).zip(&u0) {
+        self.eval_rhs();
+        let (l2, r2) = (self.fluxes[0], self.fluxes[self.cells.len()]);
+        for ((c, d), c0) in self.cells.iter_mut().zip(&self.rhs).zip(&self.u0) {
             let u1 = add(*c, *d, dt);
             *c = Cons {
                 rho: 0.5 * (c0.rho + u1.rho),
@@ -148,7 +164,14 @@ impl Pipe1d {
                 e: 0.5 * (c0.e + u1.e),
             };
         }
+        let avg = |a: Cons, b: Cons| Cons {
+            rho: 0.5 * (a.rho + b.rho),
+            mom: 0.5 * (a.mom + b.mom),
+            e: 0.5 * (a.e + b.e),
+        };
+        self.end_flux = (avg(l1, l2), avg(r1, r2));
     }
+
     /// Mass flow per unit area through the right end during the last step (ρu at the face).
     pub fn prim(&self, i: usize) -> Prim {
         self.cells[i].to_prim()
@@ -195,47 +218,43 @@ fn ghost(b: Boundary, inner: Prim, outward: f64) -> Prim {
 }
 
 impl Pipe1d {
-    /// dU/dt for every cell.
-    fn rhs(&self) -> Vec<Cons> {
+    /// dU/dt for every cell into `self.rhs`; face fluxes into `self.fluxes`.
+    fn eval_rhs(&mut self) {
         let n = self.cells.len();
-        // primitive states with two ghost cells on each side
-        let mut w = Vec::with_capacity(n + 4);
         let first = self.cells[0].to_prim();
         let last = self.cells[n - 1].to_prim();
         let gl = ghost(self.left, first, -1.0);
         let gr = ghost(self.right, last, 1.0);
+        let w = &mut self.w;
+        w.clear();
         w.push(gl);
         w.push(gl);
         w.extend(self.cells.iter().map(|c| c.to_prim()));
         w.push(gr);
         w.push(gr);
-        // limited slopes for cells 1..=n+2 of w
-        let slope = |i: usize, f: fn(&Prim) -> f64| {
-            minmod(f(&w[i]) - f(&w[i - 1]), f(&w[i + 1]) - f(&w[i]))
-        };
+        let w = &self.w;
         let face = |i: usize, side: f64| -> Prim {
-            let s = w[i];
+            let (a, s, c) = (w[i - 1], w[i], w[i + 1]);
             let r = Prim {
-                rho: s.rho + side * 0.5 * slope(i, |p| p.rho),
-                u: s.u + side * 0.5 * slope(i, |p| p.u),
-                p: s.p + side * 0.5 * slope(i, |p| p.p),
+                rho: s.rho + side * 0.5 * minmod(s.rho - a.rho, c.rho - s.rho),
+                u: s.u + side * 0.5 * minmod(s.u - a.u, c.u - s.u),
+                p: s.p + side * 0.5 * minmod(s.p - a.p, c.p - s.p),
             };
             if r.rho > 0.0 && r.p > 0.0 { r } else { s }
         };
-        // faces between w[k] and w[k+1] for k = 1..=n+1 (cell j = k−2 sits between faces k−1, k)
-        let fluxes: Vec<Cons> = (1..=n + 1)
-            .map(|k| hllc(face(k, 1.0), face(k + 1, -1.0)))
-            .collect();
-        (0..n)
-            .map(|j| {
-                let (a, b) = (fluxes[j], fluxes[j + 1]);
-                Cons {
-                    rho: -(b.rho - a.rho) / self.dx,
-                    mom: -(b.mom - a.mom) / self.dx,
-                    e: -(b.e - a.e) / self.dx,
-                }
-            })
-            .collect()
+        // face k sits between w[k] and w[k+1], k = 1..=n+1; cell j lies between faces j and j+1
+        for (k, f) in self.fluxes.iter_mut().enumerate() {
+            *f = hllc(face(k + 1, 1.0), face(k + 2, -1.0));
+        }
+        let inv = 1.0 / self.dx;
+        for (j, r) in self.rhs.iter_mut().enumerate() {
+            let (a, b) = (self.fluxes[j], self.fluxes[j + 1]);
+            *r = Cons {
+                rho: -(b.rho - a.rho) * inv,
+                mom: -(b.mom - a.mom) * inv,
+                e: -(b.e - a.e) * inv,
+            };
+        }
     }
 }
 
