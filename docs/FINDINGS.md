@@ -37,6 +37,20 @@ Found: <YYYY-MM-DD> · <area: build | tests | db | ci | deploy | env>
 
 ## Findings
 
+### Open: with the FV exhaust, coast is as loud as WOT at the firing frequency (LFA 7000 rpm)
+
+**Symptom.** Source at the tail, firing order (583 Hz): coast 752 vs WOT 594 (a.u.); a real engine
+is 5–10 dB quieter on overrun.
+**Measured so far.** Cylinder at EVO: WOT 5.2 bar, coast 0.17 bar (physics right). Port gauge
+swing: WOT +40…+115 kPa, coast −26…+39 kPa (similar p-p). Not the valve limiter (port cell as a
+reservoir: no change). Not texture (tonal part alone). FV pipes themselves validated (Sod, area
+steps, steepening).
+**Next hypotheses.** Overrun fuel cut; reverse-flow Cd lower than forward (Blair); intake side
+reversion through the cylinder; compare spectra with real recordings.
+**Tools.** `examples/{port_probe,sound_breakdown,spectrum_probe}.rs`.
+
+Found: 2026-10-22 · physics
+
 ### Other sessions run real-time gates on this machine: share the CPU lock
 
 **Symptom.** Another project's differential gates (real-time game routes) failed while our cargo
