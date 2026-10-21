@@ -8,20 +8,23 @@ use engine_core::engine::{Controls, EngineDef};
 pub enum Preset {
     Single,
     Inline4,
+    LfaV10,
 }
 
 impl Preset {
-    pub const ALL: [Preset; 2] = [Preset::Single, Preset::Inline4];
+    pub const ALL: [Preset; 3] = [Preset::Single, Preset::Inline4, Preset::LfaV10];
     pub fn def(self) -> EngineDef {
         match self {
             Preset::Single => EngineDef::single(),
             Preset::Inline4 => EngineDef::inline4(),
+            Preset::LfaV10 => EngineDef::lfa_v10(),
         }
     }
     pub fn label(self) -> &'static str {
         match self {
             Preset::Single => "Single 500",
             Preset::Inline4 => "Inline-4 2.0",
+            Preset::LfaV10 => "Lexus LFA V10",
         }
     }
 }
@@ -134,6 +137,14 @@ mod tests {
         assert_eq!(h.state().preset, Preset::Inline4);
         assert_eq!(h.state().def.cylinders, 4);
         assert!(h.state().engine_dirty);
+    }
+
+    #[test]
+    fn lfa_preset_is_selectable() {
+        let mut h = harness();
+        h.get_by_label("Lexus LFA V10").click();
+        h.run();
+        assert_eq!(h.state().def.cylinders, 10);
     }
 
     #[test]

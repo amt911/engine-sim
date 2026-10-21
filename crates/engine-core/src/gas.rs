@@ -64,17 +64,51 @@ pub fn orifice_mass_flow(cd_area: f64, p_up: f64, t_up: f64, p_down: f64) -> f64
     }
 }
 
+/// A flow decided from a frozen state, to apply later. Lets several connections of one
+/// volume be computed from the same start-of-step state (Jacobi), instead of each
+/// one seeing the previous one's result — which ping-pongs a volume open to two others.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Flow {
+    /// Mass from `a` to `b` (negative: `b` → `a`).
+    pub dm: f64,
+    /// Specific enthalpy carried, J/kg (upstream side).
+    pub h: f64,
+}
+
+impl Flow {
+    pub fn apply(&self, a: &mut GasVolume, b: &mut GasVolume) {
+        a.mass_kg -= self.dm;
+        a.energy_j -= self.dm * self.h;
+        b.mass_kg += self.dm;
+        b.energy_j += self.dm * self.h;
+    }
+}
+
+/// Plan the exchange `exchange` would do, scaled by `relax` (0..=1) of the equalising
+/// limit, without changing either volume.
+pub fn plan_exchange(a: &GasVolume, b: &GasVolume, cd_area: f64, dt: f64, relax: f64) -> Flow {
+    let (pa, pb) = (a.pressure(), b.pressure());
+    let (up, down, pu, pd, sign) = if pa >= pb {
+        (a, b, pa, pb, 1.0)
+    } else {
+        (b, a, pb, pa, -1.0)
+    };
+    let h = CP * up.temperature();
+    let ideal = orifice_mass_flow(cd_area, pu, up.temperature(), pd) * dt;
+    let dm = ideal
+        .min(relax * equalising_mass(pu - pd, h, 1.0 / up.volume_m3 + 1.0 / down.volume_m3))
+        .min(0.5 * up.mass_kg);
+    Flow { dm: sign * dm, h }
+}
+
 /// Exchange gas between two volumes through an orifice for `dt` seconds.
 /// Returns the mass moved from `a` to `b` (negative if it went `b` → `a`).
 /// The moved mass carries the upstream specific enthalpy and is clamped so the
 /// pressures never cross in one step (keeps explicit stepping stable).
 pub fn exchange(a: &mut GasVolume, b: &mut GasVolume, cd_area: f64, dt: f64) -> f64 {
-    let (pa, pb) = (a.pressure(), b.pressure());
-    if pa >= pb {
-        transfer(a, b, cd_area, dt, pa, pb)
-    } else {
-        -transfer(b, a, cd_area, dt, pb, pa)
-    }
+    let f = plan_exchange(a, b, cd_area, dt, 1.0);
+    f.apply(a, b);
+    f.dm
 }
 
 /// Exchange gas between a volume and a fixed reservoir. Returns mass moved out of `a`
@@ -107,31 +141,14 @@ pub fn exchange_with_reservoir(a: &mut GasVolume, r: &Reservoir, cd_area: f64, d
     }
 }
 
-/// Move gas from `up` (pressure `pu`) to `down` (pressure `pd`), `pu >= pd`.
-fn transfer(
-    up: &mut GasVolume,
-    down: &mut GasVolume,
-    cd_area: f64,
-    dt: f64,
-    pu: f64,
-    pd: f64,
-) -> f64 {
-    let h = CP * up.temperature();
-    let ideal = orifice_mass_flow(cd_area, pu, up.temperature(), pd) * dt;
-    let dm = clamp_flow(ideal, pu - pd, h, 1.0 / up.volume_m3 + 1.0 / down.volume_m3)
-        .min(0.5 * up.mass_kg);
-    up.mass_kg -= dm;
-    up.energy_j -= dm * h;
-    down.mass_kg += dm;
-    down.energy_j += dm * h;
-    dm
-}
-
 /// Moving `dm` with enthalpy `h` changes p by (γ−1)·h·dm/V on each side (p = (γ−1)U/V),
 /// so the pressures meet exactly at dm_eq = Δp / ((γ−1)·h·Σ1/V). Never move more.
+fn equalising_mass(dp: f64, h: f64, inv_volumes: f64) -> f64 {
+    dp / ((GAMMA - 1.0) * h * inv_volumes)
+}
+
 fn clamp_flow(ideal: f64, dp: f64, h: f64, inv_volumes: f64) -> f64 {
-    let dm_eq = dp / ((GAMMA - 1.0) * h * inv_volumes);
-    ideal.min(dm_eq)
+    ideal.min(equalising_mass(dp, h, inv_volumes))
 }
 
 #[cfg(test)]
@@ -216,6 +233,29 @@ mod tests {
         // a huge step settles at atmospheric pressure, no overshoot
         exchange_with_reservoir(&mut high, &atm, 1.0, 1.0);
         assert_relative_eq!(high.pressure(), 101_325.0, max_relative = 1e-6);
+    }
+
+    #[test]
+    fn planned_flow_matches_exchange_and_relax_scales_the_limit() {
+        let (a0, b0) = (
+            GasVolume::at(5e5, 1200.0, 5e-4),
+            GasVolume::at(1e5, 300.0, 5e-4),
+        );
+        let (mut a1, mut b1) = (a0, b0);
+        let dm = exchange(&mut a1, &mut b1, 5e-4, 2e-5);
+        let f = plan_exchange(&a0, &b0, 5e-4, 2e-5, 1.0);
+        assert_relative_eq!(f.dm, dm, max_relative = 1e-12);
+        let (mut a2, mut b2) = (a0, b0);
+        f.apply(&mut a2, &mut b2);
+        assert_eq!((a1, b1), (a2, b2));
+        // reverse direction is negative and carries b's enthalpy
+        let f = plan_exchange(&b0, &a0, 5e-4, 2e-5, 1.0);
+        assert_relative_eq!(f.dm, -dm, max_relative = 1e-12);
+        assert_relative_eq!(f.h, CP * 1200.0, max_relative = 1e-12);
+        // huge step: relax 0.5 moves half the equalising mass
+        let full = plan_exchange(&a0, &b0, 1.0, 1.0, 1.0).dm;
+        let half = plan_exchange(&a0, &b0, 1.0, 1.0, 0.5).dm;
+        assert_relative_eq!(half, 0.5 * full, max_relative = 1e-12);
     }
 
     #[test]

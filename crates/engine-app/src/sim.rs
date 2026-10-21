@@ -39,8 +39,8 @@ pub struct Simulation {
 impl Simulation {
     pub fn new(def: EngineDef, sample_rate: f64, seed: u64) -> Self {
         Self {
-            engine: Engine::new(def, IDLE_START_RPM, seed),
             voice: Voice::new(sample_rate),
+            engine: Engine::new(def, IDLE_START_RPM, seed),
             sample_rate,
             controls: Controls::default(),
             trace: vec![0.0; 720],
@@ -164,6 +164,44 @@ pub(crate) mod tests {
         let out = render_secs(&mut sim, 0.5);
         let p = dominant_period(&out, 300, 700);
         assert!((470..=490).contains(&p), "period {p}");
+    }
+
+    fn rms(x: &[f32]) -> f64 {
+        (x.iter().map(|s| (s * s) as f64).sum::<f64>() / x.len() as f64).sqrt()
+    }
+
+    #[test]
+    fn load_makes_it_louder_without_saturating() {
+        // Regression: with the plain 0D runner pressure as source, high-rpm WOT was barely
+        // louder than idle; with the valve flow as source, coasting was louder than WOT.
+        // Load must raise the level (Caviezel 2026: load matters as much as rpm).
+        // Known limit: a V10 at WOT sums ten smooth 0D pulses into a nearly steady flow, so
+        // it is not checked here — sharp pulses need the waveguide exhaust (next milestone).
+        for def in [
+            EngineDef::single(),
+            EngineDef::inline4(),
+            EngineDef::lfa_v10(),
+        ] {
+            let level = |throttle: f64| {
+                let mut sim = Simulation::new(def.clone(), FS, 1);
+                sim.controls = Controls {
+                    throttle,
+                    hold_rpm: Some(6000.0),
+                    ..Controls::default()
+                };
+                render_secs(&mut sim, 0.4);
+                rms(&render_secs(&mut sim, 0.4))
+            };
+            let (coast, wot) = (level(0.0), level(1.0));
+            if def.cylinders <= 4 {
+                assert!(wot > 1.5 * coast, "{}: wot {wot} coast {coast}", def.name);
+            }
+            assert!(
+                wot > 0.02 && wot < 0.5 && coast < 0.5,
+                "{}: wot {wot} coast {coast}",
+                def.name
+            );
+        }
     }
 
     #[test]

@@ -73,10 +73,14 @@ impl LowPass {
     }
 }
 
+/// Above this frequency the radiated sound follows the derivative of the source.
+pub const RADIATION_CORNER_HZ: f64 = 150.0;
+
 /// The engine voice: raw exhaust pressure (Pa) → speaker sample in [-1, 1].
 #[derive(Debug, Clone)]
 pub struct Voice {
     dc: DcBlocker,
+    prev: f64,
     lp: LowPass,
     sample_rate: f64,
     /// Pressure that maps to full scale before soft clipping, Pa.
@@ -87,20 +91,27 @@ impl Voice {
     pub fn new(sample_rate: f64) -> Self {
         Self {
             dc: DcBlocker::new(3.0, sample_rate),
+            prev: 0.0,
             lp: LowPass::new(
                 5000.0_f64.min(0.45 * sample_rate),
                 std::f64::consts::FRAC_1_SQRT_2,
                 sample_rate,
             ),
             sample_rate,
-            full_scale_pa: 10_000.0,
+            full_scale_pa: 22_000.0,
         }
     }
     pub fn process(&mut self, pressure_pa: f64) -> f32 {
         if !pressure_pa.is_finite() {
             return 0.0;
         }
-        let y = self.lp.process(self.dc.process(pressure_pa)) / self.full_scale_pa;
+        // Radiation: a pipe outlet radiates like a monopole, p ∝ d(flow)/dt (J. O. Smith,
+        // PASP, "Spherical Waves from a Point Source"). Mix the source with its derivative so
+        // components above RADIATION_CORNER_HZ are lifted ∝ frequency.
+        let x = self.dc.process(pressure_pa);
+        let dx = (x - self.prev) * self.sample_rate / (2.0 * PI * RADIATION_CORNER_HZ);
+        self.prev = x;
+        let y = self.lp.process(x + dx) / self.full_scale_pa;
         if !y.is_finite() {
             // A runaway filter state is reset rather than left to poison every later sample.
             *self = Voice {

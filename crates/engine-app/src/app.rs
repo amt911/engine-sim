@@ -46,7 +46,8 @@ impl eframe::App for EngineApp {
             });
         if self.state.engine_dirty {
             self.state.engine_dirty = false;
-            self.sim.send(Command::Engine(self.state.def.clone()));
+            self.sim
+                .send(Command::Engine(Box::new(self.state.def.clone())));
         }
         let c = self.state.controls();
         if self.sent != Some(c) {

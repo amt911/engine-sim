@@ -14,6 +14,7 @@ use std::process::ExitCode;
 enum PresetArg {
     Single,
     Inline4,
+    LfaV10,
 }
 
 impl From<PresetArg> for Preset {
@@ -21,6 +22,7 @@ impl From<PresetArg> for Preset {
         match p {
             PresetArg::Single => Preset::Single,
             PresetArg::Inline4 => Preset::Inline4,
+            PresetArg::LfaV10 => Preset::LfaV10,
         }
     }
 }

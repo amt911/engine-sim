@@ -18,7 +18,7 @@ const SNAPSHOT_EVERY: Duration = Duration::from_millis(15);
 
 pub enum Command {
     Controls(Controls),
-    Engine(EngineDef),
+    Engine(Box<EngineDef>),
     Quit,
 }
 
@@ -96,7 +96,7 @@ fn run(
         for cmd in rx.try_iter() {
             match cmd {
                 Command::Controls(c) => sim.controls = c,
-                Command::Engine(d) => sim.replace_engine(d),
+                Command::Engine(d) => sim.replace_engine(*d),
                 Command::Quit => return,
             }
         }

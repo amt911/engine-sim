@@ -3,7 +3,11 @@
 use engine_core::engine::*;
 fn main() {
     let dt = 1.0 / 192_000.0;
-    for def0 in [EngineDef::single(), EngineDef::inline4()] {
+    for def0 in [
+        EngineDef::single(),
+        EngineDef::inline4(),
+        EngineDef::lfa_v10(),
+    ] {
         for idle in [def0.idle_throttle] {
             let mut d = def0.clone();
             d.idle_throttle = idle;
@@ -19,7 +23,7 @@ fn main() {
                 e.plenum_pressure_pa() / 1e5
             );
         }
-        for rpm in [2000.0, 4000.0, 6000.0] {
+        for rpm in [2000.0, 4000.0, 6800.0, 8700.0] {
             let mut e = Engine::new(def0.clone(), rpm, 1);
             let c = Controls {
                 throttle: 1.0,

@@ -5,7 +5,7 @@
 //! Model ladder and references: `docs/research/simulador-motor-rust.md`.
 
 use crate::combustion::{AFR_STOICH, charge_energy, wiebe};
-use crate::gas::{GasVolume, Reservoir, exchange, exchange_with_reservoir};
+use crate::gas::{GasVolume, Reservoir, exchange_with_reservoir, plan_exchange};
 use crate::geometry::CylinderGeometry;
 use crate::units::{ATM_PA, deg_to_rad, rad_s_to_rpm, rpm_to_rad_s};
 use crate::valve::ValveTiming;
@@ -36,6 +36,8 @@ pub struct EngineDef {
     pub exhaust_outlet_diameter_m: f64,
     pub redline_rpm: f64,
     pub starter_torque_nm: f64,
+    /// Friction mean effective pressure fit, bar: FMEP = a + b·(N/1000) + c·(N/1000)².
+    pub fmep_bar: [f64; 3],
 }
 
 impl Default for EngineDef {
@@ -80,6 +82,7 @@ impl EngineDef {
             exhaust_outlet_diameter_m: 0.045,
             redline_rpm: 7500.0,
             starter_torque_nm: 25.0,
+            fmep_bar: [0.97, 0.15, 0.05],
         }
     }
 
@@ -97,6 +100,50 @@ impl EngineDef {
             redline_rpm: 7000.0,
             starter_torque_nm: 60.0,
             ..Self::single()
+        }
+    }
+
+    /// Lexus LFA, Toyota 1LR-GUE: 4.8 L 72° V10, 88 × 79 mm, CR 12.0, even firing,
+    /// 9,000 rpm redline (Toyota LR engine, Wikipedia; PistonHeads LFA spec sheet).
+    /// Not public, estimated: rod length, cam timing, valve sizes (4 valves/cyl lumped into
+    /// one equivalent valve each), inertia. Firing order: placeholder (Audi 5.2 V10 order),
+    /// pending confirmation. Drawn inline until V layouts land.
+    pub fn lfa_v10() -> Self {
+        Self {
+            name: "Lexus LFA V10".into(),
+            geometry: CylinderGeometry {
+                bore_m: 0.088,
+                stroke_m: 0.079,
+                rod_m: 0.140,
+                compression_ratio: 12.0,
+            },
+            cylinders: 10,
+            firing_order: vec![1, 6, 5, 10, 2, 7, 3, 8, 4, 9],
+            intake_valve: ValveTiming {
+                open_deg: 340.0,
+                duration_deg: 270.0,
+                max_lift_m: 0.011,
+                diameter_m: 0.046,
+            },
+            exhaust_valve: ValveTiming {
+                open_deg: 125.0,
+                duration_deg: 265.0,
+                max_lift_m: 0.010,
+                diameter_m: 0.040,
+            },
+            spark_advance_deg: 28.0,
+            burn_duration_deg: 45.0,
+            flywheel_inertia_kgm2: 0.09,
+            plenum_volume_m3: 8.0e-3,
+            throttle_diameter_m: 0.120,
+            idle_throttle: 0.0015,
+            exhaust_runner_length_m: 0.6,
+            exhaust_runner_diameter_m: 0.048,
+            exhaust_outlet_diameter_m: 0.050,
+            redline_rpm: 9000.0,
+            starter_torque_nm: 150.0,
+            // Low-friction racing build (dry sump, titanium valvetrain): estimated.
+            fmep_bar: [0.8, 0.10, 0.015],
         }
     }
 
@@ -174,6 +221,8 @@ const DISCHARGE_CD: f64 = 0.8;
 /// Speed of sound used for the exhaust runner delay, m/s (hot exhaust ≈ 500–600).
 const EXHAUST_SOUND_SPEED: f64 = 550.0;
 const TORQUE_AVG_TAU_S: f64 = 0.15;
+/// Fraction of the equalising mass a valve may move per substep (see `step`).
+const VALVE_RELAX: f64 = 0.5;
 
 #[derive(Debug, Clone)]
 struct Burn {
@@ -292,11 +341,12 @@ impl Engine {
     }
 
     /// Friction torque from a Chen–Flynn-style FMEP fit (SAE 650733 form):
-    /// FMEP [bar] = 0.97 + 0.15·(N/1000) + 0.05·(N/1000)²; T = FMEP·Vd / 4π.
+    /// FMEP [bar] = a + b·(N/1000) + c·(N/1000)² (default 0.97, 0.15, 0.05); T = FMEP·Vd / 4π.
     /// tanh fades it to zero at standstill so the crank does not reverse.
     fn friction_torque(&self) -> f64 {
         let k = rad_s_to_rpm(self.omega) / 1000.0;
-        let fmep = (0.97 + 0.15 * k + 0.05 * k * k) * 1e5;
+        let [a, b, c] = self.def.fmep_bar;
+        let fmep = (a + b * k + c * k * k) * 1e5;
         fmep * self.def.displacement_m3() / (4.0 * PI) * (self.omega / 5.0).tanh()
     }
 
@@ -329,13 +379,20 @@ impl Engine {
             cs.gas.set_volume(v_new);
 
             // Valve and outlet flows.
+            // Both valve flows are planned from the same state (Jacobi) and each may close
+            // at most half the pressure gap: during overlap, sequential full equalisation
+            // with plenum then runner ping-pongs every substep (loud numerical chatter).
             let a_in = self.def.intake_valve.flow_area(cur);
-            if a_in > 0.0 {
-                exchange(&mut self.plenum, &mut cs.gas, a_in, dt);
-            }
             let a_ex = self.def.exhaust_valve.flow_area(cur);
-            if a_ex > 0.0 {
-                exchange(&mut cs.gas, &mut cs.runner, a_ex, dt);
+            let f_in =
+                (a_in > 0.0).then(|| plan_exchange(&self.plenum, &cs.gas, a_in, dt, VALVE_RELAX));
+            let f_ex =
+                (a_ex > 0.0).then(|| plan_exchange(&cs.gas, &cs.runner, a_ex, dt, VALVE_RELAX));
+            if let Some(f) = f_in {
+                f.apply(&mut self.plenum, &mut cs.gas);
+            }
+            if let Some(f) = f_ex {
+                f.apply(&mut cs.gas, &mut cs.runner);
             }
             exchange_with_reservoir(&mut cs.runner, &self.atm, outlet_area, dt);
 
@@ -370,7 +427,11 @@ impl Engine {
 
             gas_torque += (cs.gas.pressure() - ATM_PA) * g.piston_area() * g.dpos_dtheta(theta_c);
 
-            // Acoustic source: runner pressure delayed by the runner length.
+            // Acoustic source: runner gauge pressure, delayed by the runner length. The 0D
+            // runner low-passes the pulses at ~A·c/V (~100 Hz); the voice's radiation
+            // term (∝ d/dt above 150 Hz) restores the high-rpm harmonics. The valve flow
+            // itself (p = c·ṁ/A) was tried: its √Δp kink at flow reversal turns into hiss
+            // and made closed throttle louder than WOT.
             if cs.delay.len() != delay_len {
                 cs.delay = vec![0.0; delay_len];
                 cs.delay_pos = 0;
@@ -754,5 +815,37 @@ mod tests {
             let mut e = Engine::new(base.clone(), 900.0, 1);
             assert!(!e.retune(d), "structural change must rebuild");
         }
+    }
+
+    #[test]
+    fn lfa_v10_matches_published_specs() {
+        let d = EngineDef::lfa_v10();
+        // 10 · π/4 · 0.088² · 0.079 = 4.8048e-3 m³ (published: 4,805 cc)
+        assert_relative_eq!(d.displacement_m3(), 4.8048e-3, max_relative = 1e-4);
+        assert_eq!(d.geometry.compression_ratio, 12.0);
+        let mut offsets = d.phase_offsets_deg();
+        offsets.sort_by(f64::total_cmp);
+        let expected: Vec<f64> = (0..10).map(|k| 72.0 * k as f64).collect();
+        assert_eq!(offsets, expected, "even firing every 72°");
+    }
+
+    #[test]
+    fn lfa_v10_idles_and_makes_big_power() {
+        let mut e = Engine::new(EngineDef::lfa_v10(), 1000.0, 1);
+        run(&mut e, 2.0, &Controls::default());
+        assert!((500.0..1800.0).contains(&e.rpm()), "idle {}", e.rpm());
+        // Published: 480 N·m @ 6,800 rpm. A 0D model without tuned headers lands lower.
+        let mut e = Engine::new(EngineDef::lfa_v10(), 6800.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(6800.0),
+            ..Controls::default()
+        };
+        run(&mut e, 1.0, &c);
+        assert!(
+            (280.0..600.0).contains(&e.torque_nm()),
+            "torque {}",
+            e.torque_nm()
+        );
     }
 }

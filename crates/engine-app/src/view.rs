@@ -121,16 +121,17 @@ pub fn engine(ui: &mut egui::Ui, s: &Snapshot) {
         p.circle_filled(crank, 3.0, STEEL);
 
         let label = format!(
-            "#{}  {}  {:.1} bar",
+            "#{}\n{}\n{:.1} bar",
             i + 1,
             stroke_name(c.cycle_deg),
             pa_to_bar(c.pressure_pa)
         );
+        let font = FontId::proportional((cell_w / 7.0).clamp(9.0, 14.0));
         p.text(
-            pos2(cx, rect.top() + 6.0),
-            Align2::CENTER_TOP,
+            pos2(cx, deck - m(head_h) - 14.0),
+            Align2::CENTER_BOTTOM,
             label,
-            FontId::proportional(13.0),
+            font,
             Color32::LIGHT_GRAY,
         );
     }
