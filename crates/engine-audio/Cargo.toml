@@ -1,0 +1,8 @@
+[package]
+name = "engine-audio"
+description = "DSP chain and audio output for engine-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

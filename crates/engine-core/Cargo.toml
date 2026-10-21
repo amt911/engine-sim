@@ -1,0 +1,10 @@
+[package]
+name = "engine-core"
+description = "Pure, deterministic engine physics and engine definitions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+
+[dev-dependencies]

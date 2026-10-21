@@ -1,0 +1,35 @@
+[workspace]
+resolver = "3"
+members = ["crates/engine-core", "crates/engine-audio", "crates/engine-app"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/amt911/engine-sim"
+
+[workspace.dependencies]
+engine-core = { path = "crates/engine-core" }
+engine-audio = { path = "crates/engine-audio" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+thiserror = "2"
+rand = { version = "0.10", default-features = false }
+rand_chacha = { version = "0.10", default-features = false }
+cpal = "0.18"
+rtrb = "0.4"
+eframe = { version = "0.37", default-features = false, features = ["wgpu", "default_fonts", "wayland", "x11", "accesskit"] }
+egui_plot = "0.37"
+egui_kittest = "0.37"
+clap = { version = "4", features = ["derive"] }
+hound = "3"
+proptest = "1"
+approx = "0.5"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[profile.dev.package."*"]
+opt-level = 2
