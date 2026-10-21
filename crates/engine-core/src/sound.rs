@@ -180,6 +180,48 @@ mod tests {
     }
 
     #[test]
+    fn band_passes_the_band_and_rejects_dc_and_extremes() {
+        // one-pole high-pass 400 Hz then one-pole low-pass 6 kHz, at 192 kHz
+        let gain = |f: f64| {
+            let mut b = Band::default();
+            let mut peak: f64 = 0.0;
+            for n in 0..40_000 {
+                let y = b.process(
+                    (2.0 * std::f64::consts::PI * f * n as f64 * DT).sin(),
+                    400.0,
+                    6_000.0,
+                    DT,
+                );
+                if n > 20_000 {
+                    peak = peak.max(y.abs());
+                }
+            }
+            peak
+        };
+        // |H| ≈ 1/√(1+(400/f)²) · 1/√(1+(f/6000)²): 2 kHz → 0.93; 100 Hz → 0.24; 60 kHz → 0.10
+        assert!((gain(2_000.0) - 0.93).abs() < 0.05, "{}", gain(2_000.0));
+        assert!(gain(100.0) < 0.3, "{}", gain(100.0));
+        assert!(gain(60_000.0) < 0.2, "{}", gain(60_000.0));
+        let mut b = Band::default();
+        let mut y = 1.0;
+        for _ in 0..20_000 {
+            y = b.process(1.0, 400.0, 6_000.0, DT);
+        }
+        assert!(y.abs() < 1e-3, "DC must be rejected: {y}");
+    }
+
+    #[test]
+    fn white_noise_is_uncorrelated() {
+        let mut t = Texture::new(9);
+        let xs: Vec<f64> = (0..50_000).map(|_| t.white()).collect();
+        let r1 = xs.windows(2).map(|w| w[0] * w[1]).sum::<f64>() / xs.len() as f64 / (1.0 / 3.0);
+        assert!(r1.abs() < 0.02, "lag-1 correlation {r1}");
+        // uniform(−1, 1): fourth moment 1/5
+        let m4 = xs.iter().map(|x| x.powi(4)).sum::<f64>() / xs.len() as f64;
+        assert!((m4 - 0.2).abs() < 0.01, "{m4}");
+    }
+
+    #[test]
     fn flow_noise_scales_with_dynamic_pressure_and_needs_outflow() {
         let level = |radiated: f64| {
             let mut t = Texture::new(1);

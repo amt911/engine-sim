@@ -511,9 +511,13 @@ impl Engine {
         }
         let audio = radiated
             + self.texture.flow_noise(radiated, snd.flow_noise, dt)
-            + self
-                .texture
-                .intake(-throttle_dm / dt, throttle_area, bore_area, snd.intake, dt)
+            + self.texture.intake(
+                (throttle_dm / dt).abs(),
+                throttle_area,
+                bore_area,
+                snd.intake,
+                dt,
+            )
             + self.texture.clicks(dt);
 
         // Crank dynamics.
@@ -1156,5 +1160,96 @@ mod tests {
             wet_wot - dry_wot > wet_coast - dry_coast,
             "texture should grow with load"
         );
+    }
+
+    /// Output of an inline-4 held at `rpm` with only the given texture levels (jitter and reverb
+    /// off), 0.2 s after settling.
+    fn textured(flow: f64, intake: f64, mech: f64, rpm: f64, throttle: f64) -> Vec<f64> {
+        let mut d = EngineDef::inline4();
+        d.sound = crate::sound::SoundDef {
+            flow_noise: flow,
+            intake,
+            mechanical: mech,
+            combustion_jitter: 0.0,
+            reverb: 0.0,
+        };
+        let mut e = Engine::new(d, rpm, 1);
+        let c = Controls {
+            throttle,
+            hold_rpm: Some(rpm),
+            ..Controls::default()
+        };
+        run(&mut e, 0.3, &c);
+        run(&mut e, 0.2, &c)
+    }
+
+    fn mean_rms_of_difference(a: &[f64], b: &[f64]) -> (f64, f64) {
+        let d: Vec<f64> = a.iter().zip(b).map(|(x, y)| x - y).collect();
+        let m = d.iter().sum::<f64>() / d.len() as f64;
+        (
+            m,
+            (d.iter().map(|v| (v - m).powi(2)).sum::<f64>() / d.len() as f64).sqrt(),
+        )
+    }
+
+    #[test]
+    fn each_texture_source_adds_to_the_output() {
+        let dry = textured(0.0, 0.0, 0.0, 5000.0, 1.0);
+        // flow noise: zero-mean broadband added on top
+        let (m, r) = mean_rms_of_difference(&textured(1.0, 0.0, 0.0, 5000.0, 1.0), &dry);
+        assert!(
+            r > 10.0 && m.abs() < 0.2 * r,
+            "flow noise: mean {m} rms {r}"
+        );
+        // intake: the tone c·ṁ/A_bore is a positive offset under load
+        let (m, _) = mean_rms_of_difference(&textured(0.0, 1.0, 0.0, 5000.0, 1.0), &dry);
+        assert!(m > 100.0, "intake tone mean {m}");
+        // valvetrain: clicks, more of them and louder at higher rpm
+        let (_, r5) = mean_rms_of_difference(&textured(0.0, 0.0, 1.0, 5000.0, 1.0), &dry);
+        let dry2 = textured(0.0, 0.0, 0.0, 2000.0, 1.0);
+        let (_, r2) = mean_rms_of_difference(&textured(0.0, 0.0, 1.0, 2000.0, 1.0), &dry2);
+        assert!(
+            r5 > 1.5 * r2 && r2 > 0.0,
+            "clicks 2000 rpm {r2} vs 5000 rpm {r5}"
+        );
+    }
+
+    #[test]
+    fn intake_tone_follows_the_throttle_flow() {
+        // c·ṁ/A_bore: twice the flow, twice the offset. WOT vs a light throttle at the same rpm.
+        let off = |throttle: f64| {
+            let dry = textured(0.0, 0.0, 0.0, 4000.0, throttle);
+            mean_rms_of_difference(&textured(0.0, 1.0, 0.0, 4000.0, throttle), &dry).0
+        };
+        let (light, wot) = (off(0.1), off(1.0));
+        assert!(
+            wot > 2.0 * light && light > 0.0,
+            "light {light} vs WOT {wot}"
+        );
+    }
+
+    #[test]
+    fn burns_complete_with_jitter_on() {
+        // The burn must run to the end (Wiebe ≥ 99 %) every cycle with jitter enabled: peak
+        // pressure with and without jitter within 15 % (a burn dropped early would collapse it).
+        let peak = |jitter: f64| {
+            let mut d = EngineDef::single();
+            d.sound.combustion_jitter = jitter;
+            let mut e = Engine::new(d, 3000.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(3000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &c);
+            let mut p: f64 = 0.0;
+            for _ in 0..(0.2 / DT) as usize {
+                e.step(DT, &c);
+                p = p.max(e.cylinder(0).pressure_pa);
+            }
+            p
+        };
+        let (a, b) = (peak(0.0), peak(1.0));
+        assert!((b / a - 1.0).abs() < 0.15, "peak without {a} with {b}");
     }
 }
