@@ -10,6 +10,7 @@ use crate::gas::{
     GasVolume, Reservoir, exchange_with_reservoir, exhaust_valve_flow, plan_exchange,
 };
 use crate::geometry::CylinderGeometry;
+use crate::sound::{BURN_DURATION_JITTER, BURN_START_JITTER_DEG, SoundDef, Texture};
 use crate::units::{ATM_PA, deg_to_rad, rad_s_to_rpm, rpm_to_rad_s};
 use crate::valve::ValveTiming;
 use serde::{Deserialize, Serialize};
@@ -41,6 +42,8 @@ pub struct EngineDef {
     pub starter_torque_nm: f64,
     /// Friction mean effective pressure fit, bar: FMEP = a + b·(N/1000) + c·(N/1000)².
     pub fmep_bar: [f64; 3],
+    /// Sound texture levels (noise, intake, mechanics, combustion variability).
+    pub sound: SoundDef,
 }
 
 impl Default for EngineDef {
@@ -93,6 +96,7 @@ impl EngineDef {
             redline_rpm: 7500.0,
             starter_torque_nm: 25.0,
             fmep_bar: [0.97, 0.15, 0.05],
+            sound: SoundDef::default(),
         }
     }
 
@@ -164,6 +168,7 @@ impl EngineDef {
             starter_torque_nm: 150.0,
             // Low-friction racing build (dry sump, titanium valvetrain): estimated.
             fmep_bar: [0.8, 0.10, 0.015],
+            sound: SoundDef::default(),
         }
     }
 
@@ -249,6 +254,7 @@ const VALVE_RELAX: f64 = 0.5;
 #[derive(Debug, Clone)]
 struct Burn {
     start_deg: f64,
+    duration_deg: f64,
     energy_j: f64,
     released: f64,
 }
@@ -277,6 +283,7 @@ pub struct Engine {
     /// Exhaust waveguide network, built for the current step size.
     net: Option<ExhaustNet>,
     flows: Vec<f64>,
+    texture: Texture,
 }
 
 /// Crank angle `a` (deg) crossed in the step (prev, cur], on the 720° circle.
@@ -318,6 +325,7 @@ impl Engine {
             rng: seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1,
             net: None,
             flows: Vec::new(),
+            texture: Texture::new(seed ^ 0x7E57),
         }
     }
 
@@ -374,6 +382,9 @@ impl Engine {
         let spark_deg = 720.0 - self.def.spark_advance_deg;
         let ivc =
             (self.def.intake_valve.open_deg + self.def.intake_valve.duration_deg).rem_euclid(720.0);
+        let evc = (self.def.exhaust_valve.open_deg + self.def.exhaust_valve.duration_deg)
+            .rem_euclid(720.0);
+        let mut valve_closings = 0;
         let fire_ok = c.ignition && self.rpm() < self.def.redline_rpm;
         let wall_area = 2.0 * g.piston_area();
         if self.net.as_ref().is_none_or(|n| n.dt != dt) {
@@ -430,6 +441,9 @@ impl Engine {
             exchange_with_reservoir(&mut cs.gas, &self.atm, blowby_area, dt);
 
             // Combustion events.
+            if crossed(prev, cur, ivc) || crossed(prev, cur, evc) {
+                valve_closings += 1;
+            }
             if crossed(prev, cur, ivc) {
                 cs.trapped_kg = cs.gas.mass_kg;
             }
@@ -444,10 +458,10 @@ impl Engine {
                 if since > 360.0 {
                     since -= 720.0;
                 }
-                let x = wiebe(since, self.def.burn_duration_deg);
+                let x = wiebe(since, b.duration_deg);
                 cs.gas.energy_j += b.energy_j * (x - b.released);
                 b.released = x;
-                if since > 2.0 * self.def.burn_duration_deg {
+                if since > 2.0 * b.duration_deg {
                     cs.burn = None;
                 }
             }
@@ -465,9 +479,14 @@ impl Engine {
             if new_burn {
                 let trapped = cs.trapped_kg;
                 let var = 1.0 + CYCLE_VARIATION * self.noise();
+                let j = self.def.sound.combustion_jitter;
+                let start_jitter = j * BURN_START_JITTER_DEG * self.noise();
+                let duration =
+                    self.def.burn_duration_deg * (1.0 + j * BURN_DURATION_JITTER * self.noise());
                 let cs = &mut self.cyl[i];
                 cs.burn = Some(Burn {
-                    start_deg: (spark_deg + IGNITION_DELAY_DEG).rem_euclid(720.0),
+                    start_deg: (spark_deg + IGNITION_DELAY_DEG + start_jitter).rem_euclid(720.0),
+                    duration_deg: duration,
                     energy_j: charge_energy(trapped, AFR_STOICH, COMBUSTION_EFFICIENCY * var),
                     released: 0.0,
                 });
@@ -475,9 +494,23 @@ impl Engine {
             }
         }
         // Acoustic source: what the tail pipes radiate.
-        let audio = self.net.as_mut().map_or(0.0, |n| n.step(&self.flows));
+        let radiated = self.net.as_mut().map_or(0.0, |n| n.step(&self.flows));
         let throttle_area = self.throttle_area(c.throttle);
-        exchange_with_reservoir(&mut self.plenum, &self.atm, throttle_area, dt);
+        let bore_area = self.throttle_area(1.0);
+        let throttle_dm = exchange_with_reservoir(&mut self.plenum, &self.atm, throttle_area, dt);
+
+        // Texture: jet noise at the tails, induction sound, valvetrain clicks.
+        let snd = &self.def.sound;
+        let rpm = rad_s_to_rpm(self.omega);
+        for _ in 0..valve_closings {
+            self.texture.valve_closed(rpm, snd.mechanical);
+        }
+        let audio = radiated
+            + self.texture.flow_noise(radiated, snd.flow_noise, dt)
+            + self
+                .texture
+                .intake(-throttle_dm / dt, throttle_area, bore_area, snd.intake, dt)
+            + self.texture.clicks(dt);
 
         // Crank dynamics.
         let starter = if c.starter && rad_s_to_rpm(self.omega) < 600.0 {
@@ -1009,5 +1042,89 @@ mod tests {
         }
         assert!(worst > 0.0, "absolute port pressure {worst} Pa");
         assert!(swing > 1e4, "port waves expected, max |gauge| {swing}");
+    }
+
+    /// Crank angle (cycle °) of the pressure peak of each of the next `n` cycles, cylinder 1.
+    fn peak_angles(e: &mut Engine, c: &Controls, n: usize) -> Vec<f64> {
+        let mut out = Vec::new();
+        let (mut best, mut best_deg, mut last) = (0.0, 0.0, e.cylinder(0).cycle_deg);
+        while out.len() < n + 1 {
+            e.step(DT, c);
+            let v = e.cylinder(0);
+            if v.cycle_deg < last {
+                out.push(best_deg);
+                best = 0.0;
+            }
+            last = v.cycle_deg;
+            if v.pressure_pa > best && (v.cycle_deg < 90.0 || v.cycle_deg > 630.0) {
+                best = v.pressure_pa;
+                best_deg = if v.cycle_deg > 360.0 {
+                    v.cycle_deg - 720.0
+                } else {
+                    v.cycle_deg
+                };
+            }
+        }
+        out.remove(0); // the first cycle is incomplete
+        out
+    }
+
+    fn std(x: &[f64]) -> f64 {
+        let m = x.iter().sum::<f64>() / x.len() as f64;
+        (x.iter().map(|v| (v - m).powi(2)).sum::<f64>() / x.len() as f64).sqrt()
+    }
+
+    #[test]
+    fn burn_timing_varies_cycle_to_cycle() {
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        let mut e = Engine::new(EngineDef::single(), 3000.0, 1);
+        run(&mut e, 0.3, &c);
+        let jittered = std(&peak_angles(&mut e, &c, 30));
+        let mut d = EngineDef::single();
+        d.sound.combustion_jitter = 0.0;
+        let mut e = Engine::new(d, 3000.0, 1);
+        run(&mut e, 0.3, &c);
+        let steady = std(&peak_angles(&mut e, &c, 30));
+        assert!((0.3..5.0).contains(&jittered), "peak angle std {jittered}°");
+        assert!(
+            steady < 0.5 * jittered,
+            "without jitter {steady}° vs {jittered}°"
+        );
+    }
+
+    #[test]
+    fn texture_adds_high_frequency_energy_under_load() {
+        let hf = |sound: crate::sound::SoundDef, throttle: f64| {
+            let mut d = EngineDef::inline4();
+            d.sound = sound;
+            let mut e = Engine::new(d, 5000.0, 1);
+            let c = Controls {
+                throttle,
+                hold_rpm: Some(5000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &c);
+            let xs = run(&mut e, 0.2, &c);
+            (xs.windows(2).map(|w| (w[1] - w[0]).powi(2)).sum::<f64>() / xs.len() as f64).sqrt()
+        };
+        let off = crate::sound::SoundDef {
+            flow_noise: 0.0,
+            intake: 0.0,
+            mechanical: 0.0,
+            combustion_jitter: 0.0,
+            reverb: 0.0,
+        };
+        let on = crate::sound::SoundDef::default();
+        let (dry_wot, wet_wot) = (hf(off.clone(), 1.0), hf(on.clone(), 1.0));
+        let (dry_coast, wet_coast) = (hf(off, 0.0), hf(on, 0.0));
+        assert!(wet_wot > 1.3 * dry_wot, "WOT: {dry_wot} → {wet_wot}");
+        assert!(
+            wet_wot - dry_wot > wet_coast - dry_coast,
+            "texture should grow with load"
+        );
     }
 }

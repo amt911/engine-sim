@@ -265,6 +265,37 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
             );
         });
 
+    egui::CollapsingHeader::new("Sound")
+        .default_open(true)
+        .show(ui, |ui| {
+            let snd = &mut d.sound;
+            ui.add(
+                egui::Slider::new(&mut snd.flow_noise, 0.0..=4.0)
+                    .step_by(0.05)
+                    .text("Flow noise"),
+            );
+            ui.add(
+                egui::Slider::new(&mut snd.intake, 0.0..=4.0)
+                    .step_by(0.05)
+                    .text("Intake roar"),
+            );
+            ui.add(
+                egui::Slider::new(&mut snd.mechanical, 0.0..=4.0)
+                    .step_by(0.05)
+                    .text("Valvetrain"),
+            );
+            ui.add(
+                egui::Slider::new(&mut snd.combustion_jitter, 0.0..=4.0)
+                    .step_by(0.05)
+                    .text("Combustion variability"),
+            );
+            ui.add(
+                egui::Slider::new(&mut snd.reverb, 0.0..=1.0)
+                    .step_by(0.01)
+                    .text("Room reverb"),
+            );
+        });
+
     egui::CollapsingHeader::new("Mechanics").show(ui, |ui| {
         ui.add(
             egui::Slider::new(&mut d.flywheel_inertia_kgm2, 0.02..=0.6)
@@ -412,6 +443,14 @@ mod tests {
             h.state().def.exhaust.collectors,
             vec![vec![1, 4], vec![2, 3]]
         );
+        assert!(h.state().engine_dirty);
+    }
+
+    #[test]
+    fn sound_sliders_edit_the_engine() {
+        let mut h = harness(EngineDef::lfa_v10());
+        nudge(&mut h, "Flow noise");
+        assert!(h.state().def.sound.flow_noise > 1.0);
         assert!(h.state().engine_dirty);
     }
 
