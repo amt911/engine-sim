@@ -1,10 +1,11 @@
 //! The eframe application shell: wires the controls, the sim thread and the views.
 
 use crate::controls::{UiState, controls_panel};
+use crate::dyno::{self, DynoPoint};
 use crate::editor::{editor_panel, format_firing_order};
 use crate::files;
 use crate::runner::{Command, SimHandle};
-use crate::sim::Snapshot;
+use crate::sim::{DriveInput, Snapshot};
 use crate::view;
 use eframe::egui;
 use engine_core::engine::Controls;
@@ -38,6 +39,8 @@ pub struct EngineApp {
     state: UiState,
     sim: SimHandle,
     sent: Option<Controls>,
+    sent_drive: Option<DriveInput>,
+    dyno_job: Option<Receiver<Vec<DynoPoint>>>,
     quit_after: Option<f64>,
     started: Instant,
     file_job: Option<Receiver<FileJob>>,
@@ -45,11 +48,17 @@ pub struct EngineApp {
 
 impl EngineApp {
     pub fn new(cc: &eframe::CreationContext<'_>, state: UiState, quit_after: Option<f64>) -> Self {
-        let sim = SimHandle::spawn(state.def.clone(), Some(cc.egui_ctx.clone()));
+        let sim = SimHandle::spawn(
+            state.def.clone(),
+            state.vehicle.clone(),
+            Some(cc.egui_ctx.clone()),
+        );
         Self {
             state,
             sim,
             sent: None,
+            sent_drive: None,
+            dyno_job: None,
             quit_after,
             started: Instant::now(),
             file_job: None,
@@ -58,6 +67,31 @@ impl EngineApp {
 }
 
 impl EngineApp {
+    /// Start a dyno sweep on a background thread (it takes seconds), and collect a finished one.
+    fn poll_dyno(&mut self, ctx: &egui::Context) {
+        if std::mem::take(&mut self.state.dyno_request) && self.dyno_job.is_none() {
+            let (tx, rx) = channel();
+            let def = self.state.def.clone();
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(dyno::sweep(&def));
+                ctx.request_repaint();
+            });
+            self.dyno_job = Some(rx);
+        }
+        if let Some(rx) = &self.dyno_job {
+            match rx.try_recv() {
+                Ok(curve) => {
+                    self.state.dyno_curve = curve;
+                    self.dyno_job = None;
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => self.dyno_job = None,
+            }
+        }
+        self.state.dyno_running = self.dyno_job.is_some();
+    }
+
     fn dialog(&mut self, save: bool, ctx: &egui::Context) {
         let (tx, rx) = channel();
         let ctx = ctx.clone();
@@ -183,7 +217,7 @@ pub fn layout(
         .resizable(false)
         .default_size(220.0)
         .show(ui, |ui| view::gauges(ui, snap, audio));
-    egui::Panel::bottom("plots").show(ui, |ui| view::plots(ui, snap));
+    egui::Panel::bottom("plots").show(ui, |ui| view::plots(ui, snap, &state.dyno_curve));
     egui::CentralPanel::default().show(ui, |ui| view::engine(ui, snap));
     action
 }
@@ -205,6 +239,7 @@ impl eframe::App for EngineApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll_files(ui);
+        self.poll_dyno(ui.ctx());
         let snap = self.sim.snapshot();
         match layout(
             ui,
@@ -221,6 +256,16 @@ impl eframe::App for EngineApp {
             self.state.engine_dirty = false;
             self.sim
                 .send(Command::Engine(Box::new(self.state.def.clone())));
+        }
+        if self.state.vehicle_dirty {
+            self.state.vehicle_dirty = false;
+            self.sim
+                .send(Command::Vehicle(Box::new(self.state.vehicle.clone())));
+        }
+        let d = self.state.drive_input();
+        if self.sent_drive != Some(d) {
+            self.sim.send(Command::Drive(d));
+            self.sent_drive = Some(d);
         }
         let c = self.state.controls();
         if self.sent != Some(c) {
@@ -262,7 +307,7 @@ mod tests {
             (Preset::Inline4, 0.4),
             (Preset::LfaV10, 1.0),
         ] {
-            let mut sim = Simulation::new(preset.def(), 48_000.0, 1);
+            let mut sim = Simulation::with_vehicle(preset.def(), preset.vehicle(), 48_000.0, 1);
             sim.controls = Controls {
                 throttle,
                 ..Controls::default()
@@ -276,6 +321,9 @@ mod tests {
                 firing_text: crate::editor::format_firing_order(&preset.def().firing_order),
                 collectors_text: crate::editor::format_collectors(&preset.def().exhaust.collectors),
                 throttle,
+                vehicle: preset.vehicle(),
+                gear: 2,
+                dyno_curve: crate::dyno::sweep(&preset.def()),
                 ..UiState::default()
             };
             let mut h = egui_kittest::Harness::builder()

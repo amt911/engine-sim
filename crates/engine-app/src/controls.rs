@@ -1,7 +1,10 @@
 //! The driver/controls panel: presets, ignition, starter, throttle, spark advance.
 //! Logic-bearing UI, so it is tested with `egui_kittest`.
 
+use crate::dyno::DynoPoint;
+use crate::sim::DriveInput;
 use eframe::egui;
+use engine_core::drivetrain::VehicleDef;
 use engine_core::engine::{Controls, EngineDef};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,6 +21,14 @@ impl Preset {
             Preset::Single => EngineDef::single(),
             Preset::Inline4 => EngineDef::inline4(),
             Preset::LfaV10 => EngineDef::lfa_v10(),
+        }
+    }
+    /// The car this engine is fitted to (kept outside `EngineDef` so engine files stay as is).
+    pub fn vehicle(self) -> VehicleDef {
+        match self {
+            Preset::Single => VehicleDef::single(),
+            Preset::Inline4 => VehicleDef::inline4(),
+            Preset::LfaV10 => VehicleDef::lfa_v10(),
         }
     }
     /// File/CLI name, as in `presets/<slug>.yaml` and `--preset <slug>`.
@@ -60,6 +71,17 @@ pub struct UiState {
     pub errors: Vec<String>,
     /// Last file load/save message.
     pub file_msg: Option<String>,
+    /// The car; sent to the sim when `vehicle_dirty`.
+    pub vehicle: VehicleDef,
+    pub vehicle_dirty: bool,
+    /// Selected gear (0 = neutral), clutch pedal and brake pedal (held keys).
+    pub gear: usize,
+    pub clutch_held: bool,
+    pub brake_held: bool,
+    /// Last dyno curve, a run in progress, and a click waiting for the app to start one.
+    pub dyno_curve: Vec<DynoPoint>,
+    pub dyno_running: bool,
+    pub dyno_request: bool,
 }
 
 impl Default for UiState {
@@ -76,6 +98,14 @@ impl Default for UiState {
             collectors_text: String::new(),
             errors: Vec::new(),
             file_msg: None,
+            vehicle: Preset::Single.vehicle(),
+            vehicle_dirty: false,
+            gear: 0,
+            clutch_held: false,
+            brake_held: false,
+            dyno_curve: Vec::new(),
+            dyno_running: false,
+            dyno_request: false,
         }
     }
 }
@@ -94,6 +124,67 @@ impl UiState {
             ..Controls::default()
         }
     }
+    /// Gear, clutch and brake the sim should run with this frame.
+    pub fn drive_input(&self) -> DriveInput {
+        DriveInput {
+            gear: self.gear,
+            clutch_pedal: self.clutch_held,
+            brake: if self.brake_held { 1.0 } else { 0.0 },
+        }
+    }
+}
+
+/// Number keys 1..=6 → gear.
+const GEAR_KEYS: [egui::Key; 6] = [
+    egui::Key::Num1,
+    egui::Key::Num2,
+    egui::Key::Num3,
+    egui::Key::Num4,
+    egui::Key::Num5,
+    egui::Key::Num6,
+];
+
+/// Gear keys (E up, Q down, N neutral, 1-6) and the held clutch/brake keys. Ignored while a
+/// text field has focus. Gears the car does not have are ignored.
+fn drive_keys(ui: &egui::Ui, state: &mut UiState) {
+    if ui.ctx().text_edit_focused() {
+        state.clutch_held = false;
+        state.brake_held = false;
+        return;
+    }
+    let top = state.vehicle.gear_ratios.len();
+    let (up, down, neutral, number, clutch, brake) = ui.input(|i| {
+        // A fresh press only: holding a key makes the OS send `repeat: true` events.
+        let fresh = |key: egui::Key| {
+            i.events.iter().any(|e| {
+                matches!(e, egui::Event::Key { key: k, pressed: true, repeat: false, .. } if *k == key)
+            })
+        };
+        (
+            fresh(egui::Key::E),
+            fresh(egui::Key::Q),
+            fresh(egui::Key::N),
+            GEAR_KEYS.iter().position(|k| fresh(*k)),
+            i.key_down(egui::Key::C),
+            i.key_down(egui::Key::B) || i.key_down(egui::Key::ArrowDown),
+        )
+    });
+    if up {
+        state.gear = (state.gear + 1).min(top);
+    }
+    if down {
+        state.gear = state.gear.saturating_sub(1);
+    }
+    if neutral {
+        state.gear = 0;
+    }
+    if let Some(n) = number
+        && n < top
+    {
+        state.gear = n + 1;
+    }
+    state.clutch_held = clutch;
+    state.brake_held = brake;
 }
 
 /// Draw the panel; mutates `state`.
@@ -109,6 +200,9 @@ pub fn controls_panel(ui: &mut egui::Ui, state: &mut UiState) {
             state.firing_text = crate::editor::format_firing_order(&state.def.firing_order);
             state.collectors_text = crate::editor::format_collectors(&state.def.exhaust.collectors);
             state.engine_dirty = true;
+            state.vehicle = p.vehicle();
+            state.vehicle_dirty = true;
+            state.gear = 0;
         }
     }
     ui.separator();
@@ -126,6 +220,39 @@ pub fn controls_panel(ui: &mut egui::Ui, state: &mut UiState) {
     state.starter = starter.is_pointer_button_down_on() || s_key;
     state.key_throttle = w;
     ui.add(egui::Slider::new(&mut state.throttle, 0.0..=1.0).text("Throttle (hold W)"));
+    drive_keys(ui, state);
+    ui.horizontal(|ui| {
+        ui.label("Gear");
+        if ui.selectable_label(state.gear == 0, "N").clicked() {
+            state.gear = 0;
+        }
+        for g in 1..=state.vehicle.gear_ratios.len() {
+            if ui
+                .selectable_label(state.gear == g, g.to_string())
+                .clicked()
+            {
+                state.gear = g;
+            }
+        }
+    });
+    ui.label(format!(
+        "{} · clutch {} · brake {}",
+        state.vehicle.name,
+        if state.clutch_held { "DOWN" } else { "up" },
+        if state.brake_held { "ON" } else { "off" }
+    ));
+    ui.small("E/Q: gear up/down · N: neutral · 1-6: gear · hold C: clutch · hold B or Down: brake");
+    ui.separator();
+    ui.heading("Dyno");
+    if ui
+        .add_enabled(!state.dyno_running, egui::Button::new("Run dyno sweep"))
+        .clicked()
+    {
+        state.dyno_request = true;
+    }
+    if state.dyno_running {
+        ui.small("Sweeping 1,000 rpm to redline at full throttle...");
+    }
     ui.separator();
     ui.heading("Tuning");
     let r = ui.add(
@@ -239,6 +366,158 @@ mod tests {
         h.run();
         assert_eq!(h.state().controls().throttle, 0.0);
         assert!(!h.state().controls().starter);
+    }
+
+    fn press(h: &mut Harness<'static, UiState>, key: egui::Key) {
+        h.key_press(key);
+        h.run();
+    }
+
+    #[test]
+    fn e_and_q_shift_up_and_down_within_the_gearbox() {
+        let mut h = harness();
+        assert_eq!(h.state().gear, 0);
+        press(&mut h, egui::Key::E);
+        assert_eq!(h.state().gear, 1);
+        press(&mut h, egui::Key::E);
+        assert_eq!(h.state().gear, 2);
+        press(&mut h, egui::Key::Q);
+        assert_eq!(h.state().gear, 1);
+        press(&mut h, egui::Key::Q);
+        press(&mut h, egui::Key::Q);
+        assert_eq!(h.state().gear, 0, "Q stops at neutral");
+        // The motorcycle has 6 speeds: E never goes past the top one.
+        for _ in 0..9 {
+            press(&mut h, egui::Key::E);
+        }
+        assert_eq!(h.state().gear, 6);
+    }
+
+    #[test]
+    fn holding_a_gear_key_does_not_cycle_through_gears() {
+        // OS auto-repeat: the key stays down and more `pressed` events arrive (egui marks
+        // them `repeat: true` because the key is already down).
+        let mut h = harness();
+        h.key_down(egui::Key::E);
+        h.run();
+        assert_eq!(h.state().gear, 1);
+        for _ in 0..3 {
+            h.event(egui::Event::Key {
+                key: egui::Key::E,
+                physical_key: Some(egui::Key::E),
+                pressed: true,
+                repeat: true,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.run();
+        }
+        assert_eq!(h.state().gear, 1);
+    }
+
+    #[test]
+    fn number_keys_pick_a_gear_and_n_returns_to_neutral() {
+        let mut h = harness();
+        press(&mut h, egui::Key::Num3);
+        assert_eq!(h.state().gear, 3);
+        press(&mut h, egui::Key::N);
+        assert_eq!(h.state().gear, 0);
+        press(&mut h, egui::Key::Num6);
+        assert_eq!(h.state().gear, 6);
+    }
+
+    #[test]
+    fn a_gear_the_car_does_not_have_is_ignored() {
+        // The inline-4's hatchback is a 5-speed.
+        let state = UiState {
+            vehicle: Preset::Inline4.vehicle(),
+            ..UiState::default()
+        };
+        let mut h = Harness::new_ui_state(|ui, s: &mut UiState| controls_panel(ui, s), state);
+        press(&mut h, egui::Key::Num5);
+        assert_eq!(h.state().gear, 5);
+        press(&mut h, egui::Key::Num6);
+        assert_eq!(h.state().gear, 5);
+        press(&mut h, egui::Key::E);
+        assert_eq!(h.state().gear, 5);
+    }
+
+    #[test]
+    fn holding_c_presses_the_clutch_and_b_or_down_the_brake() {
+        let mut h = harness();
+        assert_eq!(h.state().drive_input(), DriveInput::default());
+        h.key_down(egui::Key::C);
+        h.run();
+        assert!(h.state().drive_input().clutch_pedal);
+        h.key_up(egui::Key::C);
+        h.key_down(egui::Key::B);
+        h.run();
+        let d = h.state().drive_input();
+        assert!(!d.clutch_pedal);
+        assert_eq!(d.brake, 1.0);
+        h.key_up(egui::Key::B);
+        h.run();
+        assert_eq!(h.state().drive_input().brake, 0.0);
+        h.key_down(egui::Key::ArrowDown);
+        h.run();
+        assert_eq!(h.state().drive_input().brake, 1.0);
+    }
+
+    #[test]
+    fn gear_buttons_select_gears() {
+        let mut h = harness();
+        h.get_by_label("4").click();
+        h.run();
+        assert_eq!(h.state().gear, 4);
+        h.get_by_label("N").click();
+        h.run();
+        assert_eq!(h.state().gear, 0);
+    }
+
+    #[test]
+    fn driving_keys_are_ignored_while_typing() {
+        let mut h = Harness::new_ui_state(
+            |ui, s: &mut UiState| {
+                let l = ui.label("Note");
+                ui.text_edit_singleline(&mut s.firing_text)
+                    .labelled_by(l.id);
+                controls_panel(ui, s);
+            },
+            UiState::default(),
+        );
+        h.get_by_label("Note").focus();
+        h.run();
+        h.key_down(egui::Key::C);
+        h.key_down(egui::Key::B);
+        h.key_press(egui::Key::E);
+        h.key_press(egui::Key::Num2);
+        h.run();
+        assert_eq!(h.state().gear, 0);
+        assert_eq!(h.state().drive_input(), DriveInput::default());
+    }
+
+    #[test]
+    fn choosing_a_preset_fits_its_car_and_resets_the_gear() {
+        let mut h = harness();
+        press(&mut h, egui::Key::Num2);
+        h.get_by_label("Lexus LFA V10").click();
+        h.run();
+        assert_eq!(h.state().vehicle, VehicleDef::lfa_v10());
+        assert!(h.state().vehicle_dirty);
+        assert_eq!(h.state().gear, 0);
+    }
+
+    #[test]
+    fn dyno_button_requests_a_sweep_and_is_disabled_while_running() {
+        let mut h = harness();
+        h.get_by_label("Run dyno sweep").click();
+        h.run();
+        assert!(h.state().dyno_request);
+        let mut busy = harness();
+        busy.state_mut().dyno_running = true;
+        busy.run();
+        busy.get_by_label("Run dyno sweep").click();
+        busy.run();
+        assert!(!busy.state().dyno_request);
     }
 
     #[test]
