@@ -188,7 +188,8 @@ cargo test --workspace                                  # all tests
 cargo clippy --workspace --all-targets -- -D warnings   # lint (gate)
 cargo fmt --all --check                                 # format (gate)
 scripts/coverage.sh                                     # coverage gate (80% lines)
-scripts/mutants.sh                                      # mutation gate (floor 90%, ratchet)
+scripts/mutants.sh --in-diff <(git diff main...HEAD -- crates/engine-core)  # PR mutation gate
+scripts/mutants.sh                                      # full run (hours; floor 90%, ratchet)
 scripts/smoke.sh                                        # real-environment smoke
 ```
 

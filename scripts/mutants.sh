@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Mutation gate over engine-core. Score = caught / (caught + missed); timeouts and
+# Mutation gate over engine-core. Extra args go to cargo-mutants. PR gate: diff-scoped,
+#   scripts/mutants.sh --in-diff <(git diff main...HEAD -- crates/engine-core)
+# (a full run takes hours: every mutant recompiles at opt-level 2; run it occasionally). Score = caught / (caught + missed); timeouts and
 # unviable mutants are excluded from both. Fails under FLOOR (a ratchet: raise it, never lower).
 set -uo pipefail
 cd "$(dirname "$0")/.."
