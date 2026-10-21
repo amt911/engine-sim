@@ -7,8 +7,8 @@ use crate::fv::{Boundary, Cons, Pipe1d, Prim};
 use crate::gas::{GasVolume, R_AIR};
 use crate::units::ATM_PA;
 
-/// Target cell size, m (≈ 10 cells per wavelength at 2 kHz in hot gas).
-pub const CELL_M: f64 = 0.03;
+/// Target cell size, m (≈ 7.5 cells per wavelength at 2 kHz in hot gas; cost ∝ 1/dx²).
+pub const CELL_M: f64 = 0.04;
 const AMBIENT_RHO: f64 = 1.18;
 const INIT_T_K: f64 = 600.0;
 
@@ -263,8 +263,8 @@ mod tests {
     #[test]
     fn substeps_respect_the_cfl_limit() {
         let net = ExhaustFv::new(&def(), 4, DT);
-        // c + |u| up to ~800 m/s in hot exhaust: dt_fv ≤ 0.8·0.03/800 = 30 µs
-        assert!(net.dt_fv <= 30e-6 + 1e-12, "{}", net.dt_fv);
+        // c + |u| up to ~800 m/s in hot exhaust: dt_fv ≤ 0.8·0.04/800 = 40 µs
+        assert!(net.dt_fv <= 40e-6 + 1e-12, "{}", net.dt_fv);
         assert_eq!(net.dt_fv, net.substeps as f64 * DT);
     }
 

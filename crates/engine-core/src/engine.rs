@@ -6,6 +6,7 @@
 
 use crate::combustion::{AFR_STOICH, charge_energy, wiebe};
 use crate::exhaust::{ExhaustDef, ExhaustModel, ExhaustNet, REVERSION_TEMP_K};
+use crate::exhaust_fv::ExhaustFv;
 use crate::gas::{
     GasVolume, Reservoir, exchange_with_reservoir, exhaust_valve_flow, plan_exchange,
 };
@@ -286,6 +287,8 @@ pub struct Engine {
     rng: u64,
     /// Exhaust waveguide network, built for the current step size.
     net: Option<ExhaustNet>,
+    /// Non-linear finite-volume exhaust, when `exhaust.model` is `fv`.
+    fv: Option<ExhaustFv>,
     flows: Vec<f64>,
     texture: Texture,
 }
@@ -328,6 +331,7 @@ impl Engine {
             combustions: 0,
             rng: seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1,
             net: None,
+            fv: None,
             flows: Vec::new(),
             texture: Texture::new(seed ^ 0x7E57),
         }
@@ -391,8 +395,21 @@ impl Engine {
         let mut valve_closings = 0;
         let fire_ok = c.ignition && self.rpm() < self.def.redline_rpm;
         let wall_area = 2.0 * g.piston_area();
-        if self.net.as_ref().is_none_or(|n| n.dt != dt) {
-            self.net = Some(ExhaustNet::new(&self.def.exhaust, self.cyl.len(), dt));
+        match self.def.exhaust.model {
+            ExhaustModel::Waveguide => {
+                self.fv = None;
+                if self.net.as_ref().is_none_or(|n| n.dt != dt) {
+                    self.net = Some(ExhaustNet::new(&self.def.exhaust, self.cyl.len(), dt));
+                }
+            }
+            ExhaustModel::Fv => {
+                self.net = None;
+                if self.fv.as_ref().is_none_or(|n| n.dt != dt) {
+                    self.fv = Some(ExhaustFv::new(&self.def.exhaust, self.cyl.len(), dt));
+                }
+            }
+        }
+        if self.flows.len() != self.cyl.len() {
             self.flows = vec![0.0; self.cyl.len()];
         }
         let blowby_area = BLOWBY_AREA_FRACTION * g.piston_area();
@@ -422,8 +439,10 @@ impl Engine {
                 (a_in > 0.0).then(|| plan_exchange(&self.plenum, &cs.gas, a_in, dt, VALVE_RELAX));
             // The exhaust port and its primary pipe are solved together: the flow raises the
             // pipe pressure at the port by z·ṁ (see `gas::port_flow`).
-            let f_ex = (a_ex > 0.0).then(|| {
-                exhaust_valve_flow(
+            let f_ex = (a_ex > 0.0).then(|| match &self.fv {
+                // FV: the first pipe cell is a real volume — a planned two-volume exchange.
+                Some(fv) => plan_exchange(&cs.gas, &fv.port_volume(i), a_ex, dt, VALVE_RELAX),
+                None => exhaust_valve_flow(
                     &cs.gas,
                     a_ex,
                     arriving,
@@ -431,7 +450,7 @@ impl Engine {
                     REVERSION_TEMP_K,
                     dt,
                     VALVE_RELAX,
-                )
+                ),
             });
             if let Some(f) = f_in {
                 f.apply(&mut self.plenum, &mut cs.gas);
@@ -440,6 +459,9 @@ impl Engine {
                 f.apply_to(&mut cs.gas);
                 f.dm / dt
             });
+            if let (Some(fv), Some(f)) = (&mut self.fv, f_ex) {
+                fv.add_valve_flow(i, f.dm, f.h);
+            }
             // Blow-by past the rings into the (vented) crankcase. Small while running, but it
             // is what lets a charge trapped at a stop bleed off so the starter can turn it.
             exchange_with_reservoir(&mut cs.gas, &self.atm, blowby_area, dt);
@@ -498,7 +520,11 @@ impl Engine {
             }
         }
         // Acoustic source: what the tail pipes radiate.
-        let radiated = self.net.as_mut().map_or(0.0, |n| n.step(&self.flows));
+        let radiated = match (&mut self.net, &mut self.fv) {
+            (_, Some(fv)) => fv.step(),
+            (Some(net), None) => net.step(&self.flows),
+            (None, None) => 0.0,
+        };
         let throttle_area = self.throttle_area(c.throttle);
         let bore_area = self.throttle_area(1.0);
         let throttle_dm = exchange_with_reservoir(&mut self.plenum, &self.atm, throttle_area, dt);
@@ -551,9 +577,22 @@ impl Engine {
     pub fn plenum_pressure_pa(&self) -> f64 {
         self.plenum.pressure()
     }
+    /// The exhaust backend running (None before the first step).
+    pub fn exhaust_model(&self) -> Option<ExhaustModel> {
+        match (&self.net, &self.fv) {
+            (_, Some(_)) => Some(ExhaustModel::Fv),
+            (Some(_), None) => Some(ExhaustModel::Waveguide),
+            (None, None) => None,
+        }
+    }
+
     /// Gauge pressure in cylinder `i`'s exhaust port (waves standing at the valve), Pa.
     pub fn exhaust_port_gauge(&self, i: usize) -> f64 {
-        self.net.as_ref().map_or(0.0, |n| n.valve_pressure(i))
+        match (&self.net, &self.fv) {
+            (_, Some(fv)) => fv.port_state(i).0 - ATM_PA,
+            (Some(n), None) => n.valve_pressure(i),
+            (None, None) => 0.0,
+        }
     }
     pub fn combustions(&self) -> u64 {
         self.combustions
@@ -1130,5 +1169,65 @@ mod tests {
             wet_wot - dry_wot > wet_coast - dry_coast,
             "texture should grow with load"
         );
+    }
+
+    fn fv(mut d: EngineDef) -> EngineDef {
+        d.exhaust.model = ExhaustModel::Fv;
+        d
+    }
+
+    #[test]
+    fn the_exhaust_model_in_use_follows_the_definition() {
+        let mut e = Engine::new(fv(EngineDef::single()), 1000.0, 1);
+        run(&mut e, 0.01, &Controls::default());
+        assert_eq!(e.exhaust_model(), Some(ExhaustModel::Fv));
+        let mut e = Engine::new(EngineDef::single(), 1000.0, 1);
+        run(&mut e, 0.01, &Controls::default());
+        assert_eq!(e.exhaust_model(), Some(ExhaustModel::Waveguide));
+    }
+
+    #[test]
+    fn fv_exhaust_engine_idles_and_makes_comparable_torque() {
+        let mut e = Engine::new(fv(EngineDef::lfa_v10()), 1000.0, 1);
+        let xs = run(&mut e, 2.0, &Controls::default());
+        assert!(xs.iter().all(|x| x.is_finite()));
+        assert!((500.0..2500.0).contains(&e.rpm()), "idle {}", e.rpm());
+        let torque = |d: EngineDef| {
+            let mut e = Engine::new(d, 6800.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(6800.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.8, &c);
+            e.torque_nm()
+        };
+        let (wg, fvt) = (
+            torque(EngineDef::lfa_v10()),
+            torque(fv(EngineDef::lfa_v10())),
+        );
+        assert!(
+            (fvt / wg - 1.0).abs() < 0.25,
+            "waveguide {wg} N·m vs fv {fvt} N·m"
+        );
+    }
+
+    #[test]
+    fn fv_exhaust_is_free_of_sample_oscillation_and_vacuum() {
+        let mut e = Engine::new(fv(EngineDef::single()), 3000.0, 1);
+        let c = Controls {
+            throttle: 0.0,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.3, &c);
+        let mut worst_p = f64::MAX;
+        let mut xs = Vec::new();
+        for _ in 0..(0.1 / DT) as usize {
+            xs.push(e.step(DT, &c));
+            worst_p = worst_p.min(ATM_PA + e.exhaust_port_gauge(0));
+        }
+        assert!(worst_p > 0.0, "port {worst_p}");
+        assert!(xs.iter().all(|x| x.is_finite()));
     }
 }
