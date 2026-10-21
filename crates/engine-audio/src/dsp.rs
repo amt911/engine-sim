@@ -103,17 +103,23 @@ impl Reverb {
     pub fn process(&mut self, x: f64) -> f64 {
         let mut v = [0.0; 4];
         let mut wet = 0.0;
-        for i in 0..4 {
-            let o = self.lines[i][self.pos[i]];
+        for (((line, pos), damp), (g, vi)) in self
+            .lines
+            .iter()
+            .zip(&self.pos)
+            .zip(self.damp.iter_mut())
+            .zip(self.g.iter().zip(v.iter_mut()))
+        {
+            let o = line[*pos];
             wet += o;
-            self.damp[i] += self.damp_k * (o - self.damp[i]);
-            v[i] = self.g[i] * self.damp[i];
+            *damp += self.damp_k * (o - *damp);
+            *vi = g * *damp;
         }
         // Householder reflection: lossless mixing, v − (2/N)·Σv.
         let sum: f64 = v.iter().sum::<f64>() * 0.5;
-        for i in 0..4 {
-            self.lines[i][self.pos[i]] = x + v[i] - sum;
-            self.pos[i] = (self.pos[i] + 1) % self.lines[i].len();
+        for ((line, pos), vi) in self.lines.iter_mut().zip(self.pos.iter_mut()).zip(v) {
+            line[*pos] = x + vi - sum;
+            *pos = (*pos + 1) % line.len();
         }
         wet * 0.5
     }
@@ -232,7 +238,7 @@ mod tests {
     #[test]
     fn reverb_tail_decays_at_rt60() {
         let mut r = Reverb::new(FS, 0.3);
-        let mut energy = |from: usize, to: usize, r: &mut Reverb, first: bool| {
+        let energy = |from: usize, to: usize, r: &mut Reverb, first: bool| {
             let mut e = 0.0;
             for n in from..to {
                 let y = r.process(if first && n == 0 { 1.0 } else { 0.0 });
