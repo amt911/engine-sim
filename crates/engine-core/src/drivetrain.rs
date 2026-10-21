@@ -1,0 +1,665 @@
+//! Vehicle, clutch and gearbox: turns the engine's crank speed into car speed and back into
+//! a load torque (plus reflected inertia) on the crank. Pure, deterministic, SI.
+//!
+//! Model (Guzzella & Onder, *Introduction to Modeling and Control of Internal Combustion
+//! Engine Systems*, 2nd ed., ch. 2 "Vehicle propulsion / driveline"; Eriksson & Nielsen,
+//! *Modeling and Control of Engines and Drivelines*, ch. 5-6):
+//!
+//! * Road load `F = ½ρ·CdA·v² + Crr·m·g + F_brake` (G&O eq. 2.1-2.3).
+//! * Overall ratio `G = i_gear · i_final`; the crank-side speed of the wheels is `ω_t = G·v/r`.
+//! * Clutch: Coulomb friction with capacity `T_max = engagement² · capacity` (the square gives
+//!   a soft bite point; a linear map stalls the engine on every launch). While the
+//!   speeds differ it slips and transmits `T_max·tanh(slip/ε)` (the tanh regularises the
+//!   sign at zero slip, as in Eriksson & Nielsen §6). When the slip is below [`LOCK_SLIP`]
+//!   and the torque needed to keep the car with the engine fits inside `T_max`, it locks:
+//!   engine and car then move as one body, the crank sees the car's mass as the reflected
+//!   inertia `(m + J_w/r²)·r²/G²` and the road load reflected through `G` and the driveline
+//!   efficiency. If the needed torque exceeds `T_max` it slips again.
+
+use serde::{Deserialize, Serialize};
+
+/// Air density at 20 °C and sea level, kg/m³ (ISA gives 1.225 at 15 °C).
+pub const AIR_DENSITY: f64 = 1.2;
+/// Standard gravity, m/s².
+pub const GRAVITY: f64 = 9.81;
+/// Slip (rad/s) below which a slipping clutch may lock.
+pub const LOCK_SLIP: f64 = 0.5;
+/// Slip regularisation of the Coulomb torque, rad/s (about 20 rpm).
+const SLIP_EPS: f64 = 2.0;
+/// Speed (m/s) over which rolling resistance fades in, so a stopped car does not creep back.
+const ROLL_FADE_SPEED: f64 = 0.1;
+/// Low-pass time constant of the locked clutch's required-torque estimate, s. Filters the
+/// combustion pulses, which a real clutch rides out by micro-slip.
+const TORQUE_FILTER_TAU: f64 = 0.02;
+/// Clutch engagement rate when the pedal is released (1 / s): about 0.7 s to full.
+const CLUTCH_ENGAGE_RATE: f64 = 1.5;
+/// Clutch engagement rate when the pedal is pressed (1 / s).
+const CLUTCH_RELEASE_RATE: f64 = 10.0;
+
+/// Static description of a vehicle (data, `serde`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct VehicleDef {
+    pub name: String,
+    /// Total mass including driver, kg.
+    pub mass_kg: f64,
+    /// Loaded tyre radius, m.
+    pub wheel_radius_m: f64,
+    /// Drag coefficient times frontal area, m².
+    pub drag_cd_a_m2: f64,
+    /// Rolling resistance coefficient (dimensionless).
+    pub rolling_coeff: f64,
+    /// Forward gear ratios, 1st first.
+    pub gear_ratios: Vec<f64>,
+    /// Final drive (differential, or primary + chain for a motorcycle).
+    pub final_drive: f64,
+    /// Mean driveline efficiency, 0..1.
+    pub driveline_efficiency: f64,
+    /// Rotating inertia of wheels, tyres and brakes (total), kg·m².
+    pub wheel_inertia_kgm2: f64,
+    /// Maximum torque the clutch can transmit when fully engaged, N·m.
+    pub clutch_capacity_nm: f64,
+    /// Deceleration at full brake, m/s² (tyre grip limit, ~0.9 g road car).
+    pub max_brake_decel_m_s2: f64,
+}
+
+impl Default for VehicleDef {
+    fn default() -> Self {
+        Self::inline4()
+    }
+}
+
+impl VehicleDef {
+    /// Light road motorcycle with rider: all values are ESTIMATES (typical 500 cc naked
+    /// bike: ~175 kg + 75 kg rider; 160/60 R17 rear tyre = 0.312 m; top gear ~150 km/h
+    /// at 6,000 rpm sets the 5.0 overall reduction; Cd·A = 0.6 × 0.6 m² sitting rider).
+    pub fn single() -> Self {
+        Self {
+            name: "Light motorcycle".into(),
+            mass_kg: 250.0,
+            wheel_radius_m: 0.312,
+            drag_cd_a_m2: 0.36,
+            rolling_coeff: 0.015,
+            gear_ratios: vec![2.75, 1.94, 1.50, 1.24, 1.05, 0.92],
+            final_drive: 5.0,
+            driveline_efficiency: 0.90,
+            wheel_inertia_kgm2: 1.2,
+            clutch_capacity_nm: 90.0,
+            max_brake_decel_m_s2: 8.0,
+        }
+    }
+
+    /// Compact hatchback, 5-speed. ESTIMATES (typical 2.0 L C-segment car: 1,300 kg with
+    /// driver, 205/55 R16 tyre = 0.316 m, Cd 0.32 × 2.0 m², ratios of a common 5-speed
+    /// manual); not taken from a specific model.
+    pub fn inline4() -> Self {
+        Self {
+            name: "Compact hatchback".into(),
+            mass_kg: 1300.0,
+            wheel_radius_m: 0.316,
+            drag_cd_a_m2: 0.64,
+            rolling_coeff: 0.012,
+            gear_ratios: vec![3.62, 1.95, 1.36, 0.94, 0.78],
+            final_drive: 4.1,
+            driveline_efficiency: 0.92,
+            wheel_inertia_kgm2: 4.0,
+            clutch_capacity_nm: 350.0,
+            max_brake_decel_m_s2: 9.0,
+        }
+    }
+
+    /// Lexus LFA. Kerb mass 1,480 kg, the six gear ratios 3.231/2.188/1.609/1.233/0.970/0.795
+    /// and the 4.556 final drive are the figures given for the LFA's 6-speed ASG in the
+    /// task spec (not independently re-verified here). The rear tyre 305/30 ZR20 gives
+    /// 0.305 × 0.30 + 0.508/2 = 0.3455 m (computed from the size). ESTIMATES: Cd·A 0.65 m²
+    /// (Cd ~0.31), Crr, efficiency, wheel inertia, clutch capacity, 1.0 g braking.
+    pub fn lfa_v10() -> Self {
+        Self {
+            name: "Lexus LFA".into(),
+            mass_kg: 1480.0,
+            wheel_radius_m: 0.3455,
+            drag_cd_a_m2: 0.65,
+            rolling_coeff: 0.011,
+            gear_ratios: vec![3.231, 2.188, 1.609, 1.233, 0.970, 0.795],
+            final_drive: 4.556,
+            driveline_efficiency: 0.93,
+            wheel_inertia_kgm2: 5.0,
+            clutch_capacity_nm: 800.0,
+            max_brake_decel_m_s2: 10.0,
+        }
+    }
+
+    /// Overall ratio crank → wheel for a gear (1-based); 0 for neutral or an unknown gear.
+    pub fn overall_ratio(&self, gear: usize) -> f64 {
+        match gear.checked_sub(1).and_then(|i| self.gear_ratios.get(i)) {
+            Some(r) => r * self.final_drive,
+            None => 0.0,
+        }
+    }
+}
+
+/// What the vehicle asks of the crank for one step.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Load {
+    /// Torque opposing the crank, N·m (pass as `Controls::load_torque_nm`).
+    pub torque_nm: f64,
+    /// Inertia added to the crank, kg·m² (pass as `Controls::extra_inertia_kgm2`).
+    pub inertia_kgm2: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Vehicle {
+    def: VehicleDef,
+    speed_m_s: f64,
+    gear: usize,
+    clutch: f64,
+    clutch_target: f64,
+    locked: bool,
+    prev_omega: f64,
+    required_nm: f64,
+    /// Set after an overload: no relock until the slip has grown past `2·LOCK_SLIP`.
+    relock_blocked: bool,
+}
+
+impl Vehicle {
+    /// A stationary vehicle in neutral with the clutch engaged.
+    pub fn new(def: VehicleDef) -> Self {
+        Self {
+            def,
+            speed_m_s: 0.0,
+            gear: 0,
+            clutch: 1.0,
+            clutch_target: 1.0,
+            locked: false,
+            prev_omega: 0.0,
+            required_nm: 0.0,
+            relock_blocked: false,
+        }
+    }
+    pub fn def(&self) -> &VehicleDef {
+        &self.def
+    }
+    pub fn speed_m_s(&self) -> f64 {
+        self.speed_m_s
+    }
+    pub fn set_speed(&mut self, v: f64) {
+        self.speed_m_s = v.max(0.0);
+    }
+    pub fn gear(&self) -> usize {
+        self.gear
+    }
+    /// Select a gear (0 = neutral); unknown gears are ignored. Shifting unlocks the clutch.
+    /// Shifting with the clutch engaged at speed is allowed on purpose (a synchromesh box
+    /// does not forbid it): the clutch then slips to the new speed ratio, or the engine
+    /// stalls at standstill, as in a real car.
+    pub fn set_gear(&mut self, gear: usize) {
+        if gear <= self.def.gear_ratios.len() && gear != self.gear {
+            self.gear = gear;
+            self.locked = false;
+            self.relock_blocked = false;
+        }
+    }
+    /// Clutch engagement now (1 = fully engaged).
+    pub fn clutch(&self) -> f64 {
+        self.clutch
+    }
+    /// Command the clutch: engagement 1 = pedal up. The actual engagement ramps there.
+    pub fn set_clutch(&mut self, engagement: f64) {
+        self.clutch_target = engagement.clamp(0.0, 1.0);
+    }
+    pub fn locked(&self) -> bool {
+        self.locked
+    }
+
+    /// Resistive force on the car at speed `v` and brake pedal `brake` (0..1), N.
+    pub fn road_force_n(&self, v: f64, brake: f64) -> f64 {
+        let d = &self.def;
+        let aero = 0.5 * AIR_DENSITY * d.drag_cd_a_m2 * v * v;
+        let rolling = d.rolling_coeff * d.mass_kg * GRAVITY * (v / ROLL_FADE_SPEED).tanh();
+        aero + rolling + brake.clamp(0.0, 1.0) * d.max_brake_decel_m_s2 * d.mass_kg
+    }
+
+    fn effective_mass(&self) -> f64 {
+        self.def.mass_kg + self.def.wheel_inertia_kgm2 / self.def.wheel_radius_m.powi(2)
+    }
+
+    fn ramp_clutch(&mut self, dt: f64) {
+        let rate = if self.clutch_target > self.clutch {
+            CLUTCH_ENGAGE_RATE
+        } else {
+            CLUTCH_RELEASE_RATE
+        };
+        let d = self.clutch_target - self.clutch;
+        self.clutch += d.clamp(-rate * dt, rate * dt);
+    }
+
+    fn coast(&mut self, dt: f64, brake: f64) {
+        let f = self.road_force_n(self.speed_m_s, brake);
+        self.speed_m_s = (self.speed_m_s - f / self.effective_mass() * dt).max(0.0);
+    }
+
+    /// Advance by `dt` given the engine speed (rad/s) and brake pedal (0..1). Returns the
+    /// load on the crank for the engine's next step.
+    pub fn step(&mut self, dt: f64, engine_omega: f64, brake: f64) -> Load {
+        self.ramp_clutch(dt);
+        let g = self.def.overall_ratio(self.gear);
+        let t_max = self.clutch * self.clutch * self.def.clutch_capacity_nm;
+        if g == 0.0 || t_max <= 0.0 {
+            self.locked = false;
+            self.coast(dt, brake);
+            return Load::default();
+        }
+        let (r, eta, m_eff) = (
+            self.def.wheel_radius_m,
+            self.def.driveline_efficiency,
+            self.effective_mass(),
+        );
+        if self.locked {
+            // Torque the clutch must carry to keep the car accelerating with the crank.
+            let accel = (engine_omega - self.prev_omega) / dt * r / g;
+            let needed = (m_eff * accel + self.road_force_n(self.speed_m_s, brake)) * r / (g * eta);
+            self.required_nm += (needed - self.required_nm) * (dt / TORQUE_FILTER_TAU).min(1.0);
+            if self.required_nm.abs() > t_max {
+                self.locked = false;
+                self.relock_blocked = true;
+            }
+        }
+        let slip = engine_omega - self.speed_m_s / r * g;
+        if self.relock_blocked && slip.abs() > 2.0 * LOCK_SLIP {
+            self.relock_blocked = false;
+        }
+        if !self.locked && !self.relock_blocked && slip.abs() < LOCK_SLIP {
+            self.locked = true;
+            self.required_nm = 0.0;
+        }
+        if self.locked {
+            self.prev_omega = engine_omega;
+            self.speed_m_s = engine_omega * r / g;
+            return Load {
+                torque_nm: self.road_force_n(self.speed_m_s, brake) * r / (g * eta),
+                inertia_kgm2: m_eff * r * r / (g * g),
+            };
+        }
+        // Slipping: Coulomb friction, regularised at zero slip.
+        let t_c = t_max * (slip / SLIP_EPS).tanh();
+        // Power flows engine → wheels losing η; wheels → engine (engine braking) likewise.
+        let f_wheel = if t_c >= 0.0 {
+            t_c * g * eta / r
+        } else {
+            t_c * g / (eta * r)
+        };
+        let f_road = self.road_force_n(self.speed_m_s, brake);
+        self.speed_m_s = (self.speed_m_s + (f_wheel - f_road) / m_eff * dt).max(0.0);
+        Load {
+            torque_nm: t_c,
+            inertia_kgm2: 0.0,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+    use proptest::prelude::*;
+
+    /// Round numbers so every expectation is a short hand calculation.
+    fn fixture() -> VehicleDef {
+        VehicleDef {
+            name: "test".into(),
+            mass_kg: 1000.0,
+            wheel_radius_m: 0.3,
+            drag_cd_a_m2: 0.6,
+            rolling_coeff: 0.01,
+            gear_ratios: vec![3.0, 2.0],
+            final_drive: 4.0,
+            driveline_efficiency: 0.9,
+            wheel_inertia_kgm2: 0.0,
+            clutch_capacity_nm: 400.0,
+            max_brake_decel_m_s2: 9.0,
+        }
+    }
+
+    fn in_first() -> Vehicle {
+        let mut v = Vehicle::new(fixture());
+        v.set_gear(1);
+        v
+    }
+
+    #[test]
+    fn clutch_ramps_at_its_engage_and_release_rates() {
+        let mut v = Vehicle::new(fixture());
+        v.set_clutch(0.0);
+        for _ in 0..1000 {
+            v.ramp_clutch(1e-3);
+        }
+        v.set_clutch(1.0);
+        v.ramp_clutch(0.1); // engage 1.5 /s → +0.15
+        assert!((v.clutch() - 0.15).abs() < 1e-12, "{}", v.clutch());
+        for _ in 0..20 {
+            v.ramp_clutch(0.1);
+        }
+        assert_eq!(v.clutch(), 1.0, "no overshoot past the target");
+        v.set_clutch(0.0);
+        v.ramp_clutch(0.05); // release 10 /s → −0.5
+        assert!((v.clutch() - 0.5).abs() < 1e-12, "{}", v.clutch());
+    }
+
+    /// Locked in 1st (overall 12) at 2 m/s, clutch 0.5 → capacity 0.25·400 = 100 N·m; the crank
+    /// accelerates at `alpha` rad/s² for 0.3 s. Needed clutch torque (hand calc, fixture):
+    /// (m·a + F_roll)·r/(g·η) with a = α·r/g, F_roll ≈ 0.01·1000·9.81 = 98.1 N:
+    /// α = 111.3 → 80 N·m (holds); α = 168.9 → 120 N·m (slips).
+    fn locked_run(alpha: f64) -> bool {
+        let mut v = Vehicle::new(fixture());
+        v.set_gear(1);
+        v.set_clutch(0.5);
+        for _ in 0..2000 {
+            v.ramp_clutch(1e-3);
+        }
+        v.set_speed(2.0);
+        let mut omega = 2.0 / 0.3 * 12.0;
+        let dt = 1e-4;
+        v.step(dt, omega, 0.0);
+        assert!(v.locked(), "starts locked");
+        for _ in 0..3000 {
+            omega += alpha * dt;
+            v.step(dt, omega, 0.0);
+            if !v.locked() {
+                return false;
+            }
+        }
+        true
+    }
+
+    #[test]
+    fn locked_clutch_holds_below_capacity_and_slips_above() {
+        assert!(locked_run(111.3), "80 N·m < 100 N·m must hold");
+        assert!(!locked_run(168.9), "120 N·m > 100 N·m must slip");
+    }
+
+    #[test]
+    fn after_an_overload_it_relocks_only_past_the_hysteresis() {
+        let mut v = Vehicle::new(fixture());
+        v.set_gear(1);
+        v.set_clutch(0.5);
+        for _ in 0..2000 {
+            v.ramp_clutch(1e-3);
+        }
+        v.set_speed(2.0);
+        let wheel = |v: &Vehicle| v.speed_m_s() / 0.3 * 12.0;
+        let dt = 1e-5;
+        v.step(dt, wheel(&v), 0.0);
+        assert!(v.locked());
+        // a gradual overload (120 N·m > 100 N·m, see `locked_run`): unlocks with little slip
+        let mut omega = wheel(&v);
+        while v.locked() {
+            omega += 168.9 * dt;
+            v.step(dt, omega, 0.0);
+        }
+        assert!(!v.locked(), "overload unlocks");
+        // slip back inside LOCK_SLIP right away: blocked, must not relock
+        v.step(dt, wheel(&v) + 0.2, 0.0);
+        assert!(!v.locked(), "relock blocked until slip exceeds 2·LOCK_SLIP");
+        // slip past 2·LOCK_SLIP (= 1 rad/s) unblocks; then back under LOCK_SLIP relocks
+        v.step(dt, wheel(&v) + 1.5, 0.0);
+        assert!(!v.locked());
+        v.step(dt, wheel(&v) + 0.2, 0.0);
+        assert!(v.locked(), "relocks once the hysteresis was crossed");
+    }
+
+    #[test]
+    fn road_force_adds_aero_rolling_and_brake() {
+        let v = Vehicle::new(fixture());
+        // 20 m/s: aero ½·1.2·0.6·20² = 144 N; rolling 0.01·1000·9.81 = 98.1 N (tanh(200) = 1).
+        assert_relative_eq!(v.road_force_n(20.0, 0.0), 242.1, max_relative = 1e-9);
+        // Half brake: 0.5·9 m/s²·1000 kg = 4,500 N more.
+        assert_relative_eq!(v.road_force_n(20.0, 0.5), 4742.1, max_relative = 1e-9);
+        // Standing still: nothing pushes the car backwards.
+        assert_eq!(v.road_force_n(0.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn overall_ratio_multiplies_gear_and_final_drive() {
+        let d = fixture();
+        assert_eq!(d.overall_ratio(0), 0.0);
+        assert_eq!(d.overall_ratio(1), 12.0);
+        assert_eq!(d.overall_ratio(2), 8.0);
+        assert_eq!(d.overall_ratio(3), 0.0);
+    }
+
+    #[test]
+    fn neutral_puts_no_load_and_the_car_coasts_down() {
+        let mut v = Vehicle::new(fixture());
+        v.set_speed(20.0);
+        let load = v.step(0.01, 300.0, 0.0);
+        assert_eq!(load, Load::default());
+        // a = 242.1 N / 1000 kg = 0.2421 m/s² → 20 − 0.002421.
+        assert_relative_eq!(v.speed_m_s(), 19.997579, max_relative = 1e-9);
+        // Full brake: (9000 + 242.1) N → 9.2421 m/s² for 0.01 s.
+        let mut v = Vehicle::new(fixture());
+        v.set_speed(20.0);
+        v.step(0.01, 300.0, 1.0);
+        assert_relative_eq!(v.speed_m_s(), 19.907579, max_relative = 1e-9);
+    }
+
+    #[test]
+    fn braking_never_reverses_the_car() {
+        let mut v = Vehicle::new(fixture());
+        v.set_speed(0.05);
+        v.step(1.0, 0.0, 1.0);
+        assert_eq!(v.speed_m_s(), 0.0);
+    }
+
+    #[test]
+    fn locked_clutch_reflects_road_load_and_car_inertia() {
+        // ω = 120 rad/s in 1st (G = 12): v = 120·0.3/12 = 3.0 m/s, no slip → locks.
+        let mut v = in_first();
+        v.set_speed(3.0);
+        let load = v.step(0.01, 120.0, 0.0);
+        assert!(v.locked());
+        // Road load at 3 m/s: aero 3.24 N + rolling 98.1 N = 101.34 N.
+        // Crank torque = F·r/(G·η) = 101.34·0.3/(12·0.9) = 2.815 N·m.
+        assert_relative_eq!(load.torque_nm, 2.815, max_relative = 1e-9);
+        // Reflected inertia m·r²/G² = 1000·0.09/144 = 0.625 kg·m².
+        assert_relative_eq!(load.inertia_kgm2, 0.625, max_relative = 1e-9);
+    }
+
+    #[test]
+    fn locked_car_speed_follows_the_crank() {
+        let mut v = in_first();
+        v.set_speed(3.0);
+        v.step(0.01, 120.0, 0.0);
+        v.step(0.01, 120.5, 0.0);
+        // v = ω·r/G = 120.5·0.3/12 = 3.0125 m/s.
+        assert_relative_eq!(v.speed_m_s(), 3.0125, max_relative = 1e-9);
+    }
+
+    #[test]
+    fn slipping_clutch_transmits_its_capacity() {
+        // Engine 300 rad/s against a stopped car: slip = 300 ≫ ε → T = 400 N·m (full clutch).
+        let mut v = in_first();
+        let load = v.step(0.01, 300.0, 0.0);
+        assert!(!v.locked());
+        assert_relative_eq!(load.torque_nm, 400.0, max_relative = 1e-9);
+        assert_eq!(load.inertia_kgm2, 0.0);
+        // Wheel force = T·G·η/r = 400·12·0.9/0.3 = 14,400 N → 14.4 m/s² → 0.144 m/s in 10 ms.
+        assert_relative_eq!(v.speed_m_s(), 0.144, max_relative = 1e-9);
+    }
+
+    #[test]
+    fn half_engaged_clutch_transmits_a_quarter() {
+        let mut v = in_first();
+        v.set_clutch(0.5);
+        // The clutch drops 1 → 0.5 at 10 /s: reaches it in 0.05 s.
+        let load = v.step(0.05, 300.0, 0.0);
+        assert_relative_eq!(v.clutch(), 0.5, max_relative = 1e-12);
+        // Torque ∝ engagement²: 0.25·400 = 100 N·m (soft bite point).
+        assert_relative_eq!(load.torque_nm, 100.0, max_relative = 1e-9);
+        // 100·12·0.9/0.3 = 3,600 N → 3.6 m/s² · 0.05 s = 0.18 m/s.
+        assert_relative_eq!(v.speed_m_s(), 0.18, max_relative = 1e-9);
+    }
+
+    #[test]
+    fn clutch_engages_slower_than_it_releases() {
+        let mut v = in_first();
+        v.set_clutch(0.0);
+        v.step(0.05, 100.0, 0.0);
+        assert_relative_eq!(v.clutch(), 0.5, max_relative = 1e-12); // 10 /s · 0.05 s
+        v.set_clutch(1.0);
+        v.step(0.05, 100.0, 0.0);
+        assert_relative_eq!(v.clutch(), 0.575, max_relative = 1e-12); // 1.5 /s · 0.05 s
+    }
+
+    #[test]
+    fn disengaged_clutch_frees_the_engine() {
+        let mut v = in_first();
+        v.set_speed(3.0);
+        v.set_clutch(0.0);
+        // Pedal fully down: it takes 0.1 s to release, so step once with a long dt.
+        let load = v.step(1.0, 300.0, 0.0);
+        assert_eq!(load, Load::default());
+        assert!(!v.locked());
+        // Coasts: 3 m/s − (101.34 N/1000 kg)·1 s.
+        assert_relative_eq!(v.speed_m_s(), 3.0 - 0.10134, max_relative = 1e-9);
+    }
+
+    #[test]
+    fn engine_braking_drags_the_crank_the_other_way() {
+        // Engine 50 rad/s, wheels at 10 m/s → 10/0.3·12 = 400 rad/s on the crank side.
+        let mut v = in_first();
+        v.set_speed(10.0);
+        let load = v.step(0.01, 50.0, 0.0);
+        assert_relative_eq!(load.torque_nm, -400.0, max_relative = 1e-9);
+        // Wheel force = −T·G/(η·r) = −400·12/(0.9·0.3) = −17,777.8 N; road 134.1 N
+        // (aero 36 + rolling 98.1) → a = −17.9119 m/s² → 10 − 0.179119.
+        assert_relative_eq!(v.speed_m_s(), 9.820881, max_relative = 1e-6);
+    }
+
+    #[test]
+    fn an_overloaded_lock_lets_go() {
+        let mut v = in_first();
+        v.set_speed(3.0);
+        v.step(0.1, 120.0, 0.0);
+        assert!(v.locked());
+        // Crank jumps 120 → 200 rad/s in 0.1 s: α = 800 rad/s² → car a = 800·0.3/12 = 20 m/s²
+        // → required torque (1000·20 + 101.34)·0.3/(12·0.9) = 558.5 N·m > 400 → slips.
+        let load = v.step(0.1, 200.0, 0.0);
+        assert!(!v.locked());
+        assert_relative_eq!(load.torque_nm, 400.0, max_relative = 1e-9);
+    }
+
+    #[test]
+    fn a_locked_clutch_really_slips_when_the_crank_pushes_past_capacity() {
+        // Regression: after an overload the clutch relocked in the same step (slip was ~0).
+        // Locked at 3 m/s in 1st (capacity 400 N·m); the crank then accelerates at 800 rad/s²,
+        // which needs (1000·20 + 101)·0.3/(12·0.9) = 558 N·m > 400.
+        let mut v = in_first();
+        v.set_speed(3.0);
+        let mut w = 120.0;
+        v.step(1e-4, w, 0.0);
+        assert!(v.locked());
+        let mut slipped = false;
+        // 1e-4 s steps: the crank gains 0.08 rad/s per step, below LOCK_SLIP, which is what
+        // let the old code relock instantly.
+        for _ in 0..2000 {
+            w += 0.08;
+            let load = v.step(1e-4, w, 0.0);
+            assert!(load.torque_nm.abs() <= 400.0 + 1e-9, "{}", load.torque_nm);
+            slipped |= v.speed_m_s() < w * 0.3 / 12.0 - 0.01;
+        }
+        assert!(slipped, "car kept pace with a crank the clutch cannot hold");
+        assert!(!v.locked());
+    }
+
+    #[test]
+    fn a_gear_change_unlocks_and_unknown_gears_are_ignored() {
+        let mut v = in_first();
+        v.set_speed(3.0);
+        v.step(0.01, 120.0, 0.0);
+        assert!(v.locked());
+        v.set_gear(2);
+        assert_eq!(v.gear(), 2);
+        assert!(!v.locked());
+        v.set_gear(9);
+        assert_eq!(v.gear(), 2);
+        v.set_gear(0);
+        assert_eq!(v.gear(), 0);
+    }
+
+    #[test]
+    fn wheel_inertia_adds_to_the_reflected_inertia() {
+        let mut d = fixture();
+        d.wheel_inertia_kgm2 = 9.0; // + 9/0.3² = 100 kg effective
+        let mut v = Vehicle::new(d);
+        v.set_gear(1);
+        v.set_speed(3.0);
+        let load = v.step(0.01, 120.0, 0.0);
+        // (1000 + 100)·0.09/144 = 0.6875 kg·m².
+        assert_relative_eq!(load.inertia_kgm2, 0.6875, max_relative = 1e-9);
+    }
+
+    #[test]
+    fn lfa_top_speed_matches_the_published_325_kmh() {
+        // 9,000 rpm in 6th: ω = 942.478 rad/s; v = ω·r/(0.795·4.556) = 942.478·0.3455/3.62202
+        // = 89.90 m/s = 323.6 km/h. Lexus quotes 325 km/h.
+        let d = VehicleDef::lfa_v10();
+        let v = 942.478 * d.wheel_radius_m / d.overall_ratio(6);
+        assert_relative_eq!(v * 3.6, 323.6, max_relative = 2e-3);
+    }
+
+    #[test]
+    fn lfa_has_the_power_to_reach_its_gear_limited_top_speed() {
+        // At 89.9 m/s: aero ½·1.2·0.65·89.9³ = 0.39·726,580 = 283.4 kW; rolling
+        // 0.011·1480·9.81 = 159.7 N · 89.9 = 14.4 kW → 297.7 kW at the wheels. The engine's
+        // ~388 kW (521 hp, see the dyno) · 0.93 = 361 kW exceeds it, so 6th gear, not drag,
+        // sets the top speed — as the spec's P = F·v argument requires.
+        let v = Vehicle::new(VehicleDef::lfa_v10());
+        let p_road = v.road_force_n(89.9, 0.0) * 89.9;
+        assert_relative_eq!(p_road, 297_700.0, max_relative = 5e-3);
+        assert!(p_road < 388_000.0 * 0.93);
+    }
+
+    #[test]
+    fn presets_are_sane_and_round_trip() {
+        for d in [
+            VehicleDef::single(),
+            VehicleDef::inline4(),
+            VehicleDef::lfa_v10(),
+        ] {
+            assert!(d.mass_kg > 100.0 && d.wheel_radius_m > 0.2 && d.wheel_radius_m < 0.5);
+            assert!(d.gear_ratios.windows(2).all(|w| w[0] > w[1]), "{}", d.name);
+            let json = serde_json::to_string(&d).unwrap();
+            assert_eq!(serde_json::from_str::<VehicleDef>(&json).unwrap(), d);
+            let yaml = serde_yaml_ng::to_string(&d).unwrap();
+            assert_eq!(serde_yaml_ng::from_str::<VehicleDef>(&yaml).unwrap(), d);
+        }
+        assert_eq!(VehicleDef::lfa_v10().gear_ratios.len(), 6);
+        assert_eq!(VehicleDef::lfa_v10().mass_kg, 1480.0);
+        // Missing fields fall back to defaults; unknown ones are rejected.
+        assert_eq!(
+            serde_json::from_str::<VehicleDef>("{}").unwrap(),
+            VehicleDef::default()
+        );
+        assert!(serde_json::from_str::<VehicleDef>(r#"{"mas_kg": 1}"#).is_err());
+    }
+
+    proptest! {
+        #[test]
+        fn speed_stays_finite_and_non_negative(
+            gear in 0usize..3,
+            omegas in proptest::collection::vec(0.0f64..1000.0, 1..40),
+            brake in 0.0f64..1.0,
+            clutch in 0.0f64..1.0,
+        ) {
+            let mut v = Vehicle::new(fixture());
+            v.set_gear(gear);
+            v.set_clutch(clutch);
+            for w in omegas {
+                let l = v.step(0.001, w, brake);
+                prop_assert!(v.speed_m_s().is_finite() && v.speed_m_s() >= 0.0);
+                prop_assert!(l.torque_nm.is_finite() && l.inertia_kgm2 >= 0.0);
+                prop_assert!(l.torque_nm.abs() <= 400.0 + 1e-9 || v.locked());
+            }
+        }
+    }
+}

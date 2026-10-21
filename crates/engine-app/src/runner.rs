@@ -2,8 +2,9 @@
 //! ring buffer holds less than `TARGET_LATENCY_S` of audio, otherwise it sleeps briefly.
 //! Without an audio device it paces itself against the wall clock.
 
-use crate::sim::{Simulation, Snapshot};
+use crate::sim::{DriveInput, Simulation, Snapshot};
 use engine_audio::device::{self, Output};
+use engine_core::drivetrain::VehicleDef;
 use engine_core::engine::{Controls, EngineDef};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
@@ -19,6 +20,8 @@ const SNAPSHOT_EVERY: Duration = Duration::from_millis(15);
 pub enum Command {
     Controls(Controls),
     Engine(Box<EngineDef>),
+    Drive(DriveInput),
+    Vehicle(Box<VehicleDef>),
     Quit,
 }
 
@@ -32,7 +35,11 @@ pub struct SimHandle {
 }
 
 impl SimHandle {
-    pub fn spawn(def: EngineDef, repaint: Option<eframe::egui::Context>) -> Self {
+    pub fn spawn(
+        def: EngineDef,
+        vehicle: VehicleDef,
+        repaint: Option<eframe::egui::Context>,
+    ) -> Self {
         let (output, producer, audio) = match device::open(RING_SECONDS) {
             Ok((out, prod)) => {
                 let sr = out.sample_rate;
@@ -41,7 +48,7 @@ impl SimHandle {
             Err(e) => (None, None, Err(e.to_string())),
         };
         let rate = *audio.as_ref().unwrap_or(&FALLBACK_RATE);
-        let sim = Simulation::new(def, rate as f64, 1);
+        let sim = Simulation::with_vehicle(def, vehicle, rate as f64, 1);
         let snapshot = Arc::new(Mutex::new(sim.snapshot()));
         let (tx, rx) = channel();
         let shared = snapshot.clone();
@@ -97,6 +104,8 @@ fn run(
             match cmd {
                 Command::Controls(c) => sim.controls = c,
                 Command::Engine(d) => sim.replace_engine(*d),
+                Command::Drive(d) => sim.drive = d,
+                Command::Vehicle(v) => sim.replace_vehicle(*v),
                 Command::Quit => return,
             }
         }

@@ -205,6 +205,9 @@ pub struct Controls {
     pub load_torque_nm: f64,
     /// Dyno speed hold: when set, crank speed is forced to this rpm.
     pub hold_rpm: Option<f64>,
+    /// Inertia the crank drags along on top of the flywheel, kg·m² (e.g. the car reflected
+    /// through a locked clutch, see `drivetrain`). Default 0.
+    pub extra_inertia_kgm2: f64,
 }
 
 impl Default for Controls {
@@ -215,6 +218,7 @@ impl Default for Controls {
             starter: false,
             load_torque_nm: 0.0,
             hold_rpm: None,
+            extra_inertia_kgm2: 0.0,
         }
     }
 }
@@ -524,7 +528,10 @@ impl Engine {
         self.torque_avg += (brake - self.torque_avg) * k;
         match c.hold_rpm {
             Some(rpm) => self.omega = rpm_to_rad_s(rpm),
-            None => self.omega = (self.omega + net / self.def.flywheel_inertia_kgm2 * dt).max(0.0),
+            None => {
+                let j = self.def.flywheel_inertia_kgm2 + c.extra_inertia_kgm2;
+                self.omega = (self.omega + net / j * dt).max(0.0);
+            }
         }
         self.theta = (self.theta + self.omega * dt).rem_euclid(4.0 * PI);
         audio
@@ -694,6 +701,29 @@ mod tests {
         // 2000 rpm → 1000 cycles/min → 16.67 cycles/s × 4 cylinders × 1.2 s = 80
         let n = e.combustions() - before;
         assert!((78..=82).contains(&n), "combustions {n}");
+    }
+
+    #[test]
+    fn extra_inertia_slows_the_crank_response() {
+        // From rest with the starter on and no fuel: one step gives ω = (T_gas + T_starter)·dt/J.
+        // Both engines see the same torque, so doubling J (extra = flywheel inertia) halves ω.
+        let run_one = |extra: f64| {
+            let mut e = Engine::new(EngineDef::single(), 0.0, 1);
+            let c = Controls {
+                ignition: false,
+                starter: true,
+                extra_inertia_kgm2: extra,
+                ..Controls::default()
+            };
+            e.step(DT, &c);
+            e.rpm()
+        };
+        let (base, doubled) = (
+            run_one(0.0),
+            run_one(EngineDef::single().flywheel_inertia_kgm2),
+        );
+        assert!(base > 0.0);
+        assert_relative_eq!(doubled, base / 2.0, max_relative = 1e-9);
     }
 
     #[test]

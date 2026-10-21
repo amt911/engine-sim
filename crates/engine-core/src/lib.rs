@@ -4,6 +4,7 @@
 
 pub mod combustion;
 pub mod config;
+pub mod drivetrain;
 pub mod engine;
 pub mod exhaust;
 pub mod gas;

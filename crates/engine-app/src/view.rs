@@ -2,6 +2,7 @@
 //! `Snapshot`; checked by looking at the running app (see PR verification), not by
 //! line coverage.
 
+use crate::dyno::{DynoPoint, peaks};
 use crate::sim::Snapshot;
 use eframe::egui::{
     self, Align2, Color32, FontId, Pos2, Rect, Stroke, StrokeKind, Vec2, pos2, vec2,
@@ -143,6 +144,16 @@ pub fn gauges(ui: &mut egui::Ui, s: &Snapshot, audio: &Result<u32, String>) {
         egui::ProgressBar::new((s.rpm / s.def.redline_rpm).clamp(0.0, 1.0) as f32)
             .text(format!("redline {:.0}", s.def.redline_rpm)),
     );
+    ui.heading(format!(
+        "{:.0} km/h  ·  gear {}",
+        s.speed_m_s * 3.6,
+        if s.gear == 0 {
+            "N".to_string()
+        } else {
+            s.gear.to_string()
+        }
+    ));
+    ui.label(format!("Clutch  {:.0} % engaged", s.clutch * 100.0));
     ui.label(format!("Torque  {:.1} N·m", s.torque_nm));
     ui.label(format!("Power   {:.1} hp", w_to_hp(s.power_w).max(0.0)));
     ui.label(format!("Crank   {:.0}° / 720°", s.crank_deg));
@@ -199,10 +210,10 @@ fn polyline(
     p.add(egui::Shape::line(pts, Stroke::new(1.5, color)));
 }
 
-pub fn plots(ui: &mut egui::Ui, s: &Snapshot) {
+pub fn plots(ui: &mut egui::Ui, s: &Snapshot, dyno: &[DynoPoint]) {
     let bar: Vec<f32> = s.pressure_trace.iter().map(|p| p / 1e5).collect();
     let max = bar.iter().cloned().fold(1.0f32, f32::max);
-    ui.columns(2, |cols| {
+    ui.columns(3, |cols| {
         polyline(
             &mut cols[0],
             &format!("Cylinder 1 pressure over the cycle (0–720°, peak {max:.0} bar)"),
@@ -221,5 +232,38 @@ pub fn plots(ui: &mut egui::Ui, s: &Snapshot) {
             Color32::from_rgb(120, 220, 140),
             110.0,
         );
+        dyno_plot(&mut cols[2], dyno);
     });
+}
+
+/// Torque and power curves of the last dyno sweep, each scaled to its own peak.
+fn dyno_plot(ui: &mut egui::Ui, points: &[DynoPoint]) {
+    let Some((t, p)) = peaks(points) else {
+        ui.label("Dyno: press \"Run dyno sweep\" for the torque and power curves");
+        return;
+    };
+    let torque: Vec<f32> = points.iter().map(|d| d.torque_nm as f32).collect();
+    let power: Vec<f32> = points.iter().map(|d| d.power_hp() as f32).collect();
+    let (first, last) = (points[0].rpm, points[points.len() - 1].rpm);
+    polyline(
+        ui,
+        &format!(
+            "Dyno {first:.0}-{last:.0} rpm: torque, peak {:.0} N·m at {:.0}",
+            t.torque_nm, t.rpm
+        ),
+        &torque,
+        0.0,
+        t.torque_nm as f32 * 1.05,
+        Color32::from_rgb(255, 170, 60),
+        48.0,
+    );
+    polyline(
+        ui,
+        &format!("power, peak {:.0} hp at {:.0}", p.power_hp(), p.rpm),
+        &power,
+        0.0,
+        p.power_hp() as f32 * 1.05,
+        Color32::from_rgb(110, 170, 255),
+        48.0,
+    );
 }
