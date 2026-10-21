@@ -43,7 +43,9 @@ Found: <YYYY-MM-DD> · <area: build | tests | db | ci | deploy | env>
 **Cause.** With `CARGO_TARGET_DIR` set, the `-j4` mutant jobs (each a separate copy of the tree)
 build into one target dir and overwrite each other's binaries; tests run against another mutant.
 **Fix / workaround.** `scripts/mutants.sh` unsets `CARGO_TARGET_DIR`. Gate results of PRs #4 and #5
-were taken with it set and were re-checked afterwards.
+were taken with it set; a clean re-check over main (exhaust + drivetrain diff) was stopped after 80 of
+625 mutants to keep the machine's load low for another session: 77/80 caught (96 %) so far.
+Mutation runs now use `-j 3` with `CARGO_BUILD_JOBS=4` (≤ ~12 threads; load must stay < 15).
 **Why it isn't obvious.** The run looks normal and most mutants still get a plausible verdict.
 
 Found: 2026-10-22 · tests

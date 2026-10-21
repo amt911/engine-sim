@@ -14,7 +14,7 @@ FLOOR=90   # 2026-10-21: measured 92.4% (640/693)
 export TMPDIR="$PWD/target/mutants-tmp"
 mkdir -p "$TMPDIR"
 OUT=$(mktemp -d)
-scripts/heavy.sh cargo mutants -p engine-core -j 4 --timeout 60 -o "$OUT" "$@" | tail -1
+CARGO_BUILD_JOBS=4 scripts/heavy.sh cargo mutants -p engine-core -j 3 --timeout 90 -o "$OUT" "$@" | tail -1
 caught=$(wc -l < "$OUT/mutants.out/caught.txt")
 missed=$(wc -l < "$OUT/mutants.out/missed.txt")
 total=$((caught + missed))
