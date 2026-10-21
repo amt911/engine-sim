@@ -73,6 +73,58 @@ impl LowPass {
     }
 }
 
+/// Small room / car-body reverb: 4-line feedback delay network with a Householder matrix
+/// and per-line damping (Jot & Chaigne 1991; J. O. Smith, PASP, "FDN reverberation").
+#[derive(Debug, Clone)]
+pub struct Reverb {
+    lines: [Vec<f64>; 4],
+    pos: [usize; 4],
+    g: [f64; 4],
+    damp: [f64; 4],
+    damp_k: f64,
+}
+
+impl Reverb {
+    /// `rt60`: time (s) for the tail to decay by 60 dB.
+    pub fn new(sample_rate: f64, rt60: f64) -> Self {
+        // Mutually prime-ish lengths (ms) spread the echoes densely.
+        const MS: [f64; 4] = [29.7, 37.1, 41.1, 43.7];
+        let len = MS.map(|ms| (ms * 1e-3 * sample_rate) as usize);
+        Self {
+            lines: len.map(|n| vec![0.0; n.max(1)]),
+            pos: [0; 4],
+            // −60 dB after rt60: each pass through a line of d samples loses 60·d/(rt60·fs) dB.
+            g: len.map(|n| 10f64.powf(-3.0 * n as f64 / (rt60 * sample_rate))),
+            damp: [0.0; 4],
+            damp_k: 1.0 - (-2.0 * PI * 6_000.0 / sample_rate).exp(),
+        }
+    }
+    /// Returns the wet (reverberant) signal for input `x`.
+    pub fn process(&mut self, x: f64) -> f64 {
+        let mut v = [0.0; 4];
+        let mut wet = 0.0;
+        for (((line, pos), damp), (g, vi)) in self
+            .lines
+            .iter()
+            .zip(&self.pos)
+            .zip(self.damp.iter_mut())
+            .zip(self.g.iter().zip(v.iter_mut()))
+        {
+            let o = line[*pos];
+            wet += o;
+            *damp += self.damp_k * (o - *damp);
+            *vi = g * *damp;
+        }
+        // Householder reflection: lossless mixing, v − (2/N)·Σv.
+        let sum: f64 = v.iter().sum::<f64>() * 0.5;
+        for ((line, pos), vi) in self.lines.iter_mut().zip(self.pos.iter_mut()).zip(v) {
+            line[*pos] = x + vi - sum;
+            *pos = (*pos + 1) % line.len();
+        }
+        wet * 0.5
+    }
+}
+
 /// Above this frequency the radiated sound follows the derivative of the source.
 pub const RADIATION_CORNER_HZ: f64 = 150.0;
 
@@ -80,6 +132,9 @@ pub const RADIATION_CORNER_HZ: f64 = 150.0;
 #[derive(Debug, Clone)]
 pub struct Voice {
     dc: DcBlocker,
+    reverb: Reverb,
+    /// Wet level of the body/room reverb (0 = dry).
+    pub reverb_mix: f64,
     prev: f64,
     lp: LowPass,
     sample_rate: f64,
@@ -91,6 +146,8 @@ impl Voice {
     pub fn new(sample_rate: f64) -> Self {
         Self {
             dc: DcBlocker::new(3.0, sample_rate),
+            reverb: Reverb::new(sample_rate, 0.35),
+            reverb_mix: 0.0,
             prev: 0.0,
             lp: LowPass::new(
                 5000.0_f64.min(0.45 * sample_rate),
@@ -111,7 +168,8 @@ impl Voice {
         let x = self.dc.process(pressure_pa);
         let dx = (x - self.prev) * self.sample_rate / (2.0 * PI * RADIATION_CORNER_HZ);
         self.prev = x;
-        let y = self.lp.process(x + dx) / self.full_scale_pa;
+        let dry = self.lp.process(x + dx);
+        let y = (dry + self.reverb_mix * self.reverb.process(dry)) / self.full_scale_pa;
         if !y.is_finite() {
             // A runaway filter state is reset rather than left to poison every later sample.
             *self = Voice {
@@ -175,6 +233,55 @@ mod tests {
         // 2nd order: −12 dB/octave → ×4 frequency ≈ 1/16
         let mut lp = LowPass::new(2000.0, q, FS);
         assert!(sine_gain(|x| lp.process(x), 8000.0) < 0.08);
+    }
+
+    #[test]
+    fn reverb_tail_decays_at_rt60() {
+        let mut r = Reverb::new(FS, 0.3);
+        let energy = |from: usize, to: usize, r: &mut Reverb, first: bool| {
+            let mut e = 0.0;
+            for n in from..to {
+                let y = r.process(if first && n == 0 { 1.0 } else { 0.0 });
+                e += y * y;
+            }
+            e
+        };
+        let early = energy(0, 4_800, &mut r, true); // first 0.1 s
+        let _ = energy(4_800, 14_400, &mut r, false); // up to 0.3 s
+        let late = energy(14_400, 19_200, &mut r, false); // 0.3–0.4 s
+        assert!(early > 0.0);
+        // After one RT60 the level is −60 dB: energy ratio ~1e-6 (generous bound for the windows)
+        assert!(late < 1e-4 * early, "early {early} late {late}");
+    }
+
+    #[test]
+    fn reverb_is_stable_and_bounded() {
+        let mut r = Reverb::new(FS, 2.0);
+        let mut peak: f64 = 0.0;
+        for n in 0..FS as usize * 3 {
+            peak = peak.max(r.process(((n as f64) * 0.05).sin()).abs());
+        }
+        assert!(peak.is_finite() && peak < 20.0, "{peak}");
+    }
+
+    #[test]
+    fn voice_reverb_leaves_a_tail_only_when_mixed_in() {
+        let tail = |mix: f64| {
+            let mut v = Voice::new(FS);
+            v.reverb_mix = mix;
+            for n in 0..2_000 {
+                v.process(if n < 50 { 30_000.0 } else { 0.0 });
+            }
+            (0..4_000)
+                .map(|_| (v.process(0.0) as f64).abs())
+                .sum::<f64>()
+        };
+        assert!(
+            tail(0.3) > 10.0 * tail(0.0),
+            "{} vs {}",
+            tail(0.3),
+            tail(0.0)
+        );
     }
 
     #[test]

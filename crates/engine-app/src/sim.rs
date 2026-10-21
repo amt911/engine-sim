@@ -44,6 +44,12 @@ pub struct DriveInput {
     pub brake: f64,
 }
 
+fn voice_for(def: &EngineDef, sample_rate: f64) -> Voice {
+    let mut v = Voice::new(sample_rate);
+    v.reverb_mix = def.sound.reverb;
+    v
+}
+
 pub struct Simulation {
     engine: Engine,
     voice: Voice,
@@ -65,7 +71,7 @@ impl Simulation {
         Self {
             vehicle: Vehicle::new(vehicle),
             drive: DriveInput::default(),
-            voice: Voice::new(sample_rate),
+            voice: voice_for(&def, sample_rate),
             engine: Engine::new(def, IDLE_START_RPM, seed),
             sample_rate,
             controls: Controls::default(),
@@ -92,6 +98,7 @@ impl Simulation {
     /// Swap the engine definition, keeping the current speed. Tuning-only changes are
     /// applied in place so the engine keeps running without a click.
     pub fn replace_engine(&mut self, def: EngineDef) {
+        self.voice.reverb_mix = def.sound.reverb;
         let Some(def) = self.try_retune(def) else {
             return;
         };

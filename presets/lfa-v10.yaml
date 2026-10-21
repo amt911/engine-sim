@@ -59,3 +59,9 @@ engine:
   - 0.8
   - 0.1
   - 0.015
+  sound:
+    flow_noise: 1.0
+    intake: 1.0
+    mechanical: 1.0
+    combustion_jitter: 1.0
+    reverb: 0.15
