@@ -327,6 +327,87 @@ mod tests {
     }
 
     #[test]
+    fn clutch_ramps_at_its_engage_and_release_rates() {
+        let mut v = Vehicle::new(fixture());
+        v.set_clutch(0.0);
+        for _ in 0..1000 {
+            v.ramp_clutch(1e-3);
+        }
+        v.set_clutch(1.0);
+        v.ramp_clutch(0.1); // engage 1.5 /s → +0.15
+        assert!((v.clutch() - 0.15).abs() < 1e-12, "{}", v.clutch());
+        for _ in 0..20 {
+            v.ramp_clutch(0.1);
+        }
+        assert_eq!(v.clutch(), 1.0, "no overshoot past the target");
+        v.set_clutch(0.0);
+        v.ramp_clutch(0.05); // release 10 /s → −0.5
+        assert!((v.clutch() - 0.5).abs() < 1e-12, "{}", v.clutch());
+    }
+
+    /// Locked in 1st (overall 12) at 2 m/s, clutch 0.5 → capacity 0.25·400 = 100 N·m; the crank
+    /// accelerates at `alpha` rad/s² for 0.3 s. Needed clutch torque (hand calc, fixture):
+    /// (m·a + F_roll)·r/(g·η) with a = α·r/g, F_roll ≈ 0.01·1000·9.81 = 98.1 N:
+    /// α = 111.3 → 80 N·m (holds); α = 168.9 → 120 N·m (slips).
+    fn locked_run(alpha: f64) -> bool {
+        let mut v = Vehicle::new(fixture());
+        v.set_gear(1);
+        v.set_clutch(0.5);
+        for _ in 0..2000 {
+            v.ramp_clutch(1e-3);
+        }
+        v.set_speed(2.0);
+        let mut omega = 2.0 / 0.3 * 12.0;
+        let dt = 1e-4;
+        v.step(dt, omega, 0.0);
+        assert!(v.locked(), "starts locked");
+        for _ in 0..3000 {
+            omega += alpha * dt;
+            v.step(dt, omega, 0.0);
+            if !v.locked() {
+                return false;
+            }
+        }
+        true
+    }
+
+    #[test]
+    fn locked_clutch_holds_below_capacity_and_slips_above() {
+        assert!(locked_run(111.3), "80 N·m < 100 N·m must hold");
+        assert!(!locked_run(168.9), "120 N·m > 100 N·m must slip");
+    }
+
+    #[test]
+    fn after_an_overload_it_relocks_only_past_the_hysteresis() {
+        let mut v = Vehicle::new(fixture());
+        v.set_gear(1);
+        v.set_clutch(0.5);
+        for _ in 0..2000 {
+            v.ramp_clutch(1e-3);
+        }
+        v.set_speed(2.0);
+        let wheel = |v: &Vehicle| v.speed_m_s() / 0.3 * 12.0;
+        let dt = 1e-5;
+        v.step(dt, wheel(&v), 0.0);
+        assert!(v.locked());
+        // a gradual overload (120 N·m > 100 N·m, see `locked_run`): unlocks with little slip
+        let mut omega = wheel(&v);
+        while v.locked() {
+            omega += 168.9 * dt;
+            v.step(dt, omega, 0.0);
+        }
+        assert!(!v.locked(), "overload unlocks");
+        // slip back inside LOCK_SLIP right away: blocked, must not relock
+        v.step(dt, wheel(&v) + 0.2, 0.0);
+        assert!(!v.locked(), "relock blocked until slip exceeds 2·LOCK_SLIP");
+        // slip past 2·LOCK_SLIP (= 1 rad/s) unblocks; then back under LOCK_SLIP relocks
+        v.step(dt, wheel(&v) + 1.5, 0.0);
+        assert!(!v.locked());
+        v.step(dt, wheel(&v) + 0.2, 0.0);
+        assert!(v.locked(), "relocks once the hysteresis was crossed");
+    }
+
+    #[test]
     fn road_force_adds_aero_rolling_and_brake() {
         let v = Vehicle::new(fixture());
         // 20 m/s: aero ½·1.2·0.6·20² = 144 N; rolling 0.01·1000·9.81 = 98.1 N (tanh(200) = 1).
