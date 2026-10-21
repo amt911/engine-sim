@@ -189,13 +189,21 @@ pub fn layout(
 }
 
 impl eframe::App for EngineApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    // `logic` runs every frame even while the window is hidden or occluded; `ui` does not, so a
+    // quit timer placed in `ui` never fired when the smoke window opened behind other windows.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if self
             .quit_after
             .is_some_and(|q| self.started.elapsed().as_secs_f64() > q)
         {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
+        if self.quit_after.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll_files(ui);
         let snap = self.sim.snapshot();
         match layout(

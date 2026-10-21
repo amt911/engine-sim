@@ -37,6 +37,17 @@ Found: <YYYY-MM-DD> · <area: build | tests | db | ci | deploy | env>
 
 ## Findings
 
+### `--quit-after` never closed the window when it was hidden
+
+**Symptom.** Smoke GUI phase hung for minutes; several `engine-sim --quit-after 4` processes alive.
+**Cause.** eframe calls `App::ui` only while the window is visible; the quit timer lived in `ui`.
+The smoke window opened behind the user's windows (shared desktop) and never drew.
+**Fix / workaround.** Quit timer in `App::logic` (runs even when hidden) + `request_repaint_after`;
+the smoke runs the GUI under `timeout 30`.
+**Why it isn't obvious.** On an idle desktop the window is visible and the bug never shows.
+
+Found: 2026-10-22 · app
+
 ### cargo-mutants filled /tmp (tmpfs = RAM) with a 5 GB copy
 
 **Symptom.** RAM near exhaustion during a mutation run; `shared` memory ~8 GB.
