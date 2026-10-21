@@ -5,6 +5,9 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
 FLOOR=90   # 2026-10-21: measured 92.4% (640/693)
+# cargo-mutants copies the tree into $TMPDIR; /tmp is tmpfs here (RAM): 5 GB once. Use disk.
+export TMPDIR="$PWD/target/mutants-tmp"
+mkdir -p "$TMPDIR"
 OUT=$(mktemp -d)
 scripts/heavy.sh cargo mutants -p engine-core -j 4 --timeout 60 -o "$OUT" "$@" | tail -1
 caught=$(wc -l < "$OUT/mutants.out/caught.txt")

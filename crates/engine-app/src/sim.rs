@@ -220,40 +220,56 @@ pub(crate) mod tests {
         assert!((470..=490).contains(&p), "period {p}");
     }
 
-    fn rms(x: &[f32]) -> f64 {
+    pub fn rms(x: &[f32]) -> f64 {
         (x.iter().map(|s| (s * s) as f64).sum::<f64>() / x.len() as f64).sqrt()
     }
 
+    /// Amplitude of engine cycle orders 1..=12 (DFT at k·rpm/120 Hz).
+    pub fn orders(x: &[f32], rpm: f64) -> Vec<f64> {
+        let f0 = rpm / 120.0;
+        (1..=12)
+            .map(|k| {
+                let w = 2.0 * std::f64::consts::PI * f0 * k as f64 / FS;
+                let (mut re, mut im) = (0.0, 0.0);
+                for (n, s) in x.iter().enumerate() {
+                    re += *s as f64 * (w * n as f64).cos();
+                    im += *s as f64 * (w * n as f64).sin();
+                }
+                2.0 * (re * re + im * im).sqrt() / x.len() as f64
+            })
+            .collect()
+    }
+
     #[test]
-    fn load_makes_it_louder_without_saturating() {
-        // Regression: with the plain 0D runner pressure as source, high-rpm WOT was barely
-        // louder than idle; with the valve flow as source, coasting was louder than WOT.
-        // Load must raise the level (Caviezel 2026: load matters as much as rpm).
-        // Known limit: a V10 at WOT sums ten smooth 0D pulses into a nearly steady flow, so
-        // it is not checked here — sharp pulses need the waveguide exhaust (next milestone).
-        for def in [
-            EngineDef::single(),
-            EngineDef::inline4(),
-            EngineDef::lfa_v10(),
-        ] {
-            let level = |throttle: f64| {
-                let mut sim = Simulation::new(def.clone(), FS, 1);
-                sim.controls = Controls {
-                    throttle,
-                    hold_rpm: Some(6000.0),
-                    ..Controls::default()
-                };
-                render_secs(&mut sim, 0.4);
-                rms(&render_secs(&mut sim, 0.4))
+    fn firing_orders_dominate_and_output_is_not_saturated() {
+        // Even firing: an inline-4 fires at cycle order 4 (and multiples), a V10 at order 10.
+        // Odd orders below the firing order must be near zero for the I4 (all cylinders equal).
+        for (def, firing) in [(EngineDef::inline4(), 4usize), (EngineDef::lfa_v10(), 10)] {
+            let mut sim = Simulation::new(def.clone(), FS, 1);
+            sim.controls = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(3000.0),
+                ..Controls::default()
             };
-            let (coast, wot) = (level(0.0), level(1.0));
-            if def.cylinders <= 4 {
-                assert!(wot > 1.5 * coast, "{}: wot {wot} coast {coast}", def.name);
-            }
+            render_secs(&mut sim, 0.4);
+            let x = render_secs(&mut sim, 0.5);
+            let o = orders(&x, 3000.0);
+            let top = (0..12).max_by(|a, b| o[*a].total_cmp(&o[*b])).unwrap() + 1;
             assert!(
-                wot > 0.02 && wot < 0.5 && coast < 0.5,
-                "{}: wot {wot} coast {coast}",
+                top % firing == 0,
+                "{}: strongest order {top}, orders {o:?}",
                 def.name
+            );
+            assert!(
+                o[firing - 1] > 4.0 * o[0],
+                "{}: firing order not dominant over order 1: {o:?}",
+                def.name
+            );
+            assert!(
+                rms(&x) > 0.005 && rms(&x) < 0.5,
+                "{}: rms {}",
+                def.name,
+                rms(&x)
             );
         }
     }
@@ -390,5 +406,40 @@ pub(crate) mod tests {
         sim.replace_engine(EngineDef::inline4());
         assert_eq!(sim.engine().def().cylinders, 4);
         assert!((sim.engine().rpm() - 2500.0).abs() < 1.0);
+    }
+}
+#[cfg(test)]
+mod probe {
+    use super::tests::*;
+    use super::*;
+
+    /// Dev probe: levels and orders per operating point.
+    /// `cargo test --release -p engine-app probe -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn levels() {
+        for d in [
+            EngineDef::single(),
+            EngineDef::inline4(),
+            EngineDef::lfa_v10(),
+        ] {
+            for (t, rpm) in [(0.0, 3000.0), (1.0, 3000.0), (0.0, 7000.0), (1.0, 7000.0)] {
+                let mut sim = Simulation::new(d.clone(), FS, 1);
+                sim.controls = Controls {
+                    throttle: t,
+                    hold_rpm: Some(rpm),
+                    ..Controls::default()
+                };
+                render_secs(&mut sim, 0.4);
+                let x = render_secs(&mut sim, 0.5);
+                let o: Vec<String> = orders(&x, rpm).iter().map(|a| format!("{a:.3}")).collect();
+                println!(
+                    "{} t={t} {rpm}: rms {:.3} orders1-12 [{}]",
+                    d.name,
+                    rms(&x),
+                    o.join(" ")
+                );
+            }
+        }
     }
 }

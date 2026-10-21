@@ -37,6 +37,63 @@ Found: <YYYY-MM-DD> · <area: build | tests | db | ci | deploy | env>
 
 ## Findings
 
+### `--quit-after` never closed the window when it was hidden
+
+**Symptom.** Smoke GUI phase hung for minutes; several `engine-sim --quit-after 4` processes alive.
+**Cause.** eframe calls `App::ui` only while the window is visible; the quit timer lived in `ui`.
+The smoke window opened behind the user's windows (shared desktop) and never drew.
+**Fix / workaround.** Quit timer in `App::logic` (runs even when hidden) + `request_repaint_after`;
+the smoke runs the GUI under `timeout 30`.
+**Why it isn't obvious.** On an idle desktop the window is visible and the bug never shows.
+
+Found: 2026-10-22 · app
+
+### cargo-mutants filled /tmp (tmpfs = RAM) with a 5 GB copy
+
+**Symptom.** RAM near exhaustion during a mutation run; `shared` memory ~8 GB.
+**Cause.** cargo-mutants copies the project (with its build) into `$TMPDIR`, and `/tmp` is tmpfs on
+this machine, so the copy lives in RAM (and is not reclaimable without swap).
+**Fix / workaround.** `scripts/mutants.sh` sets `TMPDIR=target/mutants-tmp` (disk).
+**Why it isn't obvious.** The run itself was inside the 6 GB cgroup; the tmpfs pages showed up as
+"shared", not as the job's RSS.
+
+Found: 2026-10-21 · build
+
+### Exhaust port ↔ waveguide: an explicit coupling oscillates at Nyquist
+
+**Symptom.** Radiated sound alternated ±20 kPa every sample (hiss); closed throttle louder than WOT.
+**Cause.** Valve flow used last step's port pressure; near Δp ≈ 0 the orifice law (ṁ ∝ √Δp) has a
+huge slope, so the loop p⁺ → ṁ → p⁺ had gain > 1 at fs/2.
+**Fix / workaround.** Solve the port implicitly: ṁ = f(p_cyl, p_base + (c/A)·ṁ) with regula falsi
+(`gas::port_flow`). Regression test: `exhaust_source_has_no_sample_to_sample_oscillation`.
+**Why it isn't obvious.** Every unit test of the pieces passes; only the coupled loop is unstable.
+
+Found: 2026-10-21 · physics
+
+### The open pipe end must hand the *outflow velocity* to the radiation stage
+
+**Symptom.** After adding waveguides, everything hissy; sharp reversion edges dominated.
+**Cause.** The open end output p + p_reflected (pressure at the end, ≈ 0 at low frequency, i.e.
+already a derivative) and the voice differentiates again (monopole). Two derivatives.
+**Fix / workaround.** Output p − p_reflected (∝ volume velocity); the voice's single d/dt is the
+monopole far field (PASP, point source).
+**Why it isn't obvious.** Both look like "the radiated pressure"; the difference is one derivative.
+
+Found: 2026-10-21 · physics
+
+### Known limit: WOT is not clearly louder than coasting (waveguide exhaust, v0.3)
+
+**Symptom.** At the same rpm, closed throttle is about as loud as WOT (LFA at 7000 rpm: louder).
+**Cause (hypothesis, not proven).** Linear lossless-ish waveguides without mean flow: reversion
+pulses at high vacuum are sharp and the pipes ring; real exhausts damp large amplitudes (mean
+flow, non-linear losses, heat). Firing-order structure is right (I4 orders 4/8, V10 order 10).
+**Fix / workaround.** Partly fixed: a muffler in the tail (pipes rang without one) and a floor on
+the waves (they superposed below vacuum at the port). Single/I4 now louder at WOT at high rpm; the
+LFA at 7000 rpm still ~2× louder coasting. Pending: non-linear losses or the 1D FV exhaust.
+**Why it isn't obvious.** Torque and the order structure look right; only the level balance is off.
+
+Found: 2026-10-21 · physics
+
 ### egui panics on a glyph the default font lacks (e.g. "→")
 
 **Symptom.** A kittest test panics: `No glyph for "→" (U+2192) in Proportional ... Install a font that has it`.

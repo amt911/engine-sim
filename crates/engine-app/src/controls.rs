@@ -65,6 +65,8 @@ pub struct UiState {
     pub starter: bool,
     /// Firing order as typed in the editor ("1-3-4-2"; empty = automatic).
     pub firing_text: String,
+    /// Exhaust collector groups as typed ("1-3 / 2-4"; empty = one collector).
+    pub collectors_text: String,
     /// Validation problems of the edited engine (shown in the editor).
     pub errors: Vec<String>,
     /// Last file load/save message.
@@ -93,6 +95,7 @@ impl Default for UiState {
             key_throttle: false,
             starter: false,
             firing_text: "1".into(),
+            collectors_text: String::new(),
             errors: Vec::new(),
             file_msg: None,
             vehicle: Preset::Single.vehicle(),
@@ -195,6 +198,7 @@ pub fn controls_panel(ui: &mut egui::Ui, state: &mut UiState) {
             state.preset = Some(p);
             state.def = p.def();
             state.firing_text = crate::editor::format_firing_order(&state.def.firing_order);
+            state.collectors_text = crate::editor::format_collectors(&state.def.exhaust.collectors);
             state.engine_dirty = true;
             state.vehicle = p.vehicle();
             state.vehicle_dirty = true;
