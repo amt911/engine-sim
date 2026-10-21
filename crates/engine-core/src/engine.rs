@@ -88,6 +88,7 @@ impl EngineDef {
                 collector_diameter_m: 0.040,
                 tail_length_m: 1.0,
                 tail_diameter_m: 0.045,
+                muffler_transmission: 0.6,
             },
             redline_rpm: 7500.0,
             starter_torque_nm: 25.0,
@@ -145,7 +146,7 @@ impl EngineDef {
             flywheel_inertia_kgm2: 0.09,
             plenum_volume_m3: 8.0e-3,
             throttle_diameter_m: 0.120,
-            idle_throttle: 0.0034,
+            idle_throttle: 0.003,
             // Equal-length primaries, one 5-into-1 collector per bank (odd/even numbering
             // per bank is an assumption), dual tail pipes. Lengths and diameters estimated.
             exhaust: ExhaustDef {
@@ -156,6 +157,8 @@ impl EngineDef {
                 collector_diameter_m: 0.065,
                 tail_length_m: 1.2,
                 tail_diameter_m: 0.060,
+                // Sport muffler with bypass valves: less damping than a road car.
+                muffler_transmission: 0.7,
             },
             redline_rpm: 9000.0,
             starter_torque_nm: 150.0,
@@ -405,7 +408,7 @@ impl Engine {
             // The exhaust port and its primary pipe are solved together: the flow raises the
             // pipe pressure at the port by z·ṁ (see `gas::port_flow`).
             let f_ex = (a_ex > 0.0).then(|| {
-                let p_base = ATM_PA + 2.0 * arriving;
+                let p_base = (ATM_PA + 2.0 * arriving).max(0.05 * ATM_PA);
                 let m = port_flow(a_ex, &cs.gas, p_base, REVERSION_TEMP_K, z_port);
                 let pv = p_base + z_port * m;
                 let h = if m >= 0.0 {
@@ -989,5 +992,26 @@ mod tests {
                 def.name
             );
         }
+    }
+
+    #[test]
+    fn exhaust_port_never_goes_below_vacuum() {
+        // Regression (review of PR #4): linear waves superposed to −154 kPa gauge at the port
+        // (−53 kPa absolute) at closed throttle, 7000 rpm — pulling gas out of a 0.06 bar cylinder.
+        let mut e = Engine::new(EngineDef::lfa_v10(), 7000.0, 1);
+        let c = Controls {
+            throttle: 0.0,
+            hold_rpm: Some(7000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.3, &c);
+        let mut worst = f64::MAX;
+        for _ in 0..(0.1 / DT) as usize {
+            e.step(DT, &c);
+            for i in 0..10 {
+                worst = worst.min(ATM_PA + e.exhaust_port_gauge(i));
+            }
+        }
+        assert!(worst > 0.0, "absolute port pressure {worst} Pa");
     }
 }

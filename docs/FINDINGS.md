@@ -37,6 +37,17 @@ Found: <YYYY-MM-DD> · <area: build | tests | db | ci | deploy | env>
 
 ## Findings
 
+### cargo-mutants filled /tmp (tmpfs = RAM) with a 5 GB copy
+
+**Symptom.** RAM near exhaustion during a mutation run; `shared` memory ~8 GB.
+**Cause.** cargo-mutants copies the project (with its build) into `$TMPDIR`, and `/tmp` is tmpfs on
+this machine, so the copy lives in RAM (and is not reclaimable without swap).
+**Fix / workaround.** `scripts/mutants.sh` sets `TMPDIR=target/mutants-tmp` (disk).
+**Why it isn't obvious.** The run itself was inside the 6 GB cgroup; the tmpfs pages showed up as
+"shared", not as the job's RSS.
+
+Found: 2026-10-21 · build
+
 ### Exhaust port ↔ waveguide: an explicit coupling oscillates at Nyquist
 
 **Symptom.** Radiated sound alternated ±20 kPa every sample (hiss); closed throttle louder than WOT.
@@ -65,7 +76,9 @@ Found: 2026-10-21 · physics
 **Cause (hypothesis, not proven).** Linear lossless-ish waveguides without mean flow: reversion
 pulses at high vacuum are sharp and the pipes ring; real exhausts damp large amplitudes (mean
 flow, non-linear losses, heat). Firing-order structure is right (I4 orders 4/8, V10 order 10).
-**Fix / workaround.** Pending: amplitude-dependent losses or the 1D finite-volume exhaust (roadmap).
+**Fix / workaround.** Partly fixed: a muffler in the tail (pipes rang without one) and a floor on
+the waves (they superposed below vacuum at the port). Single/I4 now louder at WOT at high rpm; the
+LFA at 7000 rpm still ~2× louder coasting. Pending: non-linear losses or the 1D FV exhaust.
 **Why it isn't obvious.** Torque and the order structure look right; only the level balance is off.
 
 Found: 2026-10-21 · physics

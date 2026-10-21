@@ -57,6 +57,12 @@ impl Pipe {
             gain: (1.0 - loss_per_m).powf(length_m),
         }
     }
+    /// Extra per-trip amplitude factor (e.g. a muffler in this pipe).
+    pub fn with_extra_gain(mut self, g: f64) -> Self {
+        self.gain *= g;
+        self
+    }
+
     /// Wave arriving at the far end this step.
     pub fn at_far(&self) -> f64 {
         self.fwd.read() * self.gain

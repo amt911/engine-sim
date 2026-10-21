@@ -34,7 +34,7 @@ pub enum ConfigError {
     #[error("cannot parse engine file: {0}")]
     Parse(String),
     #[error("unsupported engine file version {0} (this build reads up to {FORMAT_VERSION})")]
-    UnsupportedVersion(u32),
+    UnsupportedVersion(u64),
     #[error("invalid engine: {}", .0.join("; "))]
     Invalid(Vec<String>),
 }
@@ -74,7 +74,7 @@ pub fn from_str(text: &str, format: Format) -> Result<EngineDef, ConfigError> {
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| parse("missing `version`".into()))?;
     if version == 0 || version > FORMAT_VERSION as u64 {
-        return Err(ConfigError::UnsupportedVersion(version as u32));
+        return Err(ConfigError::UnsupportedVersion(version));
     }
     if version == 1 {
         migrate_v1(&mut tree);
@@ -103,8 +103,22 @@ fn migrate_v1(tree: &mut serde_json::Value) {
             exhaust.insert(new.into(), v);
         }
     }
-    if !exhaust.is_empty() {
-        engine.insert("exhaust".into(), exhaust.into());
+    if exhaust.is_empty() {
+        return;
+    }
+    // Merge into an `exhaust` object the file may already have (its keys win).
+    match engine
+        .get_mut("exhaust")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        Some(existing) => {
+            for (k, v) in exhaust {
+                existing.entry(k).or_insert(v);
+            }
+        }
+        None => {
+            engine.insert("exhaust".into(), exhaust.into());
+        }
     }
 }
 
@@ -179,6 +193,10 @@ pub fn validate(def: &EngineDef) -> Result<(), ConfigError> {
             .iter()
             .all(|d| within(*d, 0.005, 0.3)),
         "exhaust pipes: lengths 0.01–20 m, Ø 5–300 mm",
+    );
+    check(
+        within(x.muffler_transmission, 0.05, 1.0),
+        "muffler transmission must be 0.05–1",
     );
     if !x.collectors.is_empty() {
         let mut all: Vec<usize> = x.collectors.iter().flatten().copied().collect();
@@ -387,6 +405,20 @@ mod tests {
             from_str(bad, Format::Yaml),
             Err(ConfigError::Parse(_))
         ));
+    }
+
+    #[test]
+    fn v1_migration_merges_into_an_existing_exhaust_object() {
+        let v1 = "version: 1\nengine:\n  exhaust_runner_length_m: 0.7\n  exhaust:\n    tail_length_m: 2.0\n";
+        let d = from_str(v1, Format::Yaml).unwrap();
+        assert_eq!(d.exhaust.primary_length_m, 0.7);
+        assert_eq!(d.exhaust.tail_length_m, 2.0);
+    }
+
+    #[test]
+    fn huge_versions_are_reported_as_written() {
+        let e = from_str("version: 4294967297\nengine: {}\n", Format::Yaml).unwrap_err();
+        assert_eq!(e, ConfigError::UnsupportedVersion(4_294_967_297));
     }
 
     #[test]

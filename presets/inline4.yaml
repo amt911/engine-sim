@@ -36,6 +36,7 @@ engine:
     collector_diameter_m: 0.055
     tail_length_m: 1.5
     tail_diameter_m: 0.05
+    muffler_transmission: 0.5
   redline_rpm: 7000.0
   starter_torque_nm: 60.0
   fmep_bar:

@@ -14,8 +14,14 @@ pub const C_TAIL: f64 = 500.0;
 pub const LOSS_PER_M: f64 = 0.03;
 /// Temperature of exhaust gas pushed back into a cylinder (reversion), K.
 pub const REVERSION_TEMP_K: f64 = 800.0;
-/// Clamp on the waves (Pa): the linear model is meaningless beyond a few bar.
+/// Clamp on the waves (Pa): the linear model is meaningless beyond a few bar, and two
+/// superposed rarefactions must never take the absolute pressure below vacuum.
 const WAVE_LIMIT_PA: f64 = 3.0e5;
+const WAVE_MIN_PA: f64 = -0.45 * crate::units::ATM_PA;
+
+fn clamp_wave(p: f64) -> f64 {
+    p.clamp(WAVE_MIN_PA, WAVE_LIMIT_PA)
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -28,6 +34,9 @@ pub struct ExhaustDef {
     pub collector_diameter_m: f64,
     pub tail_length_m: f64,
     pub tail_diameter_m: f64,
+    /// Amplitude a wave keeps crossing the muffler (absorptive silencer, lumped into the tail;
+    /// a transfer-matrix muffler is a later refinement — Munjal). 1 = straight pipe.
+    pub muffler_transmission: f64,
 }
 
 impl Default for ExhaustDef {
@@ -40,6 +49,7 @@ impl Default for ExhaustDef {
             collector_diameter_m: 0.055,
             tail_length_m: 1.5,
             tail_diameter_m: 0.050,
+            muffler_transmission: 0.5,
         }
     }
 }
@@ -47,13 +57,23 @@ impl Default for ExhaustDef {
 impl ExhaustDef {
     /// Collector groups as 0-based cylinder indices (empty → all cylinders in one).
     pub fn groups(&self, cylinders: usize) -> Vec<Vec<usize>> {
-        if self.collectors.is_empty() {
-            return vec![(0..cylinders).collect()];
-        }
-        self.collectors
+        // Invalid indices are dropped (validation reports them; the sim must not panic).
+        let groups: Vec<Vec<usize>> = self
+            .collectors
             .iter()
-            .map(|g| g.iter().map(|c| c - 1).collect())
-            .collect()
+            .map(|g| {
+                g.iter()
+                    .filter(|c| (1..=cylinders).contains(*c))
+                    .map(|c| c - 1)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|g| !g.is_empty())
+            .collect();
+        if groups.is_empty() {
+            vec![(0..cylinders).collect()]
+        } else {
+            groups
+        }
     }
 }
 
@@ -106,7 +126,8 @@ impl ExhaustNet {
                     C_TAIL,
                     dt,
                     LOSS_PER_M,
-                ),
+                )
+                .with_extra_gain(def.muffler_transmission),
                 end: OpenEnd::new(def.tail_diameter_m, dt),
             })
             .collect();
@@ -159,9 +180,9 @@ impl ExhaustNet {
             outgoing.resize(incoming.len(), 0.0);
             junction(&areas, &incoming, &mut outgoing);
             for (k, &m) in b.members.iter().enumerate() {
-                from_far[m] = outgoing[k];
+                from_far[m] = clamp_wave(outgoing[k]);
             }
-            let collector_near = outgoing[b.members.len()];
+            let collector_near = clamp_wave(outgoing[b.members.len()]);
             let mut two = [0.0; 2];
             junction(
                 &[b.collector.area_m2, b.tail.area_m2],
@@ -170,13 +191,12 @@ impl ExhaustNet {
             );
             let (reflected, out) = b.end.process(b.tail.at_far());
             radiated += out;
-            b.collector.send(collector_near, two[0]);
-            b.tail.send(two[1], reflected);
+            b.collector.send(collector_near, clamp_wave(two[0]));
+            b.tail.send(clamp_wave(two[1]), clamp_wave(reflected));
         }
         for i in 0..n {
             let a = self.primaries[i].area_m2;
-            let p_plus = (self.primaries[i].at_near() + C_PRIMARY * flows[i] / a)
-                .clamp(-WAVE_LIMIT_PA, WAVE_LIMIT_PA);
+            let p_plus = clamp_wave(self.primaries[i].at_near() + C_PRIMARY * flows[i] / a);
             self.primaries[i].send(p_plus, from_far[i]);
             self.sent[i] = p_plus;
         }
@@ -213,6 +233,25 @@ mod tests {
     }
 
     #[test]
+    fn groups_ignore_invalid_indices_instead_of_panicking() {
+        // Unvalidated definitions must not panic deep inside the simulation.
+        let d = ExhaustDef {
+            collectors: vec![vec![0, 1, 9], vec![2]],
+            ..ExhaustDef::default()
+        };
+        assert_eq!(d.groups(2), vec![vec![0], vec![1]]);
+        let d = ExhaustDef {
+            collectors: vec![vec![0]],
+            ..ExhaustDef::default()
+        };
+        assert_eq!(
+            d.groups(2),
+            vec![vec![0, 1]],
+            "nothing valid → one collector for all"
+        );
+    }
+
+    #[test]
     fn silence_stays_silent() {
         let mut net = ExhaustNet::new(&ExhaustDef::default(), 4, DT);
         for _ in 0..10_000 {
@@ -239,6 +278,38 @@ mod tests {
         );
         // 0.6 m more at 600 m/s = 1 ms = 192 steps
         assert!((185..=200).contains(&(long - short)), "{short} → {long}");
+    }
+
+    /// Energy left ringing in the system long after a short pulse (sum of |radiated|).
+    fn ringing(def: &ExhaustDef) -> f64 {
+        let mut net = ExhaustNet::new(def, 1, DT);
+        let mut tail = 0.0;
+        for k in 0..40_000 {
+            let r = net.step(&[if k < 20 { 0.2 } else { 0.0 }]);
+            if k > 20_000 {
+                tail += r.abs();
+            }
+        }
+        tail
+    }
+
+    #[test]
+    fn muffler_damps_resonances() {
+        let open = ExhaustDef {
+            muffler_transmission: 1.0,
+            ..ExhaustDef::default()
+        };
+        let muffled = ExhaustDef {
+            muffler_transmission: 0.5,
+            ..ExhaustDef::default()
+        };
+        // Round trips through the muffler lose 1 − 0.5² = 75 % each way out and back.
+        assert!(
+            ringing(&muffled) < 0.1 * ringing(&open),
+            "{} vs {}",
+            ringing(&muffled),
+            ringing(&open)
+        );
     }
 
     #[test]
