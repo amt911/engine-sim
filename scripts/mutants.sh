@@ -6,6 +6,9 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
+# Each parallel mutant builds its own copy: a shared CARGO_TARGET_DIR makes the jobs overwrite
+# each other's binaries and the verdicts meaningless.
+unset CARGO_TARGET_DIR
 FLOOR=90   # 2026-10-21: measured 92.4% (640/693)
 # cargo-mutants copies the tree into $TMPDIR; /tmp is tmpfs here (RAM): 5 GB once. Use disk.
 export TMPDIR="$PWD/target/mutants-tmp"

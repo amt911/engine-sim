@@ -37,6 +37,17 @@ Found: <YYYY-MM-DD> · <area: build | tests | db | ci | deploy | env>
 
 ## Findings
 
+### cargo-mutants with a shared CARGO_TARGET_DIR gives meaningless verdicts
+
+**Symptom.** Impossible survivors (`white() -> -1.0` survived statistical tests of `white`).
+**Cause.** With `CARGO_TARGET_DIR` set, the `-j4` mutant jobs (each a separate copy of the tree)
+build into one target dir and overwrite each other's binaries; tests run against another mutant.
+**Fix / workaround.** `scripts/mutants.sh` unsets `CARGO_TARGET_DIR`. Gate results of PRs #4 and #5
+were taken with it set and were re-checked afterwards.
+**Why it isn't obvious.** The run looks normal and most mutants still get a plausible verdict.
+
+Found: 2026-10-22 · tests
+
 ### Open (improving): FV exhaust, coast still louder than WOT at the firing order (LFA 7000)
 
 **Symptom.** Source at the tail, firing order 583 Hz: coast vs WOT was 7.4×; a real engine is
