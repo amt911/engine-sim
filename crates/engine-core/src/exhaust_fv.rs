@@ -75,11 +75,11 @@ fn junction_ghost(cell: Prim, p_j: f64, rho_j: f64, sigma: f64) -> Prim {
 /// Keep a 0D volume physical under extreme forcing (explicit coupling can overdraw it).
 fn guard(v: &mut GasVolume) {
     let floor = 1e-6 * v.volume_m3;
-    if !(v.mass_kg > floor) {
+    if v.mass_kg.is_nan() || v.mass_kg <= floor {
         v.mass_kg = floor;
     }
     let e_min = v.mass_kg * crate::gas::CV * 50.0;
-    if !(v.energy_j > e_min) {
+    if v.energy_j.is_nan() || v.energy_j <= e_min {
         v.energy_j = e_min;
     }
 }

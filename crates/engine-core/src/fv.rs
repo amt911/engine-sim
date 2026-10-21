@@ -717,10 +717,9 @@ mod tests {
             let max = ps.iter().cloned().fold(0.0, f64::max);
             // cells on the leading edge between 10 % and 90 % of the crest
             let crest = ps.iter().position(|v| *v == max).unwrap();
-            let front = (crest..1000)
+            (crest..1000)
                 .filter(|&i| ps[i] > 0.1 * max && ps[i] < 0.9 * max)
-                .count();
-            front
+                .count()
         };
         assert!(
             width(0.5) < width(0.01) / 2,
