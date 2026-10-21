@@ -168,17 +168,18 @@ snapshots). Audio fill level drives how many sim steps run per block (see resear
 
 ```bash
 cargo run -p engine-app --release                       # the app
-cargo run -p engine-app --release -- --engine presets/inline4.yaml
-cargo run -p engine-app --release -- --headless --seconds 3 --wav /tmp/out.wav
+cargo run -p engine-app --release -- --preset inline4
+cargo run -p engine-app --release -- --headless --seconds 3 --wav /tmp/out.wav --check
 cargo test --workspace                                  # all tests
 cargo clippy --workspace --all-targets -- -D warnings   # lint (gate)
 cargo fmt --all --check                                 # format (gate)
-scripts/heavy.sh cargo llvm-cov --workspace --fail-under-lines 80   # coverage gate
-scripts/heavy.sh cargo mutants -p engine-core -j 4      # mutation gate
+scripts/coverage.sh                                     # coverage gate (80% lines)
+scripts/heavy.sh cargo mutants -p engine-core -j 4 --timeout 60   # mutation gate
 scripts/smoke.sh                                        # real-environment smoke
 ```
 
-System deps (Arch): `alsa-lib`, `vulkan-icd-loader` (or GL fallback).
+System deps (Arch): `alsa-lib`, `vulkan-icd-loader`, `llvm` (for coverage). Tools:
+`cargo install cargo-llvm-cov cargo-mutants`.
 
 ---
 
