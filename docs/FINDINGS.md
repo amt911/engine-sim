@@ -37,6 +37,18 @@ Found: <YYYY-MM-DD> · <area: build | tests | db | ci | deploy | env>
 
 ## Findings
 
+### Other sessions run real-time gates on this machine: share the CPU lock
+
+**Symptom.** Another project's differential gates (real-time game routes) failed while our cargo
+builds/tests ran at ~1400 % CPU.
+**Cause.** Load above ~15 breaks their real-time timing.
+**Fix / workaround.** `scripts/heavy.sh` takes `flock /tmp/claude-1000/cpu-heavy.lock`, writes
+the owner to `cpu-heavy.owner`, runs at nice 19 with cargo -j8. Keep each hold < 30 min (split
+mutation runs per file). Agreed between sessions on 2026-10-22.
+**Why it isn't obvious.** Nothing in this repo tells you another session shares the box.
+
+Found: 2026-10-22 · env
+
 ### cargo-mutants filled /tmp (tmpfs = RAM) with a 5 GB copy
 
 **Symptom.** RAM near exhaustion during a mutation run; `shared` memory ~8 GB.
