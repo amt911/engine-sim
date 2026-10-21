@@ -43,6 +43,7 @@ fn main() {
             }
             last_lift = v.exhaust_lift_m;
         }
+        println!("plenum {:.3} bar", e.plenum_pressure_pa() / 1e5);
         println!(
             "throttle {t}: cyl {:.2}..{:.2} bar, at EVO {:.2} bar | port gauge {:.0}..{:.0} Pa | radiated {:.0}..{:.0}",
             cylmin / 1e5,

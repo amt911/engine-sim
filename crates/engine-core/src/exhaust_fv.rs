@@ -12,6 +12,8 @@ use crate::units::ATM_PA;
 pub const CELL_M: f64 = 0.04;
 const AMBIENT_RHO: f64 = 1.18;
 const INIT_T_K: f64 = 600.0;
+/// Upper bound on CFL sub-cycles per FV step (beyond it the state is beyond saving anyway).
+const MAX_SUBCYCLES: usize = 16;
 
 #[derive(Debug, Clone)]
 struct Branch {
@@ -43,6 +45,33 @@ pub struct ExhaustFv {
     vented: f64,
 }
 
+/// Boundary state of a pipe end at a junction of pressure `p_j` (Benson's constant-pressure
+/// junction; Winterbone & Pearson): the characteristic leaving the pipe is kept, so the end
+/// sees the junction pressure without being forced to rest (a u = 0 plenum ghost low-passes
+/// and reflects the pulses). `sigma` = +1 for a pipe's right end, −1 for its left end. Gas
+/// flowing out of the junction carries the junction's density (entropy).
+fn junction_ghost(cell: Prim, p_j: f64, rho_j: f64, sigma: f64) -> Prim {
+    let g = crate::gas::GAMMA;
+    // Bound the expansion/compression a single boundary state may represent.
+    let ratio = (p_j / cell.p).clamp(0.05, 20.0);
+    let p = cell.p * ratio;
+    let c_c = cell.sound_speed();
+    let c_b = c_c * ratio.powf((g - 1.0) / (2.0 * g));
+    let u = cell.u + sigma * 2.0 / (g - 1.0) * (c_c - c_b);
+    let rho = if sigma * u > 0.0 {
+        cell.rho * ratio.powf(1.0 / g)
+    } else {
+        rho_j
+    };
+    // A junction boundary is at most sonic (choked): |u| ≤ c of the boundary gas.
+    let c = (g * p / rho).sqrt();
+    Prim {
+        rho,
+        u: u.clamp(-c, c),
+        p,
+    }
+}
+
 /// Keep a 0D volume physical under extreme forcing (explicit coupling can overdraw it).
 fn guard(v: &mut GasVolume) {
     let floor = 1e-6 * v.volume_m3;
@@ -59,9 +88,15 @@ fn area(d: f64) -> f64 {
     std::f64::consts::PI * 0.25 * d * d
 }
 
-fn pipe(length: f64, init: Prim) -> Pipe1d {
-    let mut p = Pipe1d::new(length, (length / CELL_M).round().max(2.0) as usize, init);
+/// Darcy friction factor of exhaust pipes (turbulent flow in drawn steel tube, Re ~ 10⁵;
+/// Winterbone & Pearson use 0.02–0.03).
+pub const PIPE_FRICTION: f64 = 0.025;
+
+fn pipe(length: f64, diameter: f64, init: Prim) -> Pipe1d {
+    let n = (length / CELL_M).round().max(2.0);
+    let mut p = Pipe1d::segmented(&[(length, area(diameter))], length / n, init);
     p.floors = (1e-3, 500.0);
+    p.friction = PIPE_FRICTION;
     p
 }
 
@@ -91,6 +126,7 @@ impl ExhaustFv {
                     init,
                 );
                 out.floors = (1e-3, 500.0);
+                out.friction = PIPE_FRICTION;
                 out.right = Boundary::Open {
                     p: ATM_PA,
                     rho: AMBIENT_RHO,
@@ -108,7 +144,7 @@ impl ExhaustFv {
         let substeps = ((dt_target / dt).floor() as usize).max(1);
         Self {
             primaries: (0..cylinders)
-                .map(|_| pipe(def.primary_length_m, init))
+                .map(|_| pipe(def.primary_length_m, def.primary_diameter_m, init))
                 .collect(),
             a_primary: area(def.primary_diameter_m),
             branches,
@@ -185,6 +221,26 @@ impl ExhaustFv {
             self.acc_mass[i] = 0.0;
             self.acc_energy[i] = 0.0;
         }
+        // Adaptive sub-cycling: deep rarefactions (overrun) can push |u| + c beyond the speed
+        // the fixed step was sized for; split the step so every sub-step respects CFL ≤ 0.9.
+        let limit = self
+            .primaries
+            .iter()
+            .chain(self.branches.iter().map(|b| &b.out))
+            .map(|p| p.max_dt(0.9))
+            .fold(f64::INFINITY, f64::min);
+        let n = ((dt / limit).ceil() as usize).clamp(1, MAX_SUBCYCLES);
+        let h = dt / n as f64;
+        let mut radiated = 0.0;
+        for _ in 0..n {
+            radiated += self.substep(h) / n as f64;
+        }
+        self.radiated = radiated;
+        radiated
+    }
+
+    /// One FV sub-step of length `h` with the valve fluxes already set.
+    fn substep(&mut self, h: f64) -> f64 {
         let state = |v: &GasVolume| Prim {
             rho: v.mass_kg / v.volume_m3,
             u: 0.0,
@@ -193,33 +249,35 @@ impl ExhaustFv {
         for b in &mut self.branches {
             let j = state(&b.junction);
             for &m in &b.members {
-                self.primaries[m].right = Boundary::State(j);
+                let pipe = &mut self.primaries[m];
+                let last = pipe.prim(pipe.cells.len() - 1);
+                pipe.right = Boundary::State(junction_ghost(last, j.p, j.rho, 1.0));
             }
-            b.out.left = Boundary::State(j);
+            let first = b.out.prim(0);
+            b.out.left = Boundary::State(junction_ghost(first, j.p, j.rho, -1.0));
         }
         for p in &mut self.primaries {
-            p.step(dt);
+            p.step(h);
         }
         let mut radiated = 0.0;
         for b in &mut self.branches {
-            b.out.step(dt);
+            b.out.step(h);
             // the junction takes what the faces carried (total enthalpy flux → internal energy)
             for &m in &b.members {
                 let f = self.primaries[m].end_flux.1;
-                b.junction.mass_kg += f.rho * self.a_primary * dt;
-                b.junction.energy_j += f.e * self.a_primary * dt;
+                b.junction.mass_kg += f.rho * self.a_primary * h;
+                b.junction.energy_j += f.e * self.a_primary * h;
             }
             let (a_in, a_out) = b.out.end_areas();
             let fc = b.out.end_flux.0;
-            b.junction.mass_kg -= fc.rho * a_in * dt;
-            b.junction.energy_j -= fc.e * a_in * dt;
+            b.junction.mass_kg -= fc.rho * a_in * h;
+            b.junction.energy_j -= fc.e * a_in * h;
             guard(&mut b.junction);
             let o = b.out.end_flux.1;
-            self.vented += o.rho * a_out * dt;
+            self.vented += o.rho * a_out * h;
             // ρc·u at the outlet: c·(ρu), the same source quantity as the waveguide model
             radiated += C_TAIL * o.rho;
         }
-        self.radiated = radiated;
         radiated
     }
 
@@ -239,11 +297,7 @@ impl ExhaustFv {
                 * p.dx
                 * scale
         };
-        let mut m: f64 = self
-            .primaries
-            .iter()
-            .map(|p| pipe_mass(p, self.a_primary))
-            .sum();
+        let mut m: f64 = self.primaries.iter().map(|p| pipe_mass(p, 1.0)).sum();
         for b in &self.branches {
             m += b.junction.mass_kg + pipe_mass(&b.out, 1.0);
         }
@@ -367,6 +421,83 @@ mod tests {
         );
         assert!(a > 0.0);
         assert!(b > 0.1 * a && b < a, "muffled {b} vs straight {a}");
+    }
+
+    #[test]
+    fn a_one_to_one_junction_is_transparent() {
+        // One primary into a collector of the same diameter, no muffler, same tail: the junction
+        // must pass a 600 Hz tone like the equivalent straight pipe (stagnation-plenum junctions
+        // low-passed it). Reference: one segmented pipe with the same lengths and flux inlet.
+        let d = ExhaustDef {
+            primary_diameter_m: 0.05,
+            collector_diameter_m: 0.05,
+            tail_diameter_m: 0.05,
+            muffler_volume_m3: area(0.05) * CHAMBER_LENGTH_M,
+            ..def()
+        };
+        let through_net = tone_through(&d, 600.0);
+        let a = area(0.05);
+        let init = Prim {
+            rho: ATM_PA / (R_AIR * INIT_T_K),
+            u: 0.0,
+            p: ATM_PA,
+        };
+        let len = d.primary_length_m + d.collector_length_m + CHAMBER_LENGTH_M + d.tail_length_m;
+        let mut straight = Pipe1d::segmented(&[(len, a)], CELL_M, init);
+        straight.floors = (1e-3, 500.0);
+        straight.right = Boundary::Open {
+            p: ATM_PA,
+            rho: AMBIENT_RHO,
+        };
+        let dt = 5.0 * DT;
+        let (mut re, mut im, mut count) = (0.0, 0.0, 0.0);
+        let mut t = 0.0;
+        while t < 0.25 {
+            let m = (0.05 + 0.02 * (2.0 * std::f64::consts::PI * 600.0 * t).sin()) / a;
+            let cell = straight.prim(0);
+            straight.left = Boundary::Flux(Cons {
+                rho: m,
+                mom: m * m / cell.rho + cell.p,
+                e: m * 1004.5 * 900.0,
+            });
+            straight.step(dt);
+            t += dt;
+            if t > 0.1 {
+                let r = C_TAIL * straight.end_flux.1.rho;
+                re += r * (2.0 * std::f64::consts::PI * 600.0 * t).cos();
+                im += r * (2.0 * std::f64::consts::PI * 600.0 * t).sin();
+                count += 1.0;
+            }
+        }
+        let through_straight = 2.0 * (re * re + im * im).sqrt() / count;
+        let ratio = through_net / through_straight;
+        assert!(
+            (0.6..1.6).contains(&ratio),
+            "junction transmits {ratio:.2} of a straight pipe ({through_net} vs {through_straight})"
+        );
+    }
+
+    #[test]
+    fn junction_ghost_is_subsonic_and_bounded() {
+        let cell = Prim {
+            rho: 0.5,
+            u: 50.0,
+            p: 1.0e5,
+        };
+        // equal pressure: the pipe end passes through unchanged
+        let same = junction_ghost(cell, 1.0e5, 0.6, 1.0);
+        assert!((same.u - 50.0).abs() < 1e-9 && same.rho == 0.5);
+        // a near-vacuum junction must not produce supersonic boundary velocities
+        for p_j in [1.0, 100.0, 5e3, 2e6] {
+            for sigma in [1.0, -1.0] {
+                let g = junction_ghost(cell, p_j, 0.6, sigma);
+                assert!(
+                    g.u.abs() <= g.sound_speed() * (1.0 + 1e-9),
+                    "p_j {p_j} σ {sigma}: {g:?}"
+                );
+                assert!(g.rho > 0.0 && g.p > 0.0);
+            }
+        }
     }
 
     #[test]

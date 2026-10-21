@@ -125,6 +125,10 @@ pub struct Pipe1d {
     /// per-area formulation reduces to plain 1D.
     pub area: Vec<f64>,
     face_area: Vec<f64>,
+    /// Darcy friction factor of the wall (0 = inviscid). Momentum source −f/(2D)·ρu|u| with
+    /// D the hydraulic diameter √(4A/π); the dissipated work stays in the gas as heat (Winterbone &
+    /// Pearson; the standard 1D engine-code wall term). Without it pipe resonances never decay.
+    pub friction: f64,
 }
 
 impl Pipe1d {
@@ -143,6 +147,7 @@ impl Pipe1d {
             floors: (1e-9, 1e-9),
             area: vec![1.0; n],
             face_area: vec![1.0; n + 1],
+            friction: 0.0,
         }
     }
     /// Largest stable step for Courant number `cfl`.
@@ -335,9 +340,16 @@ impl Pipe1d {
             let inv = 1.0 / (self.area[j] * self.dx);
             // geometric source p·dA/dx keeps still gas still across an area change
             let p = self.w[j + 2].p;
+            let cell = self.w[j + 2];
+            let wall = if self.friction > 0.0 {
+                let d = (4.0 * self.area[j] / std::f64::consts::PI).sqrt();
+                -self.friction / (2.0 * d) * cell.rho * cell.u * cell.u.abs()
+            } else {
+                0.0
+            };
             *r = Cons {
                 rho: -(fb * b.rho - fa * a.rho) * inv,
-                mom: -(fb * b.mom - fa * a.mom - p * (fb - fa)) * inv,
+                mom: -(fb * b.mom - fa * a.mom - p * (fb - fa)) * inv + wall,
                 e: -(fb * b.e - fa * a.e) * inv,
             };
         }
@@ -560,6 +572,75 @@ mod tests {
         // and into a narrower pipe (A₂ = A₁/4): 2·4/(4+1) = 1.6
         let up = transmitted_peak(4e-3, 1e-3) / transmitted_peak(4e-3, 4e-3);
         assert!((up - 1.6).abs() < 0.15, "transmitted {up:.3}");
+    }
+
+    #[test]
+    fn wall_friction_gives_the_darcy_pressure_drop() {
+        // Steady 30 m/s air through 2 m of 40 mm pipe with Darcy f = 0.02:
+        // Δp = f·(L/D)·½ρu² = 0.02·50·0.5·1.2·900 = 540 Pa (hand calc).
+        let air = Prim {
+            rho: 1.2,
+            u: 30.0,
+            p: 101_325.0,
+        };
+        let a = std::f64::consts::PI * 0.25 * 0.04 * 0.04;
+        let mut p = Pipe1d::segmented(&[(2.0, a)], 0.02, air);
+        p.friction = 0.02;
+        let m = 1.2 * 30.0;
+        p.right = Boundary::Open {
+            p: 101_325.0,
+            rho: 1.2,
+        };
+        for _ in 0..40_000 {
+            let c = p.prim(0);
+            p.left = Boundary::Flux(Cons {
+                rho: m,
+                mom: m * m / c.rho + c.p,
+                e: m * (1004.5 * 293.0 + 450.0),
+            });
+            p.step(1e-5);
+        }
+        let n = p.cells.len();
+        let dp = p.prim(2).p - p.prim(n - 3).p;
+        let span = (n - 5) as f64 / n as f64;
+        assert!((dp / (540.0 * span) - 1.0).abs() < 0.15, "Δp {dp:.0} Pa");
+    }
+
+    #[test]
+    fn wall_friction_damps_a_ringing_pipe() {
+        let ring = |f: f64| {
+            let air = Prim {
+                rho: 1.2,
+                u: 0.0,
+                p: 101_325.0,
+            };
+            let mut p = Pipe1d::segmented(&[(1.0, 1.26e-3)], 0.02, air);
+            p.friction = f;
+            for i in 0..10 {
+                p.cells[i] = Prim {
+                    p: 111_325.0,
+                    rho: 1.29,
+                    ..air
+                }
+                .to_cons();
+            }
+            for _ in 0..30_000 {
+                p.step(1e-5);
+            }
+            // acoustic energy ∝ Σp'² about the mean (the pulse's mass raises the static pressure
+            // of the closed pipe; a steepened pulse makes the maximum meaningless)
+            let n = p.cells.len();
+            let mean = (0..n).map(|i| p.prim(i).p).sum::<f64>() / n as f64;
+            (0..n).map(|i| (p.prim(i).p - mean).powi(2)).sum::<f64>()
+        };
+        // Clear damping only (measured 0.69 on 2026-10-22); the magnitude is checked against a hand
+        // calculation in `wall_friction_gives_the_darcy_pressure_drop`.
+        assert!(
+            ring(0.03) < 0.85 * ring(0.0),
+            "friction {} vs inviscid {}",
+            ring(0.03),
+            ring(0.0)
+        );
     }
 
     #[test]

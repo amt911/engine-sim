@@ -258,6 +258,8 @@ const TORQUE_AVG_TAU_S: f64 = 0.15;
 /// charge in ~0.3 s and costs ~1–2 % of the trapped mass per cycle at WOT (typical
 /// blow-by is ~1 % of intake flow; Heywood, ch. 8).
 const BLOWBY_AREA_FRACTION: f64 = 1e-4;
+/// Speed above which the idle air control opens proportionally on overrun (dashpot).
+const DASHPOT_ONSET_RPM: f64 = 1500.0;
 /// Fraction of the equalising mass a valve may move per substep (see `step`).
 const VALVE_RELAX: f64 = 0.5;
 
@@ -373,8 +375,11 @@ impl Engine {
 
     fn throttle_area(&self, throttle: f64) -> f64 {
         let t = throttle.clamp(0.0, 1.0);
-        let open =
-            self.def.idle_throttle + (1.0 - self.def.idle_throttle) * (1.0 - (t * PI * 0.5).cos());
+        // Idle air control opens with speed above 1500 rpm (deceleration "dashpot"), as ECUs do:
+        // a fixed idle bypass would pull the manifold to near vacuum on overrun at high rpm.
+        // Below 1500 rpm it is the plain idle bypass (no feedback on the idle speed itself).
+        let idle = self.def.idle_throttle * (self.rpm() / DASHPOT_ONSET_RPM).max(1.0);
+        let open = idle + (1.0 - idle) * (1.0 - (t * PI * 0.5).cos());
         DISCHARGE_CD * PI * 0.25 * self.def.throttle_diameter_m.powi(2) * open
     }
 
@@ -980,27 +985,23 @@ mod tests {
     fn compression_bleeds_off_when_stopped() {
         // Regression: a cylinder sealed on its compression stroke kept ~6 bar forever, a gas
         // spring the starter could not push through. Rings leak (blow-by), so it decays.
-        let mut e = stalled(EngineDef::inline4(), 0, 0.5);
+        // Find a stall where the starter traps a charge (which seed does depends on the dynamics).
         let max_p = |e: &Engine| {
             (0..4)
                 .map(|i| e.cylinder(i).pressure_pa)
                 .fold(0.0, f64::max)
         };
-        // The starter pushes cylinder 1 up its compression stroke and stalls against it.
-        run(
-            &mut e,
-            0.4,
-            &Controls {
-                ignition: false,
-                starter: true,
-                ..Controls::default()
-            },
-        );
-        assert!(
-            max_p(&e) > 4e5,
-            "precondition: trapped charge, got {}",
-            max_p(&e)
-        );
+        let crank = Controls {
+            ignition: false,
+            starter: true,
+            ..Controls::default()
+        };
+        let trapped = (0..20u64).find_map(|seed| {
+            let mut e = stalled(EngineDef::inline4(), seed, 0.5 + 0.013 * seed as f64);
+            run(&mut e, 0.4, &crank);
+            (max_p(&e) > 4e5).then_some(e)
+        });
+        let mut e = trapped.expect("no stall position trapped a compression charge");
         run(
             &mut e,
             2.0,
@@ -1267,5 +1268,54 @@ mod tests {
         };
         run(&mut e, 0.3, &c);
         assert!(e.combustions() > 20, "0 disables the cut");
+    }
+
+    #[test]
+    fn fv_exhaust_survives_sustained_overrun_at_high_rpm() {
+        // Regression: closed throttle at 7000 rpm drove FV cells into near-vacuum with
+        // |u| + c beyond the fixed step's CFL limit; a primary reached 1000 bar after 0.4 s.
+        let mut e = Engine::new(fv(EngineDef::lfa_v10()), 7000.0, 1);
+        let c = Controls {
+            hold_rpm: Some(7000.0),
+            ..Controls::default()
+        };
+        let xs = run(&mut e, 0.6, &c);
+        assert!(xs.iter().all(|x| x.is_finite()));
+        let worst = (0..10)
+            .map(|i| e.cylinder(i).pressure_pa)
+            .fold(0.0, f64::max);
+        assert!(worst < 50e5, "cylinder at {worst} Pa while motoring");
+    }
+
+    #[test]
+    fn idle_air_opens_with_speed_on_overrun() {
+        // 0.0015 of the bore up to 1500 rpm; at 7000 rpm 7000/1500 × 0.0015 = 0.007 (hand)
+        let full = 1.00531e-3;
+        let e = Engine::new(EngineDef::single(), 900.0, 1);
+        assert_relative_eq!(e.throttle_area(0.0), 0.0015 * full, max_relative = 1e-5);
+        let e = Engine::new(EngineDef::single(), 7000.0, 1);
+        assert_relative_eq!(e.throttle_area(0.0), 0.007 * full, max_relative = 1e-5);
+        assert_relative_eq!(e.throttle_area(1.0), full, max_relative = 1e-5);
+    }
+
+    #[test]
+    fn overrun_manifold_pressure_stays_realistic() {
+        // Regression: closed throttle at 7000 rpm pulled the manifold to 0.06 bar (fixed idle air,
+        // 8× the pumping of idle), driving violent exhaust reversion. ECUs open the idle valve on
+        // deceleration (dashpot): real overrun MAP ≈ 0.2–0.3 bar.
+        for def in [EngineDef::inline4(), EngineDef::lfa_v10()] {
+            let mut e = Engine::new(def.clone(), 7000.0, 1);
+            let c = Controls {
+                hold_rpm: Some(7000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.5, &c);
+            let map = e.plenum_pressure_pa() / 1e5;
+            assert!(
+                (0.12..0.45).contains(&map),
+                "{}: overrun MAP {map:.3} bar",
+                def.name
+            );
+        }
     }
 }
