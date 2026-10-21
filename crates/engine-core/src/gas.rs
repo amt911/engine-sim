@@ -218,6 +218,46 @@ mod tests {
         assert_relative_eq!(high.pressure(), 101_325.0, max_relative = 1e-6);
     }
 
+    #[test]
+    fn reservoir_flows_carry_enthalpy() {
+        let atm = Reservoir {
+            pressure_pa: 101_325.0,
+            temperature_k: 300.0,
+        };
+        // inflow: energy rises by dm · cp · T_reservoir
+        let mut a = GasVolume::at(0.5e5, 600.0, 1e-3);
+        let e0 = a.energy_j;
+        let out = exchange_with_reservoir(&mut a, &atm, 1e-4, 1e-5);
+        assert_relative_eq!(a.energy_j - e0, -out * CP * 300.0, max_relative = 1e-12);
+        // outflow: energy falls by dm · cp · T_volume
+        let mut b = GasVolume::at(3e5, 900.0, 1e-3);
+        let e0 = b.energy_j;
+        let out = exchange_with_reservoir(&mut b, &atm, 1e-4, 1e-5);
+        assert_relative_eq!(e0 - b.energy_j, out * CP * 900.0, max_relative = 1e-12);
+        // a huge inflow step settles at atmospheric pressure, no overshoot
+        let mut c = GasVolume::at(0.2e5, 300.0, 1e-3);
+        exchange_with_reservoir(&mut c, &atm, 1.0, 1.0);
+        assert_relative_eq!(c.pressure(), 101_325.0, max_relative = 1e-6);
+    }
+
+    #[test]
+    fn at_most_half_the_mass_leaves_in_one_step() {
+        // 50 bar into 1 bar: the equalising mass is (1 − 1/50)/γ = 70% of the gas,
+        // so the 50% safety clamp is what binds.
+        let atm = Reservoir {
+            pressure_pa: 1e5,
+            temperature_k: 300.0,
+        };
+        let mut a = GasVolume::at(50e5, 300.0, 1e-3);
+        let m = a.mass_kg;
+        let out = exchange_with_reservoir(&mut a, &atm, 1.0, 1.0);
+        assert_relative_eq!(out, 0.5 * m, max_relative = 1e-12);
+        let mut a = GasVolume::at(50e5, 300.0, 1e-3);
+        let mut b = GasVolume::at(1e5, 300.0, 1.0);
+        let moved = exchange(&mut a, &mut b, 1.0, 1.0);
+        assert_relative_eq!(moved, 0.5 * m, max_relative = 1e-12);
+    }
+
     proptest! {
         #[test]
         fn exchange_never_crosses_or_goes_negative(

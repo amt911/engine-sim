@@ -54,11 +54,23 @@ impl Simulation {
     pub fn sample_rate(&self) -> f64 {
         self.sample_rate
     }
-    /// Swap the engine definition, keeping the current speed.
+    /// Swap the engine definition, keeping the current speed. Tuning-only changes are
+    /// applied in place so the engine keeps running without a click.
     pub fn replace_engine(&mut self, def: EngineDef) {
+        let Some(def) = self.try_retune(def) else {
+            return;
+        };
         let rpm = self.engine.rpm();
         self.engine = Engine::new(def, rpm, self.engine.combustions() ^ 0x5EED);
     }
+    fn try_retune(&mut self, def: EngineDef) -> Option<EngineDef> {
+        if self.engine.retune(def.clone()) {
+            None
+        } else {
+            Some(def)
+        }
+    }
+
     /// Fill `out` with mono samples.
     pub fn render(&mut self, out: &mut [f32]) {
         let dt = 1.0 / (self.sample_rate * SUBSTEPS as f64);

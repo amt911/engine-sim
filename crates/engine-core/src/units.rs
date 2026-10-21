@@ -48,7 +48,7 @@ mod tests {
         assert_relative_eq!(deg_to_rad(180.0), PI);
         assert_relative_eq!(rad_to_deg(PI / 2.0), 90.0);
         assert_relative_eq!(mm_to_m(86.0), 0.086);
-        assert_relative_eq!(w_to_hp(745.7), 1.0);
+        assert_relative_eq!(w_to_hp(1491.4), 2.0);
         assert_relative_eq!(pa_to_bar(250_000.0), 2.5);
         assert_relative_eq!(m3_to_cc(0.0005), 500.0);
     }

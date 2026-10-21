@@ -74,7 +74,7 @@ impl EngineDef {
             flywheel_inertia_kgm2: 0.12,
             plenum_volume_m3: 1.5e-3,
             throttle_diameter_m: 0.040,
-            idle_throttle: 0.0035,
+            idle_throttle: 0.0012,
             exhaust_runner_length_m: 0.8,
             exhaust_runner_diameter_m: 0.040,
             exhaust_outlet_diameter_m: 0.045,
@@ -92,7 +92,7 @@ impl EngineDef {
             flywheel_inertia_kgm2: 0.15,
             plenum_volume_m3: 4.0e-3,
             throttle_diameter_m: 0.060,
-            idle_throttle: 0.009,
+            idle_throttle: 0.004,
             exhaust_outlet_diameter_m: 0.050,
             redline_rpm: 7000.0,
             starter_torque_nm: 60.0,
@@ -258,6 +258,23 @@ impl Engine {
         &self.def
     }
 
+    /// Apply a new definition in place when the structure (cylinder count, geometry,
+    /// volumes) is unchanged — timing, spark, throttle, limits. Returns false when the
+    /// engine must be rebuilt instead.
+    pub fn retune(&mut self, def: EngineDef) -> bool {
+        let d = &self.def;
+        let same = d.cylinders == def.cylinders
+            && d.firing_order == def.firing_order
+            && d.geometry == def.geometry
+            && d.plenum_volume_m3 == def.plenum_volume_m3
+            && d.exhaust_runner_length_m == def.exhaust_runner_length_m
+            && d.exhaust_runner_diameter_m == def.exhaust_runner_diameter_m;
+        if same {
+            self.def = def;
+        }
+        same
+    }
+
     /// xorshift64*: uniform in [-1, 1). Seeded, so the sim stays deterministic.
     fn noise(&mut self) -> f64 {
         self.rng ^= self.rng >> 12;
@@ -331,7 +348,12 @@ impl Engine {
                 new_burn = true;
             }
             if let Some(b) = &mut cs.burn {
-                let since = (cur - b.start_deg).rem_euclid(720.0);
+                // Signed angle since the burn start, in (−360, 360]: the burn is created at
+                // the spark, a few degrees *before* it starts, and must not wrap to "done".
+                let mut since = (cur - b.start_deg).rem_euclid(720.0);
+                if since > 360.0 {
+                    since -= 720.0;
+                }
                 let x = wiebe(since, self.def.burn_duration_deg);
                 cs.gas.energy_j += b.energy_j * (x - b.released);
                 b.released = x;
@@ -578,5 +600,159 @@ mod tests {
             },
         );
         assert!(e.rpm() < 4400.0, "rpm {}", e.rpm());
+    }
+
+    #[test]
+    fn combustion_peaks_after_tdc_and_is_visible() {
+        // Regression: the burn used to wrap to "finished" one step after the spark and
+        // release all heat at once (≈127 bar at TDC). A spark-ignition peak sits
+        // ~5–25° after TDC at 40–90 bar at WOT (Heywood, ch. 9).
+        let mut e = Engine::new(EngineDef::single(), 3000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.5, &c);
+        let (mut peak, mut peak_deg, mut saw_burning) = (0.0f64, 0.0, false);
+        for _ in 0..(0.04 / DT) as usize {
+            e.step(DT, &c);
+            let v = e.cylinder(0);
+            saw_burning |= v.burning;
+            if v.pressure_pa > peak {
+                peak = v.pressure_pa;
+                peak_deg = v.cycle_deg;
+            }
+        }
+        assert!(saw_burning, "burn never visible");
+        assert!((3.0..30.0).contains(&peak_deg), "peak at {peak_deg}°");
+        assert!((30e5..95e5).contains(&peak), "peak {peak}");
+    }
+
+    #[test]
+    fn crossed_detects_angles_including_wrap() {
+        assert!(crossed(10.0, 20.0, 15.0));
+        assert!(crossed(10.0, 20.0, 20.0));
+        assert!(!crossed(10.0, 20.0, 10.0));
+        assert!(!crossed(10.0, 20.0, 25.0));
+        assert!(crossed(715.0, 3.0, 0.0));
+        assert!(crossed(715.0, 3.0, 718.0));
+        assert!(!crossed(715.0, 3.0, 5.0));
+        assert!(!crossed(10.0, 10.0, 10.0));
+    }
+
+    #[test]
+    fn friction_matches_fmep_fit() {
+        // 1000 rpm: FMEP = 0.97 + 0.15 + 0.05 = 1.17 bar; T = 1.17e5 · 4.99556e-4 / 4π = 4.6513 N·m
+        let e = Engine::new(EngineDef::single(), 1000.0, 1);
+        assert_relative_eq!(e.friction_torque(), 4.6513, max_relative = 1e-4);
+        // 3000 rpm: 0.97 + 0.45 + 0.45 = 1.87 bar → 7.4341 N·m
+        let e = Engine::new(EngineDef::single(), 3000.0, 1);
+        assert_relative_eq!(e.friction_torque(), 7.4341, max_relative = 1e-4);
+        assert_eq!(
+            Engine::new(EngineDef::single(), 0.0, 1).friction_torque(),
+            0.0
+        );
+    }
+
+    #[test]
+    fn throttle_area_spans_idle_to_full_bore() {
+        let e = Engine::new(EngineDef::single(), 900.0, 1);
+        // full: 0.8 · π/4 · 0.04² = 1.00531e-3 m²; idle = 0.0012 of that
+        assert_relative_eq!(e.throttle_area(1.0), 1.00531e-3, max_relative = 1e-5);
+        assert_relative_eq!(
+            e.throttle_area(0.0),
+            0.0012 * 1.00531e-3,
+            max_relative = 1e-5
+        );
+        // half pedal: 0.0012 + 0.9988 · (1 − cos 45°) = 0.29372
+        assert_relative_eq!(
+            e.throttle_area(0.5),
+            0.29372 * 1.00531e-3,
+            max_relative = 1e-4
+        );
+    }
+
+    #[test]
+    fn noise_is_uniform_in_unit_range_and_seeded() {
+        let mut e = Engine::new(EngineDef::single(), 900.0, 3);
+        let xs: Vec<f64> = (0..20_000).map(|_| e.noise()).collect();
+        assert!(xs.iter().all(|x| (-1.0..1.0).contains(x)));
+        let mean = xs.iter().sum::<f64>() / xs.len() as f64;
+        assert!(mean.abs() < 0.02, "mean {mean}");
+        let var = xs.iter().map(|x| x * x).sum::<f64>() / xs.len() as f64;
+        assert!((var - 1.0 / 3.0).abs() < 0.01, "var {var}"); // uniform(-1,1): 1/3
+        assert!(xs.iter().any(|x| *x < -0.9) && xs.iter().any(|x| *x > 0.9));
+        let mut f = Engine::new(EngineDef::single(), 900.0, 3);
+        assert_eq!(f.noise(), xs[0]);
+    }
+
+    #[test]
+    fn retune_keeps_the_engine_running() {
+        let mut e = Engine::new(EngineDef::single(), 2000.0, 1);
+        let c = Controls {
+            throttle: 0.5,
+            hold_rpm: Some(2000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.3, &c);
+        let (n, t) = (e.combustions(), e.torque_nm());
+        let mut d = EngineDef::single();
+        d.spark_advance_deg = 30.0;
+        assert!(e.retune(d.clone()), "same structure retunes in place");
+        assert_eq!(e.def().spark_advance_deg, 30.0);
+        assert_eq!(e.combustions(), n);
+        assert_eq!(e.torque_nm(), t);
+        assert!(
+            !e.retune(EngineDef::inline4()),
+            "different structure needs a rebuild"
+        );
+    }
+
+    #[test]
+    fn accessors_report_running_state() {
+        let mut e = Engine::new(EngineDef::single(), 1200.0, 1);
+        let c = Controls {
+            hold_rpm: Some(1200.0),
+            ..Controls::default()
+        };
+        let before = e.crank_deg();
+        e.step(DT, &c);
+        // 1200 rpm = 7200 °/s → 7200 · DT degrees per step
+        assert_relative_eq!(e.crank_deg() - before, 7200.0 * DT, max_relative = 1e-9);
+        run(&mut e, 0.5, &c);
+        assert_relative_eq!(
+            e.power_w(),
+            e.torque_nm() * rpm_to_rad_s(1200.0),
+            max_relative = 1e-12
+        );
+        assert!(e.power_w() != 0.0);
+        let p = e.plenum_pressure_pa();
+        assert!(
+            (0.1e5..0.9e5).contains(&p),
+            "closed throttle → manifold vacuum, got {p}"
+        );
+    }
+
+    #[test]
+    fn retune_refuses_any_structural_change() {
+        let base = EngineDef::single();
+        let mut changes = Vec::new();
+        let mut d = base.clone();
+        d.geometry.bore_m = 0.09;
+        changes.push(d);
+        let mut d = base.clone();
+        d.plenum_volume_m3 = 2e-3;
+        changes.push(d);
+        let mut d = base.clone();
+        d.exhaust_runner_length_m = 1.2;
+        changes.push(d);
+        let mut d = base.clone();
+        d.exhaust_runner_diameter_m = 0.05;
+        changes.push(d);
+        for d in changes {
+            let mut e = Engine::new(base.clone(), 900.0, 1);
+            assert!(!e.retune(d), "structural change must rebuild");
+        }
     }
 }

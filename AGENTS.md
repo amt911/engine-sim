@@ -184,7 +184,7 @@ cargo test --workspace                                  # all tests
 cargo clippy --workspace --all-targets -- -D warnings   # lint (gate)
 cargo fmt --all --check                                 # format (gate)
 scripts/coverage.sh                                     # coverage gate (80% lines)
-scripts/heavy.sh cargo mutants -p engine-core -j 4 --timeout 60   # mutation gate
+scripts/mutants.sh                                      # mutation gate (floor 85%, ratchet)
 scripts/smoke.sh                                        # real-environment smoke
 ```
 
@@ -199,8 +199,8 @@ Stack and conventions: [docs/agents/testing.md](docs/agents/testing.md).
 
 - **Coverage gate: 80%** lines over the workspace, excluding UI rendering glue and the `cpal`
   device code (justified in `docs/agents/testing.md`). Critical physics ≥ 90%.
-- **Mutation gate: 60% minimum** over `engine-core`; advisory until reached, with the date and the
-  score written down, then a ratchet. See
+- **Mutation gate: 60% minimum** over `engine-core`; current floor **85%** (`scripts/mutants.sh`,
+  measured 89.9% on 2026-10-21) — a ratchet, raised with the score, never lowered. See
   [Mutation gate — the 60% floor](docs/agents/quality-beyond-coverage.md#mutation-gate--the-60-floor-and-it-only-goes-up).
 - **The "E2E" of this project is the real binary**: headless render (WAV non-silent, finite, at the
   right firing frequency) + GUI launch smoke in `scripts/smoke.sh`, and `egui_kittest` tests that
