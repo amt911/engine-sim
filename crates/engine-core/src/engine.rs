@@ -5,7 +5,7 @@
 //! Model ladder and references: `docs/research/simulador-motor-rust.md`.
 
 use crate::combustion::{AFR_STOICH, charge_energy, wiebe};
-use crate::exhaust::{ExhaustDef, ExhaustNet, REVERSION_TEMP_K};
+use crate::exhaust::{ExhaustDef, ExhaustModel, ExhaustNet, REVERSION_TEMP_K};
 use crate::gas::{
     GasVolume, Reservoir, exchange_with_reservoir, exhaust_valve_flow, plan_exchange,
 };
@@ -92,6 +92,8 @@ impl EngineDef {
                 tail_length_m: 1.0,
                 tail_diameter_m: 0.045,
                 muffler_transmission: 0.6,
+                model: ExhaustModel::Waveguide,
+                muffler_volume_m3: 0.003,
             },
             redline_rpm: 7500.0,
             starter_torque_nm: 25.0,
@@ -163,6 +165,8 @@ impl EngineDef {
                 tail_diameter_m: 0.060,
                 // Sport muffler with bypass valves: less damping than a road car.
                 muffler_transmission: 0.7,
+                model: ExhaustModel::Waveguide,
+                muffler_volume_m3: 0.010,
             },
             redline_rpm: 9000.0,
             starter_torque_nm: 150.0,

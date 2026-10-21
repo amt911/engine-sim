@@ -100,6 +100,8 @@ pub enum Boundary {
     Open { p: f64, rho: f64 },
     /// A prescribed state (e.g. set by a coupled valve or junction each step).
     State(Prim),
+    /// A prescribed face flux (per unit area, positive = along +x), e.g. a valve's mass flow.
+    Flux(Cons),
 }
 
 /// A uniform pipe of `n` cells.
@@ -117,6 +119,8 @@ pub struct Pipe1d {
     rhs: Vec<Cons>,
     /// Flux through the left and right end faces in the last step (RK-averaged), per area.
     pub end_flux: (Cons, Cons),
+    /// Density and pressure floors (see [`positive`]); tiny by default.
+    pub floors: (f64, f64),
 }
 
 impl Pipe1d {
@@ -132,6 +136,7 @@ impl Pipe1d {
             u0: vec![Cons::default(); n],
             rhs: vec![Cons::default(); n],
             end_flux: (Cons::default(), Cons::default()),
+            floors: (1e-9, 1e-9),
         }
     }
     /// Largest stable step for Courant number `cfl`.
@@ -164,6 +169,9 @@ impl Pipe1d {
                 e: 0.5 * (c0.e + u1.e),
             };
         }
+        for c in &mut self.cells {
+            *c = positive(*c, self.floors.0, self.floors.1);
+        }
         let avg = |a: Cons, b: Cons| Cons {
             rho: 0.5 * (a.rho + b.rho),
             mom: 0.5 * (a.mom + b.mom),
@@ -183,6 +191,27 @@ fn add(c: Cons, d: Cons, dt: f64) -> Cons {
         rho: c.rho + dt * d.rho,
         mom: c.mom + dt * d.mom,
         e: c.e + dt * d.e,
+    }
+}
+
+/// Keep a cell physical: density and pressure at least the floors, NaN reset to rest.
+/// Extreme forcing (or a strong rarefaction against a prescribed flux) can push a cell
+/// negative, which a Riemann solver cannot recover from.
+fn positive(c: Cons, rho_floor: f64, p_floor: f64) -> Cons {
+    if !(c.rho.is_finite() && c.mom.is_finite() && c.e.is_finite()) || c.rho < rho_floor {
+        return Prim {
+            rho: rho_floor,
+            u: 0.0,
+            p: p_floor,
+        }
+        .to_cons();
+    }
+    let u = c.mom / c.rho;
+    let e_min = 0.5 * c.rho * u * u + p_floor / (GAMMA - 1.0);
+    if c.e < e_min {
+        Cons { e: e_min, ..c }
+    } else {
+        c
     }
 }
 
@@ -214,6 +243,11 @@ fn ghost(b: Boundary, inner: Prim, outward: f64) -> Prim {
             }
         }
         Boundary::State(s) => s,
+        // the face flux is overridden; reconstruction sees a wall
+        Boundary::Flux(_) => Prim {
+            u: -inner.u,
+            ..inner
+        },
     }
 }
 
@@ -245,6 +279,12 @@ impl Pipe1d {
         // face k sits between w[k] and w[k+1], k = 1..=n+1; cell j lies between faces j and j+1
         for (k, f) in self.fluxes.iter_mut().enumerate() {
             *f = hllc(face(k + 1, 1.0), face(k + 2, -1.0));
+        }
+        if let Boundary::Flux(f) = self.left {
+            self.fluxes[0] = f;
+        }
+        if let Boundary::Flux(f) = self.right {
+            self.fluxes[n] = f;
         }
         let inv = 1.0 / self.dx;
         for (j, r) in self.rhs.iter_mut().enumerate() {
@@ -343,6 +383,56 @@ mod tests {
         assert_relative_eq!(at(&p, 0.83).rho, 0.26557, max_relative = 0.05);
         // left state untouched beyond the rarefaction head (x = 0.5 − 1.18322·0.2 = 0.2634)
         assert_relative_eq!(at(&p, 0.2).rho, 1.0, max_relative = 1e-3);
+    }
+
+    #[test]
+    fn prescribed_flux_adds_exactly_that_mass_and_energy() {
+        let air = Prim {
+            rho: 1.2,
+            u: 0.0,
+            p: 101_325.0,
+        };
+        let mut p = Pipe1d::new(0.5, 50, air);
+        let f = Cons {
+            rho: 2.0,
+            mom: 101_325.0 + 2.0 * 2.0 / 1.2,
+            e: 2.0 * 3.0e5,
+        };
+        p.left = Boundary::Flux(f);
+        let m0: f64 = p.cells.iter().map(|c| c.rho).sum::<f64>() * p.dx;
+        let e0: f64 = p.cells.iter().map(|c| c.e).sum::<f64>() * p.dx;
+        let (dt, steps) = (1e-6, 100);
+        for _ in 0..steps {
+            p.step(dt);
+        }
+        let m1: f64 = p.cells.iter().map(|c| c.rho).sum::<f64>() * p.dx;
+        let e1: f64 = p.cells.iter().map(|c| c.e).sum::<f64>() * p.dx;
+        // 2 kg/(s·m²) for 100 µs → 2e-4 kg/m²; energy 6e5·1e-4 = 60 J/m² (right end is a wall)
+        assert_relative_eq!(m1 - m0, 2.0e-4, max_relative = 1e-9);
+        assert_relative_eq!(e1 - e0, 60.0, max_relative = 1e-9);
+        assert_eq!(p.end_flux.0, f);
+    }
+
+    #[test]
+    fn violent_extraction_keeps_cells_physical() {
+        let air = Prim {
+            rho: 1.2,
+            u: 0.0,
+            p: 101_325.0,
+        };
+        let mut p = Pipe1d::new(0.3, 10, air);
+        p.left = Boundary::Flux(Cons {
+            rho: -500.0,
+            mom: 101_325.0,
+            e: -500.0 * 3.0e5,
+        });
+        for _ in 0..200 {
+            p.step(2e-6);
+        }
+        for c in &p.cells {
+            let q = c.to_prim();
+            assert!(q.rho > 0.0 && q.p > 0.0 && q.u.is_finite(), "{q:?}");
+        }
     }
 
     #[test]
