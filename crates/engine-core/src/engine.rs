@@ -45,6 +45,9 @@ pub struct EngineDef {
     pub fmep_bar: [f64; 3],
     /// Sound texture levels (noise, intake, mechanics, combustion variability).
     pub sound: SoundDef,
+    /// Deceleration fuel cut-off: with the throttle closed above this speed no fuel is injected
+    /// (what production ECUs do on overrun); 0 disables it.
+    pub overrun_fuel_cut_rpm: f64,
 }
 
 impl Default for EngineDef {
@@ -100,6 +103,7 @@ impl EngineDef {
             starter_torque_nm: 25.0,
             fmep_bar: [0.97, 0.15, 0.05],
             sound: SoundDef::default(),
+            overrun_fuel_cut_rpm: 1500.0,
         }
     }
 
@@ -174,6 +178,7 @@ impl EngineDef {
             // Low-friction racing build (dry sump, titanium valvetrain): estimated.
             fmep_bar: [0.8, 0.10, 0.015],
             sound: SoundDef::default(),
+            overrun_fuel_cut_rpm: 1500.0,
         }
     }
 
@@ -393,7 +398,10 @@ impl Engine {
         let evc = (self.def.exhaust_valve.open_deg + self.def.exhaust_valve.duration_deg)
             .rem_euclid(720.0);
         let mut valve_closings = 0;
-        let fire_ok = c.ignition && self.rpm() < self.def.redline_rpm;
+        let overrun_cut = self.def.overrun_fuel_cut_rpm > 0.0
+            && c.throttle <= 0.01
+            && self.rpm() > self.def.overrun_fuel_cut_rpm;
+        let fire_ok = c.ignition && self.rpm() < self.def.redline_rpm && !overrun_cut;
         let wall_area = 2.0 * g.piston_area();
         match self.def.exhaust.model {
             ExhaustModel::Waveguide => {
@@ -1229,5 +1237,35 @@ mod tests {
         }
         assert!(worst_p > 0.0, "port {worst_p}");
         assert!(xs.iter().all(|x| x.is_finite()));
+    }
+
+    #[test]
+    fn overrun_cuts_fuel_above_the_threshold_only() {
+        // Deceleration fuel cut-off: closed throttle above `overrun_fuel_cut_rpm` → no combustion;
+        // at idle (below it) the engine keeps firing.
+        let fires = |rpm: f64, throttle: f64| {
+            let mut e = Engine::new(EngineDef::inline4(), rpm, 1);
+            let c = Controls {
+                throttle,
+                hold_rpm: Some(rpm),
+                ..Controls::default()
+            };
+            run(&mut e, 0.2, &c);
+            let n = e.combustions();
+            run(&mut e, 0.3, &c);
+            e.combustions() - n
+        };
+        assert_eq!(fires(4000.0, 0.0), 0, "overrun at 4000 rpm must not fire");
+        assert!(fires(900.0, 0.0) > 5, "idle keeps firing");
+        assert!(fires(4000.0, 0.3) > 30, "on throttle it fires");
+        let mut d = EngineDef::inline4();
+        d.overrun_fuel_cut_rpm = 0.0;
+        let mut e = Engine::new(d, 4000.0, 1);
+        let c = Controls {
+            hold_rpm: Some(4000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.3, &c);
+        assert!(e.combustions() > 20, "0 disables the cut");
     }
 }

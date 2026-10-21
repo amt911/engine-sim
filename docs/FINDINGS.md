@@ -45,8 +45,12 @@ is 5–10 dB quieter on overrun.
 swing: WOT +40…+115 kPa, coast −26…+39 kPa (similar p-p). Not the valve limiter (port cell as a
 reservoir: no change). Not texture (tonal part alone). FV pipes themselves validated (Sod, area
 steps, steepening).
-**Next hypotheses.** Overrun fuel cut; reverse-flow Cd lower than forward (Blair); intake side
-reversion through the cylinder; compare spectra with real recordings.
+**Ruled out.** Overrun fuel cut (added as a real feature: coast tone rises, 752 → 1392, the
+cylinder reaches EVO emptier).
+**Leading hypothesis.** The 0D merge junction (primaries → collector) is a stagnation plenum: it
+low-passes the pulses of the five branches and adds back-pressure (mean port gauge ≈ 78 kPa at WOT
+7000, where the tails' dynamic pressure is ~4 kPa). Next: a constant-pressure (characteristic)
+junction — Benson; Winterbone & Pearson — instead of a volume.
 **Tools.** `examples/{port_probe,sound_breakdown,spectrum_probe}.rs`.
 
 Found: 2026-10-22 · physics
