@@ -299,6 +299,22 @@ mod tests {
             hiss(0.01),
             hiss(0.02)
         );
+        // hiss ∝ ṁ·u/A_bore with u = ṁ/(ρ·A_throttle): doubling the throttle opening halves it,
+        // doubling the bore halves it too.
+        let hiss_at = |a_throttle: f64, a_bore: f64| {
+            let mut t = Texture::new(4);
+            let tone = 0.15 * 343.0 * 0.02 / a_bore;
+            let xs: Vec<f64> = (0..40_000)
+                .map(|_| t.intake(0.02, a_throttle, a_bore, 1.0, DT) - tone)
+                .collect();
+            rms(&xs[10_000..])
+        };
+        let base = hiss_at(1e-3, 1e-3);
+        assert!(
+            (hiss_at(2e-3, 1e-3) / base - 0.5).abs() < 0.05,
+            "throttle area"
+        );
+        assert!((hiss_at(1e-3, 2e-3) / base - 0.5).abs() < 0.05, "bore area");
         // degenerate areas give silence, not infinities
         let mut t = Texture::new(4);
         assert_eq!(t.intake(0.05, 0.0, 1e-3, 1.0, DT), 0.0);
@@ -319,6 +335,16 @@ mod tests {
         assert!(
             out.abs() <= before,
             "output {out} beyond its envelope {before}"
+        );
+        // the burst is zero-mean noise shaped by the envelope
+        let mut t2 = Texture::new(8);
+        t2.valve_closed(5_000.0, 1.0);
+        let env0 = t2.click_env;
+        let xs: Vec<f64> = (0..200).map(|_| t2.clicks(DT)).collect();
+        let mean = xs.iter().sum::<f64>() / xs.len() as f64;
+        assert!(
+            mean.abs() < 0.05 * env0,
+            "click mean {mean} vs envelope {env0}"
         );
         // below 1e-4 the envelope snaps to exactly zero
         // (1.5e-4 → 1e-4 takes ln(1.5)·0.4 ms / dt ≈ 31 steps)
