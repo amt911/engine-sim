@@ -180,6 +180,48 @@ mod tests {
     }
 
     #[test]
+    fn band_passes_the_band_and_rejects_dc_and_extremes() {
+        // one-pole high-pass 400 Hz then one-pole low-pass 6 kHz, at 192 kHz
+        let gain = |f: f64| {
+            let mut b = Band::default();
+            let mut peak: f64 = 0.0;
+            for n in 0..40_000 {
+                let y = b.process(
+                    (2.0 * std::f64::consts::PI * f * n as f64 * DT).sin(),
+                    400.0,
+                    6_000.0,
+                    DT,
+                );
+                if n > 20_000 {
+                    peak = peak.max(y.abs());
+                }
+            }
+            peak
+        };
+        // |H| ≈ 1/√(1+(400/f)²) · 1/√(1+(f/6000)²): 2 kHz → 0.93; 100 Hz → 0.24; 60 kHz → 0.10
+        assert!((gain(2_000.0) - 0.93).abs() < 0.05, "{}", gain(2_000.0));
+        assert!(gain(100.0) < 0.3, "{}", gain(100.0));
+        assert!(gain(60_000.0) < 0.2, "{}", gain(60_000.0));
+        let mut b = Band::default();
+        let mut y = 1.0;
+        for _ in 0..20_000 {
+            y = b.process(1.0, 400.0, 6_000.0, DT);
+        }
+        assert!(y.abs() < 1e-3, "DC must be rejected: {y}");
+    }
+
+    #[test]
+    fn white_noise_is_uncorrelated() {
+        let mut t = Texture::new(9);
+        let xs: Vec<f64> = (0..50_000).map(|_| t.white()).collect();
+        let r1 = xs.windows(2).map(|w| w[0] * w[1]).sum::<f64>() / xs.len() as f64 / (1.0 / 3.0);
+        assert!(r1.abs() < 0.02, "lag-1 correlation {r1}");
+        // uniform(−1, 1): fourth moment 1/5
+        let m4 = xs.iter().map(|x| x.powi(4)).sum::<f64>() / xs.len() as f64;
+        assert!((m4 - 0.2).abs() < 0.01, "{m4}");
+    }
+
+    #[test]
     fn flow_noise_scales_with_dynamic_pressure_and_needs_outflow() {
         let level = |radiated: f64| {
             let mut t = Texture::new(1);
@@ -230,6 +272,102 @@ mod tests {
             "{}",
             rms(&closed[10_000..])
         );
+    }
+
+    #[test]
+    fn intake_tone_and_hiss_follow_the_formulas() {
+        // tone = 0.15 · c · ṁ / A_bore = 0.15 · 343 · 0.05 / 1e-3 = 2572.5 Pa; the hiss is
+        // zero-mean, so the mean of the output is the tone.
+        let mut t = Texture::new(4);
+        let xs: Vec<f64> = (0..40_000)
+            .map(|_| t.intake(0.05, 1e-3, 1e-3, 1.0, DT))
+            .collect();
+        let mean = xs.iter().sum::<f64>() / xs.len() as f64;
+        assert!((mean / 2572.5 - 1.0).abs() < 0.02, "tone {mean}");
+        // hiss ∝ ṁ·u with u = ṁ/(ρA): doubling ṁ quadruples it
+        let hiss = |m: f64| {
+            let mut t = Texture::new(4);
+            let tone = 0.15 * 343.0 * m / 1e-3;
+            let xs: Vec<f64> = (0..40_000)
+                .map(|_| t.intake(m, 1e-3, 1e-3, 1.0, DT) - tone)
+                .collect();
+            rms(&xs[10_000..])
+        };
+        assert!(
+            (hiss(0.02) / hiss(0.01) - 4.0).abs() < 0.3,
+            "{} {}",
+            hiss(0.01),
+            hiss(0.02)
+        );
+        // hiss ∝ ṁ·u/A_bore with u = ṁ/(ρ·A_throttle): doubling the throttle opening halves it,
+        // doubling the bore halves it too.
+        let hiss_at = |a_throttle: f64, a_bore: f64| {
+            let mut t = Texture::new(4);
+            let tone = 0.15 * 343.0 * 0.02 / a_bore;
+            let xs: Vec<f64> = (0..40_000)
+                .map(|_| t.intake(0.02, a_throttle, a_bore, 1.0, DT) - tone)
+                .collect();
+            rms(&xs[10_000..])
+        };
+        let base = hiss_at(1e-3, 1e-3);
+        assert!(
+            (hiss_at(2e-3, 1e-3) / base - 0.5).abs() < 0.05,
+            "throttle area"
+        );
+        assert!((hiss_at(1e-3, 2e-3) / base - 0.5).abs() < 0.05, "bore area");
+        // degenerate areas give silence, not infinities
+        let mut t = Texture::new(4);
+        assert_eq!(t.intake(0.05, 0.0, 1e-3, 1.0, DT), 0.0);
+        assert_eq!(t.intake(0.05, 1e-3, 0.0, 1.0, DT), 0.0);
+    }
+
+    #[test]
+    fn a_valve_closing_adds_level_times_60_per_krpm() {
+        let mut t = Texture::new(1);
+        t.valve_closed(3_000.0, 2.0);
+        assert_eq!(t.click_env, 2.0 * 60.0 * 3.0);
+        t.valve_closed(1_000.0, 1.0);
+        assert_eq!(t.click_env, 360.0 + 60.0);
+        // one step decays by exp(−dt/0.4 ms); the burst is bounded by the envelope
+        let before = t.click_env;
+        let out = t.clicks(DT);
+        assert!((t.click_env / before - (-DT / 0.0004f64).exp()).abs() < 1e-12);
+        assert!(
+            out.abs() <= before,
+            "output {out} beyond its envelope {before}"
+        );
+        // the burst is zero-mean noise shaped by the envelope
+        let mut t2 = Texture::new(8);
+        t2.valve_closed(5_000.0, 1.0);
+        let env0 = t2.click_env;
+        let xs: Vec<f64> = (0..200).map(|_| t2.clicks(DT)).collect();
+        let mean = xs.iter().sum::<f64>() / xs.len() as f64;
+        assert!(
+            mean.abs() < 0.05 * env0,
+            "click mean {mean} vs envelope {env0}"
+        );
+        // below 1e-4 the envelope snaps to exactly zero
+        // (1.5e-4 → 1e-4 takes ln(1.5)·0.4 ms / dt ≈ 31 steps)
+        t.click_env = 1.5e-4;
+        for _ in 0..40 {
+            t.clicks(DT);
+        }
+        assert_eq!(t.click_env, 0.0);
+    }
+
+    const REFERENCE_WHITE_SEED5: [f64; 3] =
+        [-0.856932398150813, 0.04843985850807053, 0.43598306058512826];
+
+    #[test]
+    fn white_matches_the_reference_xorshift64_star() {
+        // Vigna's xorshift64* (shifts 12, 25, 27; multiplier 0x2545F4914F6CDD1D), seeded here as
+        // seed·0xD1B54A32D192ED03 | 1; reference values from an independent Python implementation.
+        let mut t = Texture::new(5);
+        let got: Vec<f64> = (0..3).map(|_| t.white()).collect();
+        let want = REFERENCE_WHITE_SEED5;
+        for (g, w) in got.iter().zip(want) {
+            assert!((g - w).abs() < 1e-15, "{got:?}");
+        }
     }
 
     #[test]

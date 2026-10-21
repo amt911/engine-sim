@@ -2,7 +2,7 @@
 # Real-environment smoke: drives the release binary. PASS/FAIL per phase, exits on first failure.
 set -uo pipefail
 cd "$(dirname "$0")/.."
-BIN=target/release/engine-sim
+BIN="${CARGO_TARGET_DIR:-target}/release/engine-sim"
 OUT=$(mktemp -d)
 trap 'rm -rf "$OUT"' EXIT
 phase() { echo "== $1"; }
@@ -29,6 +29,15 @@ if "$BIN" --help 2>/dev/null | grep -q -- --headless; then
   done
 fi
 
+phase "dyno sweep"
+for preset in single inline4 lfa-v10; do
+  "$BIN" --preset "$preset" --dyno >"$OUT/dyno.csv" 2>/dev/null || fail "dyno $preset"
+  [ "$(head -1 "$OUT/dyno.csv")" = "rpm,torque_nm,power_hp" ] || fail "dyno $preset header"
+  awk -F, 'NR>1 { n++; if ($2+0 <= 0 || $2 != $2+0 || $3+0 <= 0) bad=1 } END { exit (n >= 5 && !bad) ? 0 : 1 }' "$OUT/dyno.csv" \
+    || fail "dyno $preset: too few rows or non-positive/NaN torque"
+  echo "PASS dyno $preset ($(($(wc -l <"$OUT/dyno.csv") - 1)) points)"
+done
+
 phase "file round trip"
 "$BIN" --preset lfa-v10 --save "$OUT/rt.yaml" || fail "save yaml"
 "$BIN" --engine "$OUT/rt.yaml" --save "$OUT/rt.json" || fail "yaml -> json"
@@ -39,7 +48,7 @@ echo "PASS file round trip"
 
 if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && "$BIN" --help 2>/dev/null | grep -q -- --quit-after; then
   phase "gui launch"
-  "$BIN" --quit-after 4 --preset single >"$OUT/gui.log" 2>&1 || { cat "$OUT/gui.log"; fail "gui exited with error"; }
+  timeout 30 "$BIN" --quit-after 4 --preset single >"$OUT/gui.log" 2>&1 || { cat "$OUT/gui.log"; fail "gui exited with error or did not close within 30 s"; }
   echo "PASS gui launch"
 fi
 echo "ALL PASS"

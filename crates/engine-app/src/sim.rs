@@ -2,7 +2,9 @@
 //! the DSP voice, and the data the UI draws (snapshot, pressure trace, scope).
 
 use engine_audio::dsp::Voice;
+use engine_core::drivetrain::{Vehicle, VehicleDef};
 use engine_core::engine::{Controls, CylinderView, Engine, EngineDef};
+use engine_core::units::rpm_to_rad_s;
 
 /// Physics steps per audio sample (engine-sim uses 8 fluid substeps at 10 kHz; we run
 /// at the audio rate × 4, e.g. 192 kHz at 48 kHz output).
@@ -24,6 +26,22 @@ pub struct Snapshot {
     pub pressure_trace: Vec<f32>,
     /// Last `SCOPE_LEN` output samples, oldest first.
     pub scope: Vec<f32>,
+    /// Car speed, m/s, and engaged gear (0 = neutral).
+    pub speed_m_s: f64,
+    pub gear: usize,
+    /// Clutch engagement, 0 (pedal down) .. 1.
+    pub clutch: f64,
+}
+
+/// The driver's pedals and lever, set from the UI.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct DriveInput {
+    /// 0 = neutral, 1.. = forward gear.
+    pub gear: usize,
+    /// Clutch pedal pressed (disengaged).
+    pub clutch_pedal: bool,
+    /// Brake pedal 0..1.
+    pub brake: f64,
 }
 
 fn voice_for(def: &EngineDef, sample_rate: f64) -> Voice {
@@ -37,6 +55,8 @@ pub struct Simulation {
     voice: Voice,
     sample_rate: f64,
     pub controls: Controls,
+    pub drive: DriveInput,
+    vehicle: Vehicle,
     trace: Vec<f32>,
     trace_deg: usize,
     scope: Vec<f32>,
@@ -45,7 +65,12 @@ pub struct Simulation {
 
 impl Simulation {
     pub fn new(def: EngineDef, sample_rate: f64, seed: u64) -> Self {
+        Self::with_vehicle(def, VehicleDef::default(), sample_rate, seed)
+    }
+    pub fn with_vehicle(def: EngineDef, vehicle: VehicleDef, sample_rate: f64, seed: u64) -> Self {
         Self {
+            vehicle: Vehicle::new(vehicle),
+            drive: DriveInput::default(),
             voice: voice_for(&def, sample_rate),
             engine: Engine::new(def, IDLE_START_RPM, seed),
             sample_rate,
@@ -55,6 +80,14 @@ impl Simulation {
             scope: vec![0.0; SCOPE_LEN],
             scope_pos: 0,
         }
+    }
+    #[cfg(test)]
+    pub fn vehicle(&self) -> &Vehicle {
+        &self.vehicle
+    }
+    /// Swap the car (it stops, in neutral, so the new gearing cannot jump).
+    pub fn replace_vehicle(&mut self, def: VehicleDef) {
+        self.vehicle = Vehicle::new(def);
     }
     pub fn engine(&self) -> &Engine {
         &self.engine
@@ -83,10 +116,19 @@ impl Simulation {
     /// Fill `out` with mono samples.
     pub fn render(&mut self, out: &mut [f32]) {
         let dt = 1.0 / (self.sample_rate * SUBSTEPS as f64);
+        self.vehicle.set_gear(self.drive.gear);
+        self.vehicle
+            .set_clutch(if self.drive.clutch_pedal { 0.0 } else { 1.0 });
+        let mut c = self.controls;
         for s in out.iter_mut() {
             let mut p = 0.0;
             for _ in 0..SUBSTEPS {
-                p = self.engine.step(dt, &self.controls);
+                // The vehicle sees the crank speed and answers with the load for the next step.
+                let omega = rpm_to_rad_s(self.engine.rpm());
+                let load = self.vehicle.step(dt, omega, self.drive.brake);
+                c.load_torque_nm = self.controls.load_torque_nm + load.torque_nm;
+                c.extra_inertia_kgm2 = self.controls.extra_inertia_kgm2 + load.inertia_kgm2;
+                p = self.engine.step(dt, &c);
             }
             let c0 = self.engine.cylinder(0);
             // Fill every degree passed since the last sample, so none keeps a stale value.
@@ -117,6 +159,9 @@ impl Simulation {
             cylinders: (0..e.def().cylinders).map(|i| e.cylinder(i)).collect(),
             pressure_trace: self.trace.clone(),
             scope,
+            speed_m_s: self.vehicle.speed_m_s(),
+            gear: self.vehicle.gear(),
+            clutch: self.vehicle.clutch(),
         }
     }
 }
@@ -275,6 +320,88 @@ pub(crate) mod tests {
         let max = trace.iter().cloned().fold(0.0f32, f32::max);
         assert!(max < 15e5, "stale bin: {max}");
         assert!(trace.iter().all(|p| *p > 0.0));
+    }
+
+    fn driven(def: EngineDef, vehicle: VehicleDef, gear: usize, throttle: f64) -> Simulation {
+        let mut sim = Simulation::with_vehicle(def, vehicle, FS, 1);
+        sim.controls.throttle = throttle;
+        // Pedal down in neutral, rev up, select the gear, then let the clutch out.
+        sim.drive = DriveInput {
+            gear: 0,
+            clutch_pedal: true,
+            brake: 0.0,
+        };
+        render_secs(&mut sim, 0.5);
+        sim.drive.gear = gear;
+        render_secs(&mut sim, 0.05);
+        sim.drive.clutch_pedal = false;
+        sim
+    }
+
+    #[test]
+    fn launching_in_first_accelerates_the_car_without_stalling() {
+        let mut sim = driven(EngineDef::inline4(), VehicleDef::inline4(), 1, 0.6);
+        render_secs(&mut sim, 4.0);
+        let s = sim.snapshot();
+        assert_eq!(s.gear, 1);
+        assert!(s.speed_m_s > 3.0, "speed {}", s.speed_m_s);
+        assert!(s.rpm > 1000.0, "stalled at {}", s.rpm);
+        assert!(sim.vehicle().locked(), "clutch should have locked by now");
+        // Locked: car speed = ω·r/G (1st: 3.62·4.1 = 14.842, r = 0.316).
+        let omega = s.rpm * std::f64::consts::PI / 30.0;
+        assert!((s.speed_m_s - omega * 0.316 / 14.842).abs() < 0.05);
+    }
+
+    #[test]
+    fn neutral_leaves_the_engine_free_and_the_car_still() {
+        let mut sim = driven(EngineDef::inline4(), VehicleDef::inline4(), 0, 1.0);
+        render_secs(&mut sim, 0.5);
+        let s = sim.snapshot();
+        assert_eq!(s.speed_m_s, 0.0);
+        assert!(s.rpm > 4000.0, "free-revs: {}", s.rpm);
+    }
+
+    #[test]
+    fn clutch_down_lets_the_car_coast_while_the_engine_idles() {
+        let mut sim = driven(EngineDef::inline4(), VehicleDef::inline4(), 1, 0.6);
+        render_secs(&mut sim, 3.0);
+        let (v0, rpm0) = (sim.snapshot().speed_m_s, sim.snapshot().rpm);
+        sim.controls.throttle = 0.0;
+        sim.drive.clutch_pedal = true;
+        render_secs(&mut sim, 1.0);
+        let s = sim.snapshot();
+        assert!(
+            s.speed_m_s < v0 && s.speed_m_s > 0.8 * v0,
+            "{v0} → {}",
+            s.speed_m_s
+        );
+        assert!(
+            s.rpm < 0.7 * rpm0,
+            "engine spools down: {rpm0} -> {}",
+            s.rpm
+        );
+    }
+
+    #[test]
+    fn braking_stops_the_car() {
+        let mut sim = driven(EngineDef::inline4(), VehicleDef::inline4(), 1, 0.6);
+        render_secs(&mut sim, 3.0);
+        sim.controls.throttle = 0.0;
+        sim.drive.clutch_pedal = true;
+        sim.drive.brake = 1.0;
+        // From ~15 m/s at 9.2 m/s² (full brake + road load): stopped well within 3 s.
+        render_secs(&mut sim, 3.0);
+        assert_eq!(sim.snapshot().speed_m_s, 0.0);
+    }
+
+    #[test]
+    fn replace_vehicle_stops_in_neutral() {
+        let mut sim = driven(EngineDef::inline4(), VehicleDef::inline4(), 1, 0.6);
+        render_secs(&mut sim, 1.0);
+        sim.replace_vehicle(VehicleDef::lfa_v10());
+        let s = sim.snapshot();
+        assert_eq!((s.gear, s.speed_m_s), (0, 0.0));
+        assert_eq!(sim.vehicle().def().mass_kg, 1480.0);
     }
 
     #[test]

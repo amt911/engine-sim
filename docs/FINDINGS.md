@@ -76,6 +76,16 @@ lock (user rule); they run via `scripts/heavy.sh` at nice 19 with cargo -j8. Agr
 **Why it isn't obvious.** Nothing in this repo tells you another session shares the box.
 
 Found: 2026-10-22 · env
+### `--quit-after` never closed the window when it was hidden
+
+**Symptom.** Smoke GUI phase hung for minutes; several `engine-sim --quit-after 4` processes alive.
+**Cause.** eframe calls `App::ui` only while the window is visible; the quit timer lived in `ui`.
+The smoke window opened behind the user's windows (shared desktop) and never drew.
+**Fix / workaround.** Quit timer in `App::logic` (runs even when hidden) + `request_repaint_after`;
+the smoke runs the GUI under `timeout 30`.
+**Why it isn't obvious.** On an idle desktop the window is visible and the bug never shows.
+
+Found: 2026-10-22 · app
 
 ### cargo-mutants filled /tmp (tmpfs = RAM) with a 5 GB copy
 
@@ -122,6 +132,15 @@ LFA at 7000 rpm still ~2× louder coasting. Pending: non-linear losses or the 1D
 **Why it isn't obvious.** Torque and the order structure look right; only the level balance is off.
 
 Found: 2026-10-21 · physics
+
+### egui panics on a glyph the default font lacks (e.g. "→")
+
+**Symptom.** A kittest test panics: `No glyph for "→" (U+2192) in Proportional ... Install a font that has it`.
+**Cause.** epaint 0.37 panics (instead of drawing tofu) when a label contains a character missing from the bundled fonts; arrows and the like are missing, "·", "°", "²" are fine.
+**Fix / workaround.** Use ASCII ("to", "->") in UI text; check labels in a kittest run, not only by eye.
+**Why it isn't obvious.** The text is only laid out when that widget is drawn, so it only fails in the state that shows it (here: while a dyno sweep runs).
+
+Found: 2026-10-21 · tests
 
 ### `cargo llvm-cov` fails: "failed to find llvm-tools-preview"
 

@@ -38,3 +38,12 @@ is a finding, not a fact — move it.
 ## Commands that work here
 
 _None yet._
+
+## Drivetrain and dyno (feat/drivetrain)
+
+- `engine_core::drivetrain::{VehicleDef, Vehicle, Load}` — `Vehicle::step(dt, omega, brake)` returns torque + reflected inertia; `Simulation` feeds them into `Controls::load_torque_nm` / `extra_inertia_kgm2` every physics substep. Vehicle presets are keyed by `Preset::vehicle()`, not stored in `EngineDef`, so `presets/*.yaml` are unchanged. *(verified: read crates/engine-app/src/{sim,controls}.rs)*
+- Clutch torque is `engagement² · capacity` (linear stalled every launch in a 1300 kg car); engagement ramps 1.5 /s up, 10 /s down. *(verified: ran the launch test, engine stalled with the linear map)*
+- A gear selected with the clutch up at idle stalls the engine (realistic): tests press the clutch in neutral, select the gear, then release. *(verified: sim.rs `driven()` helper)*
+- Dyno (`--dyno`, release build, ~seconds): single peaks 49 N·m @2000 / 27 hp @5000; inline4 198 N·m @2500 / 112 hp @5000; LFA 516 N·m @4000 / 521 hp @8500 (published 480 N·m, 552 hp; real peak torque is at ~7000 rpm, the 0D model peaks too early). Sweep runs 1000 rpm .. below redline in 500 rpm steps. *(verified: ran `target/release/engine-sim --preset <p> --dyno`, 2026-10-21)*
+- LFA top speed from ratios: 9000 rpm in 6th = 323.6 km/h vs 325 published. *(verified: hand calc + test)*
+- Vehicle numbers marked ESTIMATE in `VehicleDef` doc comments (Cd·A, Crr, efficiency, clutch capacity, motorcycle and hatchback figures) were not checked against a source; LFA ratios/mass/final drive come from the task spec, tyre radius is computed from 305/30 ZR20.
