@@ -176,7 +176,10 @@ impl IntakeFv {
 
     fn substep(&mut self, h: f64, throttle_area: f64) -> f64 {
         let a = self.a_runner;
+        // The flow cannot enter through more area than the runner offers: a throttle body wider than
+        // its runner (or a common throttle) is limited by the duct it feeds.
         let a_eff = throttle_area.max(0.0) * self.trumpet_cd;
+        let a_itb = a_eff.min(self.a_runner * self.trumpet_cd);
         let mut radiated = 0.0;
         if self.individual {
             for pipe in &mut self.runners {
@@ -185,7 +188,7 @@ impl IntakeFv {
                 let cell = pipe.prim(0);
                 let t_cell = cell.p / (cell.rho * R_AIR);
                 let (m, e) = if ATM_PA >= cell.p {
-                    let m = orifice_mass_flow(a_eff, ATM_PA, AMBIENT_T_K, cell.p);
+                    let m = orifice_mass_flow(a_itb, ATM_PA, AMBIENT_T_K, cell.p);
                     (m, m * CP * AMBIENT_T_K)
                 } else {
                     let m = -orifice_mass_flow(a_eff, cell.p, t_cell, ATM_PA);
@@ -344,6 +347,33 @@ mod tests {
             m1 - m0,
             inducted - drawn
         );
+    }
+
+    #[test]
+    fn a_cylinder_drawing_every_step_cannot_create_mass() {
+        // Regression: between FV steps the valve drew again and again from the same stale cell;
+        // the cylinder gained more than the runner gave up (VE ≫ 1). Network + cylinder mass must
+        // change only by what the throttle inducted.
+        for individual in [true, false] {
+            let mut net = IntakeFv::new(&def(individual), 2e-3, 1, DT);
+            let mut cyl = GasVolume::at(0.2e5, 300.0, 5e-4);
+            let total0 = net.total_mass() + cyl.mass_kg;
+            let mut inducted = 0.0;
+            for _ in 0..20_000 {
+                let f = crate::gas::plan_exchange(&net.port_volume(0), &cyl, 5e-4, DT, 0.5);
+                cyl.mass_kg += f.dm;
+                cyl.energy_j += f.dm * f.h;
+                net.add_valve_flow(0, f.dm, f.h);
+                net.step(5e-4);
+                inducted += net.last_inducted();
+            }
+            let total1 = net.total_mass() + cyl.mass_kg;
+            assert!(
+                ((total1 - total0) - inducted).abs() < 1e-6 * total0,
+                "individual {individual}: {} vs {inducted}",
+                total1 - total0
+            );
+        }
     }
 
     #[test]
