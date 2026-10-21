@@ -275,6 +275,76 @@ mod tests {
     }
 
     #[test]
+    fn intake_tone_and_hiss_follow_the_formulas() {
+        // tone = 0.15 · c · ṁ / A_bore = 0.15 · 343 · 0.05 / 1e-3 = 2572.5 Pa; the hiss is
+        // zero-mean, so the mean of the output is the tone.
+        let mut t = Texture::new(4);
+        let xs: Vec<f64> = (0..40_000)
+            .map(|_| t.intake(0.05, 1e-3, 1e-3, 1.0, DT))
+            .collect();
+        let mean = xs.iter().sum::<f64>() / xs.len() as f64;
+        assert!((mean / 2572.5 - 1.0).abs() < 0.02, "tone {mean}");
+        // hiss ∝ ṁ·u with u = ṁ/(ρA): doubling ṁ quadruples it
+        let hiss = |m: f64| {
+            let mut t = Texture::new(4);
+            let tone = 0.15 * 343.0 * m / 1e-3;
+            let xs: Vec<f64> = (0..40_000)
+                .map(|_| t.intake(m, 1e-3, 1e-3, 1.0, DT) - tone)
+                .collect();
+            rms(&xs[10_000..])
+        };
+        assert!(
+            (hiss(0.02) / hiss(0.01) - 4.0).abs() < 0.3,
+            "{} {}",
+            hiss(0.01),
+            hiss(0.02)
+        );
+        // degenerate areas give silence, not infinities
+        let mut t = Texture::new(4);
+        assert_eq!(t.intake(0.05, 0.0, 1e-3, 1.0, DT), 0.0);
+        assert_eq!(t.intake(0.05, 1e-3, 0.0, 1.0, DT), 0.0);
+    }
+
+    #[test]
+    fn a_valve_closing_adds_level_times_60_per_krpm() {
+        let mut t = Texture::new(1);
+        t.valve_closed(3_000.0, 2.0);
+        assert_eq!(t.click_env, 2.0 * 60.0 * 3.0);
+        t.valve_closed(1_000.0, 1.0);
+        assert_eq!(t.click_env, 360.0 + 60.0);
+        // one step decays by exp(−dt/0.4 ms); the burst is bounded by the envelope
+        let before = t.click_env;
+        let out = t.clicks(DT);
+        assert!((t.click_env / before - (-DT / 0.0004f64).exp()).abs() < 1e-12);
+        assert!(
+            out.abs() <= before,
+            "output {out} beyond its envelope {before}"
+        );
+        // below 1e-4 the envelope snaps to exactly zero
+        // (1.5e-4 → 1e-4 takes ln(1.5)·0.4 ms / dt ≈ 31 steps)
+        t.click_env = 1.5e-4;
+        for _ in 0..40 {
+            t.clicks(DT);
+        }
+        assert_eq!(t.click_env, 0.0);
+    }
+
+    const REFERENCE_WHITE_SEED5: [f64; 3] =
+        [-0.856932398150813, 0.04843985850807053, 0.43598306058512826];
+
+    #[test]
+    fn white_matches_the_reference_xorshift64_star() {
+        // Vigna's xorshift64* (shifts 12, 25, 27; multiplier 0x2545F4914F6CDD1D), seeded here as
+        // seed·0xD1B54A32D192ED03 | 1; reference values from an independent Python implementation.
+        let mut t = Texture::new(5);
+        let got: Vec<f64> = (0..3).map(|_| t.white()).collect();
+        let want = REFERENCE_WHITE_SEED5;
+        for (g, w) in got.iter().zip(want) {
+            assert!((g - w).abs() < 1e-15, "{got:?}");
+        }
+    }
+
+    #[test]
     fn valve_clicks_decay_and_grow_with_rpm() {
         let energy = |rpm: f64| {
             let mut t = Texture::new(3);
