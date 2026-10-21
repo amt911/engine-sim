@@ -16,7 +16,8 @@ eframe.workspace = true
 clap.workspace = true
 hound.workspace = true
 rtrb.workspace = true
+rfd.workspace = true
 
 [dev-dependencies]
 approx.workspace = true
-egui_kittest.workspace = true
+egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }

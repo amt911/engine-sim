@@ -20,6 +20,17 @@ impl Preset {
             Preset::LfaV10 => EngineDef::lfa_v10(),
         }
     }
+    /// File/CLI name, as in `presets/<slug>.yaml` and `--preset <slug>`.
+    pub fn slug(self) -> &'static str {
+        match self {
+            Preset::Single => "single",
+            Preset::Inline4 => "inline4",
+            Preset::LfaV10 => "lfa-v10",
+        }
+    }
+    pub fn from_slug(slug: &str) -> Option<Preset> {
+        Preset::ALL.into_iter().find(|p| p.slug() == slug)
+    }
     pub fn label(self) -> &'static str {
         match self {
             Preset::Single => "Single 500",
@@ -40,6 +51,12 @@ pub struct UiState {
     /// Set while a key holds the throttle wide open / the starter engaged.
     pub key_throttle: bool,
     pub starter: bool,
+    /// Firing order as typed in the editor ("1-3-4-2"; empty = automatic).
+    pub firing_text: String,
+    /// Validation problems of the edited engine (shown in the editor).
+    pub errors: Vec<String>,
+    /// Last file load/save message.
+    pub file_msg: Option<String>,
 }
 
 impl Default for UiState {
@@ -52,6 +69,9 @@ impl Default for UiState {
             throttle: 0.0,
             key_throttle: false,
             starter: false,
+            firing_text: "1".into(),
+            errors: Vec::new(),
+            file_msg: None,
         }
     }
 }
@@ -79,6 +99,7 @@ pub fn controls_panel(ui: &mut egui::Ui, state: &mut UiState) {
         if ui.selectable_label(state.preset == p, p.label()).clicked() && state.preset != p {
             state.preset = p;
             state.def = p.def();
+            state.firing_text = crate::editor::format_firing_order(&state.def.firing_order);
             state.engine_dirty = true;
         }
     }
@@ -86,10 +107,12 @@ pub fn controls_panel(ui: &mut egui::Ui, state: &mut UiState) {
     ui.heading("Driver");
     ui.checkbox(&mut state.ignition, "Ignition");
     let starter = ui.button("Starter (hold S)");
+    // Keys typed into a text field (name, firing order) must not drive the engine.
+    let typing = ui.ctx().text_edit_focused();
     let (w, s_key) = ui.input(|i| {
         (
-            i.key_down(egui::Key::W) || i.key_down(egui::Key::ArrowUp),
-            i.key_down(egui::Key::S),
+            !typing && (i.key_down(egui::Key::W) || i.key_down(egui::Key::ArrowUp)),
+            !typing && i.key_down(egui::Key::S),
         )
     });
     state.starter = starter.is_pointer_button_down_on() || s_key;
@@ -140,6 +163,14 @@ mod tests {
     }
 
     #[test]
+    fn slugs_round_trip() {
+        for p in Preset::ALL {
+            assert_eq!(Preset::from_slug(p.slug()), Some(p));
+        }
+        assert_eq!(Preset::from_slug("nope"), None);
+    }
+
+    #[test]
     fn lfa_preset_is_selectable() {
         let mut h = harness();
         h.get_by_label("Lexus LFA V10").click();
@@ -154,6 +185,34 @@ mod tests {
         h.key_down(egui::Key::W);
         h.run();
         assert_eq!(h.state().controls().throttle, 1.0);
+    }
+
+    #[test]
+    fn holding_s_engages_the_starter() {
+        let mut h = harness();
+        h.key_down(egui::Key::S);
+        h.run();
+        assert!(h.state().controls().starter);
+    }
+
+    #[test]
+    fn keys_typed_into_a_text_field_do_not_drive_the_engine() {
+        let mut h = Harness::new_ui_state(
+            |ui, s: &mut UiState| {
+                let l = ui.label("Note");
+                ui.text_edit_singleline(&mut s.firing_text)
+                    .labelled_by(l.id);
+                controls_panel(ui, s);
+            },
+            UiState::default(),
+        );
+        h.get_by_label("Note").focus();
+        h.run();
+        h.key_down(egui::Key::W);
+        h.key_down(egui::Key::S);
+        h.run();
+        assert_eq!(h.state().controls().throttle, 0.0);
+        assert!(!h.state().controls().starter);
     }
 
     #[test]

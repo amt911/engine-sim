@@ -165,7 +165,7 @@ Planned (add when the phase needs them, then update this table): `fft-convolver`
 │   ├── engine-audio/  # pure DSP (DC blocker, filters, radiation, later convolution) + cpal output
 │   │                  #   behind an `AudioSink` boundary.
 │   └── engine-app/    # binary `engine-sim`: eframe UI, sim thread, CLI, headless renderer.
-├── presets/           # engine definitions in YAML (also used as test fixtures)
+├── presets/           # built-in engines as YAML (`--save`); a test keeps them equal to the code
 ├── scripts/           # smoke.sh, heavy.sh, verify-pr.sh
 └── docs/              # specs, research, agents/, FINDINGS, FACTS
 ```
@@ -178,7 +178,10 @@ snapshots). Audio fill level drives how many sim steps run per block (see resear
 
 ```bash
 cargo run -p engine-app --release                       # the app
-cargo run -p engine-app --release -- --preset inline4
+cargo run -p engine-app --release -- --preset inline4      # single | inline4 | lfa-v10
+cargo run -p engine-app --release -- --engine presets/lfa-v10.yaml   # any .yaml/.yml/.json
+cargo run -p engine-app --release -- --preset lfa-v10 --save my.yaml # write an engine file
+cargo test -p engine-app render_screens -- --ignored    # off-screen UI renders → target/screens/
 cargo run -p engine-app --release -- --headless --seconds 3 --wav /tmp/out.wav --check
 cargo test --workspace                                  # all tests
 cargo clippy --workspace --all-targets -- -D warnings   # lint (gate)

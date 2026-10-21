@@ -29,6 +29,14 @@ if "$BIN" --help 2>/dev/null | grep -q -- --headless; then
   done
 fi
 
+phase "file round trip"
+"$BIN" --preset lfa-v10 --save "$OUT/rt.yaml" || fail "save yaml"
+"$BIN" --engine "$OUT/rt.yaml" --save "$OUT/rt.json" || fail "yaml -> json"
+"$BIN" --engine "$OUT/rt.json" --headless --seconds 1 --check || fail "load json + render"
+echo '{"version": 99, "engine": {}}' > "$OUT/bad.json"
+if "$BIN" --engine "$OUT/bad.json" --headless --seconds 1 2>/dev/null; then fail "future version accepted"; fi
+echo "PASS file round trip"
+
 if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && "$BIN" --help 2>/dev/null | grep -q -- --quit-after; then
   phase "gui launch"
   "$BIN" --quit-after 4 --preset single >"$OUT/gui.log" 2>&1 || { cat "$OUT/gui.log"; fail "gui exited with error"; }

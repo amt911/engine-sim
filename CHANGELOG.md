@@ -7,3 +7,4 @@ Each tag on `main` is a runnable snapshot of the simulator (for the timelapse).
 | --- | --- | --- |
 | `v0.0.1` | 2026-10-21 | Repo bootstrap: AGENTS.md, docs, design spec, empty Cargo workspace that builds |
 | `v0.1.0` | 2026-10-21 | **First sound**: single, inline-4 and Lexus LFA V10 (published specs: 486 N·m / 531 hp vs real 480 / 552), animated cylinders, throttle (W), starter (S), ignition, spark advance, rpm/torque/power gauges, pressure trace, real-time audio |
+| `v0.2.0` | 2026-10-21 | **Editor + files**: every engine parameter as a slider (mm, cc, °, L), firing order field with validation, save/load YAML or JSON (dialogs or drag-and-drop), `--engine`/`--save` CLI, preset files in `presets/` |

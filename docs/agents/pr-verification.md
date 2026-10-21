@@ -16,8 +16,10 @@ The pass, for this desktop app:
 2. **Drive the real binary** — `scripts/smoke.sh`: release build, headless render of every preset to
    WAV (non-silent, finite, RMS in range, dominant firing frequency where the preset's RPM says),
    then launch the GUI for a few seconds and check it stays alive.
-3. **Look at it** — take a screenshot of the running window (or a kittest snapshot) for any PR
-   that touches the UI, and look at it. Attach what was seen to the verdict.
+3. **Look at it** — for any PR that touches the UI, render it off-screen and look at the PNGs:
+   `cargo test -p engine-app render_screens -- --ignored` → `target/screens/*.png` (the real
+   `app::layout`, fed by a real simulation). **Never screenshot the desktop / active window**: the
+   user works on this machine, and a capture once grabbed one of their private windows.
 4. **Read the structure** — name what the diff does to the
    [Design principles](design-principles.md#design-principles--solid-applied-with-judgement) and to the
    real-time audio rules (anything new in the audio callback is a finding).

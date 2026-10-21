@@ -20,7 +20,9 @@ pub struct EngineDef {
     pub geometry: CylinderGeometry,
     /// Number of cylinders (inline for now).
     pub cylinders: usize,
-    /// Firing order, 1-based cylinder numbers (`[1, 3, 4, 2]`). Empty = 1..=n.
+    /// Firing order, 1-based cylinder numbers (`[1, 3, 4, 2]`). Empty = automatic
+    /// ([`crate::config::default_firing_order`]).
+    #[serde(default)]
     pub firing_order: Vec<usize>,
     pub intake_valve: ValveTiming,
     pub exhaust_valve: ValveTiming,
@@ -157,7 +159,7 @@ impl EngineDef {
         let order: Vec<usize> = if self.firing_order.len() == n {
             self.firing_order.clone()
         } else {
-            (1..=n).collect()
+            crate::config::default_firing_order(n)
         };
         let mut offsets = vec![0.0; n];
         for (slot, &cyl) in order.iter().enumerate() {
@@ -221,6 +223,10 @@ const DISCHARGE_CD: f64 = 0.8;
 /// Speed of sound used for the exhaust runner delay, m/s (hot exhaust ≈ 500–600).
 const EXHAUST_SOUND_SPEED: f64 = 550.0;
 const TORQUE_AVG_TAU_S: f64 = 0.15;
+/// Effective ring leak area as a fraction of piston area. 1e-4 bleeds a stopped 6 bar
+/// charge in ~0.3 s and costs ~1–2 % of the trapped mass per cycle at WOT (typical
+/// blow-by is ~1 % of intake flow; Heywood, ch. 8).
+const BLOWBY_AREA_FRACTION: f64 = 1e-4;
 /// Fraction of the equalising mass a valve may move per substep (see `step`).
 const VALVE_RELAX: f64 = 0.5;
 
@@ -362,6 +368,7 @@ impl Engine {
         let delay_len = ((self.def.exhaust_runner_length_m / EXHAUST_SOUND_SPEED) / dt)
             .round()
             .max(1.0) as usize;
+        let blowby_area = BLOWBY_AREA_FRACTION * g.piston_area();
         let outlet_area = DISCHARGE_CD * PI * 0.25 * self.def.exhaust_outlet_diameter_m.powi(2);
 
         let mut gas_torque = 0.0;
@@ -395,6 +402,9 @@ impl Engine {
                 f.apply(&mut cs.gas, &mut cs.runner);
             }
             exchange_with_reservoir(&mut cs.runner, &self.atm, outlet_area, dt);
+            // Blow-by past the rings into the (vented) crankcase. Small while running, but it
+            // is what lets a charge trapped at a stop bleed off so the starter can turn it.
+            exchange_with_reservoir(&mut cs.gas, &self.atm, blowby_area, dt);
 
             // Combustion events.
             if crossed(prev, cur, ivc) {
@@ -847,5 +857,86 @@ mod tests {
             "torque {}",
             e.torque_nm()
         );
+    }
+
+    /// Stall with ignition off after `idle_s` of running; returns the stalled engine.
+    fn stalled(def: EngineDef, seed: u64, idle_s: f64) -> Engine {
+        let mut e = Engine::new(def, 900.0, seed);
+        run(&mut e, idle_s, &Controls::default());
+        run(
+            &mut e,
+            4.0,
+            &Controls {
+                ignition: false,
+                ..Controls::default()
+            },
+        );
+        assert!(e.rpm() < 1.0, "did not stall: {}", e.rpm());
+        e
+    }
+
+    #[test]
+    fn compression_bleeds_off_when_stopped() {
+        // Regression: a cylinder sealed on its compression stroke kept ~6 bar forever, a gas
+        // spring the starter could not push through. Rings leak (blow-by), so it decays.
+        let mut e = stalled(EngineDef::inline4(), 0, 0.5);
+        let max_p = |e: &Engine| {
+            (0..4)
+                .map(|i| e.cylinder(i).pressure_pa)
+                .fold(0.0, f64::max)
+        };
+        // The starter pushes cylinder 1 up its compression stroke and stalls against it.
+        run(
+            &mut e,
+            0.4,
+            &Controls {
+                ignition: false,
+                starter: true,
+                ..Controls::default()
+            },
+        );
+        assert!(
+            max_p(&e) > 4e5,
+            "precondition: trapped charge, got {}",
+            max_p(&e)
+        );
+        run(
+            &mut e,
+            2.0,
+            &Controls {
+                ignition: false,
+                ..Controls::default()
+            },
+        );
+        assert!(max_p(&e) < 1.5e5, "still {} Pa", max_p(&e));
+    }
+
+    #[test]
+    fn restarts_from_any_stall_position() {
+        // Seeds 0, 7, 9 stalled the I4 against compression (found by sweeping 60 positions).
+        for (def, seeds) in [
+            (EngineDef::inline4(), vec![0u64, 7, 9, 3]),
+            (EngineDef::single(), vec![38, 5]),
+            (EngineDef::lfa_v10(), vec![0, 4]),
+        ] {
+            for k in seeds {
+                let mut e = stalled(def.clone(), k, 0.5 + 0.013 * k as f64);
+                run(
+                    &mut e,
+                    1.5,
+                    &Controls {
+                        starter: true,
+                        ..Controls::default()
+                    },
+                );
+                run(&mut e, 1.5, &Controls::default());
+                assert!(
+                    e.rpm() > 400.0,
+                    "{} seed {k}: {} rpm after start",
+                    def.name,
+                    e.rpm()
+                );
+            }
+        }
     }
 }
