@@ -119,6 +119,14 @@ lines below bind even if you never open the document; open it before working on 
 - **Codex and Claude Code** → [docs/agents/agent-compatibility.md](docs/agents/agent-compatibility.md).
   Rules are edited in `AGENTS.md` (or its `docs/agents/` document), never in `CLAUDE.md`.
 
+**Timing-dependent jobs take the CPU for themselves, nothing else does.** Real-time runs with deadlines and
+benchmarks or pacing measurements run under a shared lock with any other session on the machine: holds under
+30 min and under `timeout`; a waiter goes ahead at once when the holder is orphaned (its process or its session is
+gone), and after 30 min in any case — nobody waits forever, not even a session left alone. Builds and test suites
+never take it. Protocol and
+script: [agent orchestration](docs/agents/agent-orchestration.md#exclusive-cpu-between-sessions--only-for-jobs-whose-result-depends-on-time)
+(`scripts/cpu-lock.sh` here).
+
 ## 🧠 Heavy jobs run inside a memory cgroup (MANDATORY)
 
 **No exceptions:** any long or parallel job started here — the full test suite, coverage, mutation
