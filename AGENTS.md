@@ -26,6 +26,16 @@ exported/imported as JSON or YAML. For anyone who likes engines; it must run on 
   agent would otherwise rediscover. Read it when you start, append to it when you finish. See
   [Agent orchestration](docs/agents/agent-orchestration.md#agent-orchestration--parallel-where-its-free-batched-where-its-yours).
 
+## Project skills
+
+Installed in `.agents/skills/` (Codex) and symlinked in `.claude/skills/` (Claude Code), pinned in
+`skills-lock.json` (`npx skills add <owner/repo> --skill <name>`; reviewed before install):
+
+- `rust-skills` (leonardomso/rust-skills) — Rust guidelines; consult when writing or reviewing Rust.
+- `egui`, `egui-kittest`, `egui-review`, `eframe-project` (gregorycarnegie/egui-agent-skills) —
+  written for egui 0.36; we are on 0.37, so confirm API claims against the registry source
+  (see `docs/FINDINGS.md`). Run `egui-review` before merging UI changes.
+
 ## ⚡ graphify — use every session
 
 ```text

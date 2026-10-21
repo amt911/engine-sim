@@ -9,3 +9,4 @@
 7. Exportacion de los motores a un json o yaml
 8. Importacion de los motores a un json o yaml
 9. Simulacion de carga, como caballos, par, marchas, etc para simular que corre el motor.
+10. Vista en 3D del motor — al final del todo (pedido 2026-10-21).

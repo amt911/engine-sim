@@ -60,6 +60,6 @@ impl eframe::App for EngineApp {
             .show(ui, |ui| view::gauges(ui, &snap, &self.sim.audio));
         egui::Panel::bottom("plots").show(ui, |ui| view::plots(ui, &snap));
         egui::CentralPanel::default().show(ui, |ui| view::engine(ui, &snap));
-        ui.ctx().request_repaint();
+        // No request_repaint here: the sim thread requests one per published snapshot.
     }
 }
