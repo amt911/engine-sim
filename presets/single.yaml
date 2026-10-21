@@ -1,4 +1,4 @@
-version: 1
+version: 2
 engine:
   name: Single 500
   geometry:
@@ -24,10 +24,16 @@ engine:
   flywheel_inertia_kgm2: 0.12
   plenum_volume_m3: 0.0015
   throttle_diameter_m: 0.04
-  idle_throttle: 0.0012
-  exhaust_runner_length_m: 0.8
-  exhaust_runner_diameter_m: 0.04
-  exhaust_outlet_diameter_m: 0.045
+  idle_throttle: 0.0015
+  exhaust:
+    primary_length_m: 0.8
+    primary_diameter_m: 0.04
+    collectors: []
+    collector_length_m: 0.05
+    collector_diameter_m: 0.04
+    tail_length_m: 1.0
+    tail_diameter_m: 0.045
+    muffler_transmission: 0.6
   redline_rpm: 7500.0
   starter_torque_nm: 25.0
   fmep_bar:

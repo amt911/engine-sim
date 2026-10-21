@@ -5,7 +5,7 @@ use crate::engine::EngineDef;
 use serde::{Deserialize, Serialize};
 
 /// Current file format version. Bump on a breaking change and add a migration + test.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 pub const MAX_CYLINDERS: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,7 +34,7 @@ pub enum ConfigError {
     #[error("cannot parse engine file: {0}")]
     Parse(String),
     #[error("unsupported engine file version {0} (this build reads up to {FORMAT_VERSION})")]
-    UnsupportedVersion(u32),
+    UnsupportedVersion(u64),
     #[error("invalid engine: {}", .0.join("; "))]
     Invalid(Vec<String>),
 }
@@ -63,25 +63,63 @@ pub fn to_string(def: &EngineDef, format: Format) -> Result<String, ConfigError>
 
 /// Parse and validate an engine file.
 pub fn from_str(text: &str, format: Format) -> Result<EngineDef, ConfigError> {
-    // Read the version first so a newer file says so instead of failing on a field.
-    #[derive(Deserialize)]
-    struct Header {
-        version: u32,
-    }
+    // Parse into a generic tree first: read the version, migrate old layouts, then type it.
     let parse = |e: String| ConfigError::Parse(e);
-    let header: Header = match format {
+    let mut tree: serde_json::Value = match format {
         Format::Yaml => serde_yaml_ng::from_str(text).map_err(|e| parse(e.to_string()))?,
         Format::Json => serde_json::from_str(text).map_err(|e| parse(e.to_string()))?,
     };
-    if header.version == 0 || header.version > FORMAT_VERSION {
-        return Err(ConfigError::UnsupportedVersion(header.version));
+    let version = tree
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| parse("missing `version`".into()))?;
+    if version == 0 || version > FORMAT_VERSION as u64 {
+        return Err(ConfigError::UnsupportedVersion(version));
     }
-    let file: EngineFile = match format {
-        Format::Yaml => serde_yaml_ng::from_str(text).map_err(|e| parse(e.to_string()))?,
-        Format::Json => serde_json::from_str(text).map_err(|e| parse(e.to_string()))?,
-    };
+    if version == 1 {
+        migrate_v1(&mut tree);
+    }
+    let file: EngineFile = serde_json::from_value(tree).map_err(|e| parse(e.to_string()))?;
     validate(&file.engine)?;
     Ok(file.engine)
+}
+
+/// v1 → v2: the per-cylinder 0D runner + outlet became an exhaust system of waveguides.
+fn migrate_v1(tree: &mut serde_json::Value) {
+    tree["version"] = 2.into();
+    let Some(engine) = tree
+        .get_mut("engine")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    let mut exhaust = serde_json::Map::new();
+    for (old, new) in [
+        ("exhaust_runner_length_m", "primary_length_m"),
+        ("exhaust_runner_diameter_m", "primary_diameter_m"),
+        ("exhaust_outlet_diameter_m", "tail_diameter_m"),
+    ] {
+        if let Some(v) = engine.remove(old) {
+            exhaust.insert(new.into(), v);
+        }
+    }
+    if exhaust.is_empty() {
+        return;
+    }
+    // Merge into an `exhaust` object the file may already have (its keys win).
+    match engine
+        .get_mut("exhaust")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        Some(existing) => {
+            for (k, v) in exhaust {
+                existing.entry(k).or_insert(v);
+            }
+        }
+        None => {
+            engine.insert("exhaust".into(), exhaust.into());
+        }
+    }
 }
 
 /// Every problem found, so the editor can show them all at once.
@@ -142,12 +180,33 @@ pub fn validate(def: &EngineDef) -> Result<(), ConfigError> {
         within(def.idle_throttle, 0.0, 1.0),
         "idle throttle must be in [0, 1]",
     );
+    let x = &def.exhaust;
     check(
-        within(def.exhaust_runner_length_m, 0.05, 10.0)
-            && within(def.exhaust_runner_diameter_m, 0.005, 0.3)
-            && within(def.exhaust_outlet_diameter_m, 0.005, 0.3),
-        "exhaust runner 0.05–10 m long, runner and outlet Ø 5–300 mm",
+        within(x.primary_length_m, 0.05, 10.0)
+            && within(x.collector_length_m, 0.01, 10.0)
+            && within(x.tail_length_m, 0.05, 20.0)
+            && [
+                x.primary_diameter_m,
+                x.collector_diameter_m,
+                x.tail_diameter_m,
+            ]
+            .iter()
+            .all(|d| within(*d, 0.005, 0.3)),
+        "exhaust pipes: lengths 0.01–20 m, Ø 5–300 mm",
     );
+    check(
+        within(x.muffler_transmission, 0.05, 1.0),
+        "muffler transmission must be 0.05–1",
+    );
+    if !x.collectors.is_empty() {
+        let mut all: Vec<usize> = x.collectors.iter().flatten().copied().collect();
+        all.sort_unstable();
+        check(
+            all == (1..=def.cylinders).collect::<Vec<_>>()
+                && x.collectors.iter().all(|g| !g.is_empty()),
+            "exhaust collectors must group every cylinder exactly once",
+        );
+    }
     check(
         within(def.redline_rpm, 500.0, 30_000.0),
         "redline must be 500–30000 rpm",
@@ -223,9 +282,9 @@ mod tests {
     #[test]
     fn written_file_carries_version() {
         let y = to_string(&EngineDef::single(), Format::Yaml).unwrap();
-        assert!(y.starts_with("version: 1\n"), "{y}");
+        assert!(y.starts_with("version: 2\n"), "{y}");
         let j = to_string(&EngineDef::single(), Format::Json).unwrap();
-        assert!(j.contains("\"version\": 1"), "{j}");
+        assert!(j.contains("\"version\": 2"), "{j}");
     }
 
     #[test]
@@ -298,11 +357,19 @@ mod tests {
             ("inertia", Box::new(|d| d.flywheel_inertia_kgm2 = 1e-12)),
             ("bore", Box::new(|d| d.geometry.bore_m = 1e-6)),
             (
+                "rod",
+                Box::new(|d| d.geometry.rod_m = d.geometry.stroke_m * 0.5),
+            ),
+            (
                 "compression",
                 Box::new(|d| d.geometry.compression_ratio = 1e9),
             ),
             ("burn", Box::new(|d| d.burn_duration_deg = 1e9)),
-            ("exhaust", Box::new(|d| d.exhaust_runner_length_m = 1e7)),
+            ("exhaust", Box::new(|d| d.exhaust.primary_length_m = 1e7)),
+            (
+                "exhaust",
+                Box::new(|d| d.exhaust.tail_diameter_m = f64::NAN),
+            ),
             (
                 "intake valve",
                 Box::new(|d| d.intake_valve.open_deg = f64::NAN),
@@ -320,6 +387,56 @@ mod tests {
                 "{needle}: {errs:?}"
             );
         }
+    }
+
+    #[test]
+    fn version_1_files_migrate_to_the_exhaust_system() {
+        // v1 (≤ v0.2.0) had one 0D runner per cylinder plus an outlet orifice.
+        let v1 = "version: 1\nengine:\n  name: Old\n  cylinders: 4\n  exhaust_runner_length_m: 0.7\n  exhaust_runner_diameter_m: 0.041\n  exhaust_outlet_diameter_m: 0.052\n";
+        let d = from_str(v1, Format::Yaml).unwrap();
+        assert_eq!(d.name, "Old");
+        assert_eq!(d.exhaust.primary_length_m, 0.7);
+        assert_eq!(d.exhaust.primary_diameter_m, 0.041);
+        assert_eq!(d.exhaust.tail_diameter_m, 0.052);
+        let j = r#"{"version": 1, "engine": {"exhaust_runner_length_m": 0.9}}"#;
+        assert_eq!(
+            from_str(j, Format::Json).unwrap().exhaust.primary_length_m,
+            0.9
+        );
+        // a v2 file must not use the old keys
+        let bad = "version: 2\nengine:\n  exhaust_runner_length_m: 0.7\n";
+        assert!(matches!(
+            from_str(bad, Format::Yaml),
+            Err(ConfigError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn v1_migration_merges_into_an_existing_exhaust_object() {
+        let v1 = "version: 1\nengine:\n  exhaust_runner_length_m: 0.7\n  exhaust:\n    tail_length_m: 2.0\n";
+        let d = from_str(v1, Format::Yaml).unwrap();
+        assert_eq!(d.exhaust.primary_length_m, 0.7);
+        assert_eq!(d.exhaust.tail_length_m, 2.0);
+    }
+
+    #[test]
+    fn huge_versions_are_reported_as_written() {
+        let e = from_str("version: 4294967297\nengine: {}\n", Format::Yaml).unwrap_err();
+        assert_eq!(e, ConfigError::UnsupportedVersion(4_294_967_297));
+    }
+
+    #[test]
+    fn collectors_must_partition_the_cylinders() {
+        let mut d = EngineDef::lfa_v10();
+        assert!(validate(&d).is_ok());
+        d.exhaust.collectors = vec![vec![1, 3, 5, 7, 9], vec![2, 4, 6, 8]];
+        assert!(validate(&d).is_err(), "cylinder 10 missing");
+        d.exhaust.collectors = vec![vec![1, 3, 5, 7, 9, 2], vec![2, 4, 6, 8, 10]];
+        assert!(validate(&d).is_err(), "cylinder 2 twice");
+        d.exhaust.collectors = vec![];
+        assert!(validate(&d).is_ok(), "empty = one collector for all");
+        d.exhaust.collectors = vec![(1..=10).collect(), vec![]];
+        assert!(validate(&d).is_err(), "an empty group is a mistake");
     }
 
     #[test]
@@ -357,8 +474,20 @@ mod tests {
 
     #[test]
     fn default_firing_orders_are_permutations_and_classic() {
+        assert_eq!(default_firing_order(3), vec![1, 3, 2]);
         assert_eq!(default_firing_order(4), vec![1, 3, 4, 2]);
+        assert_eq!(default_firing_order(5), vec![1, 2, 4, 5, 3]);
         assert_eq!(default_firing_order(6), vec![1, 5, 3, 6, 2, 4]);
+        assert_eq!(default_firing_order(8), vec![1, 6, 2, 5, 8, 3, 7, 4]);
+        assert_eq!(
+            default_firing_order(10),
+            vec![1, 6, 5, 10, 2, 7, 3, 8, 4, 9]
+        );
+        assert_eq!(
+            default_firing_order(12),
+            vec![1, 7, 5, 11, 3, 9, 6, 12, 2, 8, 4, 10]
+        );
+        assert_eq!(default_firing_order(7), vec![1, 3, 5, 7, 2, 4, 6]);
         for n in 1..=MAX_CYLINDERS {
             let mut o = default_firing_order(n);
             o.sort();

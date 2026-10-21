@@ -159,8 +159,9 @@ Planned (add when the phase needs them, then update this table): `fft-convolver`
 ```text
 /
 ├── crates/
-│   ├── engine-core/   # pure physics, no IO: units, geometry (crank-slider, Wankel), gas (0D volumes,
-│   │                  #   orifice flow, later 1D pipes), combustion (Wiebe), dynamics, load/dyno,
+│   ├── engine-core/   # pure physics, no IO: units, geometry (crank-slider), gas (0D volumes,
+│   │                  #   orifice + implicit port flow), waveguide + exhaust (pipes, collectors,
+│   │                  #   open ends), combustion (Wiebe), dynamics, load/dyno,
 │   │                  #   gearbox, engine definition (serde) + presets. 100% deterministic, f64.
 │   ├── engine-audio/  # pure DSP (DC blocker, filters, radiation, later convolution) + cpal output
 │   │                  #   behind an `AudioSink` boundary.

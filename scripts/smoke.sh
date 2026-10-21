@@ -2,7 +2,7 @@
 # Real-environment smoke: drives the release binary. PASS/FAIL per phase, exits on first failure.
 set -uo pipefail
 cd "$(dirname "$0")/.."
-BIN=target/release/engine-sim
+BIN="${CARGO_TARGET_DIR:-target}/release/engine-sim"
 OUT=$(mktemp -d)
 trap 'rm -rf "$OUT"' EXIT
 phase() { echo "== $1"; }
@@ -39,7 +39,7 @@ echo "PASS file round trip"
 
 if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && "$BIN" --help 2>/dev/null | grep -q -- --quit-after; then
   phase "gui launch"
-  "$BIN" --quit-after 4 --preset single >"$OUT/gui.log" 2>&1 || { cat "$OUT/gui.log"; fail "gui exited with error"; }
+  timeout 30 "$BIN" --quit-after 4 --preset single >"$OUT/gui.log" 2>&1 || { cat "$OUT/gui.log"; fail "gui exited with error or did not close within 30 s"; }
   echo "PASS gui launch"
 fi
 echo "ALL PASS"

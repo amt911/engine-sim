@@ -53,6 +53,22 @@ pub fn format_firing_order(order: &[usize]) -> String {
         .join("-")
 }
 
+/// Collector groups: "1-3-5-7-9 / 2-4-6-8-10"; empty means one collector for all.
+pub fn parse_collectors(text: &str) -> Result<Vec<Vec<usize>>, String> {
+    if text.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    text.split('/').map(parse_firing_order).collect()
+}
+
+pub fn format_collectors(groups: &[Vec<usize>]) -> String {
+    groups
+        .iter()
+        .map(|g| format_firing_order(g))
+        .collect::<Vec<_>>()
+        .join(" / ")
+}
+
 /// Draw the editor; edits `state.def` and marks it dirty when the result is valid.
 pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
     let before = state.def.clone();
@@ -181,31 +197,73 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
             0.01,
             "Idle air (% of throttle)",
         );
-        scaled(
-            ui,
-            &mut d.exhaust_runner_length_m,
-            1000.0,
-            100.0..=2000.0,
-            10.0,
-            "Exhaust runner length (mm)",
-        );
-        scaled(
-            ui,
-            &mut d.exhaust_runner_diameter_m,
-            1000.0,
-            20.0..=90.0,
-            1.0,
-            "Exhaust runner Ø (mm)",
-        );
-        scaled(
-            ui,
-            &mut d.exhaust_outlet_diameter_m,
-            1000.0,
-            20.0..=110.0,
-            1.0,
-            "Exhaust outlet Ø (mm)",
-        );
     });
+
+    egui::CollapsingHeader::new("Exhaust")
+        .default_open(true)
+        .show(ui, |ui| {
+            let x = &mut d.exhaust;
+            scaled(
+                ui,
+                &mut x.primary_length_m,
+                1000.0,
+                100.0..=2000.0,
+                10.0,
+                "Primary length (mm)",
+            );
+            scaled(
+                ui,
+                &mut x.primary_diameter_m,
+                1000.0,
+                20.0..=90.0,
+                1.0,
+                "Primary Ø (mm)",
+            );
+            ui.horizontal(|ui| {
+                let l = ui.label("Collectors");
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.collectors_text)
+                        .hint_text("all into one")
+                        .desired_width(180.0),
+                )
+                .labelled_by(l.id);
+            });
+            if let Ok(groups) = parse_collectors(&state.collectors_text) {
+                x.collectors = groups;
+            }
+            scaled(
+                ui,
+                &mut x.collector_length_m,
+                1000.0,
+                10.0..=1500.0,
+                10.0,
+                "Collector length (mm)",
+            );
+            scaled(
+                ui,
+                &mut x.collector_diameter_m,
+                1000.0,
+                20.0..=120.0,
+                1.0,
+                "Collector Ø (mm)",
+            );
+            scaled(
+                ui,
+                &mut x.tail_length_m,
+                1000.0,
+                100.0..=4000.0,
+                10.0,
+                "Tail pipe length (mm)",
+            );
+            scaled(
+                ui,
+                &mut x.tail_diameter_m,
+                1000.0,
+                20.0..=120.0,
+                1.0,
+                "Tail pipe Ø (mm)",
+            );
+        });
 
     egui::CollapsingHeader::new("Mechanics").show(ui, |ui| {
         ui.add(
@@ -231,6 +289,9 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
         Err(e) => vec![e.to_string()],
     };
     if let Err(e) = parse_firing_order(&state.firing_text) {
+        state.errors.insert(0, e);
+    }
+    if let Err(e) = parse_collectors(&state.collectors_text) {
         state.errors.insert(0, e);
     }
     for e in &state.errors {
@@ -326,6 +387,32 @@ mod tests {
             "{:?}",
             h.state().errors
         );
+    }
+
+    #[test]
+    fn collectors_text_round_trip() {
+        assert_eq!(parse_collectors(""), Ok(vec![]));
+        assert_eq!(
+            parse_collectors("1-3 / 2-4"),
+            Ok(vec![vec![1, 3], vec![2, 4]])
+        );
+        assert!(parse_collectors("1-3 / x").is_err());
+        assert_eq!(format_collectors(&[vec![1, 3], vec![2, 4]]), "1-3 / 2-4");
+        assert_eq!(format_collectors(&[]), "");
+    }
+
+    #[test]
+    fn collectors_field_edits_the_exhaust() {
+        let mut h = harness(EngineDef::inline4());
+        h.get_by_label("Collectors").focus();
+        h.run();
+        h.get_by_label("Collectors").type_text("1-4 / 2-3");
+        h.run();
+        assert_eq!(
+            h.state().def.exhaust.collectors,
+            vec![vec![1, 4], vec![2, 3]]
+        );
+        assert!(h.state().engine_dirty);
     }
 
     #[test]
