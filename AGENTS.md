@@ -26,6 +26,16 @@ exported/imported as JSON or YAML. For anyone who likes engines; it must run on 
   agent would otherwise rediscover. Read it when you start, append to it when you finish. See
   [Agent orchestration](docs/agents/agent-orchestration.md#agent-orchestration--parallel-where-its-free-batched-where-its-yours).
 
+## Project skills
+
+Installed in `.agents/skills/` (Codex) and symlinked in `.claude/skills/` (Claude Code), pinned in
+`skills-lock.json` (`npx skills add <owner/repo> --skill <name>`; reviewed before install):
+
+- `rust-skills` (leonardomso/rust-skills) — Rust guidelines; consult when writing or reviewing Rust.
+- `egui`, `egui-kittest`, `egui-review`, `eframe-project` (gregorycarnegie/egui-agent-skills) —
+  written for egui 0.36; we are on 0.37, so confirm API claims against the registry source
+  (see `docs/FINDINGS.md`). Run `egui-review` before merging UI changes.
+
 ## ⚡ graphify — use every session
 
 ```text
@@ -168,17 +178,18 @@ snapshots). Audio fill level drives how many sim steps run per block (see resear
 
 ```bash
 cargo run -p engine-app --release                       # the app
-cargo run -p engine-app --release -- --engine presets/inline4.yaml
-cargo run -p engine-app --release -- --headless --seconds 3 --wav /tmp/out.wav
+cargo run -p engine-app --release -- --preset inline4
+cargo run -p engine-app --release -- --headless --seconds 3 --wav /tmp/out.wav --check
 cargo test --workspace                                  # all tests
 cargo clippy --workspace --all-targets -- -D warnings   # lint (gate)
 cargo fmt --all --check                                 # format (gate)
-scripts/heavy.sh cargo llvm-cov --workspace --fail-under-lines 80   # coverage gate
-scripts/heavy.sh cargo mutants -p engine-core -j 4      # mutation gate
+scripts/coverage.sh                                     # coverage gate (80% lines)
+scripts/mutants.sh                                      # mutation gate (floor 85%, ratchet)
 scripts/smoke.sh                                        # real-environment smoke
 ```
 
-System deps (Arch): `alsa-lib`, `vulkan-icd-loader` (or GL fallback).
+System deps (Arch): `alsa-lib`, `vulkan-icd-loader`, `llvm` (for coverage). Tools:
+`cargo install cargo-llvm-cov cargo-mutants`.
 
 ---
 
@@ -188,8 +199,8 @@ Stack and conventions: [docs/agents/testing.md](docs/agents/testing.md).
 
 - **Coverage gate: 80%** lines over the workspace, excluding UI rendering glue and the `cpal`
   device code (justified in `docs/agents/testing.md`). Critical physics ≥ 90%.
-- **Mutation gate: 60% minimum** over `engine-core`; advisory until reached, with the date and the
-  score written down, then a ratchet. See
+- **Mutation gate: 60% minimum** over `engine-core`; current floor **85%** (`scripts/mutants.sh`,
+  measured 89.9% on 2026-10-21) — a ratchet, raised with the score, never lowered. See
   [Mutation gate — the 60% floor](docs/agents/quality-beyond-coverage.md#mutation-gate--the-60-floor-and-it-only-goes-up).
 - **The "E2E" of this project is the real binary**: headless render (WAV non-silent, finite, at the
   right firing frequency) + GUI launch smoke in `scripts/smoke.sh`, and `egui_kittest` tests that

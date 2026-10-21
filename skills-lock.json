@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "skills": {
+    "eframe-project": {
+      "source": "gregorycarnegie/egui-agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/eframe-project/SKILL.md",
+      "computedHash": "dcab69afaee4da37a711a6f25778ca24af951ed01a2591dbc3d3dafac90608c6"
+    },
+    "egui": {
+      "source": "gregorycarnegie/egui-agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/egui/SKILL.md",
+      "computedHash": "7c54191f4518662052b3794a8ccec328f1dc5cfb6ad0ab500c5b8ad0aceb58ee"
+    },
+    "egui-kittest": {
+      "source": "gregorycarnegie/egui-agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/egui-kittest/SKILL.md",
+      "computedHash": "3392bfb3d57fcef023905d5b2a3399356950f576c6a740725785ccdecaf6ece1"
+    },
+    "egui-review": {
+      "source": "gregorycarnegie/egui-agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/egui-review/SKILL.md",
+      "computedHash": "b1abf02e4d781930a0c83f2d90a72075c3bb90a52775c7324af15b65d96d4a24"
+    },
+    "rust-skills": {
+      "source": "leonardomso/rust-skills",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "9719e9ebd94783d3436ed26156bf9bf2e4c7f63b3220d9d17ff90cba55c92bb8"
+    }
+  }
+}

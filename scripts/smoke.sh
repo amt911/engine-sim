@@ -18,17 +18,20 @@ echo "PASS version"
 
 if "$BIN" --help 2>/dev/null | grep -q -- --headless; then
   phase "headless render"
-  for preset in presets/*.yaml; do
+  for preset in $("$BIN" --help | sed -n 's/.*possible values: \(.*\)]/\1/p' | head -1 | tr -d ','); do
+    "$BIN" --preset "$preset" --headless --seconds 3 --wav "$OUT/$preset.wav" --check || fail "headless $preset"
+    echo "PASS headless $preset"
+  done
+  for preset in presets/*.yaml presets/*.json; do
     [ -e "$preset" ] || continue
-    wav="$OUT/$(basename "$preset" .yaml).wav"
-    "$BIN" --engine "$preset" --headless --seconds 3 --wav "$wav" --check || fail "headless $preset"
+    "$BIN" --engine "$preset" --headless --seconds 3 --wav "$OUT/x.wav" --check || fail "headless $preset"
     echo "PASS headless $preset"
   done
 fi
 
 if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && "$BIN" --help 2>/dev/null | grep -q -- --quit-after; then
   phase "gui launch"
-  "$BIN" --quit-after 4 >"$OUT/gui.log" 2>&1 || { cat "$OUT/gui.log"; fail "gui exited with error"; }
+  "$BIN" --quit-after 4 --preset single >"$OUT/gui.log" 2>&1 || { cat "$OUT/gui.log"; fail "gui exited with error"; }
   echo "PASS gui launch"
 fi
 echo "ALL PASS"

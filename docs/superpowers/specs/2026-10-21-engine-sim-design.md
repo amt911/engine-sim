@@ -48,6 +48,7 @@ the outside contract (`Simulation::step(dt) -> sample`, `snapshot()`):
 | `v0.5.0` | Rotary (Wankel) engines |
 | `v0.6.0` | 1D finite-volume exhaust (validated on Sod shock tube) |
 | `v0.7.0` | Adaptive quality, SIMD, performance on old machines |
+| `v1.0.0` | **3D view** of the engine (user request 2026-10-21: last of all) — wgpu 3D render of block, crank, pistons, valves, manifolds; 2D cross-section stays as an option |
 
 ## Cases (what verification drives)
 

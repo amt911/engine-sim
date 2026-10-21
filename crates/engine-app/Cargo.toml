@@ -12,3 +12,11 @@ path = "src/main.rs"
 [dependencies]
 engine-core.workspace = true
 engine-audio.workspace = true
+eframe.workspace = true
+clap.workspace = true
+hound.workspace = true
+rtrb.workspace = true
+
+[dev-dependencies]
+approx.workspace = true
+egui_kittest.workspace = true

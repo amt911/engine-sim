@@ -37,4 +37,32 @@ Found: <YYYY-MM-DD> · <area: build | tests | db | ci | deploy | env>
 
 ## Findings
 
-_None yet._
+### `cargo llvm-cov` fails: "failed to find llvm-tools-preview"
+
+**Symptom.** `cargo llvm-cov` asks for `rustup component add llvm-tools-preview`; there is no rustup.
+**Cause.** Rust comes from Arch's `rust` package, which ships no llvm-tools component.
+**Fix / workaround.** Use the system LLVM (same major as `rustc -vV`): `LLVM_COV=/usr/bin/llvm-cov
+LLVM_PROFDATA=/usr/bin/llvm-profdata`. `scripts/coverage.sh` sets them.
+**Why it isn't obvious.** The error points at rustup, which is not installed here at all.
+
+Found: 2026-10-21 · build
+
+### egui 0.37: `App::ui` replaces `update`, `Panel::left` replaces `SidePanel`
+
+**Symptom.** Examples online use `SidePanel::left(..).show(ctx, ..)` and `fn update(ctx, frame)`.
+**Cause.** egui/eframe 0.37 renamed them: `eframe::App::ui(&mut self, ui, frame)`,
+`egui::Panel::{left,right,top,bottom}(id).show(ui, ..)`, `CentralPanel::default().show(ui, ..)`;
+`rect_stroke` takes a `StrokeKind`.
+**Fix / workaround.** Read the registry source (`~/.cargo/registry/src/*/egui-0.37*/`), not old docs.
+**Why it isn't obvious.** Most tutorials and model memory predate the rename.
+
+Found: 2026-10-21 · build
+
+### kittest: a labelled `Slider` matches two nodes
+
+**Symptom.** `get_by_label("Spark advance …")` panics: "Found two or more nodes".
+**Cause.** `Slider::text` labels both the slider and its value box.
+**Fix / workaround.** `get_by_role_and_label(egui::accesskit::Role::Slider, label)`.
+**Why it isn't obvious.** Buttons and checkboxes with the same API match exactly one node.
+
+Found: 2026-10-21 · tests
