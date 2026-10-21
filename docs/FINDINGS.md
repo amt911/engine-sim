@@ -47,8 +47,9 @@ Found: <YYYY-MM-DD> · <area: build | tests | db | ci | deploy | env>
 - Overrun manifold at 0.06 bar (fixed idle air, 8× pumping): ECU dashpot → 0.17 bar. Biggest win.
 - Inviscid pipes rang forever: Darcy wall friction (f = 0.025).
 - Overrun near-vacuum broke the fixed FV step's CFL (a primary reached 1000 bar): sub-cycling.
-**Now.** Coast/WOT = 2.2× at the firing order. Remaining suspects: reverse-flow Cd through the
-exhaust valve lower than forward (Blair); then compare spectra with real recordings.
+**Now.** Coast/WOT = 2.2× at the firing order. Ruled out: reverse-flow Cd (added, ratio 0.75:
+no change — the coast tone is not valve-area limited). Next: compare with real recordings; the
+1D intake (induction-side reversion through the cylinder).
 **Tools.** `examples/{port_probe,sound_breakdown,spectrum_probe,blowup_probe}.rs`.
 
 Found: 2026-10-22 · physics

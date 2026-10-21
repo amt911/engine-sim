@@ -45,6 +45,10 @@ pub struct EngineDef {
     pub fmep_bar: [f64; 3],
     /// Sound texture levels (noise, intake, mechanics, combustion variability).
     pub sound: SoundDef,
+    /// Discharge-coefficient ratio for reverse flow through the exhaust valve (pipe → cylinder)
+    /// relative to forward flow. Estimate (Blair, *Design and Simulation of Four-Stroke Engines*,
+    /// separate inflow/outflow Cd maps); 1 = symmetric.
+    pub exhaust_reverse_cd_ratio: f64,
     /// Deceleration fuel cut-off: with the throttle closed above this speed no fuel is injected
     /// (what production ECUs do on overrun); 0 disables it.
     pub overrun_fuel_cut_rpm: f64,
@@ -104,6 +108,7 @@ impl EngineDef {
             fmep_bar: [0.97, 0.15, 0.05],
             sound: SoundDef::default(),
             overrun_fuel_cut_rpm: 1500.0,
+            exhaust_reverse_cd_ratio: 0.75,
         }
     }
 
@@ -179,6 +184,7 @@ impl EngineDef {
             fmep_bar: [0.8, 0.10, 0.015],
             sound: SoundDef::default(),
             overrun_fuel_cut_rpm: 1500.0,
+            exhaust_reverse_cd_ratio: 0.75,
         }
     }
 
@@ -298,6 +304,8 @@ pub struct Engine {
     fv: Option<ExhaustFv>,
     flows: Vec<f64>,
     texture: Texture,
+    /// Total mass that flowed back from the exhaust into the cylinders, kg (diagnostics).
+    reversion_kg: f64,
 }
 
 /// Crank angle `a` (deg) crossed in the step (prev, cur], on the 720° circle.
@@ -341,6 +349,7 @@ impl Engine {
             fv: None,
             flows: Vec::new(),
             texture: Texture::new(seed ^ 0x7E57),
+            reversion_kg: 0.0,
         }
     }
 
@@ -452,19 +461,34 @@ impl Engine {
                 (a_in > 0.0).then(|| plan_exchange(&self.plenum, &cs.gas, a_in, dt, VALVE_RELAX));
             // The exhaust port and its primary pipe are solved together: the flow raises the
             // pipe pressure at the port by z·ṁ (see `gas::port_flow`).
-            let f_ex = (a_ex > 0.0).then(|| match &self.fv {
+            let plan_ex = |area: f64| match &self.fv {
                 // FV: the first pipe cell is a real volume — a planned two-volume exchange.
-                Some(fv) => plan_exchange(&cs.gas, &fv.port_volume(i), a_ex, dt, VALVE_RELAX),
+                Some(fv) => plan_exchange(&cs.gas, &fv.port_volume(i), area, dt, VALVE_RELAX),
                 None => exhaust_valve_flow(
                     &cs.gas,
-                    a_ex,
+                    area,
                     arriving,
                     z_port,
                     REVERSION_TEMP_K,
                     dt,
                     VALVE_RELAX,
                 ),
+            };
+            // Reverse flow (pipe → cylinder) passes the valve against the port's curve with a lower
+            // discharge coefficient than forward flow (Blair measures separate in/out maps).
+            let f_ex = (a_ex > 0.0).then(|| {
+                let f = plan_ex(a_ex);
+                if f.dm < 0.0 && self.def.exhaust_reverse_cd_ratio < 1.0 {
+                    plan_ex(a_ex * self.def.exhaust_reverse_cd_ratio)
+                } else {
+                    f
+                }
             });
+            if let Some(f) = f_ex
+                && f.dm < 0.0
+            {
+                self.reversion_kg -= f.dm;
+            }
             if let Some(f) = f_in {
                 f.apply(&mut self.plenum, &mut cs.gas);
             }
@@ -590,6 +614,11 @@ impl Engine {
     pub fn plenum_pressure_pa(&self) -> f64 {
         self.plenum.pressure()
     }
+    /// Total exhaust reversion (pipe → cylinder) so far, kg.
+    pub fn exhaust_reversion_kg(&self) -> f64 {
+        self.reversion_kg
+    }
+
     /// The exhaust backend running (None before the first step).
     pub fn exhaust_model(&self) -> Option<ExhaustModel> {
         match (&self.net, &self.fv) {
@@ -1316,6 +1345,31 @@ mod tests {
                 "{}: overrun MAP {map:.3} bar",
                 def.name
             );
+        }
+    }
+
+    #[test]
+    fn reverse_flow_through_the_exhaust_valve_is_throttled() {
+        // Same overrun state, reverse-flow Cd ratio 1.0 vs 0.5: reversion mass into the cylinders
+        // over the exhaust valve drops (choked inflow ∝ area); forward flow is unaffected.
+        let reverted = |ratio: f64, model: ExhaustModel| {
+            let mut d = EngineDef::inline4();
+            d.exhaust_reverse_cd_ratio = ratio;
+            d.exhaust.model = model;
+            let mut e = Engine::new(d, 6000.0, 1);
+            let c = Controls {
+                hold_rpm: Some(6000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &c);
+            let before = e.exhaust_reversion_kg();
+            run(&mut e, 0.2, &c);
+            e.exhaust_reversion_kg() - before
+        };
+        for model in [ExhaustModel::Waveguide, ExhaustModel::Fv] {
+            let (full, half) = (reverted(1.0, model), reverted(0.5, model));
+            assert!(full > 0.0, "{model:?}: no reversion measured");
+            assert!(half < 0.8 * full, "{model:?}: {half} vs {full}");
         }
     }
 }
