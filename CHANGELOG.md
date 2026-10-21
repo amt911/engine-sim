@@ -10,3 +10,4 @@ Each tag on `main` is a runnable snapshot of the simulator (for the timelapse).
 | `v0.2.0` | 2026-10-21 | **Editor + files**: every engine parameter as a slider (mm, cc, °, L), firing order field with validation, save/load YAML or JSON (dialogs or drag-and-drop), `--engine`/`--save` CLI, preset files in `presets/` |
 | `v0.3.0` | 2026-10-21 | **Exhaust waveguides**: primaries, collectors (LFA: two 5-into-1 banks), tail pipes, radiating open ends; implicit valve-port coupling; exhaust editor section; file format v2 (v1 files migrate) |
 | `v0.4.0` | 2026-10-22 | **Drivetrain**: clutch (slip/lock with overload hysteresis), gearbox, vehicle with aero/rolling/brake, speedometer; dyno sweep (`--dyno`, GUI plot) |
+| `v0.5.0` | 2026-10-22 | **Sound texture**: turbulent flow noise ∝ outflow, induction roar, valvetrain clicks, cycle-to-cycle combustion variability, body/room reverb; Sound section in the editor |
