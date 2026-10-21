@@ -230,6 +230,9 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
         Err(config::ConfigError::Invalid(e)) => e,
         Err(e) => vec![e.to_string()],
     };
+    if let Err(e) = parse_firing_order(&state.firing_text) {
+        state.errors.insert(0, e);
+    }
     for e in &state.errors {
         ui.colored_label(egui::Color32::LIGHT_RED, e);
     }
@@ -306,6 +309,23 @@ mod tests {
         h.run();
         assert!(!h.state().engine_dirty, "invalid engine must not be sent");
         h.get_by_label_contains("every cylinder exactly once");
+    }
+
+    #[test]
+    fn unparsable_firing_order_blocks_saving() {
+        // Regression: "1-x" showed an error but left `errors` empty, so Save stayed enabled
+        // and wrote the previous firing order.
+        let mut h = harness(EngineDef::inline4());
+        h.get_by_label("Firing order").focus();
+        h.run();
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.get_by_label("Firing order").type_text("1-x");
+        h.run();
+        assert!(
+            h.state().errors.iter().any(|e| e.contains("'x'")),
+            "{:?}",
+            h.state().errors
+        );
     }
 
     #[test]

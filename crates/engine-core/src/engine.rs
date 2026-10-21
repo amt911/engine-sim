@@ -14,7 +14,7 @@ use std::f64::consts::PI;
 
 /// Everything that describes an engine. Pure data, (de)serializable.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct EngineDef {
     pub name: String,
     pub geometry: CylinderGeometry,

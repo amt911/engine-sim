@@ -40,6 +40,7 @@ pub enum ConfigError {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EngineFile {
     version: u32,
     engine: EngineDef,
@@ -85,62 +86,80 @@ pub fn from_str(text: &str, format: Format) -> Result<EngineDef, ConfigError> {
 
 /// Every problem found, so the editor can show them all at once.
 pub fn validate(def: &EngineDef) -> Result<(), ConfigError> {
+    // Bounds are generous physical limits (wider than the editor's sliders); NaN fails all.
     let mut errs = Vec::new();
     let mut check = |ok: bool, msg: &str| {
         if !ok {
             errs.push(msg.to_string());
         }
     };
+    let within = |x: f64, lo: f64, hi: f64| x.is_finite() && (lo..=hi).contains(&x);
     let g = &def.geometry;
-    let pos = |x: f64| x.is_finite() && x > 0.0;
     check(
         (1..=MAX_CYLINDERS).contains(&def.cylinders),
         "cylinders must be between 1 and 16",
     );
-    check(pos(g.bore_m), "bore must be positive");
-    check(pos(g.stroke_m), "stroke must be positive");
+    check(within(g.bore_m, 0.02, 0.3), "bore must be 20–300 mm");
+    check(within(g.stroke_m, 0.02, 0.3), "stroke must be 20–300 mm");
     check(
-        g.rod_m.is_finite() && g.rod_m > g.stroke_m * 0.5,
-        "rod must be longer than half the stroke",
+        within(g.rod_m, 0.0, 1.0) && g.rod_m > g.stroke_m * 0.5,
+        "rod must be longer than half the stroke (and < 1 m)",
     );
     check(
-        g.compression_ratio.is_finite() && g.compression_ratio > 1.0,
-        "compression ratio must be above 1",
+        within(g.compression_ratio, 1.01, 30.0),
+        "compression ratio must be 1–30",
     );
     for (name, v) in [
         ("intake valve", &def.intake_valve),
         ("exhaust valve", &def.exhaust_valve),
     ] {
-        let ok = v.duration_deg > 0.0
-            && v.duration_deg < 720.0
-            && pos(v.max_lift_m)
-            && pos(v.diameter_m)
-            && v.open_deg.is_finite();
+        let ok = within(v.open_deg, -720.0, 720.0)
+            && within(v.duration_deg, 1.0, 719.0)
+            && within(v.max_lift_m, 0.0005, 0.05)
+            && within(v.diameter_m, 0.005, 0.2);
         check(
             ok,
-            &format!("{name}: duration in (0, 720)°, lift and diameter positive"),
+            &format!("{name}: opening in ±720°, duration 1–719°, lift 0.5–50 mm, Ø 5–200 mm"),
         );
     }
-    check(pos(def.burn_duration_deg), "burn duration must be positive");
     check(
-        pos(def.flywheel_inertia_kgm2),
-        "flywheel inertia must be positive",
+        within(def.spark_advance_deg, -90.0, 90.0),
+        "spark advance must be −90…90° BTDC",
     );
     check(
-        pos(def.plenum_volume_m3) && pos(def.throttle_diameter_m),
-        "plenum volume and throttle diameter must be positive",
+        within(def.burn_duration_deg, 5.0, 180.0),
+        "burn duration must be 5–180°",
     );
     check(
-        (0.0..=1.0).contains(&def.idle_throttle),
+        within(def.flywheel_inertia_kgm2, 0.005, 10.0),
+        "flywheel inertia must be 0.005–10 kg·m²",
+    );
+    check(
+        within(def.plenum_volume_m3, 1e-5, 0.1) && within(def.throttle_diameter_m, 0.005, 0.5),
+        "plenum 0.01–100 L and throttle Ø 5–500 mm",
+    );
+    check(
+        within(def.idle_throttle, 0.0, 1.0),
         "idle throttle must be in [0, 1]",
     );
     check(
-        pos(def.exhaust_runner_length_m)
-            && pos(def.exhaust_runner_diameter_m)
-            && pos(def.exhaust_outlet_diameter_m),
-        "exhaust runner and outlet sizes must be positive",
+        within(def.exhaust_runner_length_m, 0.05, 10.0)
+            && within(def.exhaust_runner_diameter_m, 0.005, 0.3)
+            && within(def.exhaust_outlet_diameter_m, 0.005, 0.3),
+        "exhaust runner 0.05–10 m long, runner and outlet Ø 5–300 mm",
     );
-    check(pos(def.redline_rpm), "redline must be positive");
+    check(
+        within(def.redline_rpm, 500.0, 30_000.0),
+        "redline must be 500–30000 rpm",
+    );
+    check(
+        within(def.starter_torque_nm, 0.0, 5000.0),
+        "starter torque must be 0–5000 N·m",
+    );
+    check(
+        def.fmep_bar.iter().all(|c| within(*c, 0.0, 20.0)),
+        "fmep coefficients must be 0–20 bar",
+    );
     if !def.firing_order.is_empty() {
         let mut o = def.firing_order.clone();
         o.sort_unstable();
@@ -265,6 +284,62 @@ mod tests {
             );
         }
         assert!(validate(&EngineDef::lfa_v10()).is_ok());
+    }
+
+    #[test]
+    fn validation_rejects_nan_and_absurd_values() {
+        // Each of these used to pass validation and then run silent or never fire.
+        type Mutate = Box<dyn Fn(&mut EngineDef)>;
+        let cases: Vec<(&str, Mutate)> = vec![
+            ("fmep", Box::new(|d| d.fmep_bar[0] = f64::NAN)),
+            ("spark", Box::new(|d| d.spark_advance_deg = 900.0)),
+            ("spark", Box::new(|d| d.spark_advance_deg = f64::NAN)),
+            ("starter", Box::new(|d| d.starter_torque_nm = f64::NAN)),
+            ("inertia", Box::new(|d| d.flywheel_inertia_kgm2 = 1e-12)),
+            ("bore", Box::new(|d| d.geometry.bore_m = 1e-6)),
+            (
+                "compression",
+                Box::new(|d| d.geometry.compression_ratio = 1e9),
+            ),
+            ("burn", Box::new(|d| d.burn_duration_deg = 1e9)),
+            ("exhaust", Box::new(|d| d.exhaust_runner_length_m = 1e7)),
+            (
+                "intake valve",
+                Box::new(|d| d.intake_valve.open_deg = f64::NAN),
+            ),
+            ("redline", Box::new(|d| d.redline_rpm = 1e9)),
+        ];
+        for (needle, mutate) in cases {
+            let mut d = EngineDef::single();
+            mutate(&mut d);
+            let Err(ConfigError::Invalid(errs)) = validate(&d) else {
+                panic!("{needle}: accepted")
+            };
+            assert!(
+                errs.iter().any(|e| e.contains(needle)),
+                "{needle}: {errs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn typos_are_errors_not_silently_ignored() {
+        let e = from_str("version: 1\nengine:\n  cylinder: 8\n", Format::Yaml).unwrap_err();
+        assert!(
+            matches!(&e, ConfigError::Parse(m) if m.contains("cylinder")),
+            "{e:?}"
+        );
+        let e = from_str(
+            "version: 1\nengine:\n  geometry: { bore: 0.09 }\n",
+            Format::Yaml,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&e, ConfigError::Parse(m) if m.contains("bore")),
+            "{e:?}"
+        );
+        let e = from_str("version: 1\nextra: 2\nengine: {}\n", Format::Yaml).unwrap_err();
+        assert!(matches!(e, ConfigError::Parse(_)));
     }
 
     #[test]

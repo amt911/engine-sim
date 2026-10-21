@@ -17,6 +17,7 @@ pub fn load_engine(path: &Path) -> Result<EngineDef, String> {
 
 pub fn save_engine(path: &Path, def: &EngineDef) -> Result<(), String> {
     let format = format_of(path)?;
+    config::validate(def).map_err(|e| e.to_string())?;
     let text = config::to_string(def, format).map_err(|e| e.to_string())?;
     std::fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))
 }
@@ -50,6 +51,16 @@ mod tests {
         let p = tmp("bad.yaml");
         std::fs::write(&p, "version: 1\nengine:\n  cylinders: 0\n").unwrap();
         assert!(load_engine(&p).unwrap_err().contains("cylinders"));
+    }
+
+    #[test]
+    fn invalid_engines_are_never_written() {
+        let p = tmp("invalid.yaml");
+        let _ = std::fs::remove_file(&p);
+        let mut d = EngineDef::single();
+        d.cylinders = 0;
+        assert!(save_engine(&p, &d).unwrap_err().contains("cylinders"));
+        assert!(!p.exists());
     }
 
     #[test]

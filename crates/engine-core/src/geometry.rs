@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CylinderGeometry {
     pub bore_m: f64,
     pub stroke_m: f64,

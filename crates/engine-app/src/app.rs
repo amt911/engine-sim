@@ -9,13 +9,29 @@ use crate::view;
 use eframe::egui;
 use engine_core::engine::Controls;
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::time::Instant;
 
 /// Result of a native file dialog, which runs on its own thread so the frame never blocks.
 enum FileJob {
     Load(Option<PathBuf>),
-    Save(Option<PathBuf>),
+    /// Path chosen, and the engine as it was when Save was clicked.
+    Save(Option<PathBuf>, Box<engine_core::engine::EngineDef>),
+}
+
+enum JobPoll {
+    Pending,
+    Done(FileJob),
+    /// The dialog thread ended without answering (e.g. no file-dialog portal).
+    Lost,
+}
+
+fn poll_job(rx: &Receiver<FileJob>) -> JobPoll {
+    match rx.try_recv() {
+        Ok(job) => JobPoll::Done(job),
+        Err(TryRecvError::Empty) => JobPoll::Pending,
+        Err(TryRecvError::Disconnected) => JobPoll::Lost,
+    }
 }
 
 pub struct EngineApp {
@@ -49,10 +65,11 @@ impl EngineApp {
             "{}.yaml",
             self.state.def.name.replace(' ', "-").to_lowercase()
         );
+        let snapshot = Box::new(self.state.def.clone());
         std::thread::spawn(move || {
             let d = rfd::FileDialog::new().add_filter("Engine", &["yaml", "yml", "json"]);
             let job = if save {
-                FileJob::Save(d.set_file_name(name).save_file())
+                FileJob::Save(d.set_file_name(name).save_file(), snapshot)
             } else {
                 FileJob::Load(d.pick_file())
             };
@@ -67,6 +84,7 @@ impl EngineApp {
             Ok(def) => {
                 self.state.firing_text = format_firing_order(&def.firing_order);
                 self.state.def = def;
+                self.state.preset = None;
                 self.state.engine_dirty = true;
                 self.state.file_msg = Some(format!("Loaded {}", path.display()));
             }
@@ -75,17 +93,25 @@ impl EngineApp {
     }
 
     fn poll_files(&mut self, ui: &egui::Ui) {
-        if let Some(job) = self.file_job.as_ref().and_then(|rx| rx.try_recv().ok()) {
-            self.file_job = None;
-            match job {
-                FileJob::Load(Some(p)) => self.load(&p),
-                FileJob::Save(Some(p)) => {
-                    self.state.file_msg = Some(match files::save_engine(&p, &self.state.def) {
-                        Ok(()) => format!("Saved {}", p.display()),
-                        Err(e) => e,
-                    });
+        let poll = self.file_job.as_ref().map_or(JobPoll::Pending, poll_job);
+        match poll {
+            JobPoll::Pending => {}
+            JobPoll::Lost => {
+                self.file_job = None;
+                self.state.file_msg = Some("The file dialog could not be opened.".into());
+            }
+            JobPoll::Done(job) => {
+                self.file_job = None;
+                match job {
+                    FileJob::Load(Some(p)) => self.load(&p),
+                    FileJob::Save(Some(p), def) => {
+                        self.state.file_msg = Some(match files::save_engine(&p, &def) {
+                            Ok(()) => format!("Saved {}", p.display()),
+                            Err(e) => e,
+                        });
+                    }
+                    FileJob::Load(None) | FileJob::Save(None, _) => {}
                 }
-                FileJob::Load(None) | FileJob::Save(None) => {}
             }
         }
         let dropped: Vec<PathBuf> = ui.input(|i| {
@@ -202,6 +228,17 @@ mod tests {
     use crate::sim::Simulation;
     use engine_core::engine::Controls;
 
+    #[test]
+    fn a_dialog_thread_that_dies_is_reported_not_pending_forever() {
+        let (tx, rx) = channel::<FileJob>();
+        assert!(matches!(poll_job(&rx), JobPoll::Pending));
+        drop(tx);
+        assert!(matches!(poll_job(&rx), JobPoll::Lost));
+        let (tx, rx) = channel();
+        tx.send(FileJob::Load(None)).unwrap();
+        assert!(matches!(poll_job(&rx), JobPoll::Done(FileJob::Load(None))));
+    }
+
     /// Off-screen renders of the real layout to `target/screens/*.png`, for looking at the
     /// UI without opening a window on the desktop. Needs a GPU (or lavapipe):
     /// `cargo test -p engine-app render_screens -- --ignored`.
@@ -224,7 +261,7 @@ mod tests {
             sim.render(&mut buf);
             let snap = sim.snapshot();
             let mut state = UiState {
-                preset,
+                preset: Some(preset),
                 def: preset.def(),
                 firing_text: crate::editor::format_firing_order(&preset.def().firing_order),
                 throttle,

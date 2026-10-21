@@ -89,7 +89,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let state = UiState {
-        preset,
+        preset: cli.engine.is_none().then_some(preset),
         firing_text: editor::format_firing_order(&def.firing_order),
         def,
         ..UiState::default()

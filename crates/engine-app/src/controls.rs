@@ -42,7 +42,8 @@ impl Preset {
 
 #[derive(Debug, Clone)]
 pub struct UiState {
-    pub preset: Preset,
+    /// The built-in this engine came from; `None` after loading or creating a custom one.
+    pub preset: Option<Preset>,
     /// The engine being edited; sent to the sim when `engine_dirty`.
     pub def: EngineDef,
     pub engine_dirty: bool,
@@ -62,7 +63,7 @@ pub struct UiState {
 impl Default for UiState {
     fn default() -> Self {
         Self {
-            preset: Preset::Single,
+            preset: Some(Preset::Single),
             def: Preset::Single.def(),
             engine_dirty: false,
             ignition: true,
@@ -96,8 +97,11 @@ impl UiState {
 pub fn controls_panel(ui: &mut egui::Ui, state: &mut UiState) {
     ui.heading("Engine");
     for p in Preset::ALL {
-        if ui.selectable_label(state.preset == p, p.label()).clicked() && state.preset != p {
-            state.preset = p;
+        if ui
+            .selectable_label(state.preset == Some(p), p.label())
+            .clicked()
+        {
+            state.preset = Some(p);
             state.def = p.def();
             state.firing_text = crate::editor::format_firing_order(&state.def.firing_order);
             state.engine_dirty = true;
@@ -157,7 +161,7 @@ mod tests {
         let mut h = harness();
         h.get_by_label("Inline-4 2.0").click();
         h.run();
-        assert_eq!(h.state().preset, Preset::Inline4);
+        assert_eq!(h.state().preset, Some(Preset::Inline4));
         assert_eq!(h.state().def.cylinders, 4);
         assert!(h.state().engine_dirty);
     }
@@ -168,6 +172,24 @@ mod tests {
             assert_eq!(Preset::from_slug(p.slug()), Some(p));
         }
         assert_eq!(Preset::from_slug("nope"), None);
+    }
+
+    #[test]
+    fn presets_work_after_loading_a_custom_engine() {
+        // Regression: after loading a file the preset stayed "Single", so clicking
+        // "Single 500" was ignored.
+        let mut custom = Preset::Inline4.def();
+        custom.name = "From a file".into();
+        let state = UiState {
+            preset: None,
+            def: custom,
+            ..UiState::default()
+        };
+        let mut h = Harness::new_ui_state(|ui, s: &mut UiState| controls_panel(ui, s), state);
+        h.get_by_label("Single 500").click();
+        h.run();
+        assert_eq!(h.state().def, Preset::Single.def());
+        assert_eq!(h.state().preset, Some(Preset::Single));
     }
 
     #[test]
