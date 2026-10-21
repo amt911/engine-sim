@@ -157,6 +157,8 @@ pub struct Vehicle {
     locked: bool,
     prev_omega: f64,
     required_nm: f64,
+    /// Set after an overload: no relock until the slip has grown past `2·LOCK_SLIP`.
+    relock_blocked: bool,
 }
 
 impl Vehicle {
@@ -171,6 +173,7 @@ impl Vehicle {
             locked: false,
             prev_omega: 0.0,
             required_nm: 0.0,
+            relock_blocked: false,
         }
     }
     pub fn def(&self) -> &VehicleDef {
@@ -186,10 +189,14 @@ impl Vehicle {
         self.gear
     }
     /// Select a gear (0 = neutral); unknown gears are ignored. Shifting unlocks the clutch.
+    /// Shifting with the clutch engaged at speed is allowed on purpose (a synchromesh box
+    /// does not forbid it): the clutch then slips to the new speed ratio, or the engine
+    /// stalls at standstill, as in a real car.
     pub fn set_gear(&mut self, gear: usize) {
         if gear <= self.def.gear_ratios.len() && gear != self.gear {
             self.gear = gear;
             self.locked = false;
+            self.relock_blocked = false;
         }
     }
     /// Clutch engagement now (1 = fully engaged).
@@ -254,10 +261,14 @@ impl Vehicle {
             self.required_nm += (needed - self.required_nm) * (dt / TORQUE_FILTER_TAU).min(1.0);
             if self.required_nm.abs() > t_max {
                 self.locked = false;
+                self.relock_blocked = true;
             }
         }
         let slip = engine_omega - self.speed_m_s / r * g;
-        if !self.locked && slip.abs() < LOCK_SLIP {
+        if self.relock_blocked && slip.abs() > 2.0 * LOCK_SLIP {
+            self.relock_blocked = false;
+        }
+        if !self.locked && !self.relock_blocked && slip.abs() < LOCK_SLIP {
             self.locked = true;
             self.required_nm = 0.0;
         }
@@ -454,6 +465,29 @@ mod tests {
         let load = v.step(0.1, 200.0, 0.0);
         assert!(!v.locked());
         assert_relative_eq!(load.torque_nm, 400.0, max_relative = 1e-9);
+    }
+
+    #[test]
+    fn a_locked_clutch_really_slips_when_the_crank_pushes_past_capacity() {
+        // Regression: after an overload the clutch relocked in the same step (slip was ~0).
+        // Locked at 3 m/s in 1st (capacity 400 N·m); the crank then accelerates at 800 rad/s²,
+        // which needs (1000·20 + 101)·0.3/(12·0.9) = 558 N·m > 400.
+        let mut v = in_first();
+        v.set_speed(3.0);
+        let mut w = 120.0;
+        v.step(1e-4, w, 0.0);
+        assert!(v.locked());
+        let mut slipped = false;
+        // 1e-4 s steps: the crank gains 0.08 rad/s per step, below LOCK_SLIP, which is what
+        // let the old code relock instantly.
+        for _ in 0..2000 {
+            w += 0.08;
+            let load = v.step(1e-4, w, 0.0);
+            assert!(load.torque_nm.abs() <= 400.0 + 1e-9, "{}", load.torque_nm);
+            slipped |= v.speed_m_s() < w * 0.3 / 12.0 - 0.01;
+        }
+        assert!(slipped, "car kept pace with a crank the clutch cannot hold");
+        assert!(!v.locked());
     }
 
     #[test]

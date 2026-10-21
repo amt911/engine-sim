@@ -8,9 +8,10 @@ use engine_core::units::{rpm_to_rad_s, w_to_hp};
 pub const START_RPM: f64 = 1000.0;
 /// Speed increment, rpm.
 pub const STEP_RPM: f64 = 500.0;
-/// Time to let each new speed settle before measuring, s.
-const SETTLE_S: f64 = 0.4;
-/// Averaging window, s (several engine cycles even at 1,000 rpm).
+/// Time to let each new speed settle before measuring, s: >= 5 time constants (0.15 s) of the
+/// engine's torque average, so under 1 % of the previous point is left.
+const SETTLE_S: f64 = 0.8;
+/// Minimum averaging window, s; rounded up to whole engine cycles (see [`measure_steps`]).
 const MEASURE_S: f64 = 0.4;
 /// Physics step, s (same as the app at 48 kHz × 4).
 const DT: f64 = 1.0 / 192_000.0;
@@ -35,6 +36,14 @@ impl DynoPoint {
     }
 }
 
+/// Physics steps to average over: whole 720° cycles (120/rpm s each) covering at least
+/// `MEASURE_S`, so the firing pulses of every cylinder count equally.
+pub fn measure_steps(rpm: f64) -> usize {
+    let cycle_s = 120.0 / rpm;
+    let cycles = (MEASURE_S / cycle_s).ceil().max(1.0);
+    (cycles * cycle_s / DT).round() as usize
+}
+
 /// Speeds of a sweep: `START_RPM` up to (not including) the redline, `STEP_RPM` apart.
 pub fn sweep_speeds(redline_rpm: f64) -> Vec<f64> {
     std::iter::successors(Some(START_RPM), |r| Some(r + STEP_RPM))
@@ -47,7 +56,6 @@ pub fn sweep(def: &EngineDef) -> Vec<DynoPoint> {
     let speeds = sweep_speeds(def.redline_rpm);
     let mut engine = Engine::new(def.clone(), START_RPM, 1);
     let settle = (SETTLE_S / DT) as usize;
-    let measure = (MEASURE_S / DT) as usize;
     speeds
         .into_iter()
         .map(|rpm| {
@@ -59,6 +67,7 @@ pub fn sweep(def: &EngineDef) -> Vec<DynoPoint> {
             for _ in 0..settle {
                 engine.step(DT, &c);
             }
+            let measure = measure_steps(rpm);
             let mut sum = 0.0;
             for _ in 0..measure {
                 engine.step(DT, &c);
@@ -133,6 +142,34 @@ mod tests {
         assert_eq!(t.rpm, 2000.0);
         assert_eq!(p.rpm, 6000.0); // 60·628 = 37.7 kW > 90·314 = 28.3 kW > 100·209 = 20.9 kW
         assert!(peaks(&[]).is_none());
+    }
+
+    #[test]
+    fn measuring_covers_whole_engine_cycles() {
+        // One cycle = 720° = 120/rpm s: 1,000 rpm → 0.12 s, so 0.4 s rounds up to 4 cycles
+        // = 0.48 s = 92,160 steps of 1/192 kHz; 6,000 rpm → 0.02 s → 20 cycles = 76,800 steps.
+        assert_eq!(measure_steps(1000.0), 92_160);
+        assert_eq!(measure_steps(6000.0), 76_800);
+    }
+
+    #[test]
+    fn settling_outlasts_five_filter_time_constants() {
+        // The engine's torque average has τ = 0.15 s; 5τ = 0.75 s leaves < 1 % (e^-5 = 0.67 %).
+        const { assert!(SETTLE_S >= 5.0 * 0.15) };
+    }
+
+    #[test]
+    fn single_cylinder_curve_is_smooth() {
+        // A one-cylinder torque pulse is lumpy; without whole-cycle averaging adjacent
+        // points jumped. Adjacent 500 rpm steps must stay within 15 % of the peak.
+        let pts = sweep(&EngineDef::single());
+        let peak = peaks(&pts).unwrap().0.torque_nm;
+        for w in pts.windows(2) {
+            assert!(
+                (w[1].torque_nm - w[0].torque_nm).abs() < 0.15 * peak,
+                "{w:?}"
+            );
+        }
     }
 
     #[test]

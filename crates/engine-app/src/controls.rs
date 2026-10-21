@@ -151,11 +151,17 @@ fn drive_keys(ui: &egui::Ui, state: &mut UiState) {
     }
     let top = state.vehicle.gear_ratios.len();
     let (up, down, neutral, number, clutch, brake) = ui.input(|i| {
+        // A fresh press only: holding a key makes the OS send `repeat: true` events.
+        let fresh = |key: egui::Key| {
+            i.events.iter().any(|e| {
+                matches!(e, egui::Event::Key { key: k, pressed: true, repeat: false, .. } if *k == key)
+            })
+        };
         (
-            i.key_pressed(egui::Key::E),
-            i.key_pressed(egui::Key::Q),
-            i.key_pressed(egui::Key::N),
-            GEAR_KEYS.iter().position(|k| i.key_pressed(*k)),
+            fresh(egui::Key::E),
+            fresh(egui::Key::Q),
+            fresh(egui::Key::N),
+            GEAR_KEYS.iter().position(|k| fresh(*k)),
             i.key_down(egui::Key::C),
             i.key_down(egui::Key::B) || i.key_down(egui::Key::ArrowDown),
         )
@@ -381,6 +387,27 @@ mod tests {
             press(&mut h, egui::Key::E);
         }
         assert_eq!(h.state().gear, 6);
+    }
+
+    #[test]
+    fn holding_a_gear_key_does_not_cycle_through_gears() {
+        // OS auto-repeat: the key stays down and more `pressed` events arrive (egui marks
+        // them `repeat: true` because the key is already down).
+        let mut h = harness();
+        h.key_down(egui::Key::E);
+        h.run();
+        assert_eq!(h.state().gear, 1);
+        for _ in 0..3 {
+            h.event(egui::Event::Key {
+                key: egui::Key::E,
+                physical_key: Some(egui::Key::E),
+                pressed: true,
+                repeat: true,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.run();
+        }
+        assert_eq!(h.state().gear, 1);
     }
 
     #[test]
