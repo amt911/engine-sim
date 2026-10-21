@@ -121,6 +121,10 @@ pub struct Pipe1d {
     pub end_flux: (Cons, Cons),
     /// Density and pressure floors (see [`positive`]); tiny by default.
     pub floors: (f64, f64),
+    /// Cross-section per cell and per face (n + 1), m²; all 1 for a uniform pipe, so the
+    /// per-area formulation reduces to plain 1D.
+    pub area: Vec<f64>,
+    face_area: Vec<f64>,
 }
 
 impl Pipe1d {
@@ -137,6 +141,8 @@ impl Pipe1d {
             rhs: vec![Cons::default(); n],
             end_flux: (Cons::default(), Cons::default()),
             floors: (1e-9, 1e-9),
+            area: vec![1.0; n],
+            face_area: vec![1.0; n + 1],
         }
     }
     /// Largest stable step for Courant number `cfl`.
@@ -151,13 +157,41 @@ impl Pipe1d {
             .fold(1e-9, f64::max);
         cfl * self.dx / vmax
     }
+    /// A pipe made of consecutive segments `(length, cross-section area)`: quasi-1D Euler with
+    /// the geometric source p·dA/dx (Toro §1.6.3; Winterbone & Pearson), so area changes
+    /// (collector → muffler can → tail) transmit and reflect waves without 0D junctions.
+    pub fn segmented(segments: &[(f64, f64)], cell: f64, init: Prim) -> Self {
+        let counts: Vec<usize> = segments
+            .iter()
+            .map(|(l, _)| ((l / cell).round() as usize).max(1))
+            .collect();
+        let n: usize = counts.iter().sum();
+        let mut p = Pipe1d::new(n as f64 * cell, n, init);
+        p.area = segments
+            .iter()
+            .zip(&counts)
+            .flat_map(|((_, a), k)| std::iter::repeat_n(*a, *k))
+            .collect();
+        p.face_area[0] = p.area[0];
+        p.face_area[n] = p.area[n - 1];
+        for k in 1..n {
+            p.face_area[k] = 0.5 * (p.area[k - 1] + p.area[k]);
+        }
+        p
+    }
+
+    /// Cross-section of the end faces (left, right), m² (1 for a uniform pipe).
+    pub fn end_areas(&self) -> (f64, f64) {
+        (self.face_area[0], self.face_area[self.cells.len()])
+    }
+
     /// Advance by `dt` (SSP-RK2 with MUSCL-minmod reconstruction).
     pub fn step(&mut self, dt: f64) {
         self.u0.copy_from_slice(&self.cells);
         self.eval_rhs();
         let (l1, r1) = (self.fluxes[0], self.fluxes[self.cells.len()]);
         for (c, d) in self.cells.iter_mut().zip(&self.rhs) {
-            *c = add(*c, *d, dt);
+            *c = positive(add(*c, *d, dt), self.floors.0, self.floors.1);
         }
         self.eval_rhs();
         let (l2, r2) = (self.fluxes[0], self.fluxes[self.cells.len()]);
@@ -216,12 +250,11 @@ fn positive(c: Cons, rho_floor: f64, p_floor: f64) -> Cons {
 }
 
 fn minmod(a: f64, b: f64) -> f64 {
+    // van Leer limiter (smooth, TVD; less dissipative than minmod at a few cells per wavelength)
     if a * b <= 0.0 {
         0.0
-    } else if a.abs() < b.abs() {
-        a
     } else {
-        b
+        2.0 * a * b / (a + b)
     }
 }
 
@@ -280,19 +313,32 @@ impl Pipe1d {
         for (k, f) in self.fluxes.iter_mut().enumerate() {
             *f = hllc(face(k + 1, 1.0), face(k + 2, -1.0));
         }
+        // A wall passes no mass or energy; MUSCL at a mirrored ghost is not exactly symmetric,
+        // so impose it (keeps closed pipes conservative to round-off).
+        if self.left == Boundary::Wall {
+            self.fluxes[0].rho = 0.0;
+            self.fluxes[0].e = 0.0;
+        }
+        if self.right == Boundary::Wall {
+            self.fluxes[n].rho = 0.0;
+            self.fluxes[n].e = 0.0;
+        }
         if let Boundary::Flux(f) = self.left {
             self.fluxes[0] = f;
         }
         if let Boundary::Flux(f) = self.right {
             self.fluxes[n] = f;
         }
-        let inv = 1.0 / self.dx;
         for (j, r) in self.rhs.iter_mut().enumerate() {
             let (a, b) = (self.fluxes[j], self.fluxes[j + 1]);
+            let (fa, fb) = (self.face_area[j], self.face_area[j + 1]);
+            let inv = 1.0 / (self.area[j] * self.dx);
+            // geometric source p·dA/dx keeps still gas still across an area change
+            let p = self.w[j + 2].p;
             *r = Cons {
-                rho: -(b.rho - a.rho) * inv,
-                mom: -(b.mom - a.mom) * inv,
-                e: -(b.e - a.e) * inv,
+                rho: -(fb * b.rho - fa * a.rho) * inv,
+                mom: -(fb * b.mom - fa * a.mom - p * (fb - fa)) * inv,
+                e: -(fb * b.e - fa * a.e) * inv,
             };
         }
     }
@@ -433,6 +479,87 @@ mod tests {
             let q = c.to_prim();
             assert!(q.rho > 0.0 && q.p > 0.0 && q.u.is_finite(), "{q:?}");
         }
+    }
+
+    fn stepped(a1: f64, a2: f64) -> Pipe1d {
+        let air = Prim {
+            rho: 1.2,
+            u: 0.0,
+            p: 101_325.0,
+        };
+        Pipe1d::segmented(&[(1.0, a1), (1.0, a2)], 0.01, air)
+    }
+
+    #[test]
+    fn still_gas_stays_still_across_an_area_step() {
+        let mut p = stepped(1e-3, 4e-3);
+        for _ in 0..2_000 {
+            p.step(1e-5);
+        }
+        let worst = (0..p.cells.len())
+            .map(|i| p.prim(i).u.abs())
+            .fold(0.0, f64::max);
+        assert!(worst < 1e-9, "spurious velocity {worst}");
+        assert_eq!(p.end_areas(), (1e-3, 4e-3));
+    }
+
+    #[test]
+    fn variable_area_pipe_conserves_mass() {
+        let mut p = stepped(1e-3, 4e-3);
+        for i in 10..20 {
+            p.cells[i] = Prim {
+                rho: 1.5,
+                u: 0.0,
+                p: 140_000.0,
+            }
+            .to_cons();
+        }
+        let mass = |p: &Pipe1d| {
+            p.cells
+                .iter()
+                .zip(&p.area)
+                .map(|(c, a)| c.rho * a)
+                .sum::<f64>()
+                * p.dx
+        };
+        let m0 = mass(&p);
+        for _ in 0..3_000 {
+            p.step(1e-5);
+        }
+        assert_relative_eq!(mass(&p), m0, max_relative = 1e-12);
+    }
+
+    /// Peak of a small right-going pulse after it has crossed into the second segment.
+    fn transmitted_peak(a1: f64, a2: f64) -> f64 {
+        let mut p = stepped(a1, a2);
+        let base = 101_325.0;
+        for i in 20..30 {
+            let s = (std::f64::consts::PI * (i - 20) as f64 / 10.0).sin();
+            p.cells[i] = Prim {
+                rho: 1.2 * (1.0 + 0.001 * s / 1.4),
+                u: 0.001 * s * 343.8 / 1.4,
+                p: base * (1.0 + 0.001 * s),
+            }
+            .to_cons();
+        }
+        // pulse centre: 0.25 m + 343.8 m/s · 3.2 ms ≈ 1.35 m, fully past the step at 1 m
+        let mut t = 0.0;
+        while t < 3.2e-3 {
+            p.step(1e-5);
+            t += 1e-5;
+        }
+        (100..200).map(|i| p.prim(i).p - base).fold(0.0, f64::max)
+    }
+
+    #[test]
+    fn area_step_transmits_two_a1_over_a1_plus_a2() {
+        // Linear theory for a compact area step: pressure transmission 2A₁/(A₁+A₂) = 0.4 for
+        // A₂ = 4A₁. Normalised by the same pipe without a step (removes numerical damping).
+        let ratio = transmitted_peak(1e-3, 4e-3) / transmitted_peak(1e-3, 1e-3);
+        assert!((ratio - 0.4).abs() < 0.05, "transmitted {ratio:.3}");
+        // and into a narrower pipe (A₂ = A₁/4): 2·4/(4+1) = 1.6
+        let up = transmitted_peak(4e-3, 1e-3) / transmitted_peak(4e-3, 4e-3);
+        assert!((up - 1.6).abs() < 0.15, "transmitted {up:.3}");
     }
 
     #[test]
