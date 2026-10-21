@@ -37,21 +37,19 @@ Found: <YYYY-MM-DD> · <area: build | tests | db | ci | deploy | env>
 
 ## Findings
 
-### Open: with the FV exhaust, coast is as loud as WOT at the firing frequency (LFA 7000 rpm)
+### Open (improving): FV exhaust, coast still louder than WOT at the firing order (LFA 7000)
 
-**Symptom.** Source at the tail, firing order (583 Hz): coast 752 vs WOT 594 (a.u.); a real engine
-is 5–10 dB quieter on overrun.
-**Measured so far.** Cylinder at EVO: WOT 5.2 bar, coast 0.17 bar (physics right). Port gauge
-swing: WOT +40…+115 kPa, coast −26…+39 kPa (similar p-p). Not the valve limiter (port cell as a
-reservoir: no change). Not texture (tonal part alone). FV pipes themselves validated (Sod, area
-steps, steepening).
-**Ruled out.** Overrun fuel cut (added as a real feature: coast tone rises, 752 → 1392, the
-cylinder reaches EVO emptier).
-**Leading hypothesis.** The 0D merge junction (primaries → collector) is a stagnation plenum: it
-low-passes the pulses of the five branches and adds back-pressure (mean port gauge ≈ 78 kPa at WOT
-7000, where the tails' dynamic pressure is ~4 kPa). Next: a constant-pressure (characteristic)
-junction — Benson; Winterbone & Pearson — instead of a volume.
-**Tools.** `examples/{port_probe,sound_breakdown,spectrum_probe}.rs`.
+**Symptom.** Source at the tail, firing order 583 Hz: coast vs WOT was 7.4×; a real engine is
+5–10 dB quieter on overrun.
+**Found and fixed so far.**
+- The 0D merge junction was a u = 0 stagnation plenum: it passed 35 % of a straight pipe's tone.
+  Characteristic (Benson) junction → transparent.
+- Overrun manifold at 0.06 bar (fixed idle air, 8× pumping): ECU dashpot → 0.17 bar. Biggest win.
+- Inviscid pipes rang forever: Darcy wall friction (f = 0.025).
+- Overrun near-vacuum broke the fixed FV step's CFL (a primary reached 1000 bar): sub-cycling.
+**Now.** Coast/WOT = 2.2× at the firing order. Remaining suspects: reverse-flow Cd through the
+exhaust valve lower than forward (Blair); then compare spectra with real recordings.
+**Tools.** `examples/{port_probe,sound_breakdown,spectrum_probe,blowup_probe}.rs`.
 
 Found: 2026-10-22 · physics
 
