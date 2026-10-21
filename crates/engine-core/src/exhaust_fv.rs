@@ -4,7 +4,7 @@
 //! atmosphere. Pulses steepen with amplitude, which the linear waveguides cannot do.
 
 use crate::exhaust::{C_TAIL, ExhaustDef};
-use crate::fv::{Boundary, Cons, Pipe1d, Prim};
+use crate::fv::{Boundary, Pipe1d, Prim, flux_boundary};
 use crate::gas::{GasVolume, R_AIR};
 use crate::units::ATM_PA;
 
@@ -50,7 +50,7 @@ pub struct ExhaustFv {
 /// sees the junction pressure without being forced to rest (a u = 0 plenum ghost low-passes
 /// and reflects the pulses). `sigma` = +1 for a pipe's right end, −1 for its left end. Gas
 /// flowing out of the junction carries the junction's density (entropy).
-fn junction_ghost(cell: Prim, p_j: f64, rho_j: f64, sigma: f64) -> Prim {
+pub(crate) fn junction_ghost(cell: Prim, p_j: f64, rho_j: f64, sigma: f64) -> Prim {
     let g = crate::gas::GAMMA;
     // Bound the expansion/compression a single boundary state may represent.
     let ratio = (p_j / cell.p).clamp(0.05, 20.0);
@@ -73,7 +73,7 @@ fn junction_ghost(cell: Prim, p_j: f64, rho_j: f64, sigma: f64) -> Prim {
 }
 
 /// Keep a 0D volume physical under extreme forcing (explicit coupling can overdraw it).
-fn guard(v: &mut GasVolume) {
+pub(crate) fn guard(v: &mut GasVolume) {
     let floor = 1e-6 * v.volume_m3;
     if v.mass_kg.is_nan() || v.mass_kg <= floor {
         v.mass_kg = floor;
@@ -84,7 +84,7 @@ fn guard(v: &mut GasVolume) {
     }
 }
 
-fn area(d: f64) -> f64 {
+pub(crate) fn area(d: f64) -> f64 {
     std::f64::consts::PI * 0.25 * d * d
 }
 
@@ -208,16 +208,7 @@ impl ExhaustFv {
             };
             let mass_flux = scale * self.acc_mass[i] / (a * dt);
             let energy_flux = scale * self.acc_energy[i] / (a * dt);
-            let rho_up = if mass_flux >= 0.0 {
-                cell.rho.max(1e-3)
-            } else {
-                cell.rho
-            };
-            pipe.left = Boundary::Flux(Cons {
-                rho: mass_flux,
-                mom: mass_flux * mass_flux / rho_up + cell.p,
-                e: energy_flux,
-            });
+            pipe.left = Boundary::Flux(flux_boundary(mass_flux, energy_flux, cell));
             self.acc_mass[i] = 0.0;
             self.acc_energy[i] = 0.0;
         }
@@ -309,6 +300,7 @@ impl ExhaustFv {
 mod tests {
     use super::*;
     use crate::exhaust::ExhaustModel;
+    use crate::fv::Cons;
 
     const DT: f64 = 1.0 / 192_000.0;
 

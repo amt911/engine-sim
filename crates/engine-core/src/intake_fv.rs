@@ -1,0 +1,361 @@
+//! Intake as non-linear 1D finite-volume runners ([`crate::fv`]): one runner per cylinder from a
+//! trumpet to the intake valve, fed either through **individual throttle bodies** at each trumpet
+//! (ITBs, like the LFA) or from a common **plenum** behind a single throttle. Gives intake (ram)
+//! tuning and induction sound. Spec: `docs/superpowers/specs/2026-10-22-intake-and-pipe-editor.md`.
+
+use crate::exhaust_fv::{CELL_M, PIPE_FRICTION, area, guard, junction_ghost};
+use crate::fv::{Boundary, Pipe1d, Prim, flux_boundary};
+use crate::gas::{CP, GasVolume, R_AIR, orifice_mass_flow};
+use crate::units::ATM_PA;
+use serde::{Deserialize, Serialize};
+
+pub const AMBIENT_T_K: f64 = 300.0;
+/// Speed of sound of ambient air, for the induction-sound source c·(ρu).
+pub const C_AIR: f64 = 343.0;
+const MAX_SUBCYCLES: usize = 16;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntakeModel {
+    /// One 0D plenum straight onto the valves (cheap; the original model).
+    #[default]
+    ZeroD,
+    /// 1D runners with trumpets (and a plenum unless the throttles are individual).
+    Fv,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct IntakeDef {
+    pub model: IntakeModel,
+    pub runner_length_m: f64,
+    pub runner_diameter_m: f64,
+    /// One throttle per runner at its trumpet (ITB) instead of a common throttle + plenum.
+    pub individual_throttles: bool,
+    /// Entry loss coefficient of the trumpet (sharp edge ≈ 0.5, bellmouth ≈ 0.05; Blair).
+    pub trumpet_loss: f64,
+}
+
+impl Default for IntakeDef {
+    fn default() -> Self {
+        Self {
+            model: IntakeModel::ZeroD,
+            runner_length_m: 0.3,
+            runner_diameter_m: 0.042,
+            individual_throttles: false,
+            trumpet_loss: 0.1,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct IntakeFv {
+    runners: Vec<Pipe1d>,
+    a_runner: f64,
+    individual: bool,
+    /// Common plenum (unused with individual throttles).
+    plenum: GasVolume,
+    /// Discharge-coefficient factor of the trumpet entry, 1/√(1 + k).
+    trumpet_cd: f64,
+    pub substeps: usize,
+    pub dt_fv: f64,
+    pub dt: f64,
+    count: usize,
+    acc_mass: Vec<f64>,
+    acc_energy: Vec<f64>,
+    radiated: f64,
+    inducted: f64,
+}
+
+impl IntakeFv {
+    pub fn new(def: &IntakeDef, plenum_volume_m3: f64, cylinders: usize, dt: f64) -> Self {
+        let init = Prim {
+            rho: ATM_PA / (R_AIR * AMBIENT_T_K),
+            u: 0.0,
+            p: ATM_PA,
+        };
+        let a_runner = area(def.runner_diameter_m);
+        let runners = (0..cylinders)
+            .map(|_| {
+                let n = (def.runner_length_m / CELL_M).round().max(2.0);
+                let mut p = Pipe1d::segmented(
+                    &[(def.runner_length_m, a_runner)],
+                    def.runner_length_m / n,
+                    init,
+                );
+                p.floors = (1e-3, 500.0);
+                p.friction = PIPE_FRICTION;
+                p
+            })
+            .collect();
+        // cold air, |u| + c up to ~700 m/s at a choked trumpet: 0.8 · cell / 700
+        let dt_target = 0.8 * CELL_M / 700.0;
+        let substeps = ((dt_target / dt).floor() as usize).max(1);
+        Self {
+            runners,
+            a_runner,
+            individual: def.individual_throttles,
+            plenum: GasVolume::at(ATM_PA, AMBIENT_T_K, plenum_volume_m3.max(1e-5)),
+            trumpet_cd: 1.0 / (1.0 + def.trumpet_loss.max(0.0)).sqrt(),
+            substeps,
+            dt_fv: substeps as f64 * dt,
+            dt,
+            count: 0,
+            acc_mass: vec![0.0; cylinders],
+            acc_energy: vec![0.0; cylinders],
+            radiated: 0.0,
+            inducted: 0.0,
+        }
+    }
+
+    /// The runner's last cell (at the valve) as a 0D volume, for the valve flow.
+    pub fn port_volume(&self, i: usize) -> GasVolume {
+        let pipe = &self.runners[i];
+        let c = pipe.cells[pipe.cells.len() - 1];
+        let v = self.a_runner * pipe.dx;
+        let prim = c.to_prim();
+        GasVolume {
+            mass_kg: c.rho * v,
+            energy_j: prim.p / (crate::gas::GAMMA - 1.0) * v,
+            volume_m3: v,
+        }
+    }
+
+    /// Register this physics step's valve flow: `dm` kg from the runner into the cylinder
+    /// (negative = back-flow into the runner) carrying total specific enthalpy `h`.
+    pub fn add_valve_flow(&mut self, i: usize, dm: f64, h: f64) {
+        self.acc_mass[i] += dm;
+        self.acc_energy[i] += dm * h;
+    }
+
+    /// Advance one physics step with throttle effective area `throttle_area` (per runner with
+    /// ITBs, total for a common throttle). Returns the induction sound source (c·ρu at the
+    /// trumpets, or at the throttle for a plenum), held between FV steps.
+    pub fn step(&mut self, throttle_area: f64) -> f64 {
+        self.count += 1;
+        self.inducted = 0.0;
+        if self.count < self.substeps {
+            return self.radiated;
+        }
+        self.count = 0;
+        let dt = self.dt_fv;
+        let a = self.a_runner;
+        for (i, pipe) in self.runners.iter_mut().enumerate() {
+            let n = pipe.cells.len();
+            let cell = pipe.prim(n - 1);
+            // what leaves the runner into the cylinder is a +x flux at its right face
+            let available = 0.5 * pipe.cells[n - 1].rho * a * pipe.dx;
+            let scale = if self.acc_mass[i] > available {
+                available / self.acc_mass[i]
+            } else {
+                1.0
+            };
+            let mf = scale * self.acc_mass[i] / (a * dt);
+            pipe.right = Boundary::Flux(flux_boundary(
+                mf,
+                scale * self.acc_energy[i] / (a * dt),
+                cell,
+            ));
+            self.acc_mass[i] = 0.0;
+            self.acc_energy[i] = 0.0;
+        }
+        let limit = self
+            .runners
+            .iter()
+            .map(|p| p.max_dt(0.9))
+            .fold(f64::INFINITY, f64::min);
+        let k = ((dt / limit).ceil() as usize).clamp(1, MAX_SUBCYCLES);
+        let h = dt / k as f64;
+        let mut radiated = 0.0;
+        for _ in 0..k {
+            radiated += self.substep(h, throttle_area) / k as f64;
+        }
+        self.radiated = radiated;
+        radiated
+    }
+
+    fn substep(&mut self, h: f64, throttle_area: f64) -> f64 {
+        let a = self.a_runner;
+        let a_eff = throttle_area.max(0.0) * self.trumpet_cd;
+        let mut radiated = 0.0;
+        if self.individual {
+            for pipe in &mut self.runners {
+                // throttle body at the trumpet: compressible orifice between the atmosphere and
+                // the first cell, imposed as the face flux
+                let cell = pipe.prim(0);
+                let t_cell = cell.p / (cell.rho * R_AIR);
+                let (m, e) = if ATM_PA >= cell.p {
+                    let m = orifice_mass_flow(a_eff, ATM_PA, AMBIENT_T_K, cell.p);
+                    (m, m * CP * AMBIENT_T_K)
+                } else {
+                    let m = -orifice_mass_flow(a_eff, cell.p, t_cell, ATM_PA);
+                    (m, m * CP * t_cell)
+                };
+                let mf = m / a;
+                pipe.left = Boundary::Flux(flux_boundary(mf, e / a, cell));
+                pipe.step(h);
+                self.inducted += pipe.end_flux.0.rho * a * h;
+                radiated += C_AIR * pipe.end_flux.0.rho;
+            }
+        } else {
+            let dm = crate::gas::exchange_with_reservoir(
+                &mut self.plenum,
+                &crate::gas::Reservoir {
+                    pressure_pa: ATM_PA,
+                    temperature_k: AMBIENT_T_K,
+                },
+                a_eff,
+                h,
+            );
+            self.inducted -= dm;
+            radiated += C_AIR * (-dm / h) / a;
+            let pl = Prim {
+                rho: self.plenum.mass_kg / self.plenum.volume_m3,
+                u: 0.0,
+                p: self.plenum.pressure(),
+            };
+            for pipe in &mut self.runners {
+                let first = pipe.prim(0);
+                pipe.left = Boundary::State(junction_ghost(first, pl.p, pl.rho, -1.0));
+                pipe.step(h);
+                let f = pipe.end_flux.0;
+                self.plenum.mass_kg -= f.rho * a * h;
+                self.plenum.energy_j -= f.e * a * h;
+            }
+            guard(&mut self.plenum);
+        }
+        radiated
+    }
+
+    /// Manifold pressure as an engine gauge reads it: the plenum, or the runners' mean with ITBs.
+    pub fn manifold_pressure(&self) -> f64 {
+        if self.individual {
+            let mid = |p: &Pipe1d| p.prim(p.cells.len() / 2).p;
+            self.runners.iter().map(mid).sum::<f64>() / self.runners.len().max(1) as f64
+        } else {
+            self.plenum.pressure()
+        }
+    }
+
+    /// Air that entered from the atmosphere during the last physics step, kg.
+    pub fn last_inducted(&self) -> f64 {
+        self.inducted
+    }
+
+    pub fn total_mass(&self) -> f64 {
+        let pipes: f64 = self
+            .runners
+            .iter()
+            .map(|p| {
+                p.cells
+                    .iter()
+                    .zip(&p.area)
+                    .map(|(c, a)| c.rho * a)
+                    .sum::<f64>()
+                    * p.dx
+            })
+            .sum();
+        pipes
+            + if self.individual {
+                0.0
+            } else {
+                self.plenum.mass_kg
+            }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DT: f64 = 1.0 / 192_000.0;
+
+    fn def(individual: bool) -> IntakeDef {
+        IntakeDef {
+            model: IntakeModel::Fv,
+            individual_throttles: individual,
+            ..IntakeDef::default()
+        }
+    }
+
+    #[test]
+    fn open_and_quiet_stays_at_atmospheric() {
+        for individual in [true, false] {
+            let mut net = IntakeFv::new(&def(individual), 2e-3, 2, DT);
+            for _ in 0..20_000 {
+                net.step(1e-3);
+            }
+            let p = net.manifold_pressure();
+            assert!((p - ATM_PA).abs() < 100.0, "individual {individual}: {p}");
+        }
+    }
+
+    #[test]
+    fn steady_suction_is_fed_through_the_throttle() {
+        // 0.02 kg/s drawn by one valve; after settling, the throttle inducts the same on average.
+        for individual in [true, false] {
+            let mut net = IntakeFv::new(&def(individual), 2e-3, 1, DT);
+            let mut inducted = 0.0;
+            let n = (0.4 / DT) as usize;
+            for k in 0..n {
+                net.add_valve_flow(0, 0.02 * DT, CP * 300.0);
+                net.step(5e-4);
+                if k > n / 2 {
+                    inducted += net.last_inducted();
+                }
+            }
+            let rate = inducted / (n / 2) as f64 / DT;
+            assert!(
+                (rate / 0.02 - 1.0).abs() < 0.03,
+                "individual {individual}: {rate} kg/s"
+            );
+        }
+    }
+
+    #[test]
+    fn a_nearly_closed_throttle_pulls_a_vacuum() {
+        for individual in [true, false] {
+            let mut net = IntakeFv::new(&def(individual), 2e-3, 1, DT);
+            for _ in 0..(0.3 / DT) as usize {
+                net.add_valve_flow(0, 0.01 * DT, CP * 300.0);
+                net.step(1e-6);
+            }
+            let p = net.manifold_pressure();
+            assert!(p < 0.5 * ATM_PA && p > 0.0, "individual {individual}: {p}");
+        }
+    }
+
+    #[test]
+    fn mass_balances_through_the_runners() {
+        let mut net = IntakeFv::new(&def(false), 2e-3, 2, DT);
+        let m0 = net.total_mass();
+        let (mut drawn, mut inducted) = (0.0, 0.0);
+        for k in 0..20_000 {
+            let dm = if k % 2_000 < 600 { 4e-7 } else { 0.0 };
+            net.add_valve_flow(0, dm, CP * 300.0);
+            drawn += dm;
+            net.step(5e-4);
+            inducted += net.last_inducted();
+        }
+        let m1 = net.total_mass();
+        assert!(
+            ((m1 - m0) - (inducted - drawn)).abs() < 1e-6 * m0,
+            "Δm {} vs {}",
+            m1 - m0,
+            inducted - drawn
+        );
+    }
+
+    #[test]
+    fn violent_suction_stays_finite() {
+        let mut net = IntakeFv::new(&def(true), 2e-3, 4, DT);
+        for k in 0..30_000 {
+            for c in 0..4 {
+                let ph = (k + c * 1_200) % 4_800;
+                net.add_valve_flow(c, if ph < 1_200 { 8e-7 } else { -2e-7 }, CP * 400.0);
+            }
+            assert!(net.step(2e-4).is_finite(), "step {k}");
+        }
+        assert!(net.manifold_pressure() > 0.0);
+    }
+}
