@@ -1,39 +1,30 @@
 mod app;
 mod controls;
+mod editor;
+mod files;
 mod headless;
 mod runner;
 mod sim;
 mod view;
 
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use controls::{Preset, UiState};
 use std::path::PathBuf;
 use std::process::ExitCode;
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum PresetArg {
-    Single,
-    Inline4,
-    LfaV10,
-}
-
-impl From<PresetArg> for Preset {
-    fn from(p: PresetArg) -> Self {
-        match p {
-            PresetArg::Single => Preset::Single,
-            PresetArg::Inline4 => Preset::Inline4,
-            PresetArg::LfaV10 => Preset::LfaV10,
-        }
-    }
-}
 
 /// Real-time engine sound simulator.
 #[derive(Debug, Parser)]
 #[command(version)]
 struct Cli {
     /// Built-in engine to start with.
-    #[arg(long, value_enum, default_value = "single")]
-    preset: PresetArg,
+    #[arg(long, default_value = "single", value_parser = clap::builder::PossibleValuesParser::new(Preset::ALL.map(Preset::slug)))]
+    preset: String,
+    /// Engine file to load (.yaml/.yml/.json); overrides --preset.
+    #[arg(long)]
+    engine: Option<PathBuf>,
+    /// Write the selected engine to this file (.yaml/.json) and exit.
+    #[arg(long)]
+    save: Option<PathBuf>,
     /// Render offline instead of opening the window.
     #[arg(long)]
     headless: bool,
@@ -56,16 +47,32 @@ struct Cli {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let preset: Preset = cli.preset.into();
+    let preset = Preset::from_slug(&cli.preset).unwrap_or(Preset::Single);
+    let def = match &cli.engine {
+        Some(path) => match files::load_engine(path) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => preset.def(),
+    };
+    if let Some(path) = &cli.save {
+        return match files::save_engine(path, &def) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("{e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if cli.headless {
-        let (samples, report) = headless::render(preset.def(), cli.seconds, cli.throttle, 48_000.0);
+        let name = def.name.clone();
+        let (samples, report) = headless::render(def, cli.seconds, cli.throttle, 48_000.0);
         println!(
-            "{}: {} samples, rms {:.4}, peak {:.3}, final {:.0} rpm",
-            preset.label(),
-            report.samples,
-            report.rms,
-            report.peak,
-            report.final_rpm
+            "{name}: {} samples, rms {:.4}, peak {:.3}, final {:.0} rpm",
+            report.samples, report.rms, report.peak, report.final_rpm
         );
         if let Some(path) = &cli.wav
             && let Err(e) = headless::write_wav(path, &samples, 48_000)
@@ -82,8 +89,9 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let state = UiState {
-        preset,
-        def: preset.def(),
+        preset: cli.engine.is_none().then_some(preset),
+        firing_text: editor::format_firing_order(&def.firing_order),
+        def,
         ..UiState::default()
     };
     let options = eframe::NativeOptions {

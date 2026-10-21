@@ -1,0 +1,45 @@
+version: 1
+engine:
+  name: Lexus LFA V10
+  geometry:
+    bore_m: 0.088
+    stroke_m: 0.079
+    rod_m: 0.14
+    compression_ratio: 12.0
+  cylinders: 10
+  firing_order:
+  - 1
+  - 6
+  - 5
+  - 10
+  - 2
+  - 7
+  - 3
+  - 8
+  - 4
+  - 9
+  intake_valve:
+    open_deg: 340.0
+    duration_deg: 270.0
+    max_lift_m: 0.011
+    diameter_m: 0.046
+  exhaust_valve:
+    open_deg: 125.0
+    duration_deg: 265.0
+    max_lift_m: 0.01
+    diameter_m: 0.04
+  spark_advance_deg: 28.0
+  burn_duration_deg: 45.0
+  flywheel_inertia_kgm2: 0.09
+  plenum_volume_m3: 0.008
+  throttle_diameter_m: 0.12
+  idle_throttle: 0.0015
+  exhaust_runner_length_m: 0.6
+  exhaust_runner_diameter_m: 0.048
+  exhaust_outlet_diameter_m: 0.05
+  redline_rpm: 9000.0
+  starter_torque_nm: 150.0
+  fmep_bar:
+  - 0.8
+  - 0.1
+  - 0.015

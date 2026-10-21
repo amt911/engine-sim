@@ -26,6 +26,7 @@ clap = { version = "4", features = ["derive"] }
 hound = "3"
 proptest = "1"
 approx = "0.5"
+rfd = "0.17"
 
 [profile.release]
 lto = "thin"

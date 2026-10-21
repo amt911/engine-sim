@@ -20,6 +20,17 @@ impl Preset {
             Preset::LfaV10 => EngineDef::lfa_v10(),
         }
     }
+    /// File/CLI name, as in `presets/<slug>.yaml` and `--preset <slug>`.
+    pub fn slug(self) -> &'static str {
+        match self {
+            Preset::Single => "single",
+            Preset::Inline4 => "inline4",
+            Preset::LfaV10 => "lfa-v10",
+        }
+    }
+    pub fn from_slug(slug: &str) -> Option<Preset> {
+        Preset::ALL.into_iter().find(|p| p.slug() == slug)
+    }
     pub fn label(self) -> &'static str {
         match self {
             Preset::Single => "Single 500",
@@ -31,7 +42,8 @@ impl Preset {
 
 #[derive(Debug, Clone)]
 pub struct UiState {
-    pub preset: Preset,
+    /// The built-in this engine came from; `None` after loading or creating a custom one.
+    pub preset: Option<Preset>,
     /// The engine being edited; sent to the sim when `engine_dirty`.
     pub def: EngineDef,
     pub engine_dirty: bool,
@@ -40,18 +52,27 @@ pub struct UiState {
     /// Set while a key holds the throttle wide open / the starter engaged.
     pub key_throttle: bool,
     pub starter: bool,
+    /// Firing order as typed in the editor ("1-3-4-2"; empty = automatic).
+    pub firing_text: String,
+    /// Validation problems of the edited engine (shown in the editor).
+    pub errors: Vec<String>,
+    /// Last file load/save message.
+    pub file_msg: Option<String>,
 }
 
 impl Default for UiState {
     fn default() -> Self {
         Self {
-            preset: Preset::Single,
+            preset: Some(Preset::Single),
             def: Preset::Single.def(),
             engine_dirty: false,
             ignition: true,
             throttle: 0.0,
             key_throttle: false,
             starter: false,
+            firing_text: "1".into(),
+            errors: Vec::new(),
+            file_msg: None,
         }
     }
 }
@@ -76,9 +97,13 @@ impl UiState {
 pub fn controls_panel(ui: &mut egui::Ui, state: &mut UiState) {
     ui.heading("Engine");
     for p in Preset::ALL {
-        if ui.selectable_label(state.preset == p, p.label()).clicked() && state.preset != p {
-            state.preset = p;
+        if ui
+            .selectable_label(state.preset == Some(p), p.label())
+            .clicked()
+        {
+            state.preset = Some(p);
             state.def = p.def();
+            state.firing_text = crate::editor::format_firing_order(&state.def.firing_order);
             state.engine_dirty = true;
         }
     }
@@ -86,10 +111,12 @@ pub fn controls_panel(ui: &mut egui::Ui, state: &mut UiState) {
     ui.heading("Driver");
     ui.checkbox(&mut state.ignition, "Ignition");
     let starter = ui.button("Starter (hold S)");
+    // Keys typed into a text field (name, firing order) must not drive the engine.
+    let typing = ui.ctx().text_edit_focused();
     let (w, s_key) = ui.input(|i| {
         (
-            i.key_down(egui::Key::W) || i.key_down(egui::Key::ArrowUp),
-            i.key_down(egui::Key::S),
+            !typing && (i.key_down(egui::Key::W) || i.key_down(egui::Key::ArrowUp)),
+            !typing && i.key_down(egui::Key::S),
         )
     });
     state.starter = starter.is_pointer_button_down_on() || s_key;
@@ -134,9 +161,35 @@ mod tests {
         let mut h = harness();
         h.get_by_label("Inline-4 2.0").click();
         h.run();
-        assert_eq!(h.state().preset, Preset::Inline4);
+        assert_eq!(h.state().preset, Some(Preset::Inline4));
         assert_eq!(h.state().def.cylinders, 4);
         assert!(h.state().engine_dirty);
+    }
+
+    #[test]
+    fn slugs_round_trip() {
+        for p in Preset::ALL {
+            assert_eq!(Preset::from_slug(p.slug()), Some(p));
+        }
+        assert_eq!(Preset::from_slug("nope"), None);
+    }
+
+    #[test]
+    fn presets_work_after_loading_a_custom_engine() {
+        // Regression: after loading a file the preset stayed "Single", so clicking
+        // "Single 500" was ignored.
+        let mut custom = Preset::Inline4.def();
+        custom.name = "From a file".into();
+        let state = UiState {
+            preset: None,
+            def: custom,
+            ..UiState::default()
+        };
+        let mut h = Harness::new_ui_state(|ui, s: &mut UiState| controls_panel(ui, s), state);
+        h.get_by_label("Single 500").click();
+        h.run();
+        assert_eq!(h.state().def, Preset::Single.def());
+        assert_eq!(h.state().preset, Some(Preset::Single));
     }
 
     #[test]
@@ -154,6 +207,34 @@ mod tests {
         h.key_down(egui::Key::W);
         h.run();
         assert_eq!(h.state().controls().throttle, 1.0);
+    }
+
+    #[test]
+    fn holding_s_engages_the_starter() {
+        let mut h = harness();
+        h.key_down(egui::Key::S);
+        h.run();
+        assert!(h.state().controls().starter);
+    }
+
+    #[test]
+    fn keys_typed_into_a_text_field_do_not_drive_the_engine() {
+        let mut h = Harness::new_ui_state(
+            |ui, s: &mut UiState| {
+                let l = ui.label("Note");
+                ui.text_edit_singleline(&mut s.firing_text)
+                    .labelled_by(l.id);
+                controls_panel(ui, s);
+            },
+            UiState::default(),
+        );
+        h.get_by_label("Note").focus();
+        h.run();
+        h.key_down(egui::Key::W);
+        h.key_down(egui::Key::S);
+        h.run();
+        assert_eq!(h.state().controls().throttle, 0.0);
+        assert!(!h.state().controls().starter);
     }
 
     #[test]

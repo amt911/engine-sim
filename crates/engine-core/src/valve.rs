@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 pub const VALVE_CD: f64 = 0.7;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ValveTiming {
     /// Crank angle where the valve starts to open, degrees in [0, 720).
     pub open_deg: f64,

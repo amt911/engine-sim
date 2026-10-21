@@ -165,7 +165,7 @@ Planned (add when the phase needs them, then update this table): `fft-convolver`
 │   ├── engine-audio/  # pure DSP (DC blocker, filters, radiation, later convolution) + cpal output
 │   │                  #   behind an `AudioSink` boundary.
 │   └── engine-app/    # binary `engine-sim`: eframe UI, sim thread, CLI, headless renderer.
-├── presets/           # engine definitions in YAML (also used as test fixtures)
+├── presets/           # built-in engines as YAML (`--save`); a test keeps them equal to the code
 ├── scripts/           # smoke.sh, heavy.sh, verify-pr.sh
 └── docs/              # specs, research, agents/, FINDINGS, FACTS
 ```
@@ -178,13 +178,16 @@ snapshots). Audio fill level drives how many sim steps run per block (see resear
 
 ```bash
 cargo run -p engine-app --release                       # the app
-cargo run -p engine-app --release -- --preset inline4
+cargo run -p engine-app --release -- --preset inline4      # single | inline4 | lfa-v10
+cargo run -p engine-app --release -- --engine presets/lfa-v10.yaml   # any .yaml/.yml/.json
+cargo run -p engine-app --release -- --preset lfa-v10 --save my.yaml # write an engine file
+cargo test -p engine-app render_screens -- --ignored    # off-screen UI renders → target/screens/
 cargo run -p engine-app --release -- --headless --seconds 3 --wav /tmp/out.wav --check
 cargo test --workspace                                  # all tests
 cargo clippy --workspace --all-targets -- -D warnings   # lint (gate)
 cargo fmt --all --check                                 # format (gate)
 scripts/coverage.sh                                     # coverage gate (80% lines)
-scripts/mutants.sh                                      # mutation gate (floor 85%, ratchet)
+scripts/mutants.sh                                      # mutation gate (floor 90%, ratchet)
 scripts/smoke.sh                                        # real-environment smoke
 ```
 
@@ -199,8 +202,8 @@ Stack and conventions: [docs/agents/testing.md](docs/agents/testing.md).
 
 - **Coverage gate: 80%** lines over the workspace, excluding UI rendering glue and the `cpal`
   device code (justified in `docs/agents/testing.md`). Critical physics ≥ 90%.
-- **Mutation gate: 60% minimum** over `engine-core`; current floor **85%** (`scripts/mutants.sh`,
-  measured 89.9% on 2026-10-21) — a ratchet, raised with the score, never lowered. See
+- **Mutation gate: 60% minimum** over `engine-core`; current floor **90%** (`scripts/mutants.sh`,
+  measured 92.4% on 2026-10-21) — a ratchet, raised with the score, never lowered. See
   [Mutation gate — the 60% floor](docs/agents/quality-beyond-coverage.md#mutation-gate--the-60-floor-and-it-only-goes-up).
 - **The "E2E" of this project is the real binary**: headless render (WAV non-silent, finite, at the
   right firing frequency) + GUI launch smoke in `scripts/smoke.sh`, and `egui_kittest` tests that

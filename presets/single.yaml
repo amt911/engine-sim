@@ -1,0 +1,36 @@
+version: 1
+engine:
+  name: Single 500
+  geometry:
+    bore_m: 0.086
+    stroke_m: 0.086
+    rod_m: 0.143
+    compression_ratio: 10.0
+  cylinders: 1
+  firing_order:
+  - 1
+  intake_valve:
+    open_deg: 345.0
+    duration_deg: 250.0
+    max_lift_m: 0.009
+    diameter_m: 0.034
+  exhaust_valve:
+    open_deg: 135.0
+    duration_deg: 245.0
+    max_lift_m: 0.008
+    diameter_m: 0.029
+  spark_advance_deg: 25.0
+  burn_duration_deg: 55.0
+  flywheel_inertia_kgm2: 0.12
+  plenum_volume_m3: 0.0015
+  throttle_diameter_m: 0.04
+  idle_throttle: 0.0012
+  exhaust_runner_length_m: 0.8
+  exhaust_runner_diameter_m: 0.04
+  exhaust_outlet_diameter_m: 0.045
+  redline_rpm: 7500.0
+  starter_torque_nm: 25.0
+  fmep_bar:
+  - 0.97
+  - 0.15
+  - 0.05

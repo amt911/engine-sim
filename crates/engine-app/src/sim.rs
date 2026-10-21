@@ -32,6 +32,7 @@ pub struct Simulation {
     sample_rate: f64,
     pub controls: Controls,
     trace: Vec<f32>,
+    trace_deg: usize,
     scope: Vec<f32>,
     scope_pos: usize,
 }
@@ -44,6 +45,7 @@ impl Simulation {
             sample_rate,
             controls: Controls::default(),
             trace: vec![0.0; 720],
+            trace_deg: 0,
             scope: vec![0.0; SCOPE_LEN],
             scope_pos: 0,
         }
@@ -80,7 +82,14 @@ impl Simulation {
                 p = self.engine.step(dt, &self.controls);
             }
             let c0 = self.engine.cylinder(0);
-            self.trace[(c0.cycle_deg as usize).min(719)] = c0.pressure_pa as f32;
+            // Fill every degree passed since the last sample, so none keeps a stale value.
+            let cur = (c0.cycle_deg as usize).min(719);
+            let mut d = self.trace_deg;
+            while d != cur {
+                d = (d + 1) % 720;
+                self.trace[d] = c0.pressure_pa as f32;
+            }
+            self.trace_deg = cur;
             *s = self.voice.process(p);
             self.scope[self.scope_pos] = *s;
             self.scope_pos = (self.scope_pos + 1) % SCOPE_LEN;
@@ -217,6 +226,32 @@ pub(crate) mod tests {
             "compression visible in trace"
         );
         assert!(s.rpm > 0.0);
+    }
+
+    #[test]
+    fn pressure_trace_has_no_stale_bins_at_high_rpm() {
+        // Regression: at 9,000 rpm a sample advances ~1.1°, so bins were skipped and kept
+        // values from earlier cycles (spikes in the plot). Every bin must be from the last cycle.
+        let mut sim = Simulation::new(EngineDef::lfa_v10(), FS, 1);
+        sim.controls = Controls {
+            throttle: 0.0,
+            hold_rpm: Some(1000.0),
+            ..Controls::default()
+        };
+        render_secs(&mut sim, 0.3);
+        sim.controls = Controls {
+            throttle: 0.0,
+            ignition: false,
+            hold_rpm: Some(9000.0),
+            ..Controls::default()
+        };
+        render_secs(&mut sim, 0.3);
+        let trace = sim.snapshot().pressure_trace;
+        // Motored at closed throttle the cylinder never exceeds ~15 bar; leftovers from
+        // the fired cycles at 1,000 rpm would.
+        let max = trace.iter().cloned().fold(0.0f32, f32::max);
+        assert!(max < 15e5, "stale bin: {max}");
+        assert!(trace.iter().all(|p| *p > 0.0));
     }
 
     #[test]
