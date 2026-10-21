@@ -29,6 +29,15 @@ if "$BIN" --help 2>/dev/null | grep -q -- --headless; then
   done
 fi
 
+phase "dyno sweep"
+for preset in single inline4 lfa-v10; do
+  "$BIN" --preset "$preset" --dyno >"$OUT/dyno.csv" 2>/dev/null || fail "dyno $preset"
+  [ "$(head -1 "$OUT/dyno.csv")" = "rpm,torque_nm,power_hp" ] || fail "dyno $preset header"
+  awk -F, 'NR>1 { n++; if ($2+0 <= 0 || $2 != $2+0 || $3+0 <= 0) bad=1 } END { exit (n >= 5 && !bad) ? 0 : 1 }' "$OUT/dyno.csv" \
+    || fail "dyno $preset: too few rows or non-positive/NaN torque"
+  echo "PASS dyno $preset ($(($(wc -l <"$OUT/dyno.csv") - 1)) points)"
+done
+
 phase "file round trip"
 "$BIN" --preset lfa-v10 --save "$OUT/rt.yaml" || fail "save yaml"
 "$BIN" --engine "$OUT/rt.yaml" --save "$OUT/rt.json" || fail "yaml -> json"

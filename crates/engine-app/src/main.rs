@@ -1,5 +1,6 @@
 mod app;
 mod controls;
+mod dyno;
 mod editor;
 mod files;
 mod headless;
@@ -25,6 +26,9 @@ struct Cli {
     /// Write the selected engine to this file (.yaml/.json) and exit.
     #[arg(long)]
     save: Option<PathBuf>,
+    /// Run a wide-open-throttle dyno sweep and print `rpm,torque_nm,power_hp` as CSV.
+    #[arg(long)]
+    dyno: bool,
     /// Render offline instead of opening the window.
     #[arg(long)]
     headless: bool,
@@ -66,6 +70,21 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         };
+    }
+    if cli.dyno {
+        let points = dyno::sweep(&def);
+        print!("{}", dyno::to_csv(&points));
+        if let Some((t, p)) = dyno::peaks(&points) {
+            eprintln!(
+                "{}: peak {:.0} N·m at {:.0} rpm, peak {:.0} hp at {:.0} rpm",
+                def.name,
+                t.torque_nm,
+                t.rpm,
+                p.power_hp(),
+                p.rpm
+            );
+        }
+        return ExitCode::SUCCESS;
     }
     if cli.headless {
         let name = def.name.clone();

@@ -161,7 +161,7 @@ Planned (add when the phase needs them, then update this table): `fft-convolver`
 ├── crates/
 │   ├── engine-core/   # pure physics, no IO: units, geometry (crank-slider, Wankel), gas (0D volumes,
 │   │                  #   orifice flow, later 1D pipes), combustion (Wiebe), dynamics, load/dyno,
-│   │                  #   gearbox, engine definition (serde) + presets. 100% deterministic, f64.
+│   │                  #   gearbox (drivetrain: vehicle, clutch), engine definition (serde) + presets. 100% deterministic, f64.
 │   ├── engine-audio/  # pure DSP (DC blocker, filters, radiation, later convolution) + cpal output
 │   │                  #   behind an `AudioSink` boundary.
 │   └── engine-app/    # binary `engine-sim`: eframe UI, sim thread, CLI, headless renderer.
@@ -181,6 +181,7 @@ cargo run -p engine-app --release                       # the app
 cargo run -p engine-app --release -- --preset inline4      # single | inline4 | lfa-v10
 cargo run -p engine-app --release -- --engine presets/lfa-v10.yaml   # any .yaml/.yml/.json
 cargo run -p engine-app --release -- --preset lfa-v10 --save my.yaml # write an engine file
+cargo run -p engine-app --release -- --preset lfa-v10 --dyno         # WOT sweep as CSV rpm,torque_nm,power_hp
 cargo test -p engine-app render_screens -- --ignored    # off-screen UI renders → target/screens/
 cargo run -p engine-app --release -- --headless --seconds 3 --wav /tmp/out.wav --check
 cargo test --workspace                                  # all tests
