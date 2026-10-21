@@ -76,6 +76,12 @@ pub struct Flow {
 }
 
 impl Flow {
+    /// Apply to a volume exchanging with a reservoir (the reservoir does not change).
+    pub fn apply_to(&self, a: &mut GasVolume) {
+        a.mass_kg -= self.dm;
+        a.energy_j -= self.dm * self.h;
+    }
+
     pub fn apply(&self, a: &mut GasVolume, b: &mut GasVolume) {
         a.mass_kg -= self.dm;
         a.energy_j -= self.dm * self.h;
@@ -114,41 +120,96 @@ pub fn exchange(a: &mut GasVolume, b: &mut GasVolume, cd_area: f64, dt: f64) -> 
 /// Exchange gas between a volume and a fixed reservoir. Returns mass moved out of `a`
 /// (negative = inflow into `a`).
 pub fn exchange_with_reservoir(a: &mut GasVolume, r: &Reservoir, cd_area: f64, dt: f64) -> f64 {
+    let f = plan_with_reservoir(a, r, cd_area, dt, 1.0);
+    f.apply_to(a);
+    f.dm
+}
+
+/// Plan the exchange between a volume and a reservoir (mass out of `a`; negative = inflow),
+/// limited to `relax` of the equalising mass, without changing `a`.
+pub fn plan_with_reservoir(
+    a: &GasVolume,
+    r: &Reservoir,
+    cd_area: f64,
+    dt: f64,
+    relax: f64,
+) -> Flow {
     let pa = a.pressure();
+    let inv_v = 1.0 / a.volume_m3;
     if pa >= r.pressure_pa {
         let h = CP * a.temperature();
-        let dm = clamp_flow(
-            orifice_mass_flow(cd_area, pa, a.temperature(), r.pressure_pa) * dt,
-            pa - r.pressure_pa,
-            h,
-            1.0 / a.volume_m3,
-        )
-        .min(0.5 * a.mass_kg);
-        a.mass_kg -= dm;
-        a.energy_j -= dm * h;
-        dm
+        let ideal = orifice_mass_flow(cd_area, pa, a.temperature(), r.pressure_pa) * dt;
+        let dm = ideal
+            .min(relax * equalising_mass(pa - r.pressure_pa, h, inv_v))
+            .min(0.5 * a.mass_kg);
+        Flow { dm, h }
     } else {
         let h = CP * r.temperature_k;
-        let dm = clamp_flow(
-            orifice_mass_flow(cd_area, r.pressure_pa, r.temperature_k, pa) * dt,
-            r.pressure_pa - pa,
+        let ideal = orifice_mass_flow(cd_area, r.pressure_pa, r.temperature_k, pa) * dt;
+        Flow {
+            dm: -ideal.min(relax * equalising_mass(r.pressure_pa - pa, h, inv_v)),
             h,
-            1.0 / a.volume_m3,
-        );
-        a.mass_kg += dm;
-        a.energy_j += dm * h;
-        -dm
+        }
     }
+}
+
+/// Signed mass flow (kg/s, + out of `a`) through an orifice into a pipe whose pressure at
+/// the port rises with that flow: p(ṁ) = `p_base` + `z`·ṁ (`z` = c/A, plane-wave impedance;
+/// `p_base` = p_atm + 2·p⁻). Solved implicitly — an explicit lag makes the port oscillate at
+/// Nyquist — with Illinois regula falsi on h(ṁ) = ṁ − f(p(ṁ)), which is monotone.
+/// Gas flowing back into `a` comes at `t_back`.
+pub fn port_flow(cd_area: f64, a: &GasVolume, p_base: f64, t_back: f64, z: f64) -> f64 {
+    let (pa, ta) = (a.pressure(), a.temperature());
+    let f = |m: f64| {
+        let pv = p_base + z * m;
+        if pa >= pv {
+            orifice_mass_flow(cd_area, pa, ta, pv)
+        } else {
+            -orifice_mass_flow(cd_area, pv, t_back, pa)
+        }
+    };
+    let m0 = f(0.0);
+    if m0 == 0.0 {
+        return 0.0;
+    }
+    // h(0) and h(m0) bracket the root: h(0) = −m0 and h(m0) has the opposite sign.
+    let h = |m: f64| m - f(m);
+    let (mut lo, mut hi) = (0.0, m0);
+    let (mut hlo, mut hhi) = (h(lo), h(hi));
+    if hhi == 0.0 {
+        return hi;
+    }
+    let mut side = 0;
+    let tol = 1e-9 * m0.abs();
+    for _ in 0..60 {
+        let m = (lo * hhi - hi * hlo) / (hhi - hlo);
+        let hm = h(m);
+        if hm.abs() <= tol {
+            return m;
+        }
+        if (hm > 0.0) == (hhi > 0.0) {
+            hi = m;
+            hhi = hm;
+            if side == -1 {
+                hlo *= 0.5;
+            }
+            side = -1;
+        } else {
+            lo = m;
+            hlo = hm;
+            if side == 1 {
+                hhi *= 0.5;
+            }
+            side = 1;
+        }
+    }
+    (lo * hhi - hi * hlo) / (hhi - hlo)
 }
 
 /// Moving `dm` with enthalpy `h` changes p by (γ−1)·h·dm/V on each side (p = (γ−1)U/V),
 /// so the pressures meet exactly at dm_eq = Δp / ((γ−1)·h·Σ1/V). Never move more.
 fn equalising_mass(dp: f64, h: f64, inv_volumes: f64) -> f64 {
     dp / ((GAMMA - 1.0) * h * inv_volumes)
-}
-
-fn clamp_flow(ideal: f64, dp: f64, h: f64, inv_volumes: f64) -> f64 {
-    ideal.min(equalising_mass(dp, h, inv_volumes))
 }
 
 #[cfg(test)]
@@ -256,6 +317,59 @@ mod tests {
         let full = plan_exchange(&a0, &b0, 1.0, 1.0, 1.0).dm;
         let half = plan_exchange(&a0, &b0, 1.0, 1.0, 0.5).dm;
         assert_relative_eq!(half, 0.5 * full, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn planned_reservoir_flow_matches_exchange_and_relaxes() {
+        let atm = Reservoir {
+            pressure_pa: 1e5,
+            temperature_k: 300.0,
+        };
+        for p in [0.3e5, 3e5] {
+            let a0 = GasVolume::at(p, 700.0, 5e-4);
+            let mut a1 = a0;
+            let dm = exchange_with_reservoir(&mut a1, &atm, 2e-4, 2e-5);
+            let f = plan_with_reservoir(&a0, &atm, 2e-4, 2e-5, 1.0);
+            assert_relative_eq!(f.dm, dm, max_relative = 1e-12);
+            let mut a2 = a0;
+            f.apply_to(&mut a2);
+            assert_eq!(a1, a2);
+            let full = plan_with_reservoir(&a0, &atm, 1.0, 1.0, 1.0).dm;
+            let half = plan_with_reservoir(&a0, &atm, 1.0, 1.0, 0.25).dm;
+            assert_relative_eq!(half, 0.25 * full, max_relative = 1e-12);
+        }
+    }
+
+    #[test]
+    fn port_flow_solves_the_coupled_equation() {
+        let z = 600.0 / (std::f64::consts::PI * 0.25 * 0.04 * 0.04);
+        for (p, base) in [
+            (5e5, 1e5),
+            (1.2e5, 1e5),
+            (0.3e5, 1e5),
+            (1e5, 1e5),
+            (1e5, 1.0001e5),
+        ] {
+            let a = GasVolume::at(p, 900.0, 5e-4);
+            let m = port_flow(7e-4, &a, base, 800.0, z);
+            let pv = base + z * m;
+            let expected = if p >= pv {
+                orifice_mass_flow(7e-4, p, 900.0, pv)
+            } else {
+                -orifice_mass_flow(7e-4, pv, 800.0, p)
+            };
+            assert!(
+                (m - expected).abs() <= 1e-6 * expected.abs().max(1e-9),
+                "p {p}: {m} vs {expected}"
+            );
+            assert_eq!(m > 0.0, p > base, "direction at p {p}");
+        }
+        // no pipe impedance → plain orifice flow
+        let a = GasVolume::at(3e5, 900.0, 5e-4);
+        assert_relative_eq!(
+            port_flow(7e-4, &a, 1e5, 800.0, 0.0),
+            orifice_mass_flow(7e-4, 3e5, 900.0, 1e5)
+        );
     }
 
     #[test]

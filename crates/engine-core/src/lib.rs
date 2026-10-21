@@ -5,7 +5,9 @@
 pub mod combustion;
 pub mod config;
 pub mod engine;
+pub mod exhaust;
 pub mod gas;
 pub mod geometry;
 pub mod units;
 pub mod valve;
+pub mod waveguide;

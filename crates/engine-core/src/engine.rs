@@ -1,11 +1,14 @@
 //! Engine definition (data) and the running engine (0D crank-angle-resolved model).
 //!
-//! Per cylinder: plenum → intake valve → cylinder → exhaust valve → exhaust runner →
+//! Per cylinder: plenum → intake valve → cylinder → exhaust valve → exhaust waveguides →
 //! atmosphere. Mechanics: analytic crank-slider with a lumped flywheel inertia.
 //! Model ladder and references: `docs/research/simulador-motor-rust.md`.
 
 use crate::combustion::{AFR_STOICH, charge_energy, wiebe};
-use crate::gas::{GasVolume, Reservoir, exchange_with_reservoir, plan_exchange};
+use crate::exhaust::{ExhaustDef, ExhaustNet, REVERSION_TEMP_K};
+use crate::gas::{
+    CP, Flow, GAMMA, GasVolume, Reservoir, exchange_with_reservoir, plan_exchange, port_flow,
+};
 use crate::geometry::CylinderGeometry;
 use crate::units::{ATM_PA, deg_to_rad, rad_s_to_rpm, rpm_to_rad_s};
 use crate::valve::ValveTiming;
@@ -33,9 +36,7 @@ pub struct EngineDef {
     pub throttle_diameter_m: f64,
     /// Fraction of throttle area open at zero pedal (idle air).
     pub idle_throttle: f64,
-    pub exhaust_runner_length_m: f64,
-    pub exhaust_runner_diameter_m: f64,
-    pub exhaust_outlet_diameter_m: f64,
+    pub exhaust: ExhaustDef,
     pub redline_rpm: f64,
     pub starter_torque_nm: f64,
     /// Friction mean effective pressure fit, bar: FMEP = a + b·(N/1000) + c·(N/1000)².
@@ -78,10 +79,16 @@ impl EngineDef {
             flywheel_inertia_kgm2: 0.12,
             plenum_volume_m3: 1.5e-3,
             throttle_diameter_m: 0.040,
-            idle_throttle: 0.0012,
-            exhaust_runner_length_m: 0.8,
-            exhaust_runner_diameter_m: 0.040,
-            exhaust_outlet_diameter_m: 0.045,
+            idle_throttle: 0.0015,
+            exhaust: ExhaustDef {
+                primary_length_m: 0.8,
+                primary_diameter_m: 0.040,
+                collectors: vec![],
+                collector_length_m: 0.05,
+                collector_diameter_m: 0.040,
+                tail_length_m: 1.0,
+                tail_diameter_m: 0.045,
+            },
             redline_rpm: 7500.0,
             starter_torque_nm: 25.0,
             fmep_bar: [0.97, 0.15, 0.05],
@@ -97,8 +104,8 @@ impl EngineDef {
             flywheel_inertia_kgm2: 0.15,
             plenum_volume_m3: 4.0e-3,
             throttle_diameter_m: 0.060,
-            idle_throttle: 0.004,
-            exhaust_outlet_diameter_m: 0.050,
+            idle_throttle: 0.0055,
+            exhaust: ExhaustDef::default(),
             redline_rpm: 7000.0,
             starter_torque_nm: 60.0,
             ..Self::single()
@@ -138,10 +145,18 @@ impl EngineDef {
             flywheel_inertia_kgm2: 0.09,
             plenum_volume_m3: 8.0e-3,
             throttle_diameter_m: 0.120,
-            idle_throttle: 0.0015,
-            exhaust_runner_length_m: 0.6,
-            exhaust_runner_diameter_m: 0.048,
-            exhaust_outlet_diameter_m: 0.050,
+            idle_throttle: 0.0034,
+            // Equal-length primaries, one 5-into-1 collector per bank (odd/even numbering
+            // per bank is an assumption), dual tail pipes. Lengths and diameters estimated.
+            exhaust: ExhaustDef {
+                primary_length_m: 0.6,
+                primary_diameter_m: 0.042,
+                collectors: vec![vec![1, 3, 5, 7, 9], vec![2, 4, 6, 8, 10]],
+                collector_length_m: 0.3,
+                collector_diameter_m: 0.065,
+                tail_length_m: 1.2,
+                tail_diameter_m: 0.060,
+            },
             redline_rpm: 9000.0,
             starter_torque_nm: 150.0,
             // Low-friction racing build (dry sump, titanium valvetrain): estimated.
@@ -220,8 +235,6 @@ const WALL_HTC: f64 = 350.0;
 const WALL_TEMP_K: f64 = 400.0;
 const AMBIENT_K: f64 = 300.0;
 const DISCHARGE_CD: f64 = 0.8;
-/// Speed of sound used for the exhaust runner delay, m/s (hot exhaust ≈ 500–600).
-const EXHAUST_SOUND_SPEED: f64 = 550.0;
 const TORQUE_AVG_TAU_S: f64 = 0.15;
 /// Effective ring leak area as a fraction of piston area. 1e-4 bleeds a stopped 6 bar
 /// charge in ~0.3 s and costs ~1–2 % of the trapped mass per cycle at WOT (typical
@@ -241,13 +254,9 @@ struct Burn {
 struct CylinderState {
     offset_deg: f64,
     gas: GasVolume,
-    runner: GasVolume,
     trapped_kg: f64,
     burn: Option<Burn>,
     cycle_deg: f64,
-    /// Exhaust runner pressure history, for the propagation delay to the outlet.
-    delay: Vec<f64>,
-    delay_pos: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -262,6 +271,9 @@ pub struct Engine {
     torque_avg: f64,
     combustions: u64,
     rng: u64,
+    /// Exhaust waveguide network, built for the current step size.
+    net: Option<ExhaustNet>,
+    flows: Vec<f64>,
 }
 
 /// Crank angle `a` (deg) crossed in the step (prev, cur], on the 720° circle.
@@ -274,8 +286,6 @@ fn crossed(prev: f64, cur: f64, a: f64) -> bool {
 impl Engine {
     pub fn new(def: EngineDef, initial_rpm: f64, seed: u64) -> Self {
         let g = def.geometry;
-        let runner_v =
-            PI * 0.25 * def.exhaust_runner_diameter_m.powi(2) * def.exhaust_runner_length_m;
         let cyl = def
             .phase_offsets_deg()
             .into_iter()
@@ -284,12 +294,9 @@ impl Engine {
                 CylinderState {
                     offset_deg,
                     gas: GasVolume::at(ATM_PA, AMBIENT_K, g.volume(deg_to_rad(cycle_deg))),
-                    runner: GasVolume::at(ATM_PA, AMBIENT_K, runner_v),
                     trapped_kg: 0.0,
                     burn: None,
                     cycle_deg,
-                    delay: vec![0.0; 1],
-                    delay_pos: 0,
                 }
             })
             .collect();
@@ -306,6 +313,8 @@ impl Engine {
             torque_avg: 0.0,
             combustions: 0,
             rng: seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1,
+            net: None,
+            flows: Vec::new(),
         }
     }
 
@@ -322,8 +331,7 @@ impl Engine {
             && d.firing_order == def.firing_order
             && d.geometry == def.geometry
             && d.plenum_volume_m3 == def.plenum_volume_m3
-            && d.exhaust_runner_length_m == def.exhaust_runner_length_m
-            && d.exhaust_runner_diameter_m == def.exhaust_runner_diameter_m;
+            && d.exhaust == def.exhaust;
         if same {
             self.def = def;
         }
@@ -365,15 +373,16 @@ impl Engine {
             (self.def.intake_valve.open_deg + self.def.intake_valve.duration_deg).rem_euclid(720.0);
         let fire_ok = c.ignition && self.rpm() < self.def.redline_rpm;
         let wall_area = 2.0 * g.piston_area();
-        let delay_len = ((self.def.exhaust_runner_length_m / EXHAUST_SOUND_SPEED) / dt)
-            .round()
-            .max(1.0) as usize;
+        if self.net.as_ref().is_none_or(|n| n.dt != dt) {
+            self.net = Some(ExhaustNet::new(&self.def.exhaust, self.cyl.len(), dt));
+            self.flows = vec![0.0; self.cyl.len()];
+        }
         let blowby_area = BLOWBY_AREA_FRACTION * g.piston_area();
-        let outlet_area = DISCHARGE_CD * PI * 0.25 * self.def.exhaust_outlet_diameter_m.powi(2);
 
         let mut gas_torque = 0.0;
-        let mut audio = 0.0;
+        let z_port = self.net.as_ref().map_or(1.0, |n| n.port_impedance());
         for i in 0..self.cyl.len() {
+            let arriving = self.net.as_ref().map_or(0.0, |n| n.arriving(i));
             let prev = self.cyl[i].cycle_deg;
             let cur = (crank_deg - self.cyl[i].offset_deg).rem_euclid(720.0);
             let theta_c = deg_to_rad(cur);
@@ -393,15 +402,32 @@ impl Engine {
             let a_ex = self.def.exhaust_valve.flow_area(cur);
             let f_in =
                 (a_in > 0.0).then(|| plan_exchange(&self.plenum, &cs.gas, a_in, dt, VALVE_RELAX));
-            let f_ex =
-                (a_ex > 0.0).then(|| plan_exchange(&cs.gas, &cs.runner, a_ex, dt, VALVE_RELAX));
+            // The exhaust port and its primary pipe are solved together: the flow raises the
+            // pipe pressure at the port by z·ṁ (see `gas::port_flow`).
+            let f_ex = (a_ex > 0.0).then(|| {
+                let p_base = ATM_PA + 2.0 * arriving;
+                let m = port_flow(a_ex, &cs.gas, p_base, REVERSION_TEMP_K, z_port);
+                let pv = p_base + z_port * m;
+                let h = if m >= 0.0 {
+                    CP * cs.gas.temperature()
+                } else {
+                    CP * REVERSION_TEMP_K
+                };
+                let limit = VALVE_RELAX * (cs.gas.pressure() - pv).abs() * cs.gas.volume_m3
+                    / ((GAMMA - 1.0) * h);
+                let mut dm = (m * dt).clamp(-limit, limit);
+                if dm > 0.0 {
+                    dm = dm.min(0.5 * cs.gas.mass_kg);
+                }
+                Flow { dm, h }
+            });
             if let Some(f) = f_in {
                 f.apply(&mut self.plenum, &mut cs.gas);
             }
-            if let Some(f) = f_ex {
-                f.apply(&mut cs.gas, &mut cs.runner);
-            }
-            exchange_with_reservoir(&mut cs.runner, &self.atm, outlet_area, dt);
+            self.flows[i] = f_ex.map_or(0.0, |f| {
+                f.apply_to(&mut cs.gas);
+                f.dm / dt
+            });
             // Blow-by past the rings into the (vented) crankcase. Small while running, but it
             // is what lets a charge trapped at a stop bleed off so the starter can turn it.
             exchange_with_reservoir(&mut cs.gas, &self.atm, blowby_area, dt);
@@ -437,18 +463,6 @@ impl Engine {
 
             gas_torque += (cs.gas.pressure() - ATM_PA) * g.piston_area() * g.dpos_dtheta(theta_c);
 
-            // Acoustic source: runner gauge pressure, delayed by the runner length. The 0D
-            // runner low-passes the pulses at ~A·c/V (~100 Hz); the voice's radiation
-            // term (∝ d/dt above 150 Hz) restores the high-rpm harmonics. The valve flow
-            // itself (p = c·ṁ/A) was tried: its √Δp kink at flow reversal turns into hiss
-            // and made closed throttle louder than WOT.
-            if cs.delay.len() != delay_len {
-                cs.delay = vec![0.0; delay_len];
-                cs.delay_pos = 0;
-            }
-            audio += cs.delay[cs.delay_pos];
-            cs.delay[cs.delay_pos] = cs.runner.pressure() - ATM_PA;
-            cs.delay_pos = (cs.delay_pos + 1) % delay_len;
             cs.cycle_deg = cur;
 
             if new_burn {
@@ -463,6 +477,8 @@ impl Engine {
                 self.combustions += 1;
             }
         }
+        // Acoustic source: what the tail pipes radiate.
+        let audio = self.net.as_mut().map_or(0.0, |n| n.step(&self.flows));
         let throttle_area = self.throttle_area(c.throttle);
         exchange_with_reservoir(&mut self.plenum, &self.atm, throttle_area, dt);
 
@@ -500,6 +516,10 @@ impl Engine {
     }
     pub fn plenum_pressure_pa(&self) -> f64 {
         self.plenum.pressure()
+    }
+    /// Gauge pressure in cylinder `i`'s exhaust port (waves standing at the valve), Pa.
+    pub fn exhaust_port_gauge(&self, i: usize) -> f64 {
+        self.net.as_ref().map_or(0.0, |n| n.valve_pressure(i))
     }
     pub fn combustions(&self) -> u64 {
         self.combustions
@@ -729,17 +749,17 @@ mod tests {
     #[test]
     fn throttle_area_spans_idle_to_full_bore() {
         let e = Engine::new(EngineDef::single(), 900.0, 1);
-        // full: 0.8 · π/4 · 0.04² = 1.00531e-3 m²; idle = 0.0012 of that
+        // full: 0.8 · π/4 · 0.04² = 1.00531e-3 m²; idle = 0.0015 of that
         assert_relative_eq!(e.throttle_area(1.0), 1.00531e-3, max_relative = 1e-5);
         assert_relative_eq!(
             e.throttle_area(0.0),
-            0.0012 * 1.00531e-3,
+            0.0015 * 1.00531e-3,
             max_relative = 1e-5
         );
-        // half pedal: 0.0012 + 0.9988 · (1 − cos 45°) = 0.29372
+        // half pedal: 0.0015 + 0.9985 · (1 − cos 45°) = 0.29395
         assert_relative_eq!(
             e.throttle_area(0.5),
-            0.29372 * 1.00531e-3,
+            0.29395 * 1.00531e-3,
             max_relative = 1e-4
         );
     }
@@ -816,10 +836,10 @@ mod tests {
         d.plenum_volume_m3 = 2e-3;
         changes.push(d);
         let mut d = base.clone();
-        d.exhaust_runner_length_m = 1.2;
+        d.exhaust.primary_length_m = 1.2;
         changes.push(d);
         let mut d = base.clone();
-        d.exhaust_runner_diameter_m = 0.05;
+        d.exhaust.collectors = vec![vec![1]];
         changes.push(d);
         for d in changes {
             let mut e = Engine::new(base.clone(), 900.0, 1);
@@ -937,6 +957,37 @@ mod tests {
                     e.rpm()
                 );
             }
+        }
+    }
+
+    #[test]
+    fn exhaust_source_has_no_sample_to_sample_oscillation() {
+        // Regression: the valve-to-pipe coupling used last step's wave; near equal pressures
+        // the orifice slope made a period-2 instability (±20 kPa alternating every sample),
+        // heard as hiss and making closed throttle louder than WOT.
+        for (def, throttle) in [
+            (EngineDef::single(), 0.0),
+            (EngineDef::single(), 1.0),
+            (EngineDef::lfa_v10(), 0.0),
+        ] {
+            let mut e = Engine::new(def.clone(), 3000.0, 1);
+            let c = Controls {
+                throttle,
+                hold_rpm: Some(3000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &c);
+            let xs = run(&mut e, 0.1, &c);
+            // second difference catches alternation; smooth waves give small values
+            let worst = xs
+                .windows(3)
+                .map(|w| (w[2] - 2.0 * w[1] + w[0]).abs())
+                .fold(0.0, f64::max);
+            assert!(
+                worst < 3000.0,
+                "{} throttle {throttle}: second difference {worst} Pa",
+                def.name
+            );
         }
     }
 }

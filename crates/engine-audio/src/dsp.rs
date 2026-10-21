@@ -98,7 +98,7 @@ impl Voice {
                 sample_rate,
             ),
             sample_rate,
-            full_scale_pa: 22_000.0,
+            full_scale_pa: 400_000.0,
         }
     }
     pub fn process(&mut self, pressure_pa: f64) -> f32 {

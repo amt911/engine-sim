@@ -83,6 +83,8 @@ impl EngineApp {
         match files::load_engine(path) {
             Ok(def) => {
                 self.state.firing_text = format_firing_order(&def.firing_order);
+                self.state.collectors_text =
+                    crate::editor::format_collectors(&def.exhaust.collectors);
                 self.state.def = def;
                 self.state.preset = None;
                 self.state.engine_dirty = true;
@@ -264,6 +266,7 @@ mod tests {
                 preset: Some(preset),
                 def: preset.def(),
                 firing_text: crate::editor::format_firing_order(&preset.def().firing_order),
+                collectors_text: crate::editor::format_collectors(&preset.def().exhaust.collectors),
                 throttle,
                 ..UiState::default()
             };

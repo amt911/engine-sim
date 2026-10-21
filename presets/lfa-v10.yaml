@@ -1,4 +1,4 @@
-version: 1
+version: 2
 engine:
   name: Lexus LFA V10
   geometry:
@@ -33,10 +33,25 @@ engine:
   flywheel_inertia_kgm2: 0.09
   plenum_volume_m3: 0.008
   throttle_diameter_m: 0.12
-  idle_throttle: 0.0015
-  exhaust_runner_length_m: 0.6
-  exhaust_runner_diameter_m: 0.048
-  exhaust_outlet_diameter_m: 0.05
+  idle_throttle: 0.0034
+  exhaust:
+    primary_length_m: 0.6
+    primary_diameter_m: 0.042
+    collectors:
+    - - 1
+      - 3
+      - 5
+      - 7
+      - 9
+    - - 2
+      - 4
+      - 6
+      - 8
+      - 10
+    collector_length_m: 0.3
+    collector_diameter_m: 0.065
+    tail_length_m: 1.2
+    tail_diameter_m: 0.06
   redline_rpm: 9000.0
   starter_torque_nm: 150.0
   fmep_bar:
