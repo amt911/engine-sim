@@ -42,9 +42,9 @@ Found: <YYYY-MM-DD> · <area: build | tests | db | ci | deploy | env>
 **Symptom.** Another project's differential gates (real-time game routes) failed while our cargo
 builds/tests ran at ~1400 % CPU.
 **Cause.** Load above ~15 breaks their real-time timing.
-**Fix / workaround.** `scripts/heavy.sh` takes `flock /tmp/claude-1000/cpu-heavy.lock`, writes
-the owner to `cpu-heavy.owner`, runs at nice 19 with cargo -j8. Keep each hold < 30 min (split
-mutation runs per file). Agreed between sessions on 2026-10-22.
+**Fix / workaround.** Timing-dependent jobs (benchmarks, real-time factor) run through
+`scripts/cpu-lock.sh` (flock + owner line v2 + timeout 1800). Builds/tests/lint never take the
+lock (user rule); they run via `scripts/heavy.sh` at nice 19 with cargo -j8. Agreed 2026-10-22.
 **Why it isn't obvious.** Nothing in this repo tells you another session shares the box.
 
 Found: 2026-10-22 · env
