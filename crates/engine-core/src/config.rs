@@ -357,6 +357,10 @@ mod tests {
             ("inertia", Box::new(|d| d.flywheel_inertia_kgm2 = 1e-12)),
             ("bore", Box::new(|d| d.geometry.bore_m = 1e-6)),
             (
+                "rod",
+                Box::new(|d| d.geometry.rod_m = d.geometry.stroke_m * 0.5),
+            ),
+            (
                 "compression",
                 Box::new(|d| d.geometry.compression_ratio = 1e9),
             ),
@@ -431,6 +435,8 @@ mod tests {
         assert!(validate(&d).is_err(), "cylinder 2 twice");
         d.exhaust.collectors = vec![];
         assert!(validate(&d).is_ok(), "empty = one collector for all");
+        d.exhaust.collectors = vec![(1..=10).collect(), vec![]];
+        assert!(validate(&d).is_err(), "an empty group is a mistake");
     }
 
     #[test]
@@ -468,8 +474,20 @@ mod tests {
 
     #[test]
     fn default_firing_orders_are_permutations_and_classic() {
+        assert_eq!(default_firing_order(3), vec![1, 3, 2]);
         assert_eq!(default_firing_order(4), vec![1, 3, 4, 2]);
+        assert_eq!(default_firing_order(5), vec![1, 2, 4, 5, 3]);
         assert_eq!(default_firing_order(6), vec![1, 5, 3, 6, 2, 4]);
+        assert_eq!(default_firing_order(8), vec![1, 6, 2, 5, 8, 3, 7, 4]);
+        assert_eq!(
+            default_firing_order(10),
+            vec![1, 6, 5, 10, 2, 7, 3, 8, 4, 9]
+        );
+        assert_eq!(
+            default_firing_order(12),
+            vec![1, 7, 5, 11, 3, 9, 6, 12, 2, 8, 4, 10]
+        );
+        assert_eq!(default_firing_order(7), vec![1, 3, 5, 7, 2, 4, 6]);
         for n in 1..=MAX_CYLINDERS {
             let mut o = default_firing_order(n);
             o.sort();

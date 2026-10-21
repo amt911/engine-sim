@@ -206,6 +206,42 @@ pub fn port_flow(cd_area: f64, a: &GasVolume, p_base: f64, t_back: f64, z: f64) 
     (lo * hhi - hi * hlo) / (hhi - hlo)
 }
 
+/// One step of flow through an exhaust valve into its primary pipe, given the wave arriving at
+/// the port (`arriving`, gauge Pa), the port impedance `z` = c/A and the reversion gas
+/// temperature. Solves the port implicitly ([`port_flow`]), then limits the step to `relax` of
+/// the equalising mass and to half the cylinder's mass. Returns the planned flow (+ = out).
+pub fn exhaust_valve_flow(
+    gas: &GasVolume,
+    area: f64,
+    arriving: f64,
+    z: f64,
+    t_back: f64,
+    dt: f64,
+    relax: f64,
+) -> Flow {
+    if area <= 0.0 {
+        return Flow {
+            dm: 0.0,
+            h: CP * gas.temperature(),
+        };
+    }
+    let atm = crate::units::ATM_PA;
+    let p_base = (atm + 2.0 * arriving).max(0.05 * atm);
+    let m = port_flow(area, gas, p_base, t_back, z);
+    let pv = p_base + z * m;
+    let h = if m >= 0.0 {
+        CP * gas.temperature()
+    } else {
+        CP * t_back
+    };
+    let limit = relax * (gas.pressure() - pv).abs() * gas.volume_m3 / ((GAMMA - 1.0) * h);
+    let mut dm = (m * dt).clamp(-limit, limit);
+    if dm > 0.0 {
+        dm = dm.min(0.5 * gas.mass_kg);
+    }
+    Flow { dm, h }
+}
+
 /// Moving `dm` with enthalpy `h` changes p by (γ−1)·h·dm/V on each side (p = (γ−1)U/V),
 /// so the pressures meet exactly at dm_eq = Δp / ((γ−1)·h·Σ1/V). Never move more.
 fn equalising_mass(dp: f64, h: f64, inv_volumes: f64) -> f64 {
@@ -369,6 +405,50 @@ mod tests {
         assert_relative_eq!(
             port_flow(7e-4, &a, 1e5, 800.0, 0.0),
             orifice_mass_flow(7e-4, 3e5, 900.0, 1e5)
+        );
+    }
+
+    const Z: f64 = 600.0 / (std::f64::consts::PI * 0.25 * 0.04 * 0.04);
+
+    #[test]
+    fn exhaust_valve_blowdown_and_reversion() {
+        // Blowdown: hot 5 bar cylinder, quiet pipe → outflow with the cylinder's enthalpy.
+        let hot = GasVolume::at(5e5, 1200.0, 4e-4);
+        let f = exhaust_valve_flow(&hot, 5e-4, 0.0, Z, 800.0, 5e-6, 0.5);
+        let m = port_flow(5e-4, &hot, 1.01325e5, 800.0, Z);
+        assert_relative_eq!(f.dm, m * 5e-6, max_relative = 1e-12);
+        assert_relative_eq!(f.h, CP * 1200.0, max_relative = 1e-12);
+        // Reversion: 0.3 bar cylinder → inflow carrying the pipe gas enthalpy (800 K).
+        let cold = GasVolume::at(0.3e5, 400.0, 4e-4);
+        let f = exhaust_valve_flow(&cold, 5e-4, 0.0, Z, 800.0, 5e-6, 0.5);
+        assert!(f.dm < 0.0);
+        assert_relative_eq!(f.h, CP * 800.0, max_relative = 1e-12);
+        // An arriving compression wave (+0.3 bar) raises the port base by twice its amplitude.
+        let with_wave = exhaust_valve_flow(&hot, 5e-4, 0.3e5, Z, 800.0, 5e-6, 0.5);
+        let m = port_flow(5e-4, &hot, 1.01325e5 + 0.6e5, 800.0, Z);
+        assert_relative_eq!(with_wave.dm, m * 5e-6, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn exhaust_valve_limits() {
+        let hot = GasVolume::at(5e5, 1200.0, 4e-4);
+        // Huge step: limited to `relax` of the equalising mass towards the port pressure.
+        let f = exhaust_valve_flow(&hot, 5e-4, 0.0, Z, 800.0, 1.0, 0.25);
+        let m = port_flow(5e-4, &hot, 1.01325e5, 800.0, Z);
+        let pv = 1.01325e5 + Z * m;
+        let eq = (5e5 - pv) * 4e-4 / ((GAMMA - 1.0) * CP * 1200.0);
+        assert_relative_eq!(f.dm, 0.25 * eq, max_relative = 1e-9);
+        // Never more than half the cylinder's mass.
+        let f = exhaust_valve_flow(&hot, 5e-4, 0.0, 1e-3, 800.0, 1.0, 1.0);
+        assert!(f.dm <= 0.5 * hot.mass_kg * (1.0 + 1e-12));
+        // A rarefaction deeper than vacuum is floored at 5 % of an atmosphere.
+        let deep = exhaust_valve_flow(&hot, 5e-4, -2.0e5, Z, 800.0, 5e-6, 0.5);
+        let m = port_flow(5e-4, &hot, 0.05 * 1.01325e5, 800.0, Z);
+        assert_relative_eq!(deep.dm, m * 5e-6, max_relative = 1e-12);
+        // Valve shut: nothing moves.
+        assert_eq!(
+            exhaust_valve_flow(&hot, 0.0, 0.0, Z, 800.0, 5e-6, 0.5).dm,
+            0.0
         );
     }
 

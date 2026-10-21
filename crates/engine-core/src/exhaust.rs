@@ -252,6 +252,63 @@ mod tests {
     }
 
     #[test]
+    fn the_collector_reflection_returns_to_the_valve_after_a_round_trip() {
+        // Two primaries into one collector: the junction (areas A, A, Ac) reflects part of a
+        // pulse back to its valve with negative sign (opening into more area), after 2·Lp/c.
+        let d = ExhaustDef::default();
+        let mut net = ExhaustNet::new(&d, 2, DT);
+        let round_trip = (2.0 * d.primary_length_m / C_PRIMARY / DT) as usize; // 0.7·2/600 s = 448 steps
+        let mut first = None;
+        for k in 0..2000usize {
+            if net.arriving(0).abs() > 1.0 && first.is_none() {
+                first = Some((k, net.arriving(0)));
+            }
+            net.step(&[if k < 5 { 0.1 } else { 0.0 }, 0.0]);
+        }
+        let (k, p) = first.expect("reflection never arrived");
+        assert!(
+            k.abs_diff(round_trip) <= 2,
+            "arrived at {k}, expected {round_trip}"
+        );
+        assert!(
+            p < 0.0,
+            "expansion into the collector reflects a rarefaction, got {p}"
+        );
+    }
+
+    #[test]
+    fn an_outflow_pulse_radiates_positive_first() {
+        let mut net = ExhaustNet::new(&ExhaustDef::default(), 1, DT);
+        let mut first = 0.0;
+        for k in 0..2000 {
+            let r = net.step(&[if k < 20 { 0.2 } else { 0.0 }]);
+            if first == 0.0 && r.abs() > 1.0 {
+                first = r;
+            }
+        }
+        assert!(first > 0.0, "{first}");
+        // two branches add up: the same pulse in each gives twice the output
+        let two = ExhaustDef {
+            collectors: vec![vec![1], vec![2]],
+            ..ExhaustDef::default()
+        };
+        let one = ExhaustDef {
+            collectors: vec![vec![1, 2]],
+            ..ExhaustDef::default()
+        };
+        let total = |d: &ExhaustDef, flows: [f64; 2]| {
+            let mut net = ExhaustNet::new(d, 2, DT);
+            (0..3000)
+                .map(|k| net.step(&if k < 20 { flows } else { [0.0, 0.0] }))
+                .sum::<f64>()
+        };
+        let a = total(&two, [0.2, 0.0]);
+        let b = total(&two, [0.2, 0.2]);
+        assert!((b - 2.0 * a).abs() < 1e-6 * a.abs(), "{a} {b}");
+        assert!(total(&one, [0.2, 0.2]).is_finite());
+    }
+
+    #[test]
     fn silence_stays_silent() {
         let mut net = ExhaustNet::new(&ExhaustDef::default(), 4, DT);
         for _ in 0..10_000 {
