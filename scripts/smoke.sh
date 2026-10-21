@@ -2,7 +2,7 @@
 # Real-environment smoke: drives the release binary. PASS/FAIL per phase, exits on first failure.
 set -uo pipefail
 cd "$(dirname "$0")/.."
-BIN=target/release/engine-sim
+BIN="${CARGO_TARGET_DIR:-target}/release/engine-sim"
 OUT=$(mktemp -d)
 trap 'rm -rf "$OUT"' EXIT
 phase() { echo "== $1"; }
