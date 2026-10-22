@@ -4,6 +4,7 @@
 use crate::controls::UiState;
 use eframe::egui;
 use engine_core::config::{self, MAX_CYLINDERS};
+use engine_core::intake_fv::IntakeModel;
 use engine_core::units::m3_to_cc;
 use std::ops::RangeInclusive;
 
@@ -197,6 +198,30 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
             0.01,
             "Idle air (% of throttle)",
         );
+        let it = &mut d.intake;
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut it.model, IntakeModel::ZeroD, "0D plenum");
+            ui.radio_value(&mut it.model, IntakeModel::Fv, "1D runners");
+        });
+        if it.model == IntakeModel::Fv {
+            ui.checkbox(&mut it.individual_throttles, "Individual throttle bodies");
+            scaled(
+                ui,
+                &mut it.runner_length_m,
+                1000.0,
+                50.0..=1000.0,
+                10.0,
+                "Runner length (mm)",
+            );
+            scaled(
+                ui,
+                &mut it.runner_diameter_m,
+                1000.0,
+                20.0..=80.0,
+                1.0,
+                "Runner Ø (mm)",
+            );
+        }
     });
 
     egui::CollapsingHeader::new("Exhaust")
@@ -451,6 +476,25 @@ mod tests {
         let mut h = harness(EngineDef::lfa_v10());
         nudge(&mut h, "Flow noise");
         assert!(h.state().def.sound.flow_noise > 1.0);
+        assert!(h.state().engine_dirty);
+    }
+
+    #[test]
+    fn intake_model_and_runner_controls_edit_the_engine() {
+        let mut h = harness(EngineDef::inline4());
+        h.get_by_label("Intake & exhaust").click();
+        h.run();
+        h.get_by_label("1D runners").click();
+        h.run();
+        assert_eq!(
+            h.state().def.intake.model,
+            engine_core::intake_fv::IntakeModel::Fv
+        );
+        h.get_by_label("Individual throttle bodies").click();
+        h.run();
+        assert!(h.state().def.intake.individual_throttles);
+        nudge(&mut h, "Runner length (mm)");
+        assert!(h.state().def.intake.runner_length_m > 0.3);
         assert!(h.state().engine_dirty);
     }
 

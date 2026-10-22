@@ -2,16 +2,29 @@
 use engine_core::engine::*;
 use engine_core::intake_fv::IntakeModel;
 fn main() {
+    // `intake_probe lfa` sweeps the V10 instead of the inline-4.
+    let lfa = std::env::args().nth(1).as_deref() == Some("lfa");
+    let base = if lfa {
+        EngineDef::lfa_v10
+    } else {
+        EngineDef::inline4
+    };
+    let rpms: &[f64] = if lfa {
+        &[4000.0, 6000.0, 7000.0, 8000.0, 9000.0]
+    } else {
+        &[2000.0, 3000.0, 4000.0, 5000.0, 6500.0]
+    };
     let dt = 1.0 / 192_000.0;
     for (runner, model) in [
         (0.3, None),
         (0.15, Some(true)),
+        (0.25, Some(true)),
         (0.6, Some(true)),
         (0.3, Some(false)),
     ] {
         let mut line = format!("runner {runner} m {model:?}:");
-        for rpm in [2000.0, 3000.0, 4000.0, 5000.0, 6500.0] {
-            let mut d = EngineDef::inline4();
+        for &rpm in rpms {
+            let mut d = base();
             if let Some(itb) = model {
                 d.intake.model = IntakeModel::Fv;
                 d.intake.individual_throttles = itb;
