@@ -591,7 +591,12 @@ pub struct Engine {
     inducted_kg: f64,
 }
 
-/// Crank angle `a` (deg) crossed in the step (prev, cur], on the 720° circle.
+/// Gas held in one primary, kg: its volume π/4·d²·L at atmospheric pressure and `t_k`.
+fn primary_gas_mass(ex: &crate::exhaust::ExhaustDef, t_k: f64) -> f64 {
+    let v = PI * 0.25 * ex.primary_diameter_m.powi(2) * ex.primary_length_m;
+    ATM_PA / (crate::gas::R_AIR * t_k) * v
+}
+
 /// Exhaust port gas: heat-transfer coefficient to the primary's wall, W/(m²·K) (Heywood, ICE
 /// Fundamentals, §12.6: 100–500 in exhaust ports), and the wall's own time constant, s (a
 /// steel pipe's thermal mass; estimate).
@@ -637,6 +642,7 @@ fn pedal_opening(t: f64) -> f64 {
     1.0 - (t * PI * 0.5).cos()
 }
 
+/// Crank angle `a` (deg) crossed in the step (prev, cur], on the 720° circle.
 fn crossed(prev: f64, cur: f64, a: f64) -> bool {
     let span = (cur - prev).rem_euclid(720.0);
     let to_a = (a - prev).rem_euclid(720.0);
@@ -948,11 +954,9 @@ impl Engine {
             });
             {
                 let ex = &self.def.exhaust;
-                let len = ex.primary_length_m;
-                let v = PI * 0.25 * ex.primary_diameter_m.powi(2) * len;
-                let m = ATM_PA / (crate::gas::R_AIR * cs.port_t) * v;
+                let m = primary_gas_mass(ex, cs.port_t);
                 let (dm, t_in) = f_ex.map_or((0.0, cs.port_t), |f| (f.dm, f.h / crate::gas::CP));
-                let a_wall = PI * ex.primary_diameter_m * len;
+                let a_wall = PI * ex.primary_diameter_m * ex.primary_length_m;
                 cs.port_t = port_gas_temperature(cs.port_t, m, dm, t_in, cs.wall_t, a_wall, dt);
                 cs.wall_t += (cs.port_t - cs.wall_t) * (dt / PIPE_WALL_TAU_S);
             }
@@ -1260,6 +1264,35 @@ mod tests {
                 "jump earlier {jump_earlier}: {fired} firings"
             );
         }
+    }
+
+    #[test]
+    fn a_primary_holds_its_volume_of_gas_at_one_atmosphere() {
+        // 40 mm × 0.7 m: V = π/4·0.04²·0.7 = 8.7965e-4 m³; at 900 K,
+        // ρ = 101 325/(287·900) = 0.39228 kg/m³ → 3.4506e-4 kg
+        let ex = crate::exhaust::ExhaustDef::default();
+        assert_relative_eq!(primary_gas_mass(&ex, 900.0), 3.4506e-4, max_relative = 1e-4);
+    }
+
+    #[test]
+    fn the_primary_wall_warms_with_a_minute_time_constant() {
+        // A first-order lag, dT_w/dt = (T_gas − T_w)/60 s: over one second from cold (320 K)
+        // the wall rises by the mean excess of the gas over it divided by 60.
+        let mut e = Engine::new(EngineDef::inline4(), 3000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        let (mut excess, n) = (0.0, (1.0 / DT) as usize);
+        for _ in 0..n {
+            excess += e.cyl[0].port_t - e.cyl[0].wall_t;
+            e.step(DT, &c);
+        }
+        let rise = e.cyl[0].wall_t - 320.0;
+        let want = excess / n as f64 / 60.0;
+        assert!(want > 3.0, "the gas should be hot: {want} K/s");
+        assert_relative_eq!(rise, want, max_relative = 0.02);
     }
 
     #[test]

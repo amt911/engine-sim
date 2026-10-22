@@ -85,6 +85,13 @@ pub(crate) fn rising_root(f: impl Fn(f64) -> f64, mut lo: f64, mut hi: f64) -> f
     0.5 * (lo + hi)
 }
 
+/// Density of gas at atmospheric pressure whose speed of sound is `C_TAIL`, kg/m³
+/// (T = c²/γR = 622 K): the reference the tail's acoustic source is scaled about.
+fn tail_reference_density() -> f64 {
+    let t = C_TAIL * C_TAIL / (crate::gas::GAMMA * R_AIR);
+    ATM_PA / (R_AIR * t)
+}
+
 /// Boundary state of a pipe end at a junction of pressure `p_j` (Benson's constant-pressure
 /// junction; Winterbone & Pearson): the characteristic leaving the pipe is kept, so the end
 /// sees the junction pressure without being forced to rest (a u = 0 plenum ghost low-passes
@@ -102,13 +109,6 @@ pub(crate) fn junction_ghost(cell: Prim, p_j: f64, rho_j: f64, sigma: f64) -> Pr
 /// orifice of that area passes (no pressure recovery past the throat), solved together with
 /// the outgoing characteristic, so the boundary stays stable where an explicit orifice flux
 /// chatters. `psi` ≥ 1 is the open end; 0 is a wall.
-/// Density of gas at atmospheric pressure whose speed of sound is `C_TAIL`, kg/m³
-/// (T = c²/γR = 622 K): the reference the tail's acoustic source is scaled about.
-fn tail_reference_density() -> f64 {
-    let t = C_TAIL * C_TAIL / (crate::gas::GAMMA * R_AIR);
-    ATM_PA / (R_AIR * t)
-}
-
 pub(crate) fn throttled_ghost(cell: Prim, p_j: f64, rho_j: f64, sigma: f64, psi: f64) -> Prim {
     let g = crate::gas::GAMMA;
     let k = 0.5 * (g - 1.0);
@@ -1123,6 +1123,31 @@ mod tests {
             (coarse_tails / coarse - 1.0).abs() < 1e-9,
             "{coarse_tails} vs {coarse}"
         );
+    }
+
+    #[test]
+    fn the_tail_source_is_referenced_to_gas_at_its_sound_speed() {
+        // c = 500 m/s ⇒ T = c²/(γR) = 250 000/(1.4·287) = 622.2 K; at 101 325 Pa,
+        // ρ = p/(R·T) = 101 325/(287·622.2) = 0.56742 kg/m³
+        approx::assert_relative_eq!(tail_reference_density(), 0.56742, max_relative = 1e-4);
+    }
+
+    #[test]
+    fn the_port_sees_the_wave_arriving_from_its_first_cell() {
+        // ρ = 0.5 kg/m³, u = 30 m/s, p = 1.5 bar: c = √(1.4·1.5e5/0.5) = 648.07 m/s; the wave
+        // towards the valve (p′ − ρc·u)/2 = (48 675 − 9 721.1)/2 = 19 476.9 Pa; impedance c/A
+        // over a 40 mm primary (A = 1.2566e-3 m²) = 515 721; T = p/(ρR) = 1 045.3 K
+        let mut net = ExhaustFv::new(&def(), 1, DT);
+        net.primaries[0].cells[0] = Prim {
+            rho: 0.5,
+            u: 30.0,
+            p: 1.5e5,
+        }
+        .to_cons();
+        let (arriving, z, t) = net.port_wave(0);
+        approx::assert_relative_eq!(arriving, 19_476.9, max_relative = 1e-5);
+        approx::assert_relative_eq!(z, 515_721.0, max_relative = 1e-5);
+        approx::assert_relative_eq!(t, 1_045.30, max_relative = 1e-5);
     }
 
     #[test]
