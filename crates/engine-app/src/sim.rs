@@ -213,6 +213,187 @@ pub(crate) mod tests {
         h / total
     }
 
+    /// Diagnostic (run by hand): a free-running drive in neutral (idle, three blips, a pull to
+    /// the limiter, lift-off) rendered through the app's chain, per preset and sound layer, to
+    /// `target/sound/<preset>-<mix>.wav` with the throttle trace in `throttle.csv`.
+    /// `cargo test -p engine-app --release drive_render -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn drive_render() {
+        use engine_core::sound::SoundDef;
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/sound");
+        std::fs::create_dir_all(&dir).unwrap();
+        let throttle_at = |t: f64| -> f64 {
+            let blip = |t0: f64| (t0..t0 + 0.25).contains(&t);
+            if blip(2.0) || blip(3.0) || blip(4.0) || (5.0..7.5).contains(&t) {
+                1.0
+            } else {
+                0.0
+            }
+        };
+        let block = 240;
+        for (name, def) in [
+            ("inline4", EngineDef::inline4()),
+            ("lfa", EngineDef::lfa_v10()),
+            ("flatplane", EngineDef::flatplane_v8()),
+            ("crossplane", EngineDef::crossplane_v8()),
+        ] {
+            let quiet = SoundDef {
+                flow_noise: 0.0,
+                intake: 0.0,
+                mechanical: 0.0,
+                combustion_jitter: 0.0,
+                reverb: 0.0,
+                ..def.sound.clone()
+            };
+            for (mix, snd) in [
+                ("all", def.sound.clone()),
+                (
+                    "physics",
+                    SoundDef {
+                        leveling: 0.0,
+                        ..quiet
+                    },
+                ),
+            ] {
+                let mut d = def.clone();
+                d.sound = snd;
+                let mut sim = Simulation::new(d, FS, 1);
+                let mut out = Vec::new();
+                let mut rpm = Vec::new();
+                let n = (11.0 * FS) as usize / block;
+                for b in 0..n {
+                    sim.controls.throttle = throttle_at(b as f64 * block as f64 / FS);
+                    let mut buf = vec![0.0f32; block];
+                    sim.render(&mut buf);
+                    out.extend_from_slice(&buf);
+                    rpm.push(sim.engine().rpm());
+                }
+                let path = dir.join(format!("{name}-{mix}.wav"));
+                crate::headless::write_wav(&path, &out, FS as u32).unwrap();
+                let csv: String = rpm
+                    .iter()
+                    .enumerate()
+                    .map(|(b, r)| {
+                        let t = b as f64 * block as f64 / FS;
+                        format!("{t:.4},{:.0},{r:.0}\n", throttle_at(t))
+                    })
+                    .collect();
+                std::fs::write(dir.join(format!("{name}-{mix}.csv")), csv).unwrap();
+                println!("{}", path.display());
+            }
+        }
+    }
+
+    /// Diagnostic (run by hand, prints): what the listener hears, per sound layer, as level
+    /// and the share in engine-cycle orders; the rest is aperiodic ("air").
+    /// `cargo test -p engine-app --release air_probe -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn air_probe() {
+        use engine_core::sound::SoundDef;
+        let quiet = |d: &EngineDef| SoundDef {
+            flow_noise: 0.0,
+            intake: 0.0,
+            mechanical: 0.0,
+            combustion_jitter: 0.0,
+            reverb: 0.0,
+            ..d.sound.clone()
+        };
+        for (name, def) in [
+            ("inline4", EngineDef::inline4()),
+            ("lfa", EngineDef::lfa_v10()),
+            ("flatplane", EngineDef::flatplane_v8()),
+        ] {
+            for (label, throttle, rpm) in [
+                ("wot", 1.0, 5000.0),
+                ("wot", 1.0, 4937.0),
+                ("coast", 0.0, 4937.0),
+            ] {
+                let mixes: [(&str, SoundDef); 6] = [
+                    ("all", def.sound.clone()),
+                    ("physics", quiet(&def)),
+                    (
+                        "+flow",
+                        SoundDef {
+                            flow_noise: def.sound.flow_noise,
+                            ..quiet(&def)
+                        },
+                    ),
+                    (
+                        "+intake",
+                        SoundDef {
+                            intake: def.sound.intake,
+                            ..quiet(&def)
+                        },
+                    ),
+                    (
+                        "+jitter",
+                        SoundDef {
+                            combustion_jitter: def.sound.combustion_jitter,
+                            ..quiet(&def)
+                        },
+                    ),
+                    (
+                        "all-lev0",
+                        SoundDef {
+                            leveling: 0.0,
+                            ..def.sound.clone()
+                        },
+                    ),
+                ];
+                let mut line = format!("{name:9} {label:5}");
+                for (m, snd) in mixes {
+                    let mut d = def.clone();
+                    d.sound = snd;
+                    let mut sim = Simulation::new(d, FS, 1);
+                    sim.controls = Controls {
+                        throttle,
+                        hold_rpm: Some(rpm),
+                        ..Controls::default()
+                    };
+                    render_secs(&mut sim, 1.0);
+                    let x = render_secs(&mut sim, 0.5);
+                    let db = 20.0 * rms(&x).max(1e-9).log10();
+                    // energy split of the cycle orders: < 500 Hz, 0.5–2 kHz, > 2 kHz
+                    let f0 = rpm / 120.0;
+                    let mut bands = [0.0f64; 3];
+                    let mut k = 1;
+                    while k as f64 * f0 < 12_000.0 {
+                        let f = k as f64 * f0;
+                        let w = 2.0 * std::f64::consts::PI * f / FS;
+                        let (mut re, mut im) = (0.0, 0.0);
+                        for (n, s) in x.iter().enumerate() {
+                            re += *s as f64 * (w * n as f64).cos();
+                            im += *s as f64 * (w * n as f64).sin();
+                        }
+                        let e = re * re + im * im;
+                        bands[if f < 500.0 {
+                            0
+                        } else if f < 2000.0 {
+                            1
+                        } else {
+                            2
+                        }] += e;
+                        k += 1;
+                    }
+                    let t: f64 = bands.iter().sum();
+                    let n = x.len() as f64;
+                    let ms = x.iter().map(|s| (*s as f64).powi(2)).sum::<f64>() / n;
+                    let periodic = 2.0 * t / (n * n) / ms;
+                    line += &format!(
+                        " | {m} {db:5.1} dB per {:3.0}% {:2.0}/{:2.0}/{:2.0}%",
+                        100.0 * periodic,
+                        100.0 * bands[0] / t,
+                        100.0 * bands[1] / t,
+                        100.0 * bands[2] / t
+                    );
+                }
+                println!("{line}");
+            }
+        }
+    }
+
     #[test]
     fn a_screaming_lfa_is_engine_orders_not_air() {
         // User report (2026-10-22): at high rpm a background "air" noise covered the engine.

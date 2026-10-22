@@ -355,3 +355,34 @@ PAPERS.md. Tests: `the_exhaust_source_is_the_volume_flow`,
 `the_fv_exhaust_valve_does_not_chatter_on_overrun`, `the_port_holds_what_the_valve_already_pushed`.
 
 Found: 2026-10-22 · physics
+
+### Revs swept 2.5× too fast, idle hung at the fuel cut-off, limiter fired at random
+
+**Symptom.** Blips and downshifts sounded synthetic ("air", a siren-like smear). The spectrograms
+(`drive_render` + `scripts/spectrogram.py`) showed three things:
+- The LFA went from idle to 9000 rpm in 0.23 s; Tanahashi measured 0.6 s.
+- After a lift-off it hung at ≈ 1500 rpm.
+- The rev limiter cut random cylinders, 25–50 % of the energy off the engine orders.
+
+**Cause.**
+- **Inertia.** The preset inertias were guesses; published engine inertias are ≈ 0.15–0.25 kg·m².
+- **Idle air and gating.** The rpm-proportional "decel" idle air was always on above 1500. The
+  idle loop was gated off above 1500, which is the fuel cut-off speed, and the cut had no
+  hysteresis.
+- **Dashpot units.** `DASHPOT_HOLD = 0.02` was a fraction of plate *area*; a dashpot holds a few
+  percent of *travel* (3 % travel = 0.11 % area). After every blip the engine had ~4× the idle
+  air at fuel reactivation, so it surged back to the cut-off and hunted.
+- **Integral freeze.** The idle integral was frozen whenever the engine was above target and
+  falling, so a heavy crank's slow start-flare decay was never trimmed.
+
+**Fix / workaround.**
+- The LFA's inertia (0.28) comes from its measured snap: test
+  `the_lfa_snaps_from_idle_to_9000_in_six_tenths`. That is at the top of the published range,
+  which hints that our transient torque is a little high (no wall-film fuel lag on tip-in).
+- Injection cut-offs with hysteresis (overrun: reactivate at idle + 300; limiter: 200 below the
+  redline). The decel air applies only while the overrun cut-off holds.
+- The dashpot is held in travel.
+- The integral holds only if the fall reaches the target within 1 s.
+
+Tests: `released_from_high_revs_every_engine_settles_at_its_idle`,
+`the_rev_limiter_bounces_off_the_redline`, `overrun_pulls_the_manifold_to_a_deep_vacuum`.
