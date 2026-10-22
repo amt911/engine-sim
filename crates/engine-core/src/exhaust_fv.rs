@@ -683,11 +683,25 @@ mod tests {
         );
         let points = points.into_inner();
         assert!((r - 1.259_921_049_894_873).abs() < 1e-12, "{r}");
-        assert!(points.len() <= 15, "{} evaluations", points.len());
         // the ends first, then the secant through them: (0·6 − 2·(−2)) / (6 + 2) = 0.5
         assert_eq!(&points[..3], &[0.0, 2.0, 0.5]);
         // every step stays inside the bracket
         assert!(points.iter().all(|x| (0.0..=2.0).contains(x)), "{points:?}");
+        // Illinois converges superlinearly: 13 evaluations (bisection: 2 + 44)
+        assert_eq!(points.len(), 13, "{points:?}");
+        // A step never gets within 1e-13 in 40 tries (Illinois creeps along it): the bracket's
+        // midpoint is the answer, after exactly 2 + 40 evaluations.
+        let calls = std::cell::Cell::new(0);
+        let r = rising_root(
+            |x| {
+                calls.set(calls.get() + 1);
+                if x < 0.3 { -1.0 } else { 1.0 }
+            },
+            0.0,
+            1.0,
+        );
+        assert_eq!(calls.get(), 42);
+        assert!((r - 0.3).abs() < 1e-9, "{r}");
         // a steep, one-sided function (√ near its end, like w_j at x = 1) still converges
         let r = rising_root(|x| x - (1.0 - x * x).max(0.0).sqrt(), 0.0, 1.0);
         assert!((r - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-12, "{r}");
