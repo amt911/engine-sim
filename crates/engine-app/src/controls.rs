@@ -83,6 +83,8 @@ pub struct UiState {
     pub firing_text: String,
     /// Exhaust collector groups as typed ("1-3 / 2-4"; empty = one collector).
     pub collectors_text: String,
+    /// Cylinder banks as typed, same format ("1-3 / 2-4"; empty = halves).
+    pub banks_text: String,
     /// Validation problems of the edited engine (shown in the editor).
     pub errors: Vec<String>,
     /// Last file load/save message.
@@ -100,6 +102,22 @@ pub struct UiState {
     pub dyno_request: bool,
 }
 
+impl UiState {
+    /// Edit `def`: the engine and the text fields typed from it (firing order, collectors,
+    /// banks), so they cannot disagree.
+    pub fn set_engine(&mut self, def: EngineDef) {
+        self.firing_text = crate::editor::format_firing_order(&def.firing_order);
+        self.collectors_text = crate::editor::format_collectors(&def.exhaust.collectors);
+        self.banks_text = crate::editor::format_collectors(&def.layout.banks);
+        self.def = def;
+    }
+    pub fn with_engine(def: EngineDef) -> Self {
+        let mut s = Self::default();
+        s.set_engine(def);
+        s
+    }
+}
+
 impl Default for UiState {
     fn default() -> Self {
         Self {
@@ -112,6 +130,7 @@ impl Default for UiState {
             starter: false,
             firing_text: "1".into(),
             collectors_text: String::new(),
+            banks_text: String::new(),
             errors: Vec::new(),
             file_msg: None,
             vehicle: Preset::Single.vehicle(),
@@ -212,9 +231,7 @@ pub fn controls_panel(ui: &mut egui::Ui, state: &mut UiState) {
             .clicked()
         {
             state.preset = Some(p);
-            state.def = p.def();
-            state.firing_text = crate::editor::format_firing_order(&state.def.firing_order);
-            state.collectors_text = crate::editor::format_collectors(&state.def.exhaust.collectors);
+            state.set_engine(p.def());
             state.engine_dirty = true;
             state.vehicle = p.vehicle();
             state.vehicle_dirty = true;

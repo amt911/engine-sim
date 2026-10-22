@@ -18,6 +18,19 @@ engine:
   - 8
   - 4
   - 9
+  layout:
+    bank_angle_deg: 72.0
+    banks:
+    - - 1
+      - 3
+      - 5
+      - 7
+      - 9
+    - - 2
+      - 4
+      - 6
+      - 8
+      - 10
   intake_valve:
     open_deg: 340.0
     duration_deg: 270.0

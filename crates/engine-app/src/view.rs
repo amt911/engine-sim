@@ -4,9 +4,7 @@
 
 use crate::dyno::{DynoPoint, peaks};
 use crate::sim::Snapshot;
-use eframe::egui::{
-    self, Align2, Color32, FontId, Pos2, Rect, Stroke, StrokeKind, Vec2, pos2, vec2,
-};
+use eframe::egui::{self, Align2, Color32, FontId, Pos2, Stroke, Vec2, pos2, vec2};
 use engine_core::units::{ATM_PA, m3_to_cc, pa_to_bar, w_to_hp};
 
 const STEEL: Color32 = Color32::from_rgb(150, 155, 165);
@@ -34,6 +32,34 @@ fn stroke_name(cycle_deg: f64) -> &'static str {
 }
 
 /// Animated cross-section of every cylinder, side by side.
+/// A cylinder's own frame: u across the bore, v up the bore axis (metres), origin at the
+/// crank, the axis tilted `tilt` rad from vertical (V and flat banks), `scale` px per metre.
+struct Frame {
+    crank: Pos2,
+    cos: f32,
+    sin: f32,
+    scale: f32,
+}
+
+impl Frame {
+    fn at(&self, u: f64, v: f64) -> Pos2 {
+        let (u, v) = (u as f32 * self.scale, v as f32 * self.scale);
+        self.crank + vec2(u * self.cos + v * self.sin, -(v * self.cos - u * self.sin))
+    }
+    /// Metres for `px` screen pixels (outlines and offsets keep their pixel size).
+    fn px(&self, px: f32) -> f64 {
+        (px / self.scale) as f64
+    }
+    fn quad(&self, u0: f64, u1: f64, v0: f64, v1: f64) -> Vec<Pos2> {
+        vec![
+            self.at(u0, v0),
+            self.at(u1, v0),
+            self.at(u1, v1),
+            self.at(u0, v1),
+        ]
+    }
+}
+
 pub fn engine(ui: &mut egui::Ui, s: &Snapshot) {
     let (rect, _) = ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
     let p = ui.painter_at(rect);
@@ -42,97 +68,143 @@ pub fn engine(ui: &mut egui::Ui, s: &Snapshot) {
     let n = s.cylinders.len().max(1);
     let (r, l, b) = (g.crank_radius(), g.rod_m, g.bore_m);
     let clear_h = g.clearance_volume() / g.piston_area();
-    let piston_h = 0.6 * b;
-    let head_h = 0.35 * b;
-    let total_h = r + l + r + piston_h + clear_h + head_h + 0.6 * b;
-    let cell_w = rect.width() / n as f32;
-    let scale = (0.85 * rect.height() / total_h as f32).min(0.8 * cell_w / (1.9 * b as f32));
-    let m = |x: f64| x as f32 * scale;
+    let total_h = r + l + r + 0.6 * b + clear_h + 0.35 * b + 0.6 * b;
+    // Two banks side by side per crank throw (V, flat), one column per throw.
+    let layout = &s.def.layout;
+    let place = layout.place(n);
+    let cols = place.iter().map(|q| q.1 + 1).max().unwrap_or(1);
+    let vee = layout.bank_angle_deg > 0.0;
+    let half_angle = (0.5 * layout.bank_angle_deg.clamp(0.0, 180.0)).to_radians();
+    let below = r + 0.4 * b;
+    let up = total_h - below;
+    let (sh, ch) = (half_angle.sin(), half_angle.cos());
+    let half_w = up * sh + 0.95 * b * ch;
+    let above = up * ch + 0.95 * b * sh;
+    let height = above + below;
+    let cell_w = rect.width() / cols as f32;
+    let scale = (0.85 * rect.height() / height as f32).min(0.9 * cell_w / (2.0 * half_w as f32));
+    let crank_y = rect.center().y + 0.5 * (above - below) as f32 * scale;
 
     for (i, c) in s.cylinders.iter().enumerate() {
-        let cx = rect.left() + cell_w * (i as f32 + 0.5);
-        let bottom = rect.center().y + m(total_h) * 0.5;
-        let crank = pos2(cx, bottom - m(r + 0.4 * b));
-        let th = c.cycle_deg.to_radians();
-        let pin = crank + vec2(m(r * th.sin()), -m(r * th.cos()));
-        let wrist_y = crank.y - m(r * th.cos() + (l * l - (r * th.sin()).powi(2)).sqrt());
-        let crown_y = wrist_y - m(0.35 * b);
-        let tdc_crown = crank.y - m(r + l) - m(0.35 * b);
-        let deck = tdc_crown - m(clear_h);
-        let bdc_skirt = crank.y - m(l - r) - m(0.35 * b) + m(piston_h);
-        let half = m(b) * 0.5;
+        let (bank, pos) = place[i];
+        let tilt = if !vee {
+            0.0
+        } else if bank == 0 {
+            -half_angle
+        } else {
+            half_angle
+        } as f32;
+        let f = Frame {
+            crank: pos2(rect.left() + cell_w * (pos as f32 + 0.5), crank_y),
+            cos: tilt.cos(),
+            sin: tilt.sin(),
+            scale,
+        };
+        cylinder(&p, &f, c, i, s, cell_w);
+    }
+}
 
-        // Chamber gas, walls, head.
-        let gas = Rect::from_min_max(pos2(cx - half, deck), pos2(cx + half, crown_y));
-        p.rect_filled(gas, 0.0, gas_color(c.temperature_k, c.burning));
-        let wall = Stroke::new(3.0, STEEL);
+fn cylinder(
+    p: &egui::Painter,
+    f: &Frame,
+    c: &engine_core::engine::CylinderView,
+    i: usize,
+    s: &Snapshot,
+    cell_w: f32,
+) {
+    let g = s.def.geometry;
+    let (r, l, b) = (g.crank_radius(), g.rod_m, g.bore_m);
+    let clear_h = g.clearance_volume() / g.piston_area();
+    let piston_h = 0.6 * b;
+    let head_h = 0.35 * b;
+    let th = c.cycle_deg.to_radians();
+    let pin = (r * th.sin(), r * th.cos());
+    let wrist_v = r * th.cos() + (l * l - (r * th.sin()).powi(2)).sqrt();
+    let crown_v = wrist_v + 0.35 * b;
+    let deck_v = r + l + 0.35 * b + clear_h;
+    let skirt_v = l - r + 0.35 * b - piston_h;
+    let half = 0.5 * b;
+
+    // Chamber gas, walls, head.
+    p.add(egui::Shape::convex_polygon(
+        f.quad(-half, half, crown_v, deck_v),
+        gas_color(c.temperature_k, c.burning),
+        Stroke::NONE,
+    ));
+    let wall = Stroke::new(3.0, STEEL);
+    for side in [-1.0, 1.0] {
+        let u = side * (half + f.px(2.0));
+        p.line_segment([f.at(u, deck_v), f.at(u, skirt_v)], wall);
+    }
+    let lip = f.px(6.0);
+    p.add(egui::Shape::convex_polygon(
+        f.quad(-half - lip, half + lip, deck_v, deck_v + head_h),
+        DARK,
+        Stroke::NONE,
+    ));
+
+    // Valves: stem + disc, pushed down by lift (drawn 1:1).
+    for (du, lift, col) in [
+        (-0.25, c.intake_lift_m, INTAKE),
+        (0.25, c.exhaust_lift_m, EXHAUST),
+    ] {
+        let u = du * b;
+        let v = deck_v - lift;
         p.line_segment(
-            [
-                pos2(cx - half - 2.0, deck),
-                pos2(cx - half - 2.0, bdc_skirt),
-            ],
-            wall,
+            [f.at(u, deck_v + head_h + f.px(8.0)), f.at(u, v)],
+            Stroke::new(2.0, col),
         );
-        p.line_segment(
-            [
-                pos2(cx + half + 2.0, deck),
-                pos2(cx + half + 2.0, bdc_skirt),
-            ],
-            wall,
-        );
-        let head = Rect::from_min_max(
-            pos2(cx - half - 6.0, deck - m(head_h)),
-            pos2(cx + half + 6.0, deck),
-        );
-        p.rect_filled(head, 2.0, DARK);
+        let (vr, t) = (0.16 * b, f.px(1.5));
+        p.add(egui::Shape::convex_polygon(
+            f.quad(u - vr, u + vr, v - t, v + t),
+            col,
+            Stroke::NONE,
+        ));
+    }
 
-        // Valves: stem + disc, pushed down by lift (drawn 1:1).
-        for (dx, lift, col) in [
-            (-0.25, c.intake_lift_m, INTAKE),
-            (0.25, c.exhaust_lift_m, EXHAUST),
-        ] {
-            let vx = cx + m(dx * b);
-            let vy = deck + m(lift);
-            let vr = m(0.16 * b);
-            p.line_segment(
-                [pos2(vx, deck - m(head_h) - 8.0), pos2(vx, vy)],
-                Stroke::new(2.0, col),
-            );
-            p.rect_filled(
-                Rect::from_center_size(pos2(vx, vy), vec2(2.0 * vr, 3.0)),
-                1.0,
-                col,
-            );
-        }
+    // Piston, rod, crank.
+    p.add(egui::Shape::convex_polygon(
+        f.quad(-half, half, crown_v - piston_h, crown_v),
+        STEEL,
+        Stroke::new(1.0, DARK),
+    ));
+    let scale = f.scale;
+    p.circle_filled(f.crank, (r * 1.35) as f32 * scale, DARK);
+    p.line_segment(
+        [f.at(pin.0, pin.1), f.at(0.0, wrist_v)],
+        Stroke::new(
+            ((0.12 * b) as f32 * scale).max(3.0),
+            Color32::from_rgb(190, 190, 200),
+        ),
+    );
+    p.circle_filled(f.at(0.0, wrist_v), 3.0, DARK);
+    p.circle_filled(
+        f.at(pin.0, pin.1),
+        ((0.1 * b) as f32 * scale).max(3.0),
+        Color32::WHITE,
+    );
+    p.circle_filled(f.crank, 3.0, STEEL);
 
-        // Piston, rod, crank.
-        let piston = Rect::from_min_max(
-            pos2(cx - half, crown_y),
-            pos2(cx + half, crown_y + m(piston_h)),
-        );
-        p.rect_filled(piston, 3.0, STEEL);
-        p.rect_stroke(piston, 3.0, Stroke::new(1.0, DARK), StrokeKind::Inside);
-        p.circle_filled(crank, m(r * 1.35), DARK);
-        p.line_segment(
-            [pin, pos2(cx, wrist_y)],
-            Stroke::new(m(0.12 * b).max(3.0), Color32::from_rgb(190, 190, 200)),
-        );
-        p.circle_filled(pos2(cx, wrist_y), 3.0, DARK);
-        p.circle_filled(pin, m(0.1 * b).max(3.0), Color32::WHITE);
-        p.circle_filled(crank, 3.0, STEEL);
-
-        let label = format!(
-            "#{}\n{}\n{:.1} bar",
-            i + 1,
-            stroke_name(c.cycle_deg),
-            pa_to_bar(c.pressure_pa)
-        );
+    let (num, stroke, bar) = (i + 1, stroke_name(c.cycle_deg), pa_to_bar(c.pressure_pa));
+    if f.sin == 0.0 {
         let font = FontId::proportional((cell_w / 7.0).clamp(9.0, 14.0));
         p.text(
-            pos2(cx, deck - m(head_h) - 14.0),
+            f.at(0.0, deck_v + head_h + f.px(14.0)),
             Align2::CENTER_BOTTOM,
-            label,
+            format!("#{num}\n{stroke}\n{bar:.1} bar"),
             font,
+            Color32::LIGHT_GRAY,
+        );
+    } else {
+        // V and flat: the two banks share a column, so one line each under the crank, the
+        // left bank's first.
+        let size = (cell_w / 12.0).clamp(8.0, 13.0);
+        let line = if f.sin < 0.0 { 0.0 } else { 1.0 };
+        p.text(
+            f.crank + vec2(0.0, (r * 1.35) as f32 * f.scale + 4.0 + line * (size + 3.0)),
+            Align2::CENTER_TOP,
+            format!("#{num} {stroke} {bar:.1} bar"),
+            FontId::proportional(size),
             Color32::LIGHT_GRAY,
         );
     }

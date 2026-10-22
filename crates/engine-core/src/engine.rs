@@ -12,6 +12,7 @@ use crate::gas::{
 };
 use crate::geometry::CylinderGeometry;
 use crate::intake_fv::{IntakeDef, IntakeFv, IntakeModel};
+use crate::layout::Layout;
 use crate::listener::Listener;
 use crate::sound::{BURN_DURATION_JITTER, BURN_START_JITTER_DEG, SoundDef, Texture};
 use crate::units::{ATM_PA, deg_to_rad, rad_s_to_rpm, rpm_to_rad_s};
@@ -31,6 +32,9 @@ pub struct EngineDef {
     /// ([`crate::config::default_firing_order`]).
     #[serde(default)]
     pub firing_order: Vec<usize>,
+    /// How the cylinders stand (inline, V, flat): drawn by the app.
+    #[serde(default)]
+    pub layout: Layout,
     pub intake_valve: ValveTiming,
     pub exhaust_valve: ValveTiming,
     pub spark_advance_deg: f64,
@@ -77,6 +81,7 @@ impl EngineDef {
             },
             cylinders: 1,
             firing_order: vec![1],
+            layout: Layout::default(),
             intake_valve: ValveTiming {
                 open_deg: 345.0,
                 duration_deg: 250.0,
@@ -125,6 +130,7 @@ impl EngineDef {
             name: "Inline-4 2.0".into(),
             cylinders: 4,
             firing_order: vec![1, 3, 4, 2],
+            layout: Layout::default(),
             flywheel_inertia_kgm2: 0.15,
             plenum_volume_m3: 4.0e-3,
             throttle_diameter_m: 0.060,
@@ -141,7 +147,7 @@ impl EngineDef {
     /// 9,000 rpm redline (Toyota LR engine, Wikipedia; PistonHeads LFA spec sheet).
     /// Not public, estimated: rod length, cam timing, valve sizes (4 valves/cyl lumped into
     /// one equivalent valve each), inertia. Firing order: placeholder (Audi 5.2 V10 order),
-    /// pending confirmation. Drawn inline until V layouts land.
+    /// pending confirmation.
     pub fn lfa_v10() -> Self {
         Self {
             name: "Lexus LFA V10".into(),
@@ -153,6 +159,11 @@ impl EngineDef {
             },
             cylinders: 10,
             firing_order: vec![1, 6, 5, 10, 2, 7, 3, 8, 4, 9],
+            // 72° V10 (Toyota LR); banks as the collectors
+            layout: Layout {
+                bank_angle_deg: 72.0,
+                banks: vec![vec![1, 3, 5, 7, 9], vec![2, 4, 6, 8, 10]],
+            },
             intake_valve: ValveTiming {
                 open_deg: 340.0,
                 duration_deg: 270.0,
@@ -225,6 +236,10 @@ impl EngineDef {
             },
             cylinders: 8,
             firing_order: vec![1, 5, 3, 7, 4, 8, 2, 6],
+            layout: Layout {
+                bank_angle_deg: 90.0,
+                banks: vec![vec![1, 2, 3, 4], vec![5, 6, 7, 8]],
+            },
             intake_valve: ValveTiming {
                 open_deg: 340.0,
                 duration_deg: 270.0,
@@ -239,7 +254,8 @@ impl EngineDef {
             },
             spark_advance_deg: 28.0,
             burn_duration_deg: 45.0,
-            flywheel_inertia_kgm2: 0.08,
+            // 0.08 stalled when floored from idle (fixed 28° advance on a full 12.5:1 charge)
+            flywheel_inertia_kgm2: 0.12,
             plenum_volume_m3: 7.0e-3,
             throttle_diameter_m: 0.095,
             idle_throttle: 0.003,
@@ -284,6 +300,10 @@ impl EngineDef {
             },
             cylinders: 8,
             firing_order: vec![1, 8, 7, 2, 6, 5, 4, 3],
+            layout: Layout {
+                bank_angle_deg: 90.0,
+                banks: vec![vec![1, 3, 5, 7], vec![2, 4, 6, 8]],
+            },
             intake_valve: ValveTiming {
                 open_deg: 350.0,
                 duration_deg: 250.0,
@@ -1423,6 +1443,45 @@ mod tests {
             (mean / want - 1.0).abs() < 0.1,
             "mean {mean} vs {want} (ṁ {mdot})"
         );
+    }
+
+    #[test]
+    fn the_vee_presets_stand_in_their_banks() {
+        // LFA: 72° V10 (Toyota LR); both V8s: 90°; the flat plane's banks 1–4 / 5–8, the
+        // cross plane's odd/even, as their collectors
+        let lfa = EngineDef::lfa_v10();
+        assert_eq!(lfa.layout.bank_angle_deg, 72.0);
+        assert_eq!(lfa.layout.banks, lfa.exhaust.collectors);
+        for d in [EngineDef::flatplane_v8(), EngineDef::crossplane_v8()] {
+            assert_eq!(d.layout.bank_angle_deg, 90.0, "{}", d.name);
+            assert_eq!(d.layout.banks, d.exhaust.collectors, "{}", d.name);
+            assert!(crate::config::validate(&d).is_ok());
+        }
+        assert_eq!(
+            EngineDef::inline4().layout,
+            crate::layout::Layout::default()
+        );
+    }
+
+    #[test]
+    fn every_preset_revs_up_from_idle_at_full_throttle() {
+        // Flooring it from 900 rpm must not stall (the flat-plane did: a light flywheel against
+        // a fixed 28° advance on a full 12.5:1 charge).
+        for d in [
+            EngineDef::single(),
+            EngineDef::inline4(),
+            EngineDef::lfa_v10(),
+            EngineDef::flatplane_v8(),
+            EngineDef::crossplane_v8(),
+        ] {
+            let mut e = Engine::new(d.clone(), 900.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                ..Controls::default()
+            };
+            run(&mut e, 0.5, &c);
+            assert!(e.rpm() > 2000.0, "{}: {} rpm", d.name, e.rpm());
+        }
     }
 
     #[test]

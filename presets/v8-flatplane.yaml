@@ -16,6 +16,17 @@ engine:
   - 8
   - 2
   - 6
+  layout:
+    bank_angle_deg: 90.0
+    banks:
+    - - 1
+      - 2
+      - 3
+      - 4
+    - - 5
+      - 6
+      - 7
+      - 8
   intake_valve:
     open_deg: 340.0
     duration_deg: 270.0
@@ -28,7 +39,7 @@ engine:
     diameter_m: 0.043
   spark_advance_deg: 28.0
   burn_duration_deg: 45.0
-  flywheel_inertia_kgm2: 0.08
+  flywheel_inertia_kgm2: 0.12
   plenum_volume_m3: 0.007
   throttle_diameter_m: 0.095
   idle_throttle: 0.003

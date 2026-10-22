@@ -9,6 +9,9 @@ engine:
   cylinders: 1
   firing_order:
   - 1
+  layout:
+    bank_angle_deg: 0.0
+    banks: []
   intake_valve:
     open_deg: 345.0
     duration_deg: 250.0

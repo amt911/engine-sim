@@ -2,7 +2,7 @@
 
 use crate::controls::{UiState, controls_panel};
 use crate::dyno::{self, DynoPoint};
-use crate::editor::{editor_panel, format_firing_order};
+use crate::editor::editor_panel;
 use crate::files;
 use crate::runner::{Command, SimHandle};
 use crate::sim::{DriveInput, Snapshot};
@@ -116,10 +116,7 @@ impl EngineApp {
     fn load(&mut self, path: &std::path::Path) {
         match files::load_engine(path) {
             Ok(def) => {
-                self.state.firing_text = format_firing_order(&def.firing_order);
-                self.state.collectors_text =
-                    crate::editor::format_collectors(&def.exhaust.collectors);
-                self.state.def = def;
+                self.state.set_engine(def);
                 self.state.preset = None;
                 self.state.engine_dirty = true;
                 self.state.file_msg = Some(format!("Loaded {}", path.display()));
@@ -319,14 +316,11 @@ mod tests {
             let snap = sim.snapshot();
             let mut state = UiState {
                 preset: Some(preset),
-                def: preset.def(),
-                firing_text: crate::editor::format_firing_order(&preset.def().firing_order),
-                collectors_text: crate::editor::format_collectors(&preset.def().exhaust.collectors),
                 throttle,
                 vehicle: preset.vehicle(),
                 gear: 2,
                 dyno_curve: crate::dyno::sweep(&preset.def()),
-                ..UiState::default()
+                ..UiState::with_engine(preset.def())
             };
             let mut h = egui_kittest::Harness::builder()
                 .with_size(egui::vec2(1400.0, 860.0))

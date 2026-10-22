@@ -258,3 +258,28 @@ one jet at twice the speed, so 4× the dynamic pressure, where two incoherent je
 Any nonlinear source (∝ u², ∝ ṁ·u) has to be evaluated per outlet.
 
 Found: 2026-10-22 · audio
+
+### egui's default slider clamping rewrites values just by drawing them
+
+**Symptom.** Showing the LS3 preset in the editor turned its 103.25 mm bore into 103 and marked the
+engine dirty, without anyone touching it.
+**Cause.** `Slider` defaults to `SliderClamping::Always`. `add_contents` calls `set_value(old)`
+every frame, and `set_value` applies `step_by` rounding (egui 0.37 `slider.rs`).
+**Fix / workaround.** Every editor slider goes through `editor::slider()` with
+`SliderClamping::Edits`: user edits are clamped and stepped, existing values stay intact. Test:
+`showing_an_engine_does_not_round_its_values`.
+
+Found: 2026-10-22 · ui
+
+### A fixed spark advance stalls a light, high-compression engine floored from idle
+
+**Symptom.** The flat-plane V8 at full throttle from 900 rpm stopped within 0.1 s; it idled fine
+and pulled from higher rpm.
+**Cause.** Advance is fixed at 28° BTDC. At 900 rpm a full 12.5:1 charge burns early enough to
+push against the crank, and a 0.08 kg·m² flywheel has too little energy to carry it through.
+Real ECUs retard the spark at low rpm and high load.
+**Fix / workaround.** Flywheel 0.12 kg·m² for now, plus the test
+`every_preset_revs_up_from_idle_at_full_throttle`. The real fix is a spark advance map against
+rpm and load (roadmap).
+
+Found: 2026-10-22 · physics

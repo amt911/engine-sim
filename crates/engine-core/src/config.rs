@@ -208,6 +208,30 @@ pub fn validate(def: &EngineDef) -> Result<(), ConfigError> {
         );
     }
     check(
+        within(x.tail_spacing_m, 0.0, 5.0),
+        "tail spacing must be 0–5 m",
+    );
+    let snd = &def.sound;
+    check(
+        within(snd.listener_distance_m, 0.1, 1000.0)
+            && within(snd.listener_angle_deg, -180.0, 180.0),
+        "listener: distance 0.1–1000 m, angle ±180°",
+    );
+    check(within(snd.leveling, 0.0, 1.0), "leveling must be 0–1");
+    let l = &def.layout;
+    check(
+        within(l.bank_angle_deg, 0.0, 180.0),
+        "bank angle must be 0–180°",
+    );
+    if !l.banks.is_empty() {
+        let mut all: Vec<usize> = l.banks.iter().flatten().copied().collect();
+        all.sort_unstable();
+        check(
+            l.banks.len() == 2 && all == (1..=def.cylinders).collect::<Vec<_>>(),
+            "banks must be two lists that hold every cylinder exactly once",
+        );
+    }
+    check(
         within(def.redline_rpm, 500.0, 30_000.0),
         "redline must be 500–30000 rpm",
     );
@@ -375,6 +399,22 @@ mod tests {
                 Box::new(|d| d.intake_valve.open_deg = f64::NAN),
             ),
             ("redline", Box::new(|d| d.redline_rpm = 1e9)),
+            (
+                "tail spacing",
+                Box::new(|d| d.exhaust.tail_spacing_m = f64::NAN),
+            ),
+            ("listener", Box::new(|d| d.sound.listener_distance_m = 0.0)),
+            ("listener", Box::new(|d| d.sound.listener_angle_deg = 400.0)),
+            ("leveling", Box::new(|d| d.sound.leveling = 2.0)),
+            ("bank angle", Box::new(|d| d.layout.bank_angle_deg = 200.0)),
+            (
+                "banks",
+                Box::new(|d| {
+                    d.cylinders = 4;
+                    d.layout.bank_angle_deg = 90.0;
+                    d.layout.banks = vec![vec![1, 2], vec![2, 4]];
+                }),
+            ),
         ];
         for (needle, mutate) in cases {
             let mut d = EngineDef::single();
