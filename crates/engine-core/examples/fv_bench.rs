@@ -46,10 +46,13 @@ fn main() {
     ] {
         let mut d = engine_core::engine::EngineDef::lfa_v10();
         d.exhaust.model = exhaust;
-        if fv_intake {
-            d.intake.model = engine_core::intake_fv::IntakeModel::Fv;
-            d.intake.individual_throttles = true;
-        }
+        // the preset is on ITBs: the 0D rows switch the intake back explicitly
+        d.intake.model = if fv_intake {
+            engine_core::intake_fv::IntakeModel::Fv
+        } else {
+            engine_core::intake_fv::IntakeModel::ZeroD
+        };
+        d.intake.individual_throttles = true;
         let mut e = engine_core::engine::Engine::new(d, 8000.0, 1);
         let c = engine_core::engine::Controls {
             throttle: 1.0,

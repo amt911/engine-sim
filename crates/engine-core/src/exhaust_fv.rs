@@ -45,6 +45,44 @@ pub struct ExhaustFv {
     vented: f64,
 }
 
+/// Root of `f`, rising through 0 on [`lo`, `hi`] (f(lo) < 0 < f(hi)), by the Illinois variant
+/// of regula falsi (Dowell & Jarratt 1971): bracketing like bisection, superlinear like the
+/// secant; a dozen evaluations reach 1e-12 where bisection takes forty. Returns the bracket's
+/// end if `f` does not change sign.
+pub(crate) fn rising_root(f: impl Fn(f64) -> f64, mut lo: f64, mut hi: f64) -> f64 {
+    let (mut f_lo, mut f_hi) = (f(lo), f(hi));
+    if f_lo >= 0.0 {
+        return lo;
+    }
+    if f_hi <= 0.0 {
+        return hi;
+    }
+    let mut side = 0;
+    for _ in 0..40 {
+        let x = (lo * f_hi - hi * f_lo) / (f_hi - f_lo);
+        let fx = f(x);
+        if fx == 0.0 || (hi - lo) <= 1e-13 * hi.abs().max(1.0) {
+            return x;
+        }
+        if fx < 0.0 {
+            lo = x;
+            f_lo = fx;
+            if side == -1 {
+                f_hi *= 0.5;
+            }
+            side = -1;
+        } else {
+            hi = x;
+            f_hi = fx;
+            if side == 1 {
+                f_lo *= 0.5;
+            }
+            side = 1;
+        }
+    }
+    0.5 * (lo + hi)
+}
+
 /// Boundary state of a pipe end at a junction of pressure `p_j` (Benson's constant-pressure
 /// junction; Winterbone & Pearson): the characteristic leaving the pipe is kept, so the end
 /// sees the junction pressure without being forced to rest (a u = 0 plenum ghost low-passes
@@ -105,16 +143,9 @@ pub(crate) fn throttled_ghost(cell: Prim, p_j: f64, rho_j: f64, sigma: f64, psi:
             return open;
         }
         let y_hi = 1.0 + k * sigma * cell.u / c_c;
-        let (mut lo, mut hi) = (y_j, y_hi.max(y_j));
-        for _ in 0..30 {
-            let mid = 0.5 * (lo + hi);
-            if excess(cell_state(mid)) > 0.0 {
-                lo = mid;
-            } else {
-                hi = mid;
-            }
-        }
-        return cell_state(0.5 * (lo + hi));
+        // excess falls with y: its negative rises through 0
+        let y = rising_root(|y| -excess(cell_state(y)), y_j, y_hi.max(y_j));
+        return cell_state(y);
     }
     // Inflow: a contact between the cell gas and the junction gas, with the same p and u on both
     // sides. In x = (p/p₀)^((γ−1)/2γ), with (p₀, ρ₀) the junction as the stagnation state at the
@@ -141,18 +172,9 @@ pub(crate) fn throttled_ghost(cell: Prim, p_j: f64, rho_j: f64, sigma: f64, psi:
     let (x, w) = if w_c(x_lo) >= w_a(x_lo) {
         (x_lo, w_a(x_lo))
     } else {
-        // w_c − w_a rises monotonically on [x_lo, 1] and changes sign: 40 halvings (bracket
-        // ~1e-13; Newton would stall on w_j's infinite slope at x = 1)
-        let (mut lo, mut hi) = (x_lo, 1.0);
-        for _ in 0..40 {
-            let mid = 0.5 * (lo + hi);
-            if w_c(mid) < w_a(mid) {
-                lo = mid;
-            } else {
-                hi = mid;
-            }
-        }
-        let x = 0.5 * (lo + hi);
+        // w_c − w_a rises monotonically on [x_lo, 1] and changes sign (bracketed: Newton would
+        // stall on w_j's infinite slope at x = 1)
+        let x = rising_root(|x| w_c(x) - w_a(x), x_lo, 1.0);
         // the pipe side's speed: smooth at x = 1, where w_j is not
         (x, w_c(x).max(0.0))
     };
@@ -645,6 +667,28 @@ mod tests {
             (b.u + b.sound_speed()).abs() < 1e-9 * b.sound_speed(),
             "{b:?}"
         );
+    }
+
+    #[test]
+    fn rising_root_finds_the_root_in_few_evaluations() {
+        // x³ − 2 on [0, 2]: the cube root of 2 (1.259921049894873); bisection would need 40+.
+        let calls = std::cell::Cell::new(0);
+        let r = rising_root(
+            |x| {
+                calls.set(calls.get() + 1);
+                x * x * x - 2.0
+            },
+            0.0,
+            2.0,
+        );
+        assert!((r - 1.259_921_049_894_873).abs() < 1e-12, "{r}");
+        assert!(calls.get() <= 15, "{} evaluations", calls.get());
+        // a steep, one-sided function (√ near its end, like w_j at x = 1) still converges
+        let r = rising_root(|x| x - (1.0 - x * x).max(0.0).sqrt(), 0.0, 1.0);
+        assert!((r - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-12, "{r}");
+        // no sign change: the bracket's end where the root would be
+        assert_eq!(rising_root(|x| x + 1.0, 0.0, 1.0), 0.0);
+        assert_eq!(rising_root(|x| x - 5.0, 0.0, 1.0), 1.0);
     }
 
     #[test]

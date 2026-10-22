@@ -185,3 +185,43 @@ restored file looks unchanged since the last (mutant) build, so nothing is rebui
 the run *after* the loop silently tests stale code.
 
 Found: 2026-10-22 · tests
+
+### A volume's pressure is the stagnation pressure for gas leaving it into a pipe
+
+**Symptom.** Plenum + 1D runners read VE 1.20 at 6000 rpm, above unrestricted ITBs (0.98) on the
+same runner. There was no tuning to explain it.
+**Cause.** The junction ghost gave inflow `p = p_j, ρ = ρ_j` with u ≠ 0. The entering gas then had
+a stagnation pressure above the volume's, so it accelerated without paying the dynamic head.
+**Fix / workaround.** Treat inflow as a contact problem. The pipe side follows the outgoing
+characteristic on the cell's isentrope; the volume side is adiabatic from rest (stagnation).
+Solve for the shared p and u (`junction_ghost`, Illinois root in x = (p/p₀)^((γ−1)/2γ), no `powf` in
+the loop). VE is now 1.00.
+**Why it isn't obvious.** At u = 0 both forms agree, and every resting or small-signal test
+passes. The error grows with u², so it only shows at high flow.
+
+Found: 2026-10-22 · physics
+
+### An explicit orifice flux from the cell pressure chatters at the FV rate
+
+**Symptom.** The LFA with ITBs: output clipped at 1.0, RMS 20× the 0D intake, and almost no energy
+in engine orders.
+**Cause.** The trumpet's face flux was a quasi-steady orifice evaluated from the first cell's
+pressure. Its slope dṁ/dΔp → ∞ at Δp → 0, so each FV step overshoots, and the face flux flips
+sign every step. The step-to-step difference was larger than the swing.
+**Fix / workaround.** A throttled characteristic end (`throttled_ghost`): the orifice limit is
+solved together with the outgoing characteristic. Test
+`pulsed_runners_radiate_without_step_to_step_chatter` checks diff-RMS < 0.3 × RMS.
+**Why it isn't obvious.** Mass balance, VE and torque all look normal; only the sound shows it.
+Look at the step-to-step difference of a source, not its mean.
+
+Found: 2026-10-22 · physics
+
+### `IntakeFv::last_inducted() / dt` is a spike train
+
+**Cause.** With `substeps` > 1, the whole FV step's air arrives on the one physics step that
+advances the pipes. That's exact for mass, but a sound source fed with it gets spikes `substeps`×
+the flow, and hiss ∝ ṁ·u goes as substeps².
+**Fix / workaround.** Sound reads `inducted_rate()` (held mean over the last FV step); mass
+bookkeeping keeps `last_inducted()`.
+
+Found: 2026-10-22 · audio
