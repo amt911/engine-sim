@@ -1,0 +1,88 @@
+version: 2
+engine:
+  name: Flat-plane V8 4.5
+  geometry:
+    bore_m: 0.094
+    stroke_m: 0.081
+    rod_m: 0.14
+    compression_ratio: 12.5
+  cylinders: 8
+  firing_order:
+  - 1
+  - 5
+  - 3
+  - 7
+  - 4
+  - 8
+  - 2
+  - 6
+  layout:
+    bank_angle_deg: 90.0
+    banks:
+    - - 1
+      - 2
+      - 3
+      - 4
+    - - 5
+      - 6
+      - 7
+      - 8
+  intake_valve:
+    open_deg: 340.0
+    duration_deg: 270.0
+    max_lift_m: 0.0115
+    diameter_m: 0.05
+  exhaust_valve:
+    open_deg: 125.0
+    duration_deg: 265.0
+    max_lift_m: 0.0105
+    diameter_m: 0.043
+  spark_advance_deg: 28.0
+  burn_duration_deg: 45.0
+  flywheel_inertia_kgm2: 0.12
+  plenum_volume_m3: 0.007
+  throttle_diameter_m: 0.095
+  idle_throttle: 0.003
+  exhaust:
+    primary_length_m: 0.45
+    primary_diameter_m: 0.042
+    collectors:
+    - - 1
+      - 2
+      - 3
+      - 4
+    - - 5
+      - 6
+      - 7
+      - 8
+    collector_length_m: 0.3
+    collector_diameter_m: 0.065
+    tail_length_m: 1.3
+    tail_diameter_m: 0.065
+    muffler_transmission: 0.7
+    model: waveguide
+    muffler_volume_m3: 0.01
+    tail_spacing_m: 0.25
+  intake:
+    model: zero_d
+    runner_length_m: 0.3
+    runner_diameter_m: 0.042
+    individual_throttles: false
+    trumpet_loss: 0.1
+  redline_rpm: 9000.0
+  starter_torque_nm: 150.0
+  fmep_bar:
+  - 0.8
+  - 0.1
+  - 0.015
+  sound:
+    flow_noise: 1.0
+    intake: 1.0
+    mechanical: 1.0
+    combustion_jitter: 1.0
+    reverb: 0.15
+    leveling: 1.0
+    listener_distance_m: 3.0
+    listener_angle_deg: 30.0
+  exhaust_reverse_cd_ratio: 0.75
+  overrun_fuel_cut_rpm: 1500.0

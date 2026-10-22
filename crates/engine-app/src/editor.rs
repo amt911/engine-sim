@@ -9,6 +9,16 @@ use engine_core::units::m3_to_cc;
 use std::ops::RangeInclusive;
 
 /// Slider over `value · scale` (e.g. metres shown as mm). Returns whether it changed.
+/// An editor slider. `Edits` clamping: what the user enters is clamped and stepped, but an
+/// engine's own values stay as they are; the default (`Always`) re-steps the bound value every
+/// frame, so showing an LS3 (103.25 mm bore, 1 mm step) silently made it 103 mm.
+fn slider<'a, N: egui::emath::Numeric>(
+    value: &'a mut N,
+    range: RangeInclusive<N>,
+) -> egui::Slider<'a> {
+    egui::Slider::new(value, range).clamping(egui::SliderClamping::Edits)
+}
+
 fn scaled(
     ui: &mut egui::Ui,
     value: &mut f64,
@@ -19,11 +29,7 @@ fn scaled(
 ) -> bool {
     let mut shown = *value * scale;
     let changed = ui
-        .add(
-            egui::Slider::new(&mut shown, range)
-                .step_by(step)
-                .text(text),
-        )
+        .add(slider(&mut shown, range).step_by(step).text(text))
         .changed();
     if changed {
         *value = shown / scale;
@@ -84,7 +90,7 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
         .show(ui, |ui| {
             let mut n = d.cylinders;
             if ui
-                .add(egui::Slider::new(&mut n, 1..=MAX_CYLINDERS).text("Cylinders"))
+                .add(slider(&mut n, 1..=MAX_CYLINDERS).text("Cylinders"))
                 .changed()
             {
                 d.cylinders = n;
@@ -103,7 +109,7 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
             );
             scaled(ui, &mut g.rod_m, 1000.0, 60.0..=260.0, 1.0, "Rod (mm)");
             ui.add(
-                egui::Slider::new(&mut g.compression_ratio, 6.0..=16.0)
+                slider(&mut g.compression_ratio, 6.0..=16.0)
                     .step_by(0.1)
                     .text("Compression ratio"),
             );
@@ -111,6 +117,28 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
                 "Displacement {:.0} cc",
                 m3_to_cc(d.displacement_m3())
             ));
+            ui.add(
+                slider(&mut d.layout.bank_angle_deg, 0.0..=180.0)
+                    .step_by(1.0)
+                    .text("Bank angle (°)"),
+            )
+            .on_hover_text("0 = inline, 60–120 = V, 180 = flat (boxer)");
+            ui.add_enabled_ui(d.layout.bank_angle_deg > 0.0, |ui| {
+                ui.horizontal(|ui| {
+                    let l = ui.label("Banks");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut state.banks_text)
+                            .hint_text("first half / second half")
+                            .desired_width(180.0),
+                    )
+                    .labelled_by(l.id);
+                });
+            })
+            .response
+            .on_disabled_hover_text("Inline (bank angle 0): one bank");
+            if let Ok(banks) = parse_collectors(&state.banks_text) {
+                d.layout.banks = banks;
+            }
         });
 
     egui::CollapsingHeader::new("Firing & combustion")
@@ -132,7 +160,7 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
                 }
             }
             ui.add(
-                egui::Slider::new(&mut d.burn_duration_deg, 20.0..=90.0)
+                slider(&mut d.burn_duration_deg, 20.0..=90.0)
                     .step_by(1.0)
                     .text("Burn duration (°)"),
             );
@@ -145,12 +173,12 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
         ] {
             ui.label(name);
             ui.add(
-                egui::Slider::new(&mut v.open_deg, 0.0..=719.0)
+                slider(&mut v.open_deg, 0.0..=719.0)
                     .step_by(1.0)
                     .text(format!("{name} opens (° of 720)")),
             );
             ui.add(
-                egui::Slider::new(&mut v.duration_deg, 120.0..=360.0)
+                slider(&mut v.duration_deg, 120.0..=360.0)
                     .step_by(1.0)
                     .text(format!("{name} duration (°)")),
             );
@@ -309,6 +337,15 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
                 1.0,
                 "Tail pipe Ø (mm)",
             );
+            ui.add_enabled_ui(x.groups(d.cylinders).len() > 1, |ui| {
+                ui.add(
+                    slider(&mut x.tail_spacing_m, 0.1..=2.0)
+                        .step_by(0.05)
+                        .text("Tail spacing (m)"),
+                );
+            })
+            .response
+            .on_disabled_hover_text("One tail pipe: nothing to spread");
         });
 
     egui::CollapsingHeader::new("Sound")
@@ -316,45 +353,66 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
         .show(ui, |ui| {
             let snd = &mut d.sound;
             ui.add(
-                egui::Slider::new(&mut snd.flow_noise, 0.0..=4.0)
+                slider(&mut snd.flow_noise, 0.0..=4.0)
                     .step_by(0.05)
                     .text("Flow noise"),
             );
             ui.add(
-                egui::Slider::new(&mut snd.intake, 0.0..=4.0)
+                slider(&mut snd.intake, 0.0..=4.0)
                     .step_by(0.05)
                     .text("Intake roar"),
             );
             ui.add(
-                egui::Slider::new(&mut snd.mechanical, 0.0..=4.0)
+                slider(&mut snd.mechanical, 0.0..=4.0)
                     .step_by(0.05)
                     .text("Valvetrain"),
             );
             ui.add(
-                egui::Slider::new(&mut snd.combustion_jitter, 0.0..=4.0)
+                slider(&mut snd.combustion_jitter, 0.0..=4.0)
                     .step_by(0.05)
                     .text("Combustion variability"),
             );
             ui.add(
-                egui::Slider::new(&mut snd.reverb, 0.0..=1.0)
+                slider(&mut snd.reverb, 0.0..=1.0)
                     .step_by(0.01)
                     .text("Room reverb"),
+            );
+            ui.add(
+                slider(&mut snd.leveling, 0.0..=1.0)
+                    .step_by(0.05)
+                    .text("Idle leveling"),
+            )
+            .on_hover_text(
+                "Lifts quiet running (idle) up to +12 dB toward full load; 0 = raw dynamics",
+            );
+            ui.add(
+                slider(&mut snd.listener_distance_m, 0.5..=30.0)
+                    .step_by(0.5)
+                    .text("Listener distance (m)"),
+            );
+            ui.add(
+                slider(&mut snd.listener_angle_deg, -90.0..=90.0)
+                    .step_by(5.0)
+                    .text("Listener angle (°)"),
+            )
+            .on_hover_text(
+                "0 = straight behind; off the axis, each tail pipe arrives at its own time",
             );
         });
 
     egui::CollapsingHeader::new("Mechanics").show(ui, |ui| {
         ui.add(
-            egui::Slider::new(&mut d.flywheel_inertia_kgm2, 0.02..=0.6)
+            slider(&mut d.flywheel_inertia_kgm2, 0.02..=0.6)
                 .step_by(0.01)
                 .text("Flywheel inertia (kg·m²)"),
         );
         ui.add(
-            egui::Slider::new(&mut d.redline_rpm, 2000.0..=14000.0)
+            slider(&mut d.redline_rpm, 2000.0..=14000.0)
                 .step_by(100.0)
                 .text("Redline (rpm)"),
         );
         ui.add(
-            egui::Slider::new(&mut d.starter_torque_nm, 5.0..=300.0)
+            slider(&mut d.starter_torque_nm, 5.0..=300.0)
                 .step_by(1.0)
                 .text("Starter torque (N·m)"),
         );
@@ -370,6 +428,9 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
     }
     if let Err(e) = parse_collectors(&state.collectors_text) {
         state.errors.insert(0, e);
+    }
+    if let Err(e) = parse_collectors(&state.banks_text) {
+        state.errors.insert(0, format!("banks: {e}"));
     }
     for e in &state.errors {
         ui.colored_label(egui::Color32::LIGHT_RED, e);
@@ -387,11 +448,8 @@ mod tests {
     use engine_core::engine::EngineDef;
 
     fn harness(def: EngineDef) -> Harness<'static, UiState> {
-        let state = UiState {
-            firing_text: format_firing_order(&def.firing_order),
-            def,
-            ..UiState::default()
-        };
+        // as the app does on loading an engine: the text fields start from it
+        let state = UiState::with_engine(def);
         Harness::new_ui_state(|ui, s: &mut UiState| editor_panel(ui, s), state)
     }
 
@@ -533,6 +591,63 @@ mod tests {
         let v = h.state().def.plenum_volume_m3;
         nudge(&mut h, "Plenum (L)");
         assert_eq!(h.state().def.plenum_volume_m3, v);
+    }
+
+    #[test]
+    fn idle_leveling_slider_edits_the_sound() {
+        // the Sound section is open by default
+        let mut h = harness(EngineDef::inline4());
+        h.get_by_role_and_label(egui::accesskit::Role::Slider, "Idle leveling")
+            .focus();
+        h.run();
+        h.key_press(egui::Key::ArrowLeft);
+        h.run();
+        assert!(h.state().def.sound.leveling < 1.0);
+        assert!(h.state().engine_dirty);
+    }
+
+    #[test]
+    fn listener_and_tail_spacing_controls_edit_the_engine() {
+        let mut h = harness(EngineDef::crossplane_v8());
+        nudge(&mut h, "Listener distance (m)");
+        assert!(h.state().def.sound.listener_distance_m > 3.0);
+        nudge(&mut h, "Listener angle (°)");
+        assert!(h.state().def.sound.listener_angle_deg > 30.0);
+        // the Exhaust section is open by default
+        nudge(&mut h, "Tail spacing (m)");
+        assert!(h.state().def.exhaust.tail_spacing_m > 1.1);
+        assert!(h.state().engine_dirty);
+    }
+
+    #[test]
+    fn showing_an_engine_does_not_round_its_values() {
+        // The LS3's 103.25 mm bore under a 1 mm-step slider: drawing must not snap it.
+        let mut h = harness(EngineDef::crossplane_v8());
+        h.run();
+        h.run();
+        assert_eq!(h.state().def, EngineDef::crossplane_v8());
+        assert!(!h.state().engine_dirty);
+    }
+
+    #[test]
+    fn bank_angle_and_banks_edit_the_layout() {
+        let mut h = harness(EngineDef::inline4());
+        nudge(&mut h, "Bank angle (°)");
+        assert!(h.state().def.layout.bank_angle_deg > 0.0);
+        h.get_by_label("Banks").focus();
+        h.run();
+        h.get_by_label("Banks").type_text("1-3 / 2-4");
+        h.run();
+        assert_eq!(h.state().def.layout.banks, vec![vec![1, 3], vec![2, 4]]);
+        assert!(h.state().engine_dirty);
+    }
+
+    #[test]
+    fn setting_an_engine_fills_its_text_fields() {
+        let s = UiState::with_engine(EngineDef::crossplane_v8());
+        assert_eq!(s.firing_text, "1-8-7-2-6-5-4-3");
+        assert_eq!(s.collectors_text, "1-3-5-7 / 2-4-6-8");
+        assert_eq!(s.banks_text, "1-3-5-7 / 2-4-6-8");
     }
 
     #[test]

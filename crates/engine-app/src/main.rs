@@ -109,10 +109,7 @@ fn main() -> ExitCode {
     }
     let state = UiState {
         preset: cli.engine.is_none().then_some(preset),
-        firing_text: editor::format_firing_order(&def.firing_order),
-        collectors_text: editor::format_collectors(&def.exhaust.collectors),
-        def,
-        ..UiState::default()
+        ..UiState::with_engine(def)
     };
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()

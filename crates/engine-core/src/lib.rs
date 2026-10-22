@@ -12,6 +12,8 @@ pub mod fv;
 pub mod gas;
 pub mod geometry;
 pub mod intake_fv;
+pub mod layout;
+pub mod listener;
 pub mod sound;
 pub mod units;
 pub mod valve;

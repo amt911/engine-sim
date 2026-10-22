@@ -129,6 +129,46 @@ impl VehicleDef {
         }
     }
 
+    /// A mid-engined coupé for the flat-plane V8, after the Ferrari 458 Italia:
+    /// 1,485 kg, 7-speed DCT 3.08/2.19/1.63/1.29/1.03/0.84/0.69 with a 4.44 final drive (as
+    /// commonly published; not independently re-verified), rear 295/35 ZR20 → 0.295 · 0.35 +
+    /// 0.508/2 = 0.35725 m (computed). ESTIMATES: Cd·A, Crr, efficiency, inertias, clutch.
+    pub fn flatplane_v8() -> Self {
+        Self {
+            name: "Flat-plane V8 coupé".into(),
+            mass_kg: 1485.0,
+            wheel_radius_m: 0.35725,
+            drag_cd_a_m2: 0.66,
+            rolling_coeff: 0.011,
+            gear_ratios: vec![3.08, 2.19, 1.63, 1.29, 1.03, 0.84, 0.69],
+            final_drive: 4.44,
+            driveline_efficiency: 0.92,
+            wheel_inertia_kgm2: 5.0,
+            clutch_capacity_nm: 800.0,
+            max_brake_decel_m_s2: 10.0,
+        }
+    }
+
+    /// A front-engined sports car for the cross-plane V8, after the C6 Corvette (LS3): 1,441 kg,
+    /// 6-speed manual 2.66/1.78/1.30/1.00/0.74/0.50 with a 3.42 final drive (as commonly
+    /// published; not independently re-verified), rear 285/35 ZR19 → 0.285 · 0.35 + 0.4826/2
+    /// = 0.34105 m (computed). ESTIMATES: Cd·A, Crr, efficiency, inertias, clutch.
+    pub fn crossplane_v8() -> Self {
+        Self {
+            name: "Cross-plane V8 sports car".into(),
+            mass_kg: 1441.0,
+            wheel_radius_m: 0.34105,
+            drag_cd_a_m2: 0.58,
+            rolling_coeff: 0.011,
+            gear_ratios: vec![2.66, 1.78, 1.30, 1.00, 0.74, 0.50],
+            final_drive: 3.42,
+            driveline_efficiency: 0.90,
+            wheel_inertia_kgm2: 5.0,
+            clutch_capacity_nm: 850.0,
+            max_brake_decel_m_s2: 10.0,
+        }
+    }
+
     /// Overall ratio crank → wheel for a gear (1-based); 0 for neutral or an unknown gear.
     pub fn overall_ratio(&self, gear: usize) -> f64 {
         match gear.checked_sub(1).and_then(|i| self.gear_ratios.get(i)) {
@@ -625,6 +665,8 @@ mod tests {
             VehicleDef::single(),
             VehicleDef::inline4(),
             VehicleDef::lfa_v10(),
+            VehicleDef::flatplane_v8(),
+            VehicleDef::crossplane_v8(),
         ] {
             assert!(d.mass_kg > 100.0 && d.wheel_radius_m > 0.2 && d.wheel_radius_m < 0.5);
             assert!(d.gear_ratios.windows(2).all(|w| w[0] > w[1]), "{}", d.name);
@@ -661,5 +703,18 @@ mod tests {
                 prop_assert!(l.torque_nm.abs() <= 400.0 + 1e-9 || v.locked());
             }
         }
+    }
+
+    #[test]
+    fn the_v8_cars_carry_their_published_gearing() {
+        let f = VehicleDef::flatplane_v8();
+        assert_eq!(
+            f.gear_ratios,
+            vec![3.08, 2.19, 1.63, 1.29, 1.03, 0.84, 0.69]
+        );
+        assert_eq!((f.final_drive, f.mass_kg), (4.44, 1485.0));
+        let c = VehicleDef::crossplane_v8();
+        assert_eq!(c.gear_ratios, vec![2.66, 1.78, 1.30, 1.00, 0.74, 0.50]);
+        assert_eq!((c.final_drive, c.mass_kg), (3.42, 1441.0));
     }
 }

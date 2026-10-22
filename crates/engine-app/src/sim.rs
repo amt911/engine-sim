@@ -47,6 +47,7 @@ pub struct DriveInput {
 fn voice_for(def: &EngineDef, sample_rate: f64) -> Voice {
     let mut v = Voice::new(sample_rate);
     v.reverb_mix = def.sound.reverb;
+    v.leveler.amount = def.sound.leveling;
     v
 }
 
@@ -99,6 +100,7 @@ impl Simulation {
     /// applied in place so the engine keeps running without a click.
     pub fn replace_engine(&mut self, def: EngineDef) {
         self.voice.reverb_mix = def.sound.reverb;
+        self.voice.leveler.amount = def.sound.leveling;
         let Some(def) = self.try_retune(def) else {
             return;
         };
@@ -189,6 +191,78 @@ pub(crate) mod tests {
         (min..=max)
             .max_by(|a, b| score(*a).total_cmp(&score(*b)))
             .unwrap()
+    }
+
+    /// Share of the signal's energy in engine-cycle orders (k · rpm/120 Hz, up to 10 kHz).
+    pub fn harmonic_share(x: &[f32], rpm: f64) -> f64 {
+        let f0 = rpm / 120.0;
+        let total: f64 = x.iter().map(|s| (*s as f64).powi(2)).sum::<f64>() / x.len() as f64;
+        let mut h = 0.0;
+        let mut k = 1;
+        while k as f64 * f0 < 10_000.0 {
+            let w = 2.0 * std::f64::consts::PI * f0 * k as f64 / FS;
+            let (mut re, mut im) = (0.0, 0.0);
+            for (n, s) in x.iter().enumerate() {
+                re += *s as f64 * (w * n as f64).cos();
+                im += *s as f64 * (w * n as f64).sin();
+            }
+            let a = 2.0 * (re * re + im * im).sqrt() / x.len() as f64;
+            h += 0.5 * a * a;
+            k += 1;
+        }
+        h / total
+    }
+
+    #[test]
+    fn a_screaming_lfa_is_engine_orders_not_air() {
+        // User report (2026-10-22): at high rpm a background "air" noise covered the engine.
+        // Flow noise is texture: at 8000 rpm WOT it must stay well under the firing orders.
+        let mut sim = Simulation::new(EngineDef::lfa_v10(), FS, 1);
+        sim.controls = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(8000.0),
+            ..Controls::default()
+        };
+        render_secs(&mut sim, 1.5);
+        let x = render_secs(&mut sim, 1.0);
+        let share = harmonic_share(&x, 8000.0);
+        assert!(share >= 0.85, "harmonic share {share}");
+    }
+
+    /// Share of the energy in cycle orders 1–3 (below the firing order of a V8) at 3000 rpm WOT.
+    fn low_order_share(def: EngineDef) -> f64 {
+        let mut sim = Simulation::new(def, FS, 1);
+        sim.controls = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        render_secs(&mut sim, 1.0);
+        let x = render_secs(&mut sim, 1.0);
+        let o = orders(&x, 3000.0);
+        let total: f64 = o.iter().map(|a| a * a).sum();
+        o[..3].iter().map(|a| a * a).sum::<f64>() / total
+    }
+
+    #[test]
+    fn a_crossplane_v8_burbles_and_a_flatplane_does_not() {
+        // Uneven pulses within each bank (cross plane) put energy below the firing order; a
+        // flat plane's banks are even inline-4s, so orders 1–3 stay near zero.
+        let cross = low_order_share(EngineDef::crossplane_v8());
+        let flat = low_order_share(EngineDef::flatplane_v8());
+        assert!(cross > 0.05, "cross-plane low orders {cross}");
+        assert!(cross > 5.0 * flat, "cross {cross} vs flat {flat}");
+    }
+
+    #[test]
+    fn the_voice_follows_the_engines_leveling() {
+        let mut def = EngineDef::inline4();
+        def.sound.leveling = 0.4;
+        let mut sim = Simulation::new(def.clone(), FS, 1);
+        assert_eq!(sim.voice.leveler.amount, 0.4);
+        def.sound.leveling = 0.0;
+        sim.replace_engine(def);
+        assert_eq!(sim.voice.leveler.amount, 0.0);
     }
 
     #[test]
@@ -453,6 +527,71 @@ mod probe {
                     rms(&x),
                     o.join(" ")
                 );
+            }
+        }
+    }
+}
+
+/// Sound diagnostics (`cargo test -p engine-app --release sound_report -- --ignored --nocapture`):
+/// per preset and operating point, the output level, how much of it is harmonic (engine orders
+/// up to 10 kHz) and the level with each texture source muted.
+#[cfg(test)]
+mod sound_report {
+    use super::tests::{FS, harmonic_share, render_secs, rms};
+    use super::*;
+
+    fn level(def: &EngineDef, rpm: Option<f64>, throttle: f64) -> (Vec<f32>, f64) {
+        let mut sim = Simulation::new(def.clone(), FS, 1);
+        sim.controls = Controls {
+            throttle,
+            hold_rpm: rpm,
+            ..Controls::default()
+        };
+        render_secs(&mut sim, 1.5);
+        let x = render_secs(&mut sim, 1.0);
+        let r = sim.engine().rpm();
+        (x, r)
+    }
+
+    #[test]
+    #[ignore]
+    fn sound_report() {
+        let db = |x: f64| 20.0 * x.max(1e-9).log10();
+        for def in [EngineDef::inline4(), EngineDef::lfa_v10()] {
+            for (what, rpm, throttle) in [
+                ("idle", None, 0.0),
+                ("3000 part", Some(3000.0), 0.25),
+                ("8000 WOT", Some(8000.0), 1.0),
+            ] {
+                let (x, r) = level(&def, rpm, throttle);
+                let mut line = format!(
+                    "{:14} {what:10} {r:5.0} rpm  {:6.1} dBFS  harmonic {:4.0}%",
+                    def.name,
+                    db(rms(&x)),
+                    100.0 * harmonic_share(&x, r)
+                );
+                for (src, f) in [
+                    ("-flow", 0usize),
+                    ("-intake", 1),
+                    ("-mech", 2),
+                    ("-jitter", 3),
+                ] {
+                    let mut d = def.clone();
+                    let s = &mut d.sound;
+                    *[
+                        &mut s.flow_noise,
+                        &mut s.intake,
+                        &mut s.mechanical,
+                        &mut s.combustion_jitter,
+                    ][f] = 0.0;
+                    let (y, r2) = level(&d, rpm, throttle);
+                    line += &format!(
+                        "  {src} {:5.1} dB/{:3.0}%",
+                        db(rms(&y)),
+                        100.0 * harmonic_share(&y, r2)
+                    );
+                }
+                println!("{line}");
             }
         }
     }

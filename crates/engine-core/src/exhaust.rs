@@ -41,6 +41,9 @@ pub struct ExhaustDef {
     pub model: ExhaustModel,
     /// Muffler expansion-chamber volume, m³ (finite-volume model).
     pub muffler_volume_m3: f64,
+    /// Distance between the outermost tail pipes across the car, m (several tails are spread
+    /// evenly between them); where the listener hears each one from.
+    pub tail_spacing_m: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -64,6 +67,7 @@ impl Default for ExhaustDef {
             muffler_transmission: 0.5,
             model: ExhaustModel::Waveguide,
             muffler_volume_m3: 0.006,
+            tail_spacing_m: 0.9,
         }
     }
 }
@@ -106,6 +110,8 @@ pub struct ExhaustNet {
     /// Last wave sent into each primary from its valve end.
     sent: Vec<f64>,
     branches: Vec<Branch>,
+    /// Radiated pressure at each tail pipe in the last step (one per collector branch).
+    tails: Vec<f64>,
     pub dt: f64,
 }
 
@@ -148,9 +154,15 @@ impl ExhaustNet {
         Self {
             primaries,
             sent: vec![0.0; cylinders],
+            tails: vec![0.0; def.groups(cylinders).len()],
             branches,
             dt,
         }
+    }
+
+    /// Radiated pressure at each tail pipe in the last step; they sum to `step`'s result.
+    pub fn last_tails(&self) -> &[f64] {
+        &self.tails
     }
 
     pub fn primary_area(&self) -> f64 {
@@ -182,7 +194,7 @@ impl ExhaustNet {
         let mut areas = Vec::new();
         let mut incoming = Vec::new();
         let mut outgoing = Vec::new();
-        for b in &mut self.branches {
+        for (b, tail_out) in self.branches.iter_mut().zip(self.tails.iter_mut()) {
             areas.clear();
             incoming.clear();
             for &m in &b.members {
@@ -205,6 +217,7 @@ impl ExhaustNet {
             );
             let (reflected, out) = b.end.process(b.tail.at_far());
             radiated += out;
+            *tail_out = out;
             b.collector.send(collector_near, clamp_wave(two[0]));
             b.tail.send(clamp_wave(two[1]), clamp_wave(reflected));
         }
@@ -234,6 +247,41 @@ mod tests {
             }
         }
         panic!("nothing radiated");
+    }
+
+    #[test]
+    fn each_tail_reports_its_own_signal_and_they_sum_to_the_radiated() {
+        let def = ExhaustDef {
+            collectors: vec![vec![1, 3], vec![2, 4]],
+            ..ExhaustDef::default()
+        };
+        let mut net = ExhaustNet::new(&def, 4, DT);
+        let mut seen = 0.0;
+        for k in 0..20_000 {
+            // only cylinder 1 (bank 1) blows: the second tail stays silent
+            let flows = [if k % 4000 < 400 { 0.05 } else { 0.0 }, 0.0, 0.0, 0.0];
+            let r = net.step(&flows);
+            let t = net.last_tails();
+            assert_eq!(t.len(), 2);
+            assert!((t[0] + t[1] - r).abs() <= 1e-12 * r.abs().max(1.0));
+            assert_eq!(t[1], 0.0);
+            seen += t[0].abs();
+        }
+        assert!(seen > 0.0);
+    }
+
+    #[test]
+    fn tail_spacing_round_trips_and_defaults_for_old_files() {
+        let old: ExhaustDef = serde_yaml_ng::from_str("tail_length_m: 1.0\n").unwrap();
+        assert_eq!(old.tail_spacing_m, 0.9);
+        let d = ExhaustDef {
+            tail_spacing_m: 1.4,
+            ..ExhaustDef::default()
+        };
+        let j: ExhaustDef = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+        let y: ExhaustDef =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&d).unwrap()).unwrap();
+        assert_eq!((j, y), (d.clone(), d));
     }
 
     #[test]

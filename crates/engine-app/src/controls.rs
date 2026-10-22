@@ -12,15 +12,25 @@ pub enum Preset {
     Single,
     Inline4,
     LfaV10,
+    FlatplaneV8,
+    CrossplaneV8,
 }
 
 impl Preset {
-    pub const ALL: [Preset; 3] = [Preset::Single, Preset::Inline4, Preset::LfaV10];
+    pub const ALL: [Preset; 5] = [
+        Preset::Single,
+        Preset::Inline4,
+        Preset::LfaV10,
+        Preset::FlatplaneV8,
+        Preset::CrossplaneV8,
+    ];
     pub fn def(self) -> EngineDef {
         match self {
             Preset::Single => EngineDef::single(),
             Preset::Inline4 => EngineDef::inline4(),
             Preset::LfaV10 => EngineDef::lfa_v10(),
+            Preset::FlatplaneV8 => EngineDef::flatplane_v8(),
+            Preset::CrossplaneV8 => EngineDef::crossplane_v8(),
         }
     }
     /// The car this engine is fitted to (kept outside `EngineDef` so engine files stay as is).
@@ -29,6 +39,8 @@ impl Preset {
             Preset::Single => VehicleDef::single(),
             Preset::Inline4 => VehicleDef::inline4(),
             Preset::LfaV10 => VehicleDef::lfa_v10(),
+            Preset::FlatplaneV8 => VehicleDef::flatplane_v8(),
+            Preset::CrossplaneV8 => VehicleDef::crossplane_v8(),
         }
     }
     /// File/CLI name, as in `presets/<slug>.yaml` and `--preset <slug>`.
@@ -37,6 +49,8 @@ impl Preset {
             Preset::Single => "single",
             Preset::Inline4 => "inline4",
             Preset::LfaV10 => "lfa-v10",
+            Preset::FlatplaneV8 => "v8-flatplane",
+            Preset::CrossplaneV8 => "v8-crossplane",
         }
     }
     pub fn from_slug(slug: &str) -> Option<Preset> {
@@ -47,6 +61,8 @@ impl Preset {
             Preset::Single => "Single 500",
             Preset::Inline4 => "Inline-4 2.0",
             Preset::LfaV10 => "Lexus LFA V10",
+            Preset::FlatplaneV8 => "V8 4.5 flat-plane (European)",
+            Preset::CrossplaneV8 => "V8 6.2 cross-plane (American)",
         }
     }
 }
@@ -67,6 +83,8 @@ pub struct UiState {
     pub firing_text: String,
     /// Exhaust collector groups as typed ("1-3 / 2-4"; empty = one collector).
     pub collectors_text: String,
+    /// Cylinder banks as typed, same format ("1-3 / 2-4"; empty = halves).
+    pub banks_text: String,
     /// Validation problems of the edited engine (shown in the editor).
     pub errors: Vec<String>,
     /// Last file load/save message.
@@ -84,6 +102,22 @@ pub struct UiState {
     pub dyno_request: bool,
 }
 
+impl UiState {
+    /// Edit `def`: the engine and the text fields typed from it (firing order, collectors,
+    /// banks), so they cannot disagree.
+    pub fn set_engine(&mut self, def: EngineDef) {
+        self.firing_text = crate::editor::format_firing_order(&def.firing_order);
+        self.collectors_text = crate::editor::format_collectors(&def.exhaust.collectors);
+        self.banks_text = crate::editor::format_collectors(&def.layout.banks);
+        self.def = def;
+    }
+    pub fn with_engine(def: EngineDef) -> Self {
+        let mut s = Self::default();
+        s.set_engine(def);
+        s
+    }
+}
+
 impl Default for UiState {
     fn default() -> Self {
         Self {
@@ -96,6 +130,7 @@ impl Default for UiState {
             starter: false,
             firing_text: "1".into(),
             collectors_text: String::new(),
+            banks_text: String::new(),
             errors: Vec::new(),
             file_msg: None,
             vehicle: Preset::Single.vehicle(),
@@ -196,9 +231,7 @@ pub fn controls_panel(ui: &mut egui::Ui, state: &mut UiState) {
             .clicked()
         {
             state.preset = Some(p);
-            state.def = p.def();
-            state.firing_text = crate::editor::format_firing_order(&state.def.firing_order);
-            state.collectors_text = crate::editor::format_collectors(&state.def.exhaust.collectors);
+            state.set_engine(p.def());
             state.engine_dirty = true;
             state.vehicle = p.vehicle();
             state.vehicle_dirty = true;

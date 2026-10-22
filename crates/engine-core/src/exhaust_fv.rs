@@ -41,6 +41,8 @@ pub struct ExhaustFv {
     acc_mass: Vec<f64>,
     acc_energy: Vec<f64>,
     radiated: f64,
+    /// Radiated source at each tail outlet, held between FV steps like `radiated`.
+    tails: Vec<f64>,
     /// Mass that left through the tail outlets in the last physics step, kg.
     vented: f64,
 }
@@ -272,6 +274,7 @@ impl ExhaustFv {
             acc_mass: vec![0.0; cylinders],
             acc_energy: vec![0.0; cylinders],
             radiated: 0.0,
+            tails: vec![0.0; def.groups(cylinders).len()],
             vented: 0.0,
         }
     }
@@ -340,15 +343,21 @@ impl ExhaustFv {
         let n = ((dt / limit).ceil() as usize).clamp(1, MAX_SUBCYCLES);
         let h = dt / n as f64;
         let mut radiated = 0.0;
+        self.tails.iter_mut().for_each(|t| *t = 0.0);
         for _ in 0..n {
-            radiated += self.substep(h) / n as f64;
+            radiated += self.substep(h, 1.0 / n as f64) / n as f64;
         }
         self.radiated = radiated;
         radiated
     }
 
+    /// Radiated source at each tail outlet (held between FV steps); they sum to `step`'s.
+    pub fn last_tails(&self) -> &[f64] {
+        &self.tails
+    }
+
     /// One FV sub-step of length `h` with the valve fluxes already set.
-    fn substep(&mut self, h: f64) -> f64 {
+    fn substep(&mut self, h: f64, weight: f64) -> f64 {
         let state = |v: &GasVolume| Prim {
             rho: v.mass_kg / v.volume_m3,
             u: 0.0,
@@ -368,7 +377,7 @@ impl ExhaustFv {
             p.step(h);
         }
         let mut radiated = 0.0;
-        for b in &mut self.branches {
+        for (bi, b) in self.branches.iter_mut().enumerate() {
             b.out.step(h);
             // the junction takes what the faces carried (total enthalpy flux → internal energy)
             for &m in &b.members {
@@ -385,6 +394,7 @@ impl ExhaustFv {
             self.vented += o.rho * a_out * h;
             // ρc·u at the outlet: c·(ρu), the same source quantity as the waveguide model
             radiated += C_TAIL * o.rho;
+            self.tails[bi] += weight * C_TAIL * o.rho;
         }
         radiated
     }
@@ -667,6 +677,31 @@ mod tests {
             (b.u + b.sound_speed()).abs() < 1e-9 * b.sound_speed(),
             "{b:?}"
         );
+    }
+
+    #[test]
+    fn each_fv_tail_reports_its_own_signal_and_they_sum_to_the_radiated() {
+        let d = ExhaustDef {
+            collectors: vec![vec![1, 3], vec![2, 4]],
+            ..def()
+        };
+        let mut net = ExhaustFv::new(&d, 4, DT);
+        let mut seen = 0.0;
+        for k in 0..40_000 {
+            if k % 8000 < 800 {
+                net.add_valve_flow(0, 0.05 * DT, 1004.5 * 900.0);
+            }
+            let r = net.step();
+            let t = net.last_tails();
+            assert_eq!(t.len(), 2);
+            assert!(
+                (t[0] + t[1] - r).abs() <= 1e-9 * r.abs().max(1.0),
+                "{t:?} vs {r}"
+            );
+            seen += t[0].abs();
+        }
+        // the blowing bank radiates more than the resting one
+        assert!(seen > 0.0);
     }
 
     #[test]
@@ -1030,5 +1065,38 @@ mod tests {
         }
         let (p, t) = net.port_state(0);
         assert!(p.is_finite() && p > 0.0 && t > 0.0, "p {p} T {t}");
+    }
+
+    #[test]
+    fn a_coarse_step_subcycles_without_changing_the_source() {
+        // At 5 kHz one FV step needs several CFL sub-cycles; the steady source (and each tail's
+        // share of it) is a mean over them, so it matches the fine-step network's.
+        let mean = |dt: f64| {
+            let d = ExhaustDef {
+                collectors: vec![vec![1], vec![2]],
+                ..def()
+            };
+            let mut net = ExhaustFv::new(&d, 2, dt);
+            let (mut sum, mut tails) = (0.0, 0.0);
+            let n = (0.1 / dt) as usize;
+            for k in 0..n {
+                net.add_valve_flow(0, 0.05 * dt, 1004.5 * 900.0);
+                net.add_valve_flow(1, 0.05 * dt, 1004.5 * 900.0);
+                let r = net.step();
+                if k > n / 2 {
+                    sum += r;
+                    tails += net.last_tails().iter().sum::<f64>();
+                }
+            }
+            let m = (n - n / 2 - 1) as f64;
+            (sum / m, tails / m)
+        };
+        let (fine, _) = mean(DT);
+        let (coarse, coarse_tails) = mean(2e-4);
+        assert!((coarse / fine - 1.0).abs() < 0.05, "{coarse} vs {fine}");
+        assert!(
+            (coarse_tails / coarse - 1.0).abs() < 1e-9,
+            "{coarse_tails} vs {coarse}"
+        );
     }
 }

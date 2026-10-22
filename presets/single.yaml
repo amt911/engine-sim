@@ -9,6 +9,9 @@ engine:
   cylinders: 1
   firing_order:
   - 1
+  layout:
+    bank_angle_deg: 0.0
+    banks: []
   intake_valve:
     open_deg: 345.0
     duration_deg: 250.0
@@ -36,6 +39,13 @@ engine:
     muffler_transmission: 0.6
     model: waveguide
     muffler_volume_m3: 0.003
+    tail_spacing_m: 0.9
+  intake:
+    model: zero_d
+    runner_length_m: 0.3
+    runner_diameter_m: 0.042
+    individual_throttles: false
+    trumpet_loss: 0.1
   redline_rpm: 7500.0
   starter_torque_nm: 25.0
   fmep_bar:
@@ -48,5 +58,8 @@ engine:
     mechanical: 1.0
     combustion_jitter: 1.0
     reverb: 0.15
+    leveling: 1.0
+    listener_distance_m: 3.0
+    listener_angle_deg: 30.0
   exhaust_reverse_cd_ratio: 0.75
   overrun_fuel_cut_rpm: 1500.0

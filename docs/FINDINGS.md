@@ -237,3 +237,49 @@ truly hung mutant times out again cheaply. cargo-mutants 27 adds its field-delet
 whatever `-F` says, so only the retried names are counted.
 
 Found: 2026-10-22 · tests
+
+### Never run the mutation gate on the tree you are editing
+
+**Symptom.** "The diff might be out of date with this source tree", then "FAIL: no mutants tested".
+**Cause.** The run started frozen (another session held the lock). By the time cargo-mutants read
+the source, `engine.rs` had changed under it, and `--in-diff` no longer matched.
+**Fix / workaround.** Run gates in a detached worktree at the PR commit
+(`git worktree add --detach target/wt-gate <branch>`) and keep working in the main checkout.
+
+Found: 2026-10-22 · tests
+
+### A sound source summed over outlets is not one outlet at the sum
+
+**Symptom.** The LFA at 8000 rpm WOT was 87 % broadband "air"; the inline-4 was clean.
+**Cause.** Jet noise took u from `radiated`, the c·ρu summed over every tail pipe. Two tails gave
+one jet at twice the speed, so 4× the dynamic pressure, where two incoherent jets give √2:
++9 dB.
+**Fix / workaround.** `Texture::flow_noise(radiated, outlets, …)`: per-outlet velocity, √n sum.
+Any nonlinear source (∝ u², ∝ ṁ·u) has to be evaluated per outlet.
+
+Found: 2026-10-22 · audio
+
+### egui's default slider clamping rewrites values just by drawing them
+
+**Symptom.** Showing the LS3 preset in the editor turned its 103.25 mm bore into 103 and marked the
+engine dirty, without anyone touching it.
+**Cause.** `Slider` defaults to `SliderClamping::Always`. `add_contents` calls `set_value(old)`
+every frame, and `set_value` applies `step_by` rounding (egui 0.37 `slider.rs`).
+**Fix / workaround.** Every editor slider goes through `editor::slider()` with
+`SliderClamping::Edits`: user edits are clamped and stepped, existing values stay intact. Test:
+`showing_an_engine_does_not_round_its_values`.
+
+Found: 2026-10-22 · ui
+
+### A fixed spark advance stalls a light, high-compression engine floored from idle
+
+**Symptom.** The flat-plane V8 at full throttle from 900 rpm stopped within 0.1 s; it idled fine
+and pulled from higher rpm.
+**Cause.** Advance is fixed at 28° BTDC. At 900 rpm a full 12.5:1 charge burns early enough to
+push against the crank, and a 0.08 kg·m² flywheel has too little energy to carry it through.
+Real ECUs retard the spark at low rpm and high load.
+**Fix / workaround.** Flywheel 0.12 kg·m² for now, plus the test
+`every_preset_revs_up_from_idle_at_full_throttle`. The real fix is a spark advance map against
+rpm and load (roadmap).
+
+Found: 2026-10-22 · physics
