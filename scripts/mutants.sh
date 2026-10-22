@@ -14,8 +14,8 @@ FLOOR=90   # 2026-10-21: measured 92.4% (640/693)
 export TMPDIR="$PWD/target/mutants-tmp"
 mkdir -p "$TMPDIR"
 # One cargo-mutants pass into $1, in a named scope that scripts/yield-cpu.sh freezes while
-# another session holds the timing lock (their real-time gates break under our load, even at
-# nice 19); it thaws when the lock frees.
+# another session holds the timing lock (their real-time gates break under our full load, even at
+# nice 19); the cap lifts when the lock frees.
 pass() {
   local out=$1; shift
   export HEAVY_UNIT="engine-sim-mutants-$$-$(basename "$out")"
