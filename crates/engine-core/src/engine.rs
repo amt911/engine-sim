@@ -1485,6 +1485,58 @@ mod tests {
     }
 
     #[test]
+    fn the_listener_hears_the_tails_through_one_delay_line() {
+        // Textures off, the output is the listener's mix of the tail signals. Standing to the
+        // side of the LFA's two tails delays the far one: the line must persist across steps.
+        let mut d = EngineDef::lfa_v10();
+        d.sound = crate::sound::SoundDef {
+            flow_noise: 0.0,
+            mechanical: 0.0,
+            combustion_jitter: 0.0,
+            intake: 0.0,
+            listener_angle_deg: 90.0,
+            ..crate::sound::SoundDef::default()
+        };
+        let mut e = Engine::new(d.clone(), 3000.0, 1);
+        let c = Controls {
+            throttle: 0.5,
+            ..Controls::default()
+        };
+        run(&mut e, 0.05, &c);
+        let mut l = crate::listener::Listener::new(
+            2,
+            d.exhaust.tail_spacing_m,
+            d.sound.listener_distance_m,
+            90.0,
+            DT,
+        );
+        let mut tails = Vec::new();
+        let (mut got, mut want) = (Vec::new(), Vec::new());
+        for _ in 0..4_000 {
+            got.push(e.step(DT, &c));
+            tails.push(match (&e.net, &e.fv) {
+                (_, Some(fv)) => fv.last_tails().to_vec(),
+                (Some(net), None) => net.last_tails().to_vec(),
+                (None, None) => vec![],
+            });
+        }
+        // the engine's line was primed during warm-up; ours starts from the same point after
+        // it has been filled once
+        let warm = 2_000;
+        for t in &tails {
+            want.push(l.process(t));
+        }
+        for k in warm..got.len() {
+            assert!(
+                (got[k] - want[k]).abs() <= 1e-9 * want[k].abs().max(1e-3),
+                "sample {k}: {} vs {}",
+                got[k],
+                want[k]
+            );
+        }
+    }
+
+    #[test]
     fn each_collector_is_a_tail_pipe_jet() {
         // two 5-into-1 banks, two tails; the inline-4's 4-into-1 has one
         assert_eq!(Engine::new(EngineDef::lfa_v10(), 1000.0, 1).tail_pipes, 2);

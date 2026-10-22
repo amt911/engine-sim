@@ -704,4 +704,17 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn the_v8_cars_carry_their_published_gearing() {
+        let f = VehicleDef::flatplane_v8();
+        assert_eq!(
+            f.gear_ratios,
+            vec![3.08, 2.19, 1.63, 1.29, 1.03, 0.84, 0.69]
+        );
+        assert_eq!((f.final_drive, f.mass_kg), (4.44, 1485.0));
+        let c = VehicleDef::crossplane_v8();
+        assert_eq!(c.gear_ratios, vec![2.66, 1.78, 1.30, 1.00, 0.74, 0.50]);
+        assert_eq!((c.final_drive, c.mass_kg), (3.42, 1441.0));
+    }
 }

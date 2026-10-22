@@ -1066,4 +1066,37 @@ mod tests {
         let (p, t) = net.port_state(0);
         assert!(p.is_finite() && p > 0.0 && t > 0.0, "p {p} T {t}");
     }
+
+    #[test]
+    fn a_coarse_step_subcycles_without_changing_the_source() {
+        // At 5 kHz one FV step needs several CFL sub-cycles; the steady source (and each tail's
+        // share of it) is a mean over them, so it matches the fine-step network's.
+        let mean = |dt: f64| {
+            let d = ExhaustDef {
+                collectors: vec![vec![1], vec![2]],
+                ..def()
+            };
+            let mut net = ExhaustFv::new(&d, 2, dt);
+            let (mut sum, mut tails) = (0.0, 0.0);
+            let n = (0.1 / dt) as usize;
+            for k in 0..n {
+                net.add_valve_flow(0, 0.05 * dt, 1004.5 * 900.0);
+                net.add_valve_flow(1, 0.05 * dt, 1004.5 * 900.0);
+                let r = net.step();
+                if k > n / 2 {
+                    sum += r;
+                    tails += net.last_tails().iter().sum::<f64>();
+                }
+            }
+            let m = (n - n / 2 - 1) as f64;
+            (sum / m, tails / m)
+        };
+        let (fine, _) = mean(DT);
+        let (coarse, coarse_tails) = mean(2e-4);
+        assert!((coarse / fine - 1.0).abs() < 0.05, "{coarse} vs {fine}");
+        assert!(
+            (coarse_tails / coarse - 1.0).abs() < 1e-9,
+            "{coarse_tails} vs {coarse}"
+        );
+    }
 }

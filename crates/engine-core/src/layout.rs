@@ -95,4 +95,14 @@ mod tests {
         let y: Layout = serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&l).unwrap()).unwrap();
         assert_eq!((j, y), (l.clone(), l));
     }
+
+    #[test]
+    fn cylinders_no_bank_names_go_after_the_first_bank() {
+        // a V with 1–2 | 3 named: 4 and 5 follow on bank 0, after its two
+        let l = Layout {
+            bank_angle_deg: 90.0,
+            banks: vec![vec![1, 2], vec![3]],
+        };
+        assert_eq!(l.place(5), vec![(0, 0), (0, 1), (1, 0), (0, 2), (0, 3)]);
+    }
 }
