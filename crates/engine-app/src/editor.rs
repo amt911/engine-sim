@@ -133,7 +133,9 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
                     )
                     .labelled_by(l.id);
                 });
-            });
+            })
+            .response
+            .on_disabled_hover_text("Inline (bank angle 0): one bank");
             if let Ok(banks) = parse_collectors(&state.banks_text) {
                 d.layout.banks = banks;
             }
