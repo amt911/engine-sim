@@ -18,6 +18,7 @@ const RHO_AMBIENT: f64 = 1.204;
 /// are kept (the common path is dropped).
 #[derive(Debug, Clone)]
 pub struct Listener {
+    distance: Vec<f64>,
     delay: Vec<usize>,
     /// ρ₀/(4πr) · A/(ρc) / dt per tail: turns the tail signal's step change into pascals.
     gain: Vec<f64>,
@@ -66,6 +67,7 @@ impl Listener {
             .collect();
         let len = delay.iter().copied().max().unwrap_or(0) + 1;
         Self {
+            distance: r,
             delay,
             gain,
             lines: vec![vec![0.0; len]; n],
@@ -73,6 +75,11 @@ impl Listener {
             pos: 0,
             shared_last: 0.0,
         }
+    }
+
+    /// Distance from each tail pipe to the listener, m.
+    pub fn distances(&self) -> &[f64] {
+        &self.distance
     }
 
     pub fn tails(&self) -> usize {

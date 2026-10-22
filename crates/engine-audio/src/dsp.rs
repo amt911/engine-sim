@@ -380,7 +380,8 @@ mod tests {
     #[test]
     fn anti_alias_passes_the_audio_band_and_stops_what_would_fold() {
         // 4th-order Butterworth at 20 kHz, run at 192 kHz: flat in the band, −3 dB at the cut,
-        // and at 40 kHz (an octave up) |H| = 1/√(1 + 2⁸) = 0.0624 (−24 dB)
+        // and at 40 kHz (an octave up) at least the analog |H| = 1/√(1 + 2⁸) = 0.0624 (−24 dB):
+        // the bilinear transform only steepens it towards Nyquist
         let fs = 192_000.0;
         let gain = |f: f64| {
             let mut a = AntiAlias::new(20_000.0, fs);
@@ -397,7 +398,7 @@ mod tests {
             std::f64::consts::FRAC_1_SQRT_2,
             max_relative = 0.03
         );
-        assert_relative_eq!(gain(40_000.0), 0.0624, max_relative = 0.1);
+        assert!(gain(40_000.0) < 0.0624, "40 kHz: {}", gain(40_000.0));
     }
 
     #[test]

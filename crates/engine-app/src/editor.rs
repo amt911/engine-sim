@@ -362,6 +362,10 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
                 slider(&mut snd.flow_noise, 0.0..=4.0)
                     .step_by(0.05)
                     .text("Flow noise"),
+            )
+            .on_hover_text(
+                "Turbulent jet noise at the tail pipes, from each one's exit velocity \
+                 (Lighthill's eighth power). 1 = the measured jet-noise level, 0 = off.",
             );
             ui.add(
                 slider(&mut snd.intake, 0.0..=4.0)
