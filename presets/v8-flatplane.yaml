@@ -87,3 +87,22 @@ engine:
     listener_angle_deg: 30.0
   exhaust_reverse_cd_ratio: 0.75
   overrun_fuel_cut_rpm: 1500.0
+  vehicle:
+    name: Flat-plane V8 coupé
+    mass_kg: 1485.0
+    wheel_radius_m: 0.35725
+    drag_cd_a_m2: 0.66
+    rolling_coeff: 0.011
+    gear_ratios:
+    - 3.08
+    - 2.19
+    - 1.63
+    - 1.29
+    - 1.03
+    - 0.84
+    - 0.69
+    final_drive: 4.44
+    driveline_efficiency: 0.92
+    wheel_inertia_kgm2: 5.0
+    clutch_capacity_nm: 800.0
+    max_brake_decel_m_s2: 10.0

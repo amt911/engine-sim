@@ -33,15 +33,9 @@ impl Preset {
             Preset::CrossplaneV8 => EngineDef::crossplane_v8(),
         }
     }
-    /// The car this engine is fitted to (kept outside `EngineDef` so engine files stay as is).
+    /// The vehicle this engine comes in.
     pub fn vehicle(self) -> VehicleDef {
-        match self {
-            Preset::Single => VehicleDef::single(),
-            Preset::Inline4 => VehicleDef::inline4(),
-            Preset::LfaV10 => VehicleDef::lfa_v10(),
-            Preset::FlatplaneV8 => VehicleDef::flatplane_v8(),
-            Preset::CrossplaneV8 => VehicleDef::crossplane_v8(),
-        }
+        self.def().vehicle
     }
     /// File/CLI name, as in `presets/<slug>.yaml` and `--preset <slug>`.
     pub fn slug(self) -> &'static str {
@@ -111,8 +105,29 @@ impl UiState {
         self.banks_text = crate::editor::format_collectors(&def.layout.banks);
         self.def = def;
     }
+    /// Take a whole engine file, or a preset's definition: the engine and the vehicle it
+    /// carries, in neutral.
+    pub fn load_engine(&mut self, def: EngineDef) {
+        self.vehicle = def.vehicle.clone();
+        self.vehicle_dirty = true;
+        self.gear = 0;
+        self.set_engine(def);
+        self.preset = None;
+        self.engine_dirty = true;
+    }
+    /// What a save writes: the engine with the vehicle in use.
+    pub fn engine_file(&self) -> EngineDef {
+        EngineDef {
+            vehicle: self.vehicle.clone(),
+            ..self.def.clone()
+        }
+    }
+    /// Start with this engine and the vehicle it carries.
     pub fn with_engine(def: EngineDef) -> Self {
-        let mut s = Self::default();
+        let mut s = Self {
+            vehicle: def.vehicle.clone(),
+            ..Self::default()
+        };
         s.set_engine(def);
         s
     }
@@ -230,12 +245,8 @@ pub fn controls_panel(ui: &mut egui::Ui, state: &mut UiState) {
             .selectable_label(state.preset == Some(p), p.label())
             .clicked()
         {
+            state.load_engine(p.def());
             state.preset = Some(p);
-            state.set_engine(p.def());
-            state.engine_dirty = true;
-            state.vehicle = p.vehicle();
-            state.vehicle_dirty = true;
-            state.gear = 0;
         }
     }
     ui.separator();
@@ -537,6 +548,28 @@ mod tests {
         assert_eq!(h.state().vehicle, VehicleDef::lfa_v10());
         assert!(h.state().vehicle_dirty);
         assert_eq!(h.state().gear, 0);
+    }
+
+    #[test]
+    fn a_loaded_engine_brings_its_own_vehicle_not_the_previous_one() {
+        // User report (2026-10-22): with the motorcycle selected, an imported V8 kept the
+        // motorcycle's gearing and name.
+        let mut s = UiState::with_engine(Preset::Single.def());
+        s.preset = Some(Preset::Single);
+        s.vehicle = Preset::Single.vehicle();
+        s.gear = 3;
+        s.load_engine(EngineDef::crossplane_v8());
+        assert_eq!(
+            UiState::with_engine(EngineDef::lfa_v10()).vehicle,
+            VehicleDef::lfa_v10()
+        );
+        assert_eq!(s.preset, None);
+        assert_eq!(s.vehicle, VehicleDef::crossplane_v8());
+        assert!(s.vehicle_dirty && s.engine_dirty);
+        assert_eq!(s.gear, 0);
+        // and what it saves carries the vehicle in use
+        s.vehicle = VehicleDef::lfa_v10();
+        assert_eq!(s.engine_file().vehicle, VehicleDef::lfa_v10());
     }
 
     #[test]

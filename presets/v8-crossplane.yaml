@@ -87,3 +87,21 @@ engine:
     listener_angle_deg: 30.0
   exhaust_reverse_cd_ratio: 0.75
   overrun_fuel_cut_rpm: 1300.0
+  vehicle:
+    name: Cross-plane V8 sports car
+    mass_kg: 1441.0
+    wheel_radius_m: 0.34105
+    drag_cd_a_m2: 0.58
+    rolling_coeff: 0.011
+    gear_ratios:
+    - 2.66
+    - 1.78
+    - 1.3
+    - 1.0
+    - 0.74
+    - 0.5
+    final_drive: 3.42
+    driveline_efficiency: 0.9
+    wheel_inertia_kgm2: 5.0
+    clutch_capacity_nm: 850.0
+    max_brake_decel_m_s2: 10.0
