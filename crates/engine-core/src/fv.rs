@@ -121,6 +121,9 @@ pub struct Pipe1d {
     /// each cell's reconstructed left and right edge states, face fluxes, the step's starting
     /// state, and the right-hand side.
     w: Vec<Prim>,
+    /// Volume flow u·A of every entry of `w` (scratch), and −f/(2D) per cell, from the areas.
+    qv: Vec<f64>,
+    wall_coef: Vec<f64>,
     edge_l: Vec<Prim>,
     edge_r: Vec<Prim>,
     fluxes: Vec<Cons>,
@@ -149,6 +152,8 @@ impl Pipe1d {
             left: Boundary::Wall,
             right: Boundary::Wall,
             w: Vec::with_capacity(n + 6),
+            qv: vec![0.0; n + 6],
+            wall_coef: Vec::new(),
             edge_l: vec![init; n + 6],
             edge_r: vec![init; n + 6],
             fluxes: vec![Cons::default(); n + 1],
@@ -308,19 +313,20 @@ fn weno5z(v: [f64; 5]) -> (f64, f64) {
     // makes it infinite and the weights ∞/∞.
     let z = |beta: f64| 1.0 + sq(tau / (beta + 1e-40));
     let (z0, z1, z2) = (z(b0), z(b1), z(b2));
+    // q_k = (stencil polynomial)/6: the 1/6 folds into the normalisation, one division each
     let right = {
         let (a0, a1, a2) = (0.1 * z0, 0.6 * z1, 0.3 * z2);
-        let q0 = (2.0 * a - 7.0 * b + 11.0 * c) / 6.0;
-        let q1 = (-b + 5.0 * c + 2.0 * d) / 6.0;
-        let q2 = (2.0 * c + 5.0 * d - e) / 6.0;
-        (a0 * q0 + a1 * q1 + a2 * q2) / (a0 + a1 + a2)
+        (a0 * (2.0 * a - 7.0 * b + 11.0 * c)
+            + a1 * (-b + 5.0 * c + 2.0 * d)
+            + a2 * (2.0 * c + 5.0 * d - e))
+            / (6.0 * (a0 + a1 + a2))
     };
     let left = {
         let (a0, a1, a2) = (0.1 * z2, 0.6 * z1, 0.3 * z0);
-        let q0 = (2.0 * e - 7.0 * d + 11.0 * c) / 6.0;
-        let q1 = (-d + 5.0 * c + 2.0 * b) / 6.0;
-        let q2 = (2.0 * c + 5.0 * b - a) / 6.0;
-        (a0 * q0 + a1 * q1 + a2 * q2) / (a0 + a1 + a2)
+        (a0 * (2.0 * e - 7.0 * d + 11.0 * c)
+            + a1 * (-d + 5.0 * c + 2.0 * b)
+            + a2 * (2.0 * c + 5.0 * b - a))
+            / (6.0 * (a0 + a1 + a2))
     };
     (left, right)
 }
@@ -364,6 +370,17 @@ impl Pipe1d {
         w.extend([gl; 3]);
         w.extend(self.cells.iter().map(|c| c.to_prim()));
         w.extend([gr; 3]);
+        for (k, (q, s)) in self.qv.iter_mut().zip(w.iter()).enumerate() {
+            *q = s.u * self.area[(k.max(3) - 3).min(n - 1)];
+        }
+        if self.friction > 0.0 && self.wall_coef.len() != n {
+            // the areas are set once (`new`, `segmented`); D = √(4A/π)
+            self.wall_coef = self
+                .area
+                .iter()
+                .map(|a| -1.0 / (2.0 * (4.0 * a / std::f64::consts::PI).sqrt()))
+                .collect();
+        }
         // edges of every cell next to a face: w[2..n + 4]; a reconstruction that is not
         // physical (ρ or p ≤ 0 at a strong shock) falls back to the cell's own state
         for i in 2..n + 4 {
@@ -377,10 +394,10 @@ impl Pipe1d {
             ]);
             // velocity as volume flow u·A, continuous across a compact area step (where u
             // itself jumps by the area ratio), back to u with this cell's area
-            let q = |k: usize| w[k].u * self.area[(k.max(3) - 3).min(n - 1)];
+            let q = &self.qv;
             // cell i (ghosts included) has faces i − 3 (left) and i − 2 (right)
             let face = |k: usize| self.face_area[k.clamp(3, n + 3) - 3];
-            let (ql, qr) = weno5z([q(i - 2), q(i - 1), q(i), q(i + 1), q(i + 2)]);
+            let (ql, qr) = weno5z([q[i - 2], q[i - 1], q[i], q[i + 1], q[i + 2]]);
             let (ul, ur) = (ql / face(i), qr / face(i + 1));
             let (pl, pr) = weno5z([w[i - 2].p, w[i - 1].p, s.p, w[i + 1].p, w[i + 2].p]);
             let ok = |r: Prim| if r.rho > 0.0 && r.p > 0.0 { r } else { s };
@@ -427,8 +444,7 @@ impl Pipe1d {
             let ps = self.edge_r[j + 3].p * (fb - area) + self.edge_l[j + 3].p * (area - fa);
             let cell = self.w[j + 3];
             let wall = if self.friction > 0.0 {
-                let d = (4.0 * self.area[j] / std::f64::consts::PI).sqrt();
-                -self.friction / (2.0 * d) * cell.rho * cell.u * cell.u.abs()
+                self.friction * self.wall_coef[j] * cell.rho * cell.u * cell.u.abs()
             } else {
                 0.0
             };

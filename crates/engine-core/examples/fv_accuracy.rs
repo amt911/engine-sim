@@ -96,21 +96,22 @@ fn main() {
             100.0 * l1 / ref1
         );
     }
-    let mut p = Pipe1d::new(
-        1.0,
-        400,
-        Prim {
+    // speed: best of 7 runs (other load on the machine only ever slows a run down)
+    let mut best = 0.0f64;
+    for _ in 0..7 {
+        let air = Prim {
             rho: 0.6,
             u: 20.0,
             p: 1.2e5,
-        },
-    );
-    let dt = p.max_dt(0.5);
-    let steps = 20_000;
-    let t = Instant::now();
-    for _ in 0..steps {
-        p.step(dt);
+        };
+        let mut p = Pipe1d::new(1.0, 400, air);
+        let dt = p.max_dt(0.5);
+        let steps = 4_000;
+        let t = Instant::now();
+        for _ in 0..steps {
+            p.step(dt);
+        }
+        best = best.max((400 * steps) as f64 / t.elapsed().as_secs_f64());
     }
-    let rate = (400 * steps) as f64 / t.elapsed().as_secs_f64();
-    println!("speed: {:.1} M cell-steps/s", rate / 1e6);
+    println!("speed: {:.1} M cell-steps/s", best / 1e6);
 }
