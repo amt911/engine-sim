@@ -688,6 +688,230 @@ mod tests {
     }
 
     #[test]
+    fn a_smooth_pulse_keeps_its_peak_second_order() {
+        // Gaussian bump (σ = 10 mm, 500 Pa) at rest splits into two 250 Pa halves (d'Alembert).
+        // MUSCL carries the right-going half 0.34 m keeping ~78 % of its peak (the TVD limiter
+        // clips the extremum at 5 cells per σ); first-order upwinding keeps only ~36 % (measured).
+        let air = Prim {
+            rho: 1.2,
+            u: 0.0,
+            p: 101_325.0,
+        };
+        let mut p = Pipe1d::new(1.0, 500, air);
+        for i in 0..500 {
+            let x = (i as f64 + 0.5) * p.dx - 0.2;
+            p.cells[i] = Prim {
+                p: 101_325.0 + 500.0 * (-0.5 * (x / 0.01).powi(2)).exp(),
+                ..air
+            }
+            .to_cons();
+        }
+        let mut t = 0.0;
+        while t < 1e-3 {
+            let dt = p.max_dt(0.8).min(1e-3 - t);
+            p.step(dt);
+            t += dt;
+        }
+        let peak = (230..330)
+            .map(|i| p.prim(i).p - 101_325.0)
+            .fold(0.0, f64::max);
+        assert!(
+            (0.7 * 250.0..1.05 * 250.0).contains(&peak),
+            "peak {peak} Pa"
+        );
+    }
+
+    #[test]
+    fn an_advected_density_bump_stays_bounded_and_keeps_its_peak() {
+        // Entropy wave: uniform p and u = 50 m/s, Gaussian density bump (σ = 10 mm, +0.3 kg/m³).
+        // It just drifts 50 mm in 1 ms; TVD reconstruction keeps it within its initial bounds
+        // (no new extrema) and keeps most of its peak.
+        let mut p = Pipe1d::new(
+            0.5,
+            250,
+            Prim {
+                rho: 1.2,
+                u: 50.0,
+                p: 101_325.0,
+            },
+        );
+        for i in 0..250 {
+            let x = (i as f64 + 0.5) * p.dx - 0.1;
+            p.cells[i] = Prim {
+                rho: 1.2 + 0.3 * (-0.5 * (x / 0.01).powi(2)).exp(),
+                u: 50.0,
+                p: 101_325.0,
+            }
+            .to_cons();
+        }
+        p.left = Boundary::Open {
+            p: 101_325.0,
+            rho: 1.2,
+        };
+        p.right = Boundary::Open {
+            p: 101_325.0,
+            rho: 1.2,
+        };
+        let mut t = 0.0;
+        while t < 1e-3 {
+            let dt = p.max_dt(0.8).min(1e-3 - t);
+            p.step(dt);
+            t += dt;
+        }
+        let rho: Vec<f64> = (20..120).map(|i| p.prim(i).rho).collect();
+        let (lo, hi) = rho
+            .iter()
+            .fold((f64::MAX, f64::MIN), |(a, b), &r| (a.min(r), b.max(r)));
+        assert!(lo > 1.2 - 0.01 && hi < 1.5 + 1e-6, "range {lo}..{hi}");
+        assert!(hi - 1.2 > 0.7 * 0.3, "peak {hi}");
+    }
+
+    #[test]
+    fn hllc_follows_the_sonic_point_of_a_transonic_rarefaction() {
+        // A rarefaction straddling the interface: the exact Godunov flux is that of the sonic
+        // state inside the fan (Toro, Riemann Solvers, eqs. 4.56 and 4.63), not the upwind state.
+        // Left fan, l = (1, 100, 1e5), r = (1, 900, 1e5): c_l = 374.17 m/s,
+        //   u* = 2/(γ+1)·(c_l + (γ−1)/2·u_l) = 328.47, ρ* = (2/(γ+1) + (γ−1)/((γ+1)c_l)·u_l)^5
+        //   = 0.5216 → ρ*u* ≈ 171.3 kg/(m²·s). HLLC with Davis speeds overshoots sonic points
+        //   (≈ 242 here, measured); the upwind flux (100) would mean the fan was never seen.
+        let state = |u: f64| Prim {
+            rho: 1.0,
+            u,
+            p: 1.0e5,
+        };
+        let f = hllc(state(100.0), state(900.0));
+        assert!(
+            (f.rho / 171.3 - 1.0).abs() < 0.5 && f.rho > 130.0,
+            "left fan: {}",
+            f.rho
+        );
+        // Mirror image (right fan, flow to the left): ρ*u* ≈ −171.3.
+        let f = hllc(state(-900.0), state(-100.0));
+        assert!(
+            (f.rho / -171.3 - 1.0).abs() < 0.5 && f.rho < -130.0,
+            "right fan: {}",
+            f.rho
+        );
+    }
+
+    #[test]
+    fn hllc_resolves_a_moving_contact_exactly() {
+        // Same p and u, different density: the exact flux is the upwind (left) state's flux,
+        // and HLLC reproduces isolated contacts exactly (Toro §10.4).
+        let l = Prim {
+            rho: 1.0,
+            u: 10.0,
+            p: 1.0e5,
+        };
+        let r = Prim { rho: 0.5, ..l };
+        let f = hllc(l, r);
+        let e = 1.0e5 / 0.4 + 0.5 * 1.0 * 100.0;
+        assert_relative_eq!(f.rho, 10.0, max_relative = 1e-9);
+        assert_relative_eq!(f.mom, 100.0 + 1.0e5, max_relative = 1e-9);
+        assert_relative_eq!(f.e, 10.0 * (e + 1.0e5), max_relative = 1e-9);
+    }
+
+    #[test]
+    fn positive_resets_broken_cells_and_floors_the_energy() {
+        let (rf, pf) = (1e-3, 500.0);
+        let rest = Prim {
+            rho: rf,
+            u: 0.0,
+            p: pf,
+        }
+        .to_cons();
+        let good = Prim {
+            rho: 2.0,
+            u: 100.0,
+            p: 1.0e5,
+        }
+        .to_cons();
+        for bad in [
+            Cons {
+                rho: f64::NAN,
+                ..good
+            },
+            Cons {
+                mom: f64::NAN,
+                ..good
+            },
+            Cons {
+                e: f64::INFINITY,
+                ..good
+            },
+            Cons {
+                rho: 0.5e-3,
+                ..good
+            },
+        ] {
+            assert_eq!(positive(bad, rf, pf), rest, "{bad:?}");
+        }
+        assert_eq!(positive(good, rf, pf), good);
+        // exactly at the density floor the cell keeps its momentum
+        let thin = Cons {
+            rho: rf,
+            mom: 0.05,
+            e: 10.0,
+        };
+        assert_eq!(positive(thin, rf, pf).mom, 0.05);
+        // too little energy: raised to kinetic (½ρu² = 10 000 J/m³) + p_floor/(γ−1) = 1250 J/m³
+        let cold = Cons { e: 1.0, ..good };
+        assert_relative_eq!(
+            positive(cold, rf, pf).e,
+            10_000.0 + 1250.0,
+            max_relative = 1e-12
+        );
+        assert_eq!(positive(cold, rf, pf).mom, good.mom);
+    }
+
+    #[test]
+    fn ghosts_mirror_walls_and_switch_open_ends_on_flow_direction() {
+        let inner = Prim {
+            rho: 0.8,
+            u: 30.0,
+            p: 1.1e5,
+        };
+        assert_eq!(ghost(Boundary::Wall, inner, 1.0).u, -30.0);
+        let f = Boundary::Flux(Cons {
+            rho: 1.0,
+            mom: 1.0,
+            e: 1.0,
+        });
+        assert_eq!(ghost(f, inner, 1.0).u, -30.0);
+        let open = Boundary::Open { p: 1.0e5, rho: 1.2 };
+        // right end, u > 0: outflow keeps the inner density, takes the outside pressure
+        let out = ghost(open, inner, 1.0);
+        assert_eq!((out.rho, out.u, out.p), (0.8, 30.0, 1.0e5));
+        // left end, same u: gas enters from the reservoir
+        let inflow = ghost(open, inner, -1.0);
+        assert_eq!((inflow.rho, inflow.u, inflow.p), (1.2, 30.0, 1.0e5));
+        // at rest nothing leaves: reservoir state
+        assert_eq!(ghost(open, Prim { u: 0.0, ..inner }, 1.0).rho, 1.2);
+    }
+
+    #[test]
+    fn a_reservoir_feeds_the_left_end_with_its_own_gas() {
+        // Dense cold reservoir (2 kg/m³, 1.2 bar) on the left of hot thin gas: the inflow brings
+        // the reservoir's density into the first cells, not the pipe's own.
+        let hot = Prim {
+            rho: 0.6,
+            u: 0.0,
+            p: 1.0e5,
+        };
+        let mut p = Pipe1d::new(0.5, 50, hot);
+        p.left = Boundary::Open { p: 1.2e5, rho: 2.0 };
+        p.right = Boundary::Open { p: 1.0e5, rho: 0.6 };
+        let mut t = 0.0;
+        while t < 2e-3 {
+            let dt = p.max_dt(0.8).min(2e-3 - t);
+            p.step(dt);
+            t += dt;
+        }
+        let c = p.prim(1);
+        assert!(c.u > 0.0 && c.rho > 1.2, "{c:?}");
+    }
+
+    #[test]
     fn large_pulses_steepen_small_ones_do_not() {
         // Non-linear propagation: a strong compression front sharpens as it travels (the
         // crest outruns the base, u + c grows with amplitude). Compare front widths.
