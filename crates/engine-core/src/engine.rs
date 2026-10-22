@@ -1248,6 +1248,120 @@ mod tests {
         );
     }
 
+    /// An inline-4 at `rpm` with the idle loop's state set by hand, for one controller step.
+    fn idling_at(rpm: f64, integral: f64, rate: f64, spark: f64) -> Engine {
+        let mut e = Engine::new(EngineDef::inline4(), rpm, 1);
+        e.omega = rpm_to_rad_s(rpm);
+        e.iac_last_rpm = rpm;
+        e.iac_integral = integral;
+        e.iac_rate = rate;
+        e.idle_spark_deg = spark;
+        e
+    }
+
+    #[test]
+    fn the_idle_air_scale_is_what_the_engine_swallows_at_idle() {
+        // inline-4, 86 × 86 mm (1.9982 L), idle 800 rpm, Ø60 mm throttle:
+        // ρ(30 kPa, 300 K) = 0.34843 kg/m³; ṁ = 0.34843 · 1.9982e-3 · 800/120 = 4.6416e-3 kg/s;
+        // choked flux from the atmosphere 0.040418 · 101325/√300 = 236.45 kg/(s·m²);
+        // Cd·A = 0.8 · π/4 · 0.06² = 2.2619e-3 m² → 4.6416e-3 / 236.45 / 2.2619e-3 = 0.0086787
+        let e = Engine::new(EngineDef::inline4(), 800.0, 1);
+        assert_relative_eq!(e.idle_air_scale(), 0.008_678_7, max_relative = 1e-4);
+    }
+
+    #[test]
+    fn one_idle_control_step_by_hand() {
+        let dt = 1e-3;
+        let scale = 0.008_678_7;
+        // 780 rpm against 800: err = 0.025; falling at 400 rpm/s (filtered: no new change,
+        // so the rate decays by dt/τ = 1/150 → 397.33)
+        let mut e = idling_at(780.0, 0.0, -400.0, -3.0);
+        e.idle_control(dt, &Controls::default());
+        assert_relative_eq!(e.iac_rate, -397.333, max_relative = 1e-5);
+        // integral 0.5 · 0.025 · 1e-3 = 1.25e-5; air = scale · (1.25e-5 + 0.05 · 0.025)
+        assert_relative_eq!(e.iac_integral, 1.25e-5, max_relative = 1e-9);
+        assert_relative_eq!(e.iac, scale * 1.2625e-3, max_relative = 1e-4);
+        // spark: 80 · 0.025 + 10 · 397.33/800 = 6.9667 from the −10° reserve → −3.0333°
+        assert_relative_eq!(e.idle_spark_deg, -3.0333, max_relative = 1e-4);
+        // a new speed reading: 700 → 720 rpm in 1 ms is 20 000 rpm/s, filtered by 1/150
+        let mut e = idling_at(720.0, 0.0, 0.0, -10.0);
+        e.iac_last_rpm = 700.0;
+        e.idle_control(dt, &Controls::default());
+        assert_relative_eq!(e.iac_rate, 133.333, max_relative = 1e-5);
+    }
+
+    #[test]
+    fn the_idle_integral_holds_while_falling_from_above_and_saturates() {
+        // above target and falling: it holds (the spark path catches the engine)
+        let mut e = idling_at(900.0, 0.1, -400.0, -10.0);
+        e.idle_control(1e-3, &Controls::default());
+        assert_eq!(e.iac_integral, 0.1);
+        // above target and steady: it closes
+        let mut e = idling_at(900.0, 0.1, 0.0, -10.0);
+        e.idle_control(1e-3, &Controls::default());
+        assert!(e.iac_integral < 0.1);
+        // the bypass stops at 3 % of the bore: 0.03 − 0.0055 added
+        let mut e = idling_at(330.0, 5.0, 0.0, -10.0);
+        e.idle_control(1e-3, &Controls::default());
+        assert_relative_eq!(e.iac, 0.03 - 0.0055, max_relative = 1e-9);
+        // and closes no further than its floor below the base bypass
+        let mut e = idling_at(1400.0, -5.0, 0.0, -10.0);
+        e.idle_control(1e-3, &Controls::default());
+        assert_relative_eq!(e.iac, IAC_MIN * 0.0055, max_relative = 1e-9);
+    }
+
+    #[test]
+    fn the_idle_loop_acts_only_on_a_released_pedal_and_a_running_engine() {
+        let acts = |rpm: f64, c: Controls| {
+            let mut e = idling_at(rpm, 0.0, 0.0, -10.0);
+            e.idle_control(1e-3, &c);
+            e.iac_integral != 0.0
+        };
+        let idle = Controls::default();
+        // 800 rpm target: above 0.4 · 800 = 320 rpm it runs on its own; the dashpot owns > 1500
+        assert!(acts(321.0, idle));
+        assert!(!acts(300.0, idle), "cranking");
+        assert!(acts(1500.0, idle));
+        assert!(!acts(1501.0, idle), "overrun");
+        assert!(acts(
+            700.0,
+            Controls {
+                throttle: 0.01,
+                ..idle
+            }
+        ));
+        assert!(
+            !acts(
+                700.0,
+                Controls {
+                    throttle: 0.02,
+                    ..idle
+                }
+            ),
+            "pedal pressed"
+        );
+        assert!(
+            !acts(
+                700.0,
+                Controls {
+                    ignition: false,
+                    ..idle
+                }
+            ),
+            "ignition off"
+        );
+        // inactive, the spark trim returns towards 0 (slewed)
+        let mut e = idling_at(700.0, 0.0, 0.0, -10.0);
+        e.idle_control(
+            1e-3,
+            &Controls {
+                throttle: 0.5,
+                ..idle
+            },
+        );
+        assert!(e.idle_spark_deg > -10.0);
+    }
+
     /// The user's journey on one engine: crank on the starter, let it idle, floor it for 0.3 s,
     /// let go. The ECU's idle control must hold `idle_rpm`, and overrun fuel cut, the dashpot
     /// and the idle control must bring it back from the blip. The single used to stall at idle,
