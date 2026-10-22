@@ -20,7 +20,9 @@ pass() {
   local out=$1; shift
   export HEAVY_UNIT="engine-sim-mutants-$$-$(basename "$out")"
   scripts/yield-cpu.sh "$HEAVY_UNIT.scope" >"$TMPDIR/yield-$$.log" 2>&1 &
-  CARGO_BUILD_JOBS=4 scripts/heavy.sh cargo mutants -p engine-core -j 3 --timeout 90 -o "$out" "$@" | tail -1
+  # 300 s: the engine-journey tests (start → idle → blip on every preset) cost ~140 CPU-s; with
+  # 3 workers on a 2-core cap a clean run takes ~200 s, and a timeout is excluded from the score.
+  CARGO_BUILD_JOBS=4 scripts/heavy.sh cargo mutants -p engine-core -j 3 --timeout 300 -o "$out" "$@" | tail -1
 }
 OUT=$(mktemp -d)
 pass "$OUT" "$@"
@@ -28,7 +30,7 @@ caught=$(wc -l < "$OUT/mutants.out/caught.txt")
 missed=$(wc -l < "$OUT/mutants.out/missed.txt")
 # Frozen time counts against cargo-mutants' wall-clock timeout, so a run frozen for a long lock
 # hold scores its mutants as timeouts. Retry them (exact names) twice: a mutant that really
-# hangs times out again in 90 s; one that was only frozen gets its verdict.
+# hangs times out again in 300 s; one that was only frozen gets its verdict.
 timeouts="$OUT/mutants.out/timeout.txt"
 for _ in 1 2; do
   [ -s "$timeouts" ] || break

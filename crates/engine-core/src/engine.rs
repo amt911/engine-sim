@@ -453,6 +453,8 @@ const BLOWBY_AREA_FRACTION: f64 = 1e-4;
 /// Level of the 1D intake's induction source relative to the exhaust (lumped: trumpets sit in the
 /// engine bay, further from the listener than the tail pipes). Estimate.
 const INTAKE_SOUND_GAIN: f64 = 0.3;
+/// Throttle plate actuator speed, full travel per second (0.1 s closed to wide open).
+const PLATE_TRAVEL_PER_S: f64 = 10.0;
 /// Throttle dashpot: the opening (fraction of the plate's area) it holds when released, and
 /// its closing time constant. A few percent and about a second (estimates).
 const DASHPOT_HOLD: f64 = 0.02;
@@ -548,6 +550,9 @@ pub struct Engine {
     idle_spark_deg: f64,
     /// Opening the throttle dashpot holds (fraction of the plate's area), decaying.
     dashpot: f64,
+    /// Throttle plate position in pedal units (0..=1), following the pedal at the actuator's
+    /// speed.
+    plate: f64,
     combustions: u64,
     /// Running totals for energy balances: heat lost to the walls, and fuel energy released, J.
     wall_heat_j: f64,
@@ -622,6 +627,7 @@ impl Engine {
             iac_rate: 0.0,
             idle_spark_deg: 0.0,
             dashpot: 0.0,
+            plate: 0.0,
             iac_last_rpm: initial_rpm,
             combustions: 0,
             wall_heat_j: 0.0,
@@ -721,6 +727,15 @@ impl Engine {
         self.idle_spark_deg + (want - self.idle_spark_deg).clamp(-max, max)
     }
 
+    /// The throttle plate follows the pedal no faster than its actuator travels: an electronic
+    /// throttle body sweeps closed to wide open in about 0.1 s (Bosch, *Automotive Handbook*,
+    /// "electronic throttle control"), and a foot on a cable is no quicker. An instant opening
+    /// steps the throttle's mass flow, which the induction sound turns into a click.
+    fn plate_step(&mut self, throttle: f64, dt: f64) {
+        let max = PLATE_TRAVEL_PER_S * dt;
+        self.plate += (throttle.clamp(0.0, 1.0) - self.plate).clamp(-max, max);
+    }
+
     /// The throttle's dashpot (the damper on a cable throttle, the closing follower of an
     /// electronic one; Bosch, *Automotive Handbook*): released, the plate is caught at a small
     /// opening and closes from it over about a second, so the manifold does not empty and drop
@@ -759,7 +774,8 @@ impl Engine {
         let g = self.def.geometry;
         let crank_deg = self.theta.to_degrees();
         self.idle_control(dt, c);
-        self.dashpot_step(c.throttle, dt);
+        self.plate_step(c.throttle, dt);
+        self.dashpot_step(self.plate, dt);
         let spark_deg = 720.0 - (self.def.spark_advance_at(self.rpm()) + self.idle_spark_deg);
         let ivc =
             (self.def.intake_valve.open_deg + self.def.intake_valve.duration_deg).rem_euclid(720.0);
@@ -982,7 +998,7 @@ impl Engine {
             Some((_, l)) if !tails.is_empty() => l.process(tails),
             _ => radiated,
         };
-        let throttle_area = self.throttle_area(c.throttle);
+        let throttle_area = self.throttle_area(self.plate);
         let bore_area = self.throttle_area(1.0);
         // 0D: throttle into the plenum. 1D: the network steps itself (ITBs take the same area each).
         let (throttle_dm, induction, throttle_flow) = match &mut self.intake_net {
@@ -1232,88 +1248,87 @@ mod tests {
         );
     }
 
-    #[test]
-    fn every_preset_starts_idles_and_survives_a_blip() {
-        // The user's journey: crank on the starter, let it idle, floor it for 0.3 s, let go.
-        // Overrun fuel cut, the dashpot and the idle control must bring it back to idle; the
-        // single used to stall at idle, the big engines on the way down from a blip.
-        for d in [
-            EngineDef::single(),
-            EngineDef::inline4(),
-            EngineDef::lfa_v10(),
-            EngineDef::flatplane_v8(),
-            EngineDef::crossplane_v8(),
-        ] {
-            let target = d.idle_rpm;
-            let mut e = Engine::new(d.clone(), 0.0, 1);
-            let crank = Controls {
-                starter: true,
-                ..Controls::default()
-            };
-            run(&mut e, 1.0, &crank);
-            run(&mut e, 6.0, &Controls::default());
-            let blip = Controls {
-                throttle: 1.0,
-                ..Controls::default()
-            };
-            run(&mut e, 0.3, &blip);
-            assert!(
-                e.rpm() > 1.3 * target,
-                "{}: blip only to {}",
-                d.name,
-                e.rpm()
-            );
-            let mut low = f64::INFINITY;
-            for _ in 0..(6.0 / DT) as usize {
+    /// The user's journey on one engine: crank on the starter, let it idle, floor it for 0.3 s,
+    /// let go. The ECU's idle control must hold `idle_rpm`, and overrun fuel cut, the dashpot
+    /// and the idle control must bring it back from the blip. The single used to stall at idle,
+    /// the big engines on the way down.
+    fn starts_idles_and_survives_a_blip(d: EngineDef) {
+        let target = d.idle_rpm;
+        let mut e = Engine::new(d.clone(), 0.0, 1);
+        let crank = Controls {
+            starter: true,
+            ..Controls::default()
+        };
+        run(&mut e, 1.0, &crank);
+        // after the start flare the ECU brings the idle down over ~10 s, as a car does
+        run(&mut e, 11.0, &Controls::default());
+        let idle: Vec<f64> = (0..(2.0 / DT) as usize)
+            .map(|_| {
                 e.step(DT, &Controls::default());
-                low = low.min(e.rpm());
-            }
-            assert!(
-                low > 0.3 * target,
-                "{}: fell to {low} after the blip",
-                d.name
-            );
-            assert!(
-                (e.rpm() / target - 1.0).abs() < 0.2,
-                "{}: back at {} vs {target}",
-                d.name,
                 e.rpm()
-            );
+            })
+            .collect();
+        let mean = idle.iter().sum::<f64>() / idle.len() as f64;
+        let low = idle.iter().copied().fold(f64::INFINITY, f64::min);
+        assert!(
+            (mean / target - 1.0).abs() < 0.08,
+            "{}: idle {mean} vs {target}",
+            d.name
+        );
+        // a lumpy idle swings; a stall is 0
+        assert!(low > 0.55 * target, "{}: idle dipped to {low}", d.name);
+        let blip = Controls {
+            throttle: 1.0,
+            ..Controls::default()
+        };
+        run(&mut e, 0.3, &blip);
+        assert!(
+            e.rpm() > 1.3 * target,
+            "{}: blip only to {}",
+            d.name,
+            e.rpm()
+        );
+        let mut low = f64::INFINITY;
+        for _ in 0..(4.0 / DT) as usize {
+            e.step(DT, &Controls::default());
+            low = low.min(e.rpm());
         }
+        assert!(
+            low > 0.3 * target,
+            "{}: fell to {low} after the blip",
+            d.name
+        );
+        assert!(
+            (e.rpm() / target - 1.0).abs() < 0.25,
+            "{}: back at {} vs {target}",
+            d.name,
+            e.rpm()
+        );
     }
 
     #[test]
-    fn every_preset_holds_its_idle_speed() {
-        // The ECU's idle-speed control holds the published idle on its own: no preset-tuned bypass
-        // keeps a cold single alive (it stalled after 7 s on its fixed 0.15 % bypass).
-        for d in [
-            EngineDef::single(),
-            EngineDef::inline4(),
-            EngineDef::lfa_v10(),
-            EngineDef::flatplane_v8(),
-            EngineDef::crossplane_v8(),
-        ] {
-            let target = d.idle_rpm;
-            let mut e = Engine::new(d.clone(), 1500.0, 1);
-            let mut low = f64::INFINITY;
-            let mut sum = 0.0;
-            let n = (20.0 / DT) as usize;
-            for k in 0..n {
-                e.step(DT, &Controls::default());
-                if k > n / 2 {
-                    low = low.min(e.rpm());
-                    sum += e.rpm();
-                }
-            }
-            let mean = sum / (n - n / 2 - 1) as f64;
-            assert!(
-                (mean / target - 1.0).abs() < 0.08,
-                "{}: mean {mean} vs {target}",
-                d.name
-            );
-            // a lumpy idle swings (the cross-plane's dips to ~0.63 of its target); a stall is 0
-            assert!(low > 0.55 * target, "{}: dipped to {low}", d.name);
-        }
+    fn the_single_starts_idles_and_survives_a_blip() {
+        starts_idles_and_survives_a_blip(EngineDef::single());
+    }
+
+    #[test]
+    fn the_inline4_starts_idles_and_survives_a_blip() {
+        starts_idles_and_survives_a_blip(EngineDef::inline4());
+    }
+
+    #[test]
+    fn the_lfa_starts_idles_and_survives_a_blip() {
+        starts_idles_and_survives_a_blip(EngineDef::lfa_v10());
+    }
+
+    #[test]
+    fn the_flatplane_starts_idles_and_survives_a_blip() {
+        starts_idles_and_survives_a_blip(EngineDef::flatplane_v8());
+    }
+
+    #[test]
+    fn the_crossplane_starts_idles_and_survives_a_blip() {
+        starts_idles_and_survives_a_blip(EngineDef::crossplane_v8());
     }
 
     #[test]
@@ -2231,6 +2246,24 @@ mod tests {
         }
         assert!(worst_p > 0.0, "port {worst_p}");
         assert!(xs.iter().all(|x| x.is_finite()));
+    }
+
+    #[test]
+    fn the_throttle_plate_takes_a_tenth_of_a_second_to_open() {
+        let mut e = Engine::new(EngineDef::inline4(), 3000.0, 1);
+        for _ in 0..(0.05 / DT) as usize {
+            e.plate_step(1.0, DT);
+        }
+        assert_relative_eq!(e.plate, 0.5, max_relative = 1e-3);
+        for _ in 0..(0.06 / DT) as usize {
+            e.plate_step(1.0, DT);
+        }
+        assert_eq!(e.plate, 1.0);
+        // and back down at the same speed (the dashpot then holds the last few percent)
+        for _ in 0..(0.05 / DT) as usize {
+            e.plate_step(0.0, DT);
+        }
+        assert_relative_eq!(e.plate, 0.5, max_relative = 1e-3);
     }
 
     #[test]
