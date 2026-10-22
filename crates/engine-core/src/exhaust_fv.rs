@@ -4,7 +4,7 @@
 //! atmosphere. Pulses steepen with amplitude, which the linear waveguides cannot do.
 
 use crate::exhaust::{C_TAIL, ExhaustDef};
-use crate::fv::{Boundary, Cons, Pipe1d, Prim};
+use crate::fv::{Boundary, Pipe1d, Prim, flux_boundary};
 use crate::gas::{GasVolume, R_AIR};
 use crate::units::ATM_PA;
 
@@ -45,35 +45,152 @@ pub struct ExhaustFv {
     vented: f64,
 }
 
+/// Root of `f`, rising through 0 on [`lo`, `hi`] (f(lo) < 0 < f(hi)), by the Illinois variant
+/// of regula falsi (Dowell & Jarratt 1971): bracketing like bisection, superlinear like the
+/// secant; a dozen evaluations reach 1e-12 where bisection takes forty. Returns the bracket's
+/// end if `f` does not change sign.
+pub(crate) fn rising_root(f: impl Fn(f64) -> f64, mut lo: f64, mut hi: f64) -> f64 {
+    let (mut f_lo, mut f_hi) = (f(lo), f(hi));
+    if f_lo >= 0.0 {
+        return lo;
+    }
+    if f_hi <= 0.0 {
+        return hi;
+    }
+    let mut side = 0;
+    for _ in 0..40 {
+        let x = (lo * f_hi - hi * f_lo) / (f_hi - f_lo);
+        let fx = f(x);
+        if fx == 0.0 || (hi - lo) <= 1e-13 * hi.abs().max(1.0) {
+            return x;
+        }
+        if fx < 0.0 {
+            lo = x;
+            f_lo = fx;
+            if side == -1 {
+                f_hi *= 0.5;
+            }
+            side = -1;
+        } else {
+            hi = x;
+            f_hi = fx;
+            if side == 1 {
+                f_lo *= 0.5;
+            }
+            side = 1;
+        }
+    }
+    0.5 * (lo + hi)
+}
+
 /// Boundary state of a pipe end at a junction of pressure `p_j` (Benson's constant-pressure
 /// junction; Winterbone & Pearson): the characteristic leaving the pipe is kept, so the end
 /// sees the junction pressure without being forced to rest (a u = 0 plenum ghost low-passes
-/// and reflects the pulses). `sigma` = +1 for a pipe's right end, −1 for its left end. Gas
-/// flowing out of the junction carries the junction's density (entropy).
-fn junction_ghost(cell: Prim, p_j: f64, rho_j: f64, sigma: f64) -> Prim {
+/// and reflects the pulses). `sigma` = +1 for a pipe's right end, −1 for its left end.
+/// Outflow expands isentropically from the cell to `p_j`. Inflow starts from the junction at
+/// rest: (`p_j`, `rho_j`) is the stagnation state, so the entering gas keeps the junction's
+/// entropy and total enthalpy and its static pressure drops by the dynamic head (Benson, The
+/// Thermodynamics and Gas Dynamics of IC Engines, vol. 1, §6 inflow boundary).
+pub(crate) fn junction_ghost(cell: Prim, p_j: f64, rho_j: f64, sigma: f64) -> Prim {
+    throttled_ghost(cell, p_j, rho_j, sigma, f64::INFINITY)
+}
+
+/// [`junction_ghost`] through a throttle of `psi` = effective area / pipe area (an ITB at its
+/// trumpet; Benson's partially open end): the flow either way is at most what a compressible
+/// orifice of that area passes (no pressure recovery past the throat), solved together with
+/// the outgoing characteristic, so the boundary stays stable where an explicit orifice flux
+/// chatters. `psi` ≥ 1 is the open end; 0 is a wall.
+pub(crate) fn throttled_ghost(cell: Prim, p_j: f64, rho_j: f64, sigma: f64, psi: f64) -> Prim {
     let g = crate::gas::GAMMA;
+    let k = 0.5 * (g - 1.0);
+    let psi = psi.max(0.0);
     // Bound the expansion/compression a single boundary state may represent.
     let ratio = (p_j / cell.p).clamp(0.05, 20.0);
-    let p = cell.p * ratio;
+    let p0 = cell.p * ratio;
     let c_c = cell.sound_speed();
-    let c_b = c_c * ratio.powf((g - 1.0) / (2.0 * g));
-    let u = cell.u + sigma * 2.0 / (g - 1.0) * (c_c - c_b);
-    let rho = if sigma * u > 0.0 {
-        cell.rho * ratio.powf(1.0 / g)
-    } else {
-        rho_j
+    // Pipe side, along the outgoing characteristic on the cell's isentrope, in
+    // y = (p/p_c)^((γ−1)/2γ): outflow speed σu = σu_c + (c_c/k)(1 − y).
+    let out_speed = |y: f64| sigma * cell.u + c_c / k * (1.0 - y);
+    let y_j = ratio.powf((g - 1.0) / (2.0 * g));
+    if out_speed(y_j) > 0.0 {
+        // Outflow. Open end: expand to p_j, at most sonic (choked).
+        let cell_state = |y: f64| {
+            let rho = cell.rho * y.powf(1.0 / k);
+            let p = cell.p * y.powf(g / k);
+            let c = (g * p / rho).sqrt();
+            Prim {
+                rho,
+                u: sigma * out_speed(y).min(c),
+                p,
+            }
+        };
+        let open = cell_state(y_j);
+        if psi >= 1.0 {
+            return open;
+        }
+        // Throttled: the face holds back to the pressure where its mass flux is what the
+        // orifice passes from the face's stagnation state to p_j; the pipe side's speed falls
+        // to 0 at y_hi, where the orifice still passes some: a root in between.
+        let excess = |s: Prim| {
+            let t = s.p / (s.rho * crate::gas::R_AIR);
+            let c2 = g * s.p / s.rho;
+            let t0 = t * (1.0 + k * s.u * s.u / c2);
+            let p0f = s.p * (t0 / t).powf(g / (g - 1.0));
+            let a = crate::gas::orifice_mass_flow(psi, p0f, t0, p_j);
+            s.rho * s.u.abs() - a
+        };
+        if excess(open) <= 0.0 {
+            return open;
+        }
+        let y_hi = 1.0 + k * sigma * cell.u / c_c;
+        // excess falls with y: its negative rises through 0
+        let y = rising_root(|y| -excess(cell_state(y)), y_j, y_hi.max(y_j));
+        return cell_state(y);
+    }
+    // Inflow: a contact between the cell gas and the junction gas, with the same p and u on both
+    // sides. In x = (p/p₀)^((γ−1)/2γ), with (p₀, ρ₀) the junction as the stagnation state at the
+    // junction's entropy, the inflow speeds are
+    //   pipe side, outgoing characteristic on the cell's isentrope:
+    //     w_c(x) = −σ·u_c − (c_c/k)·(1 − x·(p₀/p_c)^((γ−1)/2γ))   (rises with x),
+    //   junction side, adiabatic from rest:  w_j(x) = (c₀/√k)·√(1 − x²)   (0 at x = 1),
+    // with k = (γ−1)/2; sonic at x* = 1/√(1+k) (p* = 0.5283 p₀). A throttle passes ψ of the
+    // isentropic mass flux at its throat, x_t = max(x, x*): w_a(x) = ψ·x_t^(1/k)·w_j(x_t)/x^(1/k).
+    let rho0 = rho_j * (p0 / p_j).powf(1.0 / g);
+    let c0 = (g * p0 / rho0).sqrt();
+    let w_c = |x: f64| -sigma * cell.u - c_c / k * (1.0 - x * y_j);
+    let w_j = |x: f64| c0 / k.sqrt() * (1.0 - x * x).max(0.0).sqrt();
+    let x_star = 1.0 / (1.0 + k).sqrt();
+    let w_a = |x: f64| {
+        if psi >= 1.0 {
+            return w_j(x);
+        }
+        let xt = x.max(x_star);
+        psi * (xt / x).powf(1.0 / k) * w_j(xt)
     };
-    // A junction boundary is at most sonic (choked): |u| ≤ c of the boundary gas.
+    // A throttled face may sit below p* (choked throat); an open one stops at sonic.
+    let x_lo = if psi >= 1.0 { x_star } else { 0.3 };
+    let (x, w) = if w_c(x_lo) >= w_a(x_lo) {
+        (x_lo, w_a(x_lo))
+    } else {
+        // w_c − w_a rises monotonically on [x_lo, 1] and changes sign (bracketed: Newton would
+        // stall on w_j's infinite slope at x = 1)
+        let x = rising_root(|x| w_c(x) - w_a(x), x_lo, 1.0);
+        // the pipe side's speed: smooth at x = 1, where w_j is not
+        (x, w_c(x).max(0.0))
+    };
+    // p = p₀·x^(2γ/(γ−1)), ρ = ρ₀·x^(2/(γ−1)) (isentropic from the junction), at most sonic
+    let rho = rho0 * x.powf(1.0 / k);
+    let p = p0 * x.powf(g / k);
     let c = (g * p / rho).sqrt();
     Prim {
         rho,
-        u: u.clamp(-c, c),
+        u: -sigma * w.min(c),
         p,
     }
 }
 
 /// Keep a 0D volume physical under extreme forcing (explicit coupling can overdraw it).
-fn guard(v: &mut GasVolume) {
+pub(crate) fn guard(v: &mut GasVolume) {
     let floor = 1e-6 * v.volume_m3;
     if v.mass_kg.is_nan() || v.mass_kg <= floor {
         v.mass_kg = floor;
@@ -84,7 +201,7 @@ fn guard(v: &mut GasVolume) {
     }
 }
 
-fn area(d: f64) -> f64 {
+pub(crate) fn area(d: f64) -> f64 {
     std::f64::consts::PI * 0.25 * d * d
 }
 
@@ -208,12 +325,7 @@ impl ExhaustFv {
             };
             let mass_flux = scale * self.acc_mass[i] / (a * dt);
             let energy_flux = scale * self.acc_energy[i] / (a * dt);
-            let rho_up = cell.rho.max(1e-3);
-            pipe.left = Boundary::Flux(Cons {
-                rho: mass_flux,
-                mom: mass_flux * mass_flux / rho_up + cell.p,
-                e: energy_flux,
-            });
+            pipe.left = Boundary::Flux(flux_boundary(mass_flux, energy_flux, cell));
             self.acc_mass[i] = 0.0;
             self.acc_energy[i] = 0.0;
         }
@@ -304,6 +416,8 @@ impl ExhaustFv {
 mod tests {
     use super::*;
     use crate::exhaust::ExhaustModel;
+    use crate::fv::Cons;
+    use crate::gas::orifice_mass_flow;
 
     const DT: f64 = 1.0 / 192_000.0;
 
@@ -504,20 +618,177 @@ mod tests {
     }
 
     #[test]
-    fn gas_entering_a_pipe_from_a_junction_has_the_junction_density() {
-        // Right end, flow into the pipe (u < 0), junction above the cell pressure.
+    fn gas_entering_a_pipe_from_a_junction_starts_from_the_junction_stagnation_state() {
+        // Inflow from a volume (Benson's constant-pressure junction): the junction state is the
+        // stagnation state, so the entering gas keeps the junction's entropy and total enthalpy
+        // (c² /(γ−1) + u²/2 = c₀²/(γ−1)), the invariant leaving the pipe, and pays the dynamic
+        // pressure: its static pressure is below the junction's.
+        let g = crate::gas::GAMMA;
+        let (p0, rho0) = (1.3e5, 1.3);
+        let c0 = (g * p0 / rho0).sqrt();
+        for (sigma, u) in [(1.0, -30.0), (-1.0, 30.0)] {
+            let cell = Prim {
+                rho: 1.0,
+                u,
+                p: 1.0e5,
+            };
+            let b = junction_ghost(cell, p0, rho0, sigma);
+            assert!(sigma * b.u < sigma * u, "σ {sigma}: flows in faster: {b:?}");
+            let c = b.sound_speed();
+            let h0 = c * c / (g - 1.0) + 0.5 * b.u * b.u;
+            assert!(
+                (h0 / (c0 * c0 / (g - 1.0)) - 1.0).abs() < 1e-9,
+                "σ {sigma}: {b:?}"
+            );
+            let entropy = |p: f64, r: f64| p / r.powf(g);
+            assert!((entropy(b.p, b.rho) / entropy(p0, rho0) - 1.0).abs() < 1e-9);
+            // pipe side: the outgoing characteristic on the cell's own isentrope
+            let c_c = cell.sound_speed();
+            let drop = 1.0 - (b.p / cell.p).powf((g - 1.0) / (2.0 * g));
+            let along = u + sigma * 2.0 * c_c / (g - 1.0) * drop;
+            assert!((b.u - along).abs() < 1e-6, "σ {sigma}: {b:?} vs {along}");
+            assert!(b.p < p0 && b.p > cell.p, "σ {sigma}: {b:?}");
+        }
+    }
+
+    #[test]
+    fn inflow_from_a_junction_chokes_at_the_critical_pressure_ratio() {
+        // A pipe end already drawing fast from a junction above it: sonic inflow at
+        // p* = p₀·(2/(γ+1))^(γ/(γ−1)) = 0.5283 p₀ (isentropic nozzle, Anderson, Modern
+        // Compressible Flow, eq. 5.21).
         let cell = Prim {
-            rho: 1.0,
-            u: -30.0,
-            p: 1.0e5,
+            rho: 0.6,
+            u: -350.0,
+            p: 5.0e4,
         };
-        let b = junction_ghost(cell, 1.3e5, 0.7, 1.0);
-        assert_eq!(b.rho, 0.7);
-        assert!(b.u < -30.0);
-        // At rest nothing leaves the pipe, so the boundary gas is the junction's.
-        let rest = Prim { u: 0.0, ..cell };
-        assert_eq!(junction_ghost(rest, 1.0e5, 0.7, 1.0).rho, 0.7);
-        assert_eq!(junction_ghost(rest, 1.0e5, 0.7, -1.0).rho, 0.7);
+        let b = junction_ghost(cell, 1.0e5, 1.2, 1.0);
+        assert!((b.p / 1.0e5 - 0.5283).abs() < 1e-3, "{b:?}");
+        assert!(
+            (b.u + b.sound_speed()).abs() < 1e-9 * b.sound_speed(),
+            "{b:?}"
+        );
+    }
+
+    #[test]
+    fn rising_root_finds_the_root_in_few_evaluations() {
+        // x³ − 2 on [0, 2]: the cube root of 2 (1.259921049894873); bisection would need 40+.
+        let points = std::cell::RefCell::new(Vec::new());
+        let r = rising_root(
+            |x| {
+                points.borrow_mut().push(x);
+                x * x * x - 2.0
+            },
+            0.0,
+            2.0,
+        );
+        let points = points.into_inner();
+        assert!((r - 1.259_921_049_894_873).abs() < 1e-12, "{r}");
+        // the ends first, then the secant through them: (0·6 − 2·(−2)) / (6 + 2) = 0.5
+        assert_eq!(&points[..3], &[0.0, 2.0, 0.5]);
+        // every step stays inside the bracket
+        assert!(points.iter().all(|x| (0.0..=2.0).contains(x)), "{points:?}");
+        // Illinois converges superlinearly: 13 evaluations (bisection: 2 + 44)
+        assert_eq!(points.len(), 13, "{points:?}");
+        // A step never gets within 1e-13 in 40 tries (Illinois creeps along it): the bracket's
+        // midpoint is the answer, after exactly 2 + 40 evaluations.
+        let calls = std::cell::Cell::new(0);
+        let r = rising_root(
+            |x| {
+                calls.set(calls.get() + 1);
+                if x < 0.3 { -1.0 } else { 1.0 }
+            },
+            0.0,
+            1.0,
+        );
+        assert_eq!(calls.get(), 42);
+        assert!((r - 0.3).abs() < 1e-9, "{r}");
+        // a steep, one-sided function (√ near its end, like w_j at x = 1) still converges
+        let r = rising_root(|x| x - (1.0 - x * x).max(0.0).sqrt(), 0.0, 1.0);
+        assert!((r - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-12, "{r}");
+        // no sign change: the bracket's end where the root would be
+        assert_eq!(rising_root(|x| x + 1.0, 0.0, 1.0), 0.0);
+        assert_eq!(rising_root(|x| x - 5.0, 0.0, 1.0), 1.0);
+    }
+
+    #[test]
+    fn rising_root_stops_when_the_bracket_is_relatively_tight() {
+        // Scaled up 10⁶ (x³ − 2·10¹⁸ on [0, 2·10⁶]) the root is never hit exactly: the search
+        // ends when the bracket is within 1e-13 of hi, long before the 40-step cap.
+        let calls = std::cell::Cell::new(0);
+        let r = rising_root(
+            |x| {
+                calls.set(calls.get() + 1);
+                x * x * x - 2e18
+            },
+            0.0,
+            2e6,
+        );
+        assert!((r / 1_259_921.049_894_873 - 1.0).abs() < 1e-12, "{r}");
+        assert!(calls.get() <= 20, "{} evaluations", calls.get());
+    }
+
+    #[test]
+    fn a_throttled_end_passes_what_its_orifice_passes() {
+        // ψ = 0.3 of the pipe area: the face mass flux equals a compressible orifice of that area
+        // (per pipe area), fed from the junction at rest inward and from the face's own
+        // stagnation state outward; ψ = 1 is the open end, ψ = 0 a wall.
+        let g = crate::gas::GAMMA;
+        let t = |s: Prim| s.p / (s.rho * R_AIR);
+        let (p_j, rho_j) = (1.0e5, 1.16);
+        for (sigma, u, p) in [
+            (1.0, -60.0, 0.9e5),
+            (-1.0, 60.0, 0.9e5),
+            (1.0, -100.0, 0.3e5),
+        ] {
+            let cell = Prim { rho: 1.0, u, p };
+            let b = throttled_ghost(cell, p_j, rho_j, sigma, 0.3);
+            assert!(-sigma * b.u > 0.0, "inflow: {b:?}");
+            let want = orifice_mass_flow(
+                0.3,
+                p_j,
+                t(Prim {
+                    rho: rho_j,
+                    u: 0.0,
+                    p: p_j,
+                }),
+                b.p,
+            );
+            let got = b.rho * b.u.abs();
+            assert!(
+                (got / want - 1.0).abs() < 1e-6,
+                "σ {sigma}: {got} vs {want}"
+            );
+            let open = throttled_ghost(cell, p_j, rho_j, sigma, 1.0);
+            assert!(
+                b.u.abs() < open.u.abs() && b.p < open.p,
+                "{b:?} vs {open:?}"
+            );
+            assert_eq!(open, junction_ghost(cell, p_j, rho_j, sigma));
+        }
+        for (sigma, u, p) in [(1.0, 60.0, 1.1e5), (-1.0, -60.0, 1.1e5)] {
+            let cell = Prim { rho: 1.3, u, p };
+            let b = throttled_ghost(cell, p_j, rho_j, sigma, 0.3);
+            assert!(sigma * b.u > 0.0, "outflow: {b:?}");
+            let c2 = g * b.p / b.rho;
+            let t0 = t(b) * (1.0 + 0.5 * (g - 1.0) * b.u * b.u / c2);
+            let p0 = b.p * (t0 / t(b)).powf(g / (g - 1.0));
+            let want = orifice_mass_flow(0.3, p0, t0, p_j);
+            let got = b.rho * b.u.abs();
+            assert!(
+                (got / want - 1.0).abs() < 1e-6,
+                "σ {sigma}: {got} vs {want}"
+            );
+            let open = throttled_ghost(cell, p_j, rho_j, sigma, 1.0);
+            assert!(
+                b.u.abs() < open.u.abs() && b.p > open.p,
+                "{b:?} vs {open:?}"
+            );
+            assert_eq!(open, junction_ghost(cell, p_j, rho_j, sigma));
+        }
+        for (u, p) in [(-60.0, 0.9e5), (60.0, 1.1e5)] {
+            let wall = throttled_ghost(Prim { rho: 1.2, u, p }, p_j, rho_j, 1.0, 0.0);
+            assert!(wall.u.abs() < 1e-6, "{wall:?}");
+        }
     }
 
     #[test]
@@ -527,7 +798,14 @@ mod tests {
             u: 0.0,
             p: 1.0e5,
         };
-        assert!((junction_ghost(cell, 1.0e7, 0.7, 1.0).p - 20.0e5).abs() < 1e-6);
+        // inflow from at most 20× the cell pressure: a 100 bar junction acts as the same gas
+        // (same entropy) at 20 bar, which compresses the resting pipe end without choking
+        let hi = junction_ghost(cell, 1.0e7, 0.7, 1.0);
+        let rho20 = 0.7 * 0.2_f64.powf(1.0 / crate::gas::GAMMA);
+        let at20 = junction_ghost(cell, 20.0e5, rho20, 1.0);
+        assert!((hi.p - at20.p).abs() < 1e-6 * at20.p && (hi.u - at20.u).abs() < 1e-9);
+        assert!(hi.p > 0.5283 * 20.0e5 && hi.p < 20.0e5, "{hi:?}");
+        assert!(hi.u < 0.0 && -hi.u < hi.sound_speed(), "{hi:?}");
         let b = junction_ghost(cell, 1.0, 0.7, 1.0);
         assert!((b.p - 0.05e5).abs() < 1e-6);
         // The expansion to 5% would be supersonic: the ghost is choked at exactly sonic.

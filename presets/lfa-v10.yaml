@@ -32,8 +32,8 @@ engine:
   burn_duration_deg: 45.0
   flywheel_inertia_kgm2: 0.09
   plenum_volume_m3: 0.008
-  throttle_diameter_m: 0.12
-  idle_throttle: 0.003
+  throttle_diameter_m: 0.14230249470757708
+  idle_throttle: 0.0021333333333333334
   exhaust:
     primary_length_m: 0.6
     primary_diameter_m: 0.042
@@ -55,6 +55,12 @@ engine:
     muffler_transmission: 0.7
     model: waveguide
     muffler_volume_m3: 0.01
+  intake:
+    model: fv
+    runner_length_m: 0.25
+    runner_diameter_m: 0.045
+    individual_throttles: true
+    trumpet_loss: 0.1
   redline_rpm: 9000.0
   starter_torque_nm: 150.0
   fmep_bar:

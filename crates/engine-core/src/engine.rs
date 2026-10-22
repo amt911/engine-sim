@@ -11,6 +11,7 @@ use crate::gas::{
     GasVolume, Reservoir, exchange_with_reservoir, exhaust_valve_flow, plan_exchange,
 };
 use crate::geometry::CylinderGeometry;
+use crate::intake_fv::{IntakeDef, IntakeFv, IntakeModel};
 use crate::sound::{BURN_DURATION_JITTER, BURN_START_JITTER_DEG, SoundDef, Texture};
 use crate::units::{ATM_PA, deg_to_rad, rad_s_to_rpm, rpm_to_rad_s};
 use crate::valve::ValveTiming;
@@ -39,6 +40,8 @@ pub struct EngineDef {
     /// Fraction of throttle area open at zero pedal (idle air).
     pub idle_throttle: f64,
     pub exhaust: ExhaustDef,
+    /// Intake system (0D plenum, or 1D runners with ITBs / plenum).
+    pub intake: IntakeDef,
     pub redline_rpm: f64,
     pub starter_torque_nm: f64,
     /// Friction mean effective pressure fit, bar: FMEP = a + b·(N/1000) + c·(N/1000)².
@@ -103,6 +106,7 @@ impl EngineDef {
                 model: ExhaustModel::Waveguide,
                 muffler_volume_m3: 0.003,
             },
+            intake: IntakeDef::default(),
             redline_rpm: 7500.0,
             starter_torque_nm: 25.0,
             fmep_bar: [0.97, 0.15, 0.05],
@@ -123,6 +127,7 @@ impl EngineDef {
             throttle_diameter_m: 0.060,
             idle_throttle: 0.0055,
             exhaust: ExhaustDef::default(),
+            intake: IntakeDef::default(),
             redline_rpm: 7000.0,
             starter_torque_nm: 60.0,
             ..Self::single()
@@ -161,8 +166,10 @@ impl EngineDef {
             burn_duration_deg: 45.0,
             flywheel_inertia_kgm2: 0.09,
             plenum_volume_m3: 8.0e-3,
-            throttle_diameter_m: 0.120,
-            idle_throttle: 0.003,
+            // Ten individual throttle bodies of the runner's 45 mm bore, as one total bore:
+            // √10 · 45 mm. Idle bypass: the same area as 0.3 % of a 120 mm throttle.
+            throttle_diameter_m: 0.045 * std::f64::consts::SQRT_2 * 5f64.sqrt(),
+            idle_throttle: 0.003 * 0.120 * 0.120 / (0.045 * 0.045 * 10.0),
             // Equal-length primaries, one 5-into-1 collector per bank (odd/even numbering
             // per bank is an assumption), dual tail pipes. Lengths and diameters estimated.
             exhaust: ExhaustDef {
@@ -177,6 +184,14 @@ impl EngineDef {
                 muffler_transmission: 0.7,
                 model: ExhaustModel::Waveguide,
                 muffler_volume_m3: 0.010,
+            },
+            // Runners and trumpets estimated from the LFA's intake: 250 mm to the valve, 45 mm.
+            intake: IntakeDef {
+                model: IntakeModel::Fv,
+                runner_length_m: 0.25,
+                runner_diameter_m: 0.045,
+                individual_throttles: true,
+                ..IntakeDef::default()
             },
             redline_rpm: 9000.0,
             starter_torque_nm: 150.0,
@@ -268,6 +283,9 @@ const TORQUE_AVG_TAU_S: f64 = 0.15;
 /// charge in ~0.3 s and costs ~1–2 % of the trapped mass per cycle at WOT (typical
 /// blow-by is ~1 % of intake flow; Heywood, ch. 8).
 const BLOWBY_AREA_FRACTION: f64 = 1e-4;
+/// Level of the 1D intake's induction source relative to the exhaust (lumped: trumpets sit in the
+/// engine bay, further from the listener than the tail pipes). Estimate.
+const INTAKE_SOUND_GAIN: f64 = 0.3;
 /// Speed above which the idle air control opens proportionally on overrun (dashpot).
 const DASHPOT_ONSET_RPM: f64 = 1500.0;
 /// Fraction of the equalising mass a valve may move per substep (see `step`).
@@ -306,10 +324,14 @@ pub struct Engine {
     net: Option<ExhaustNet>,
     /// Non-linear finite-volume exhaust, when `exhaust.model` is `fv`.
     fv: Option<ExhaustFv>,
+    /// 1D intake runners, when `intake.model` is `fv`.
+    intake_net: Option<IntakeFv>,
     flows: Vec<f64>,
     texture: Texture,
     /// Total mass that flowed back from the exhaust into the cylinders, kg (diagnostics).
     reversion_kg: f64,
+    /// Total air inducted from the atmosphere through the throttle(s), kg (diagnostics).
+    inducted_kg: f64,
 }
 
 /// Crank angle `a` (deg) crossed in the step (prev, cur], on the 720° circle.
@@ -351,9 +373,11 @@ impl Engine {
             rng: seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1,
             net: None,
             fv: None,
+            intake_net: None,
             flows: Vec::new(),
             texture: Texture::new(seed ^ 0x7E57),
             reversion_kg: 0.0,
+            inducted_kg: 0.0,
         }
     }
 
@@ -421,6 +445,19 @@ impl Engine {
             && self.rpm() > self.def.overrun_fuel_cut_rpm;
         let fire_ok = c.ignition && self.rpm() < self.def.redline_rpm && !overrun_cut;
         let wall_area = 2.0 * g.piston_area();
+        match self.def.intake.model {
+            IntakeModel::ZeroD => self.intake_net = None,
+            IntakeModel::Fv => {
+                if self.intake_net.as_ref().is_none_or(|n| n.dt != dt) {
+                    self.intake_net = Some(IntakeFv::new(
+                        &self.def.intake,
+                        self.def.plenum_volume_m3,
+                        self.cyl.len(),
+                        dt,
+                    ));
+                }
+            }
+        }
         match self.def.exhaust.model {
             ExhaustModel::Waveguide => {
                 self.fv = None;
@@ -461,8 +498,11 @@ impl Engine {
             // with plenum then runner ping-pongs every substep (loud numerical chatter).
             let a_in = self.def.intake_valve.flow_area(cur);
             let a_ex = self.def.exhaust_valve.flow_area(cur);
-            let f_in =
-                (a_in > 0.0).then(|| plan_exchange(&self.plenum, &cs.gas, a_in, dt, VALVE_RELAX));
+            // The intake valve draws from the 0D plenum, or from its runner's last cell (1D).
+            let f_in = (a_in > 0.0).then(|| match &self.intake_net {
+                Some(net) => plan_exchange(&net.port_volume(i), &cs.gas, a_in, dt, VALVE_RELAX),
+                None => plan_exchange(&self.plenum, &cs.gas, a_in, dt, VALVE_RELAX),
+            });
             // The exhaust port and its primary pipe are solved together: the flow raises the
             // pipe pressure at the port by z·ṁ (see `gas::port_flow`).
             let plan_ex = |area: f64| match &self.fv {
@@ -494,7 +534,14 @@ impl Engine {
                 self.reversion_kg -= f.dm;
             }
             if let Some(f) = f_in {
-                f.apply(&mut self.plenum, &mut cs.gas);
+                match &mut self.intake_net {
+                    Some(net) => {
+                        cs.gas.mass_kg += f.dm;
+                        cs.gas.energy_j += f.dm * f.h;
+                        net.add_valve_flow(i, f.dm, f.h);
+                    }
+                    None => f.apply(&mut self.plenum, &mut cs.gas),
+                }
             }
             self.flows[i] = f_ex.map_or(0.0, |f| {
                 f.apply_to(&mut cs.gas);
@@ -568,7 +615,25 @@ impl Engine {
         };
         let throttle_area = self.throttle_area(c.throttle);
         let bore_area = self.throttle_area(1.0);
-        let throttle_dm = exchange_with_reservoir(&mut self.plenum, &self.atm, throttle_area, dt);
+        // 0D: throttle into the plenum. 1D: the network steps itself (ITBs take the same area each).
+        let (throttle_dm, induction, throttle_flow) = match &mut self.intake_net {
+            Some(net) => {
+                // `throttle_diameter_m` is the total equivalent opening; ITBs share it.
+                let area = if self.def.intake.individual_throttles {
+                    throttle_area / self.cyl.len().max(1) as f64
+                } else {
+                    throttle_area
+                };
+                let induction = net.step(area);
+                (-net.last_inducted(), induction, net.inducted_rate())
+            }
+            None => {
+                let dm = exchange_with_reservoir(&mut self.plenum, &self.atm, throttle_area, dt);
+                (dm, 0.0, dm / dt)
+            }
+        };
+
+        self.inducted_kg -= throttle_dm;
 
         // Texture: jet noise at the tails, induction sound, valvetrain clicks.
         let snd = &self.def.sound;
@@ -579,12 +644,13 @@ impl Engine {
         let audio = radiated
             + self.texture.flow_noise(radiated, snd.flow_noise, dt)
             + self.texture.intake(
-                (throttle_dm / dt).abs(),
+                throttle_flow.abs(),
                 throttle_area,
                 bore_area,
                 snd.intake,
                 dt,
             )
+            + snd.intake * INTAKE_SOUND_GAIN * induction
             + self.texture.clicks(dt);
 
         // Crank dynamics.
@@ -623,8 +689,21 @@ impl Engine {
         self.torque_avg * self.omega
     }
     pub fn plenum_pressure_pa(&self) -> f64 {
-        self.plenum.pressure()
+        match &self.intake_net {
+            Some(net) => net.manifold_pressure(),
+            None => self.plenum.pressure(),
+        }
     }
+    /// Total air inducted through the throttle(s) so far, kg.
+    pub fn inducted_kg(&self) -> f64 {
+        self.inducted_kg
+    }
+
+    /// Whether the 1D intake is running.
+    pub fn intake_is_fv(&self) -> bool {
+        self.intake_net.is_some()
+    }
+
     /// Total exhaust reversion (pipe → cylinder) so far, kg.
     pub fn exhaust_reversion_kg(&self) -> f64 {
         self.reversion_kg
@@ -1006,6 +1085,66 @@ mod tests {
         offsets.sort_by(f64::total_cmp);
         let expected: Vec<f64> = (0..10).map(|k| 72.0 * k as f64).collect();
         assert_eq!(offsets, expected, "even firing every 72°");
+    }
+
+    #[test]
+    fn lfa_v10_breathes_through_ten_unrestrictive_itbs() {
+        // The LR engine has one throttle body per cylinder at the trumpet (Toyota LFA press kit).
+        let d = EngineDef::lfa_v10();
+        assert_eq!(d.intake.model, IntakeModel::Fv);
+        assert!(d.intake.individual_throttles);
+        assert_eq!(d.intake.runner_length_m, 0.25);
+        assert_eq!(d.intake.runner_diameter_m, 0.045);
+        // throttle_diameter_m is the total bore the ten share: wide open, each throttle body
+        // is at least as wide as its runner (√10 · 45 mm = 142.3 mm), so the runner sets the flow
+        assert!(d.throttle_diameter_m.powi(2) / 10.0 >= d.intake.runner_diameter_m.powi(2));
+    }
+
+    #[test]
+    fn the_intake_model_in_use_is_reported() {
+        let mut e = Engine::new(EngineDef::inline4(), 1000.0, 1);
+        run(&mut e, 0.001, &Controls::default());
+        assert!(!e.intake_is_fv());
+        let mut e = Engine::new(EngineDef::lfa_v10(), 1000.0, 1);
+        run(&mut e, 0.001, &Controls::default());
+        assert!(e.intake_is_fv());
+    }
+
+    #[test]
+    fn the_trumpets_are_heard_at_their_mean_flow() {
+        // With only the intake texture on, output(1) − output(0) is the trumpets' radiation
+        // 0.3·c·Σρu plus the throttle tone 0.15·c·ṁ/A_bore. Over the runners Σρu averages
+        // ṁ/A_runner, so its mean is c·ṁ·(0.3/A_runner + 0.15/A_bore), c = 343 m/s.
+        let out = |level: f64| {
+            let mut d = EngineDef::lfa_v10();
+            d.sound = crate::sound::SoundDef {
+                flow_noise: 0.0,
+                mechanical: 0.0,
+                combustion_jitter: 0.0,
+                intake: level,
+                ..crate::sound::SoundDef::default()
+            };
+            let mut e = Engine::new(d, 4000.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(4000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.5, &c);
+            let m0 = e.inducted_kg();
+            let y = run(&mut e, 0.3, &c);
+            (y, (e.inducted_kg() - m0) / 0.3)
+        };
+        let ((quiet, _), (heard, mdot)) = (out(0.0), out(1.0));
+        let mean = heard.iter().zip(&quiet).map(|(a, b)| a - b).sum::<f64>() / heard.len() as f64;
+        let d = EngineDef::lfa_v10();
+        let a_runner = std::f64::consts::PI * 0.25 * d.intake.runner_diameter_m.powi(2);
+        let a_bore = DISCHARGE_CD * std::f64::consts::PI * 0.25 * d.throttle_diameter_m.powi(2);
+        let want = 343.0 * mdot * (0.3 / a_runner + 0.15 / a_bore);
+        assert!(
+            (mean / want - 1.0).abs() < 0.1,
+            "mean {mean} vs {want} (ṁ {mdot})"
+        );
     }
 
     #[test]
@@ -1564,5 +1703,82 @@ mod tests {
         };
         let (a, b) = (peak(0.0), peak(1.0));
         assert!((b / a - 1.0).abs() < 0.15, "peak without {a} with {b}");
+    }
+
+    fn fv_intake(mut d: EngineDef, individual: bool, runner_m: f64) -> EngineDef {
+        d.intake.model = crate::intake_fv::IntakeModel::Fv;
+        d.intake.individual_throttles = individual;
+        d.intake.runner_length_m = runner_m;
+        d
+    }
+
+    fn wot_torque(d: EngineDef, rpm: f64) -> f64 {
+        let mut e = Engine::new(d, rpm, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(rpm),
+            ..Controls::default()
+        };
+        run(&mut e, 0.8, &c);
+        e.torque_nm()
+    }
+
+    #[test]
+    fn fv_intake_makes_comparable_torque_and_is_used() {
+        let d = fv_intake(EngineDef::inline4(), false, 0.3);
+        let mut e = Engine::new(d.clone(), 3000.0, 1);
+        run(&mut e, 0.01, &Controls::default());
+        assert!(e.intake_is_fv());
+        let (zero_d, one_d) = (
+            wot_torque(EngineDef::inline4(), 4000.0),
+            wot_torque(d, 4000.0),
+        );
+        assert!(
+            (one_d / zero_d - 1.0).abs() < 0.3,
+            "0D {zero_d} vs 1D {one_d} N·m"
+        );
+    }
+
+    #[test]
+    fn longer_runners_favour_low_rpm() {
+        // Ram tuning: a longer runner's pressure wave returns later, so it helps at lower rpm
+        // (Heywood ch. 7; Winterbone & Pearson). Compare the 3000/6500 rpm torque ratio.
+        let ratio = |runner: f64| {
+            let d = fv_intake(EngineDef::inline4(), true, runner);
+            wot_torque(d.clone(), 3000.0) / wot_torque(d, 6500.0)
+        };
+        let (short, long) = (ratio(0.15), ratio(0.6));
+        assert!(long > short * 1.05, "short {short:.3} vs long {long:.3}");
+    }
+
+    #[test]
+    fn itb_engine_idles_with_a_realistic_manifold() {
+        let mut e = Engine::new(fv_intake(EngineDef::lfa_v10(), true, 0.25), 1000.0, 1);
+        let xs = run(&mut e, 2.0, &Controls::default());
+        assert!(xs.iter().all(|x| x.is_finite()));
+        assert!((500.0..2500.0).contains(&e.rpm()), "idle {}", e.rpm());
+        let map = e.plenum_pressure_pa() / 1e5;
+        assert!((0.1..0.8).contains(&map), "idle MAP {map:.3} bar");
+    }
+
+    #[test]
+    fn itb_volumetric_efficiency_stays_physical() {
+        // Regression: a 60 mm throttle feeding a 42 mm runner through the orifice law pushed twice
+        // the runner's choked flux: VE 1.5 at 2000 rpm. An NA engine stays ≲ 1.1.
+        for rpm in [2000.0, 4000.0] {
+            let d = fv_intake(EngineDef::inline4(), true, 0.3);
+            let mut e = Engine::new(d, rpm, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(rpm),
+                ..Controls::default()
+            };
+            run(&mut e, 0.6, &c);
+            let m0 = e.inducted_kg();
+            run(&mut e, 0.2, &c);
+            let ideal = 1.18 * e.def().displacement_m3() * rpm / 120.0 * 0.2;
+            let ve = (e.inducted_kg() - m0) / ideal;
+            assert!((0.6..1.15).contains(&ve), "{rpm} rpm: VE {ve:.2}");
+        }
     }
 }

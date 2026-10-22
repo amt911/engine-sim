@@ -225,6 +225,20 @@ impl Pipe1d {
     }
 }
 
+/// Face flux for a boundary that imposes a mass flux `mass_flux` (kg/(s·m²), +x) and energy
+/// flux `energy_flux`, next to `cell`. The crossing gas moves at u = ṁ″/ρ, at most sonic (a
+/// valve or throttle cannot push gas faster than sound; ρ near the floor would otherwise blow
+/// the momentum flux up).
+pub fn flux_boundary(mass_flux: f64, energy_flux: f64, cell: Prim) -> Cons {
+    let c = cell.sound_speed();
+    let u = (mass_flux / cell.rho).clamp(-c, c);
+    Cons {
+        rho: mass_flux,
+        mom: mass_flux * u + cell.p,
+        e: energy_flux,
+    }
+}
+
 fn add(c: Cons, d: Cons, dt: f64) -> Cons {
     Cons {
         rho: c.rho + dt * d.rho,
@@ -236,6 +250,9 @@ fn add(c: Cons, d: Cons, dt: f64) -> Cons {
 /// Keep a cell physical: density and pressure at least the floors, NaN reset to rest.
 /// Extreme forcing (or a strong rarefaction against a prescribed flux) can push a cell
 /// negative, which a Riemann solver cannot recover from.
+/// Velocity bound of the positivity guard, m/s.
+const U_MAX: f64 = 2000.0;
+
 fn positive(c: Cons, rho_floor: f64, p_floor: f64) -> Cons {
     if !(c.rho.is_finite() && c.mom.is_finite() && c.e.is_finite()) || c.rho < rho_floor {
         return Prim {
@@ -245,7 +262,12 @@ fn positive(c: Cons, rho_floor: f64, p_floor: f64) -> Cons {
         }
         .to_cons();
     }
-    let u = c.mom / c.rho;
+    // No gas in these ducts moves near 2 km/s; a runaway velocity would overflow ½ρu² (inf − inf).
+    let u = (c.mom / c.rho).clamp(-U_MAX, U_MAX);
+    let c = Cons {
+        mom: c.rho * u,
+        ..c
+    };
     let e_min = 0.5 * c.rho * u * u + p_floor / (GAMMA - 1.0);
     if c.e < e_min {
         Cons { e: e_min, ..c }
@@ -641,6 +663,27 @@ mod tests {
             ring(0.03),
             ring(0.0)
         );
+    }
+
+    #[test]
+    fn flux_boundary_caps_the_crossing_speed_at_sonic() {
+        let cell = Prim {
+            rho: 1.2,
+            u: 0.0,
+            p: 101_325.0,
+        };
+        // ṁ″ = 36 → u = 30 m/s: momentum 36·30 + p
+        let f = flux_boundary(36.0, 1.0, cell);
+        assert_eq!(f.rho, 36.0);
+        assert!((f.mom - (36.0 * 30.0 + 101_325.0)).abs() < 1e-9);
+        // near-vacuum cell: u would be 36/0.001 = 36 km/s; capped at c
+        let thin = Prim {
+            rho: 1e-3,
+            u: 0.0,
+            p: 500.0,
+        };
+        let f = flux_boundary(36.0, 1.0, thin);
+        assert!((f.mom - (36.0 * thin.sound_speed() + 500.0)).abs() < 1e-6);
     }
 
     #[test]

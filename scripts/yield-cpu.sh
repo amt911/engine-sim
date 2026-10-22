@@ -6,8 +6,10 @@
 # from the gate score), never as caught or missed.
 set -u
 scope=$1
-owner=/tmp/claude-$(id -u)/cpu-heavy.owner
+owner=${CPU_LOCK_OWNER:-/tmp/claude-$(id -u)/cpu-heavy.owner}
 frozen=0
+# Started alongside the job, so the scope may not exist yet: give it a minute to appear.
+for _ in $(seq 60); do systemctl --user is-active --quiet "$scope" && break; sleep 1; done
 while systemctl --user is-active --quiet "$scope"; do
   read -r hpid who _ < "$owner" 2>/dev/null || hpid=""
   if [ -n "$hpid" ] && [ "${who:-}" != engine-sim ] && kill -0 "$hpid" 2>/dev/null; then
