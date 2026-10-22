@@ -328,6 +328,8 @@ mod tests {
         assert_eq!(def.phase_offsets_deg(), vec![0.0, 360.0]);
         // written before idle speed control: a generic car idle, not the single's 1200
         assert_eq!(def.idle_rpm, 900.0);
+        // written before engine files carried their vehicle: a generic car
+        assert_eq!(def.vehicle, crate::drivetrain::VehicleDef::default());
     }
 
     #[test]

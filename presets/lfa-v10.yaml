@@ -93,3 +93,21 @@ engine:
     listener_angle_deg: 30.0
   exhaust_reverse_cd_ratio: 0.75
   overrun_fuel_cut_rpm: 1500.0
+  vehicle:
+    name: Lexus LFA
+    mass_kg: 1480.0
+    wheel_radius_m: 0.3455
+    drag_cd_a_m2: 0.65
+    rolling_coeff: 0.011
+    gear_ratios:
+    - 3.231
+    - 2.188
+    - 1.609
+    - 1.233
+    - 0.97
+    - 0.795
+    final_drive: 4.556
+    driveline_efficiency: 0.93
+    wheel_inertia_kgm2: 5.0
+    clutch_capacity_nm: 800.0
+    max_brake_decel_m_s2: 10.0

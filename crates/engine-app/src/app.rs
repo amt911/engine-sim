@@ -99,7 +99,7 @@ impl EngineApp {
             "{}.yaml",
             self.state.def.name.replace(' ', "-").to_lowercase()
         );
-        let snapshot = Box::new(self.state.def.clone());
+        let snapshot = Box::new(self.state.engine_file());
         std::thread::spawn(move || {
             let d = rfd::FileDialog::new().add_filter("Engine", &["yaml", "yml", "json"]);
             let job = if save {
@@ -116,9 +116,7 @@ impl EngineApp {
     fn load(&mut self, path: &std::path::Path) {
         match files::load_engine(path) {
             Ok(def) => {
-                self.state.set_engine(def);
-                self.state.preset = None;
-                self.state.engine_dirty = true;
+                self.state.load_engine(def);
                 self.state.file_msg = Some(format!("Loaded {}", path.display()));
             }
             Err(e) => self.state.file_msg = Some(e),

@@ -67,3 +67,20 @@ engine:
     listener_angle_deg: 30.0
   exhaust_reverse_cd_ratio: 0.75
   overrun_fuel_cut_rpm: 1500.0
+  vehicle:
+    name: Compact hatchback
+    mass_kg: 1300.0
+    wheel_radius_m: 0.316
+    drag_cd_a_m2: 0.64
+    rolling_coeff: 0.012
+    gear_ratios:
+    - 3.62
+    - 1.95
+    - 1.36
+    - 0.94
+    - 0.78
+    final_drive: 4.1
+    driveline_efficiency: 0.92
+    wheel_inertia_kgm2: 4.0
+    clutch_capacity_nm: 350.0
+    max_brake_decel_m_s2: 9.0

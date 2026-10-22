@@ -68,6 +68,10 @@ pub struct EngineDef {
     /// Deceleration fuel cut-off: with the throttle closed above this speed no fuel is injected
     /// (what production ECUs do on overrun); 0 disables it.
     pub overrun_fuel_cut_rpm: f64,
+    /// The vehicle this engine drives (gearbox, mass, tyres). Files written before engines
+    /// carried their vehicle get a generic car, never whatever was loaded before.
+    #[serde(default = "crate::drivetrain::VehicleDef::default")]
+    pub vehicle: crate::drivetrain::VehicleDef,
 }
 
 fn default_idle_rpm() -> f64 {
@@ -135,6 +139,7 @@ impl EngineDef {
             sound: SoundDef::default(),
             overrun_fuel_cut_rpm: 1500.0,
             exhaust_reverse_cd_ratio: 0.75,
+            vehicle: crate::drivetrain::VehicleDef::single(),
         }
     }
 
@@ -155,6 +160,7 @@ impl EngineDef {
             intake: IntakeDef::default(),
             redline_rpm: 7000.0,
             starter_torque_nm: 60.0,
+            vehicle: crate::drivetrain::VehicleDef::inline4(),
             ..Self::single()
         }
     }
@@ -235,6 +241,7 @@ impl EngineDef {
             sound: SoundDef::default(),
             overrun_fuel_cut_rpm: 1500.0,
             exhaust_reverse_cd_ratio: 0.75,
+            vehicle: crate::drivetrain::VehicleDef::lfa_v10(),
         }
     }
 
@@ -302,6 +309,7 @@ impl EngineDef {
             sound: SoundDef::default(),
             overrun_fuel_cut_rpm: 1500.0,
             exhaust_reverse_cd_ratio: 0.75,
+            vehicle: crate::drivetrain::VehicleDef::flatplane_v8(),
         }
     }
 
@@ -369,6 +377,7 @@ impl EngineDef {
             sound: SoundDef::default(),
             overrun_fuel_cut_rpm: 1300.0,
             exhaust_reverse_cd_ratio: 0.75,
+            vehicle: crate::drivetrain::VehicleDef::crossplane_v8(),
         }
     }
 
@@ -1884,6 +1893,22 @@ mod tests {
         run(&mut e, 3.0, &c);
         let p = e.plenum_pressure_pa();
         assert!(p < 0.35e5, "manifold at {:.2} bar on overrun", p / 1e5);
+    }
+
+    #[test]
+    fn every_preset_comes_in_its_own_vehicle() {
+        use crate::drivetrain::VehicleDef;
+        assert_eq!(EngineDef::single().vehicle, VehicleDef::single());
+        assert_eq!(EngineDef::inline4().vehicle, VehicleDef::inline4());
+        assert_eq!(EngineDef::lfa_v10().vehicle, VehicleDef::lfa_v10());
+        assert_eq!(
+            EngineDef::flatplane_v8().vehicle,
+            VehicleDef::flatplane_v8()
+        );
+        assert_eq!(
+            EngineDef::crossplane_v8().vehicle,
+            VehicleDef::crossplane_v8()
+        );
     }
 
     #[test]
