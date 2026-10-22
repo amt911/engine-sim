@@ -672,17 +672,22 @@ mod tests {
     #[test]
     fn rising_root_finds_the_root_in_few_evaluations() {
         // x³ − 2 on [0, 2]: the cube root of 2 (1.259921049894873); bisection would need 40+.
-        let calls = std::cell::Cell::new(0);
+        let points = std::cell::RefCell::new(Vec::new());
         let r = rising_root(
             |x| {
-                calls.set(calls.get() + 1);
+                points.borrow_mut().push(x);
                 x * x * x - 2.0
             },
             0.0,
             2.0,
         );
+        let points = points.into_inner();
         assert!((r - 1.259_921_049_894_873).abs() < 1e-12, "{r}");
-        assert!(calls.get() <= 15, "{} evaluations", calls.get());
+        assert!(points.len() <= 15, "{} evaluations", points.len());
+        // the ends first, then the secant through them: (0·6 − 2·(−2)) / (6 + 2) = 0.5
+        assert_eq!(&points[..3], &[0.0, 2.0, 0.5]);
+        // every step stays inside the bracket
+        assert!(points.iter().all(|x| (0.0..=2.0).contains(x)), "{points:?}");
         // a steep, one-sided function (√ near its end, like w_j at x = 1) still converges
         let r = rising_root(|x| x - (1.0 - x * x).max(0.0).sqrt(), 0.0, 1.0);
         assert!((r - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-12, "{r}");

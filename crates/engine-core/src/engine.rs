@@ -1101,6 +1101,53 @@ mod tests {
     }
 
     #[test]
+    fn the_intake_model_in_use_is_reported() {
+        let mut e = Engine::new(EngineDef::inline4(), 1000.0, 1);
+        run(&mut e, 0.001, &Controls::default());
+        assert!(!e.intake_is_fv());
+        let mut e = Engine::new(EngineDef::lfa_v10(), 1000.0, 1);
+        run(&mut e, 0.001, &Controls::default());
+        assert!(e.intake_is_fv());
+    }
+
+    #[test]
+    fn the_trumpets_are_heard_at_their_mean_flow() {
+        // With only the intake texture on, output(1) − output(0) is the trumpets' radiation
+        // 0.3·c·Σρu plus the throttle tone 0.15·c·ṁ/A_bore. Over the runners Σρu averages
+        // ṁ/A_runner, so its mean is c·ṁ·(0.3/A_runner + 0.15/A_bore), c = 343 m/s.
+        let out = |level: f64| {
+            let mut d = EngineDef::lfa_v10();
+            d.sound = crate::sound::SoundDef {
+                flow_noise: 0.0,
+                mechanical: 0.0,
+                combustion_jitter: 0.0,
+                intake: level,
+                ..crate::sound::SoundDef::default()
+            };
+            let mut e = Engine::new(d, 4000.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(4000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.5, &c);
+            let m0 = e.inducted_kg();
+            let y = run(&mut e, 0.3, &c);
+            (y, (e.inducted_kg() - m0) / 0.3)
+        };
+        let ((quiet, _), (heard, mdot)) = (out(0.0), out(1.0));
+        let mean = heard.iter().zip(&quiet).map(|(a, b)| a - b).sum::<f64>() / heard.len() as f64;
+        let d = EngineDef::lfa_v10();
+        let a_runner = std::f64::consts::PI * 0.25 * d.intake.runner_diameter_m.powi(2);
+        let a_bore = DISCHARGE_CD * std::f64::consts::PI * 0.25 * d.throttle_diameter_m.powi(2);
+        let want = 343.0 * mdot * (0.3 / a_runner + 0.15 / a_bore);
+        assert!(
+            (mean / want - 1.0).abs() < 0.1,
+            "mean {mean} vs {want} (ṁ {mdot})"
+        );
+    }
+
+    #[test]
     fn lfa_v10_idles_and_makes_big_power() {
         let mut e = Engine::new(EngineDef::lfa_v10(), 1000.0, 1);
         run(&mut e, 2.0, &Controls::default());
