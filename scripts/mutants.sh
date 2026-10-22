@@ -13,7 +13,7 @@ FLOOR=90   # 2026-10-21: measured 92.4% (640/693)
 # cargo-mutants copies the tree into $TMPDIR; /tmp is tmpfs here (RAM): 5 GB once. Use disk.
 export TMPDIR="$PWD/target/mutants-tmp"
 mkdir -p "$TMPDIR"
-# One cargo-mutants pass into $1, in a named scope that scripts/yield-cpu.sh freezes while
+# One cargo-mutants pass into $1, in a named scope that scripts/yield-cpu.sh caps to 2 cores while
 # another session holds the timing lock (their real-time gates break under our full load, even at
 # nice 19); the cap lifts when the lock frees.
 pass() {
