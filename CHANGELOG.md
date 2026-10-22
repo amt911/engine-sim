@@ -12,3 +12,4 @@ Each tag on `main` is a runnable snapshot of the simulator (for the timelapse).
 | `v0.4.0` | 2026-10-22 | **Drivetrain**: clutch (slip/lock with overload hysteresis), gearbox, vehicle with aero/rolling/brake, speedometer; dyno sweep (`--dyno`, GUI plot) |
 | `v0.5.0` | 2026-10-22 | **Sound texture**: turbulent flow noise ∝ outflow, induction roar, valvetrain clicks, cycle-to-cycle combustion variability, body/room reverb; Sound section in the editor |
 | `v0.6.0` | 2026-10-22 | **Non-linear 1D exhaust (option)**: `exhaust.model: fv` — finite-volume pipes (HLLC/MUSCL, quasi-1D areas, wall friction), characteristic junctions, muffler can; overrun fuel cut and ECU dashpot; reverse-flow Cd |
+| `v0.7.0` | 2026-10-22 | **1D intake**: `intake.model: fv` — runners with trumpets, from individual throttle bodies or a plenum (editor: model, ITB, runner length/Ø); the LFA now breathes through ten ITBs (intake ram and runner resonance); junction inflow from stagnation |
