@@ -39,6 +39,10 @@ pub struct EngineDef {
     pub exhaust_valve: ValveTiming,
     pub spark_advance_deg: f64,
     pub burn_duration_deg: f64,
+    /// Everything that turns with the crank, referred to it: crank, the rods' rotating share,
+    /// flywheel and clutch, kg·m². A car engine's is ≈ 0.15–0.25, mostly flywheel and clutch
+    /// (Avtomobilʹnyj Transport 42 (2018), 0.178 for a car engine; Łódź University of
+    /// Technology, measured flywheel assemblies at 80–90 % of the total).
     pub flywheel_inertia_kgm2: f64,
     pub plenum_volume_m3: f64,
     pub throttle_diameter_m: f64,
@@ -196,7 +200,8 @@ impl EngineDef {
             },
             spark_advance_deg: 28.0,
             burn_duration_deg: 45.0,
-            flywheel_inertia_kgm2: 0.09,
+            // from the measured unloaded snap, idle to 9000 rpm in 0.6 s (see the test)
+            flywheel_inertia_kgm2: 0.28,
             plenum_volume_m3: 8.0e-3,
             // Ten individual throttle bodies of the runner's 45 mm bore, as one total bore:
             // √10 · 45 mm. Idle bypass: the same area as 0.3 % of a 120 mm throttle.
@@ -275,7 +280,8 @@ impl EngineDef {
             },
             spark_advance_deg: 28.0,
             burn_duration_deg: 45.0,
-            flywheel_inertia_kgm2: 0.08,
+            // a light, high-revving car engine: the LFA's class
+            flywheel_inertia_kgm2: 0.2,
             plenum_volume_m3: 7.0e-3,
             throttle_diameter_m: 0.095,
             idle_throttle: 0.003,
@@ -341,8 +347,8 @@ impl EngineDef {
             },
             spark_advance_deg: 26.0,
             burn_duration_deg: 50.0,
-            // heavy cross-plane counterweights
-            flywheel_inertia_kgm2: 0.16,
+            // heavy cross-plane counterweights and a street clutch: the top of the range
+            flywheel_inertia_kgm2: 0.25,
             plenum_volume_m3: 6.0e-3,
             throttle_diameter_m: 0.090,
             // a 6.2 L on LS friction needs more bypass air (0.3 % stalls; 0.65 % idles ~1050)
@@ -464,12 +470,24 @@ const BLOWBY_AREA_FRACTION: f64 = 1e-4;
 const INTAKE_SOUND_GAIN: f64 = 0.3;
 /// Throttle plate actuator speed, full travel per second (0.1 s closed to wide open).
 const PLATE_TRAVEL_PER_S: f64 = 10.0;
-/// Throttle dashpot: the opening (fraction of the plate's area) it holds when released, and
-/// its closing time constant. A few percent and about a second (estimates).
-const DASHPOT_HOLD: f64 = 0.02;
+/// Throttle dashpot: when released, the plate is caught at a few percent of its *travel* and
+/// closes from there with a time constant of about a second (Bosch, *Automotive Handbook*,
+/// "dashpot function"; estimates). Through the plate's area curve 3 % of travel is
+/// 1 − cos(0.03·π/2) = 0.11 % of its area.
+const DASHPOT_HOLD_TRAVEL: f64 = 0.03;
 const DASHPOT_TAU_S: f64 = 1.0;
-/// Speed above which the idle air control opens proportionally on overrun (dashpot).
-const DASHPOT_ONSET_RPM: f64 = 1500.0;
+/// Overrun fuel cut-off reactivates this far above the idle speed (Bosch, *Gasoline Engine
+/// Management*, "overrun fuel cutoff": injection resumes above idle so the engine is caught
+/// before it stalls; the cut-off speed itself is the engine's `overrun_fuel_cut_rpm`), and never
+/// closer than `FUEL_CUT_HYSTERESIS_RPM` below the cut-off, so the two cannot chatter. Estimates.
+/// Speed above which the deceleration air opens in proportion while injection is cut.
+const DECEL_AIR_BASE_RPM: f64 = 1500.0;
+const FUEL_REACTIVATION_ABOVE_IDLE_RPM: f64 = 300.0;
+const FUEL_CUT_HYSTERESIS_RPM: f64 = 100.0;
+/// The speed limiter cuts injection at the redline and resumes it this far below (Bosch,
+/// *Gasoline Engine Management*, "engine-speed limitation"): a floored engine bounces off the
+/// limiter in a rhythm instead of firing at random cylinders. Estimate.
+const LIMITER_HYSTERESIS_RPM: f64 = 200.0;
 /// Idle-speed control (Bosch, *Automotive Handbook*, "Idle-speed control"; Hrovat & Sun, "Models
 /// and control methodologies for IC engine idle speed control design", Control Eng. Practice 5
 /// (1997)): two paths on the relative speed error. The air path (bypass) carries the steady
@@ -495,6 +513,9 @@ const IDLE_SPARK_KD_DEG_S: f64 = 10.0;
 /// Time constant of the speed-rate filter, s: longer than a firing interval at idle, so the
 /// loop follows the mean speed, not the ripple between firings.
 const IAC_RATE_TAU_S: f64 = 0.15;
+/// How far ahead the air path looks before holding its integral on a fall, s: the delay it
+/// acts through, the manifold's filling plus the loop's own response, about a second.
+const IAC_LOOKAHEAD_S: f64 = 1.0;
 /// Fraction of the equalising mass a valve may move per substep (see `step`).
 const VALVE_RELAX: f64 = 0.5;
 
@@ -570,6 +591,10 @@ pub struct Engine {
     /// Filtered d(rpm)/dt for the derivative action, rpm/s, and the rpm it was last taken at.
     iac_rate: f64,
     iac_last_rpm: f64,
+    /// The ECU's injection cut-offs, each with its hysteresis: overrun (pedal released at
+    /// speed) and the speed limiter.
+    overrun_cut: bool,
+    limiter_cut: bool,
     /// The idle-speed control's spark trim, degrees (negative = retarded); 0 off idle.
     idle_spark_deg: f64,
     /// Opening the throttle dashpot holds (fraction of the plate's area), decaying.
@@ -700,6 +725,8 @@ impl Engine {
             dashpot: 0.0,
             plate: 0.0,
             iac_last_rpm: initial_rpm,
+            overrun_cut: false,
+            limiter_cut: false,
             combustions: 0,
             wall_heat_j: 0.0,
             fuel_energy_j: 0.0,
@@ -757,7 +784,7 @@ impl Engine {
         let raw = (rpm - self.iac_last_rpm) / dt;
         self.iac_last_rpm = rpm;
         self.iac_rate += (raw - self.iac_rate) * (dt / IAC_RATE_TAU_S).min(1.0);
-        if c.throttle > 0.01 || !c.ignition || rpm < 0.4 * target || rpm > DASHPOT_ONSET_RPM {
+        if c.throttle > 0.01 || !c.ignition || rpm < 0.4 * target || self.overrun_cut {
             self.idle_spark_deg = self.slew_spark(0.0, dt);
             return;
         }
@@ -766,10 +793,11 @@ impl Engine {
         let scale = self.idle_air_scale();
         let lo = IAC_MIN * self.def.idle_throttle / scale;
         let hi = (IAC_MAX_AREA - self.def.idle_throttle).max(0.0) / scale;
-        // Integrate only towards the target or while the speed has stopped moving away from
-        // it: falling from a blip, the spark path catches the engine and the integral does not
-        // wind down into a stall.
-        if err > 0.0 || self.iac_rate >= 0.0 {
+        // Integrate towards the target, except while the speed is already falling fast enough
+        // to reach it within IAC_LOOKAHEAD_S: falling from a blip, the spark path catches the
+        // engine and the integral does not wind down into a stall; a slow drift above the
+        // target (a heavy crank after its start flare) is still trimmed.
+        if err > 0.0 || rpm + self.iac_rate * IAC_LOOKAHEAD_S > target {
             self.iac_integral = (self.iac_integral + IAC_KI_PER_S * err * dt).clamp(lo, hi);
         }
         self.iac = scale * (self.iac_integral + IAC_KP * err).clamp(lo, hi);
@@ -788,6 +816,19 @@ impl Engine {
         let flux = crate::gas::orifice_mass_flow(1.0, ATM_PA, 300.0, 30e3);
         let full = DISCHARGE_CD * PI * 0.25 * self.def.throttle_diameter_m.powi(2);
         (mdot / flux / full).max(1e-6)
+    }
+
+    /// Update the injection cut-offs from the speed and the pedal, each switching off only once
+    /// the speed has crossed back past its hysteresis.
+    fn fuel_cutoffs(&mut self, throttle: f64) {
+        let rpm = self.rpm();
+        let cut = self.def.overrun_fuel_cut_rpm;
+        let resume = (self.def.idle_rpm + FUEL_REACTIVATION_ABOVE_IDLE_RPM)
+            .min(cut - FUEL_CUT_HYSTERESIS_RPM);
+        self.overrun_cut =
+            cut > 0.0 && throttle <= 0.01 && (rpm > cut || (self.overrun_cut && rpm > resume));
+        let red = self.def.redline_rpm;
+        self.limiter_cut = rpm >= red || (self.limiter_cut && rpm > red - LIMITER_HYSTERESIS_RPM);
     }
 
     /// Move the spark trim towards `want` no faster than half the crank's own travel this
@@ -814,7 +855,7 @@ impl Engine {
     fn dashpot_step(&mut self, throttle: f64, dt: f64) {
         let pedal = pedal_opening(throttle.clamp(0.0, 1.0));
         if pedal >= self.dashpot {
-            self.dashpot = pedal.min(DASHPOT_HOLD);
+            self.dashpot = pedal.min(pedal_opening(DASHPOT_HOLD_TRAVEL));
         } else {
             self.dashpot *= (-dt / DASHPOT_TAU_S).exp();
         }
@@ -822,10 +863,16 @@ impl Engine {
 
     fn throttle_area(&self, throttle: f64) -> f64 {
         let t = throttle.clamp(0.0, 1.0);
-        // Idle air control opens with speed above 1500 rpm (deceleration "dashpot"), as ECUs do:
-        // a fixed idle bypass would pull the manifold to near vacuum on overrun at high rpm.
-        // Below 1500 rpm it is the idle bypass, trimmed by the idle-speed control.
-        let idle = (self.def.idle_throttle + self.iac) * (self.rpm() / DASHPOT_ONSET_RPM).max(1.0);
+        // The idle bypass, trimmed by the idle-speed control. While the overrun cut-off holds,
+        // the ECU opens it in proportion to speed above DECEL_AIR_BASE_RPM (its deceleration air):
+        // the engine's pumping grows with speed, so the manifold holds ≈ 0.2–0.3 bar instead of
+        // being pulled to a near vacuum that drives violent exhaust reversion.
+        let decel = if self.overrun_cut {
+            (self.rpm() / DECEL_AIR_BASE_RPM).max(1.0)
+        } else {
+            1.0
+        };
+        let idle = (self.def.idle_throttle + self.iac) * decel;
         let open = idle + ((1.0 - idle) * pedal_opening(t)).max(self.dashpot);
         DISCHARGE_CD * PI * 0.25 * self.def.throttle_diameter_m.powi(2) * open
     }
@@ -844,6 +891,8 @@ impl Engine {
     pub fn step(&mut self, dt: f64, c: &Controls) -> f64 {
         let g = self.def.geometry;
         let crank_deg = self.theta.to_degrees();
+        // the ECU first decides whether it injects, then trims the idle accordingly
+        self.fuel_cutoffs(c.throttle);
         self.idle_control(dt, c);
         self.plate_step(c.throttle, dt);
         self.dashpot_step(self.plate, dt);
@@ -853,10 +902,7 @@ impl Engine {
         let evc = (self.def.exhaust_valve.open_deg + self.def.exhaust_valve.duration_deg)
             .rem_euclid(720.0);
         let mut valve_closings = 0;
-        let overrun_cut = self.def.overrun_fuel_cut_rpm > 0.0
-            && c.throttle <= 0.01
-            && self.rpm() > self.def.overrun_fuel_cut_rpm;
-        let fire_ok = c.ignition && self.rpm() < self.def.redline_rpm && !overrun_cut;
+        let fire_ok = c.ignition && !self.overrun_cut && !self.limiter_cut;
         let wall_area = 2.0 * g.piston_area();
         let mean_piston_speed = mean_piston_speed(g.stroke_m, self.omega);
         match self.def.intake.model {
@@ -1572,10 +1618,20 @@ mod tests {
 
     #[test]
     fn the_idle_integral_holds_while_falling_from_above_and_saturates() {
-        // above target and falling: it holds (the spark path catches the engine)
+        // 100 rpm above the 800 target, falling at 400 rpm/s: within the 1 s look-ahead it gets
+        // there (900 − 400 = 500), so it holds and the spark path catches the engine
         let mut e = idling_at(900.0, 0.1, -400.0, -10.0);
         e.idle_control(1e-3, &Controls::default());
         assert_eq!(e.iac_integral, 0.1);
+        // just fast enough: 900 − 100.2 = 799.8 within the second, so it holds (the rate
+        // filter takes 100.9 to 100.2 in this 1 ms step)
+        let mut e = idling_at(900.0, 0.1, -100.9, -10.0);
+        e.idle_control(1e-3, &Controls::default());
+        assert_eq!(e.iac_integral, 0.1);
+        // drifting down at 50 rpm/s it would still be at 850: it closes
+        let mut e = idling_at(900.0, 0.1, -50.0, -10.0);
+        e.idle_control(1e-3, &Controls::default());
+        assert!(e.iac_integral < 0.1);
         // above target and steady: it closes
         let mut e = idling_at(900.0, 0.1, 0.0, -10.0);
         e.idle_control(1e-3, &Controls::default());
@@ -1591,18 +1647,48 @@ mod tests {
     }
 
     #[test]
+    fn the_cut_offs_switch_with_their_hysteresis() {
+        // Inline-4: idle 800, cut-off 1500 → reactivation at min(800 + 300, 1500 − 100) = 1100;
+        // redline 7000 → the limiter resumes at 6800.
+        let at = |e: &mut Engine, rpm: f64, throttle: f64| {
+            e.omega = rpm_to_rad_s(rpm);
+            e.fuel_cutoffs(throttle);
+            (e.overrun_cut, e.limiter_cut)
+        };
+        let mut e = Engine::new(EngineDef::inline4(), 800.0, 1);
+        assert_eq!(at(&mut e, 1200.0, 0.0), (false, false), "below the cut-off");
+        assert_eq!(at(&mut e, 1600.0, 0.02), (false, false), "pedal pressed");
+        assert_eq!(at(&mut e, 1600.0, 0.0), (true, false));
+        assert_eq!(at(&mut e, 1200.0, 0.0), (true, false), "held down to 1100");
+        assert_eq!(at(&mut e, 1090.0, 0.0), (false, false));
+        assert_eq!(at(&mut e, 1200.0, 0.0), (false, false), "stays fuelled");
+        assert_eq!(at(&mut e, 7000.0, 1.0), (false, true));
+        assert_eq!(at(&mut e, 6900.0, 1.0), (false, true), "held down to 6800");
+        assert_eq!(at(&mut e, 6790.0, 1.0), (false, false));
+        assert_eq!(at(&mut e, 6900.0, 1.0), (false, false), "stays fuelled");
+        // Single: idle 1200, cut-off 1500 → min(1500, 1400) = 1400
+        let mut e = Engine::new(EngineDef::single(), 1200.0, 1);
+        assert_eq!(at(&mut e, 1600.0, 0.0), (true, false));
+        assert_eq!(at(&mut e, 1450.0, 0.0), (true, false));
+        assert_eq!(at(&mut e, 1390.0, 0.0), (false, false));
+    }
+
+    #[test]
     fn the_idle_loop_acts_only_on_a_released_pedal_and_a_running_engine() {
-        let acts = |rpm: f64, c: Controls| {
+        let acts_cut = |rpm: f64, c: Controls, cut: bool| {
             let mut e = idling_at(rpm, 0.0, 0.0, -10.0);
+            e.overrun_cut = cut;
             e.idle_control(1e-3, &c);
             e.iac_integral != 0.0
         };
+        let acts = |rpm: f64, c: Controls| acts_cut(rpm, c, false);
         let idle = Controls::default();
-        // 800 rpm target: above 0.4 · 800 = 320 rpm it runs on its own; the dashpot owns > 1500
+        // 800 rpm target: above 0.4 · 800 = 320 rpm it runs on its own, at any speed while
+        // fuelled; it rests while the overrun cut-off holds
         assert!(acts(321.0, idle));
         assert!(!acts(300.0, idle), "cranking");
-        assert!(acts(1500.0, idle));
-        assert!(!acts(1501.0, idle), "overrun");
+        assert!(acts(1501.0, idle));
+        assert!(!acts_cut(1501.0, idle, true), "overrun");
         assert!(acts(
             700.0,
             Controls {
@@ -1698,6 +1784,115 @@ mod tests {
             d.name,
             e.rpm()
         );
+    }
+
+    /// Warm idle, then the pedal floored in neutral until `rpm`, then released: the time to
+    /// get there, and the speed trace for `after` seconds once released.
+    fn rev_and_release(d: EngineDef, rpm: f64, after: f64) -> (f64, Vec<f64>) {
+        let mut e = Engine::new(d.clone(), d.idle_rpm, 1);
+        run(&mut e, 4.0, &Controls::default());
+        let wot = Controls {
+            throttle: 1.0,
+            ..Controls::default()
+        };
+        let mut t = 0.0;
+        while e.rpm() < rpm && t < 3.0 {
+            e.step(DT, &wot);
+            t += DT;
+        }
+        let trace = (0..(after / DT) as usize)
+            .map(|_| {
+                e.step(DT, &Controls::default());
+                e.rpm()
+            })
+            .collect();
+        (t, trace)
+    }
+
+    #[test]
+    fn the_lfa_snaps_from_idle_to_9000_in_six_tenths() {
+        // Measured by the LFA's chief engineer (H. Tanahashi, quoted by evo and Road & Track,
+        // 2009): unloaded, a stab of the pedal takes the V10 from idle to 9000 rpm in 0.6 s.
+        let (t, _) = rev_and_release(EngineDef::lfa_v10(), 8990.0, 0.0);
+        assert!((0.5..0.7).contains(&t), "idle to 9000 in {t:.3} s");
+    }
+
+    #[test]
+    fn released_from_high_revs_every_engine_settles_at_its_idle() {
+        // Overrun fuel cut until injection reactivates near idle, then the idle control takes
+        // over (Bosch, Gasoline Engine Management): back at idle within a few seconds and
+        // staying there, not hung at the cut-off speed.
+        for d in [
+            EngineDef::single(),
+            EngineDef::inline4(),
+            EngineDef::lfa_v10(),
+            EngineDef::flatplane_v8(),
+            EngineDef::crossplane_v8(),
+        ] {
+            let target = d.idle_rpm;
+            let (_, trace) = rev_and_release(d.clone(), 0.8 * d.redline_rpm, 8.0);
+            let tail = &trace[(6.0 / DT) as usize..];
+            let mean = tail.iter().sum::<f64>() / tail.len() as f64;
+            let low = tail.iter().copied().fold(f64::INFINITY, f64::min);
+            assert!(
+                (mean / target - 1.0).abs() < 0.1,
+                "{}: settled at {mean:.0} vs {target}; trace {:?}",
+                d.name,
+                trace
+                    .iter()
+                    .step_by((0.25 / DT) as usize)
+                    .map(|r| *r as i64)
+                    .collect::<Vec<_>>()
+            );
+            assert!(low > 0.6 * target, "{}: dipped to {low:.0}", d.name);
+        }
+    }
+
+    #[test]
+    fn the_rev_limiter_bounces_off_the_redline() {
+        // A fuel cut-off limiter with hysteresis (Bosch, Gasoline Engine Management, "engine
+        // speed limitation"): injection stops at the redline and resumes some way below, so a
+        // floored engine in neutral bounces in a rhythm a few times a second.
+        let d = EngineDef::inline4();
+        let red = d.redline_rpm;
+        let mut e = Engine::new(d, 3000.0, 1);
+        let wot = Controls {
+            throttle: 1.0,
+            ..Controls::default()
+        };
+        run(&mut e, 1.5, &wot);
+        let trace: Vec<f64> = (0..(1.0 / DT) as usize)
+            .map(|_| {
+                e.step(DT, &wot);
+                e.rpm()
+            })
+            .collect();
+        let hi = trace.iter().copied().fold(0.0, f64::max);
+        let lo = trace.iter().copied().fold(f64::INFINITY, f64::min);
+        assert!(hi < red + 150.0, "overshoot to {hi:.0}");
+        assert!(lo < red - 100.0, "no bounce: down to {lo:.0} only");
+        // bounces: crossings of the middle of the band, upwards
+        let mid = 0.5 * (hi + lo);
+        let ups = trace
+            .windows(2)
+            .filter(|w| w[0] < mid && w[1] >= mid)
+            .count();
+        assert!((2..=30).contains(&ups), "{ups} bounces in a second");
+    }
+
+    #[test]
+    fn overrun_pulls_the_manifold_to_a_deep_vacuum() {
+        // Closed throttle at speed: the engine pumps the manifold down to ~0.2–0.3 bar
+        // (Heywood, ICE Fundamentals, §7.6.1 and Fig. 7-19, part-load intake vacuum); the idle
+        // air alone cannot feed 5000 rpm.
+        let mut e = Engine::new(EngineDef::inline4(), 5000.0, 1);
+        let c = Controls {
+            hold_rpm: Some(5000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 3.0, &c);
+        let p = e.plenum_pressure_pa();
+        assert!(p < 0.35e5, "manifold at {:.2} bar on overrun", p / 1e5);
     }
 
     #[test]
@@ -2678,8 +2873,9 @@ mod tests {
 
     #[test]
     fn the_dashpot_lets_the_throttle_close_slowly() {
-        // Lifting off WOT, the plate is caught at 2 % of its area and closes from there with
-        // τ = 1 s: e^−1 = 0.368 of the hold after 1 s. Pressing again opens it at once.
+        // Lifting off WOT, the plate is caught at 3 % of its travel, 1 − cos(0.03·π/2) =
+        // 1.11013e-3 of its area, and closes from there with τ = 1 s: e^−1 = 0.368 of the hold
+        // after 1 s. Pressing again opens it at once.
         let mut e = Engine::new(EngineDef::inline4(), 3000.0, 1);
         let full = e.throttle_area(1.0);
         let idle = e.throttle_area(0.0);
@@ -2691,13 +2887,13 @@ mod tests {
         run(&mut e, 0.1, &wot);
         e.dashpot_step(0.0, DT);
         let held = e.throttle_area(0.0);
-        assert_relative_eq!(held, idle + 0.02 * full, max_relative = 1e-3);
+        assert_relative_eq!(held, idle + 1.11013e-3 * full, max_relative = 1e-3);
         for _ in 0..(1.0 / DT) as usize {
             e.dashpot_step(0.0, DT);
         }
         assert_relative_eq!(
             e.throttle_area(0.0),
-            idle + 0.02 * 0.3679 * full,
+            idle + 1.11013e-3 * 0.3679 * full,
             max_relative = 1e-3
         );
         e.dashpot_step(1.0, DT);
@@ -2753,11 +2949,14 @@ mod tests {
 
     #[test]
     fn idle_air_opens_with_speed_on_overrun() {
-        // 0.0015 of the bore up to 1500 rpm; at 7000 rpm 7000/1500 × 0.0015 = 0.007 (hand)
+        // 0.0015 of the bore up to 1500 rpm; at 7000 rpm with injection cut,
+        // 7000/1500 × 0.0015 = 0.007 (hand); fuelled, it stays the idle bypass
         let full = 1.00531e-3;
         let e = Engine::new(EngineDef::single(), 900.0, 1);
         assert_relative_eq!(e.throttle_area(0.0), 0.0015 * full, max_relative = 1e-5);
-        let e = Engine::new(EngineDef::single(), 7000.0, 1);
+        let mut e = Engine::new(EngineDef::single(), 7000.0, 1);
+        assert_relative_eq!(e.throttle_area(0.0), 0.0015 * full, max_relative = 1e-5);
+        e.overrun_cut = true;
         assert_relative_eq!(e.throttle_area(0.0), 0.007 * full, max_relative = 1e-5);
         assert_relative_eq!(e.throttle_area(1.0), full, max_relative = 1e-5);
     }
