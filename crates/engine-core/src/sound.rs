@@ -8,9 +8,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SoundDef {
-    /// Broadband jet/turbulence noise at the tail pipes, ∝ dynamic pressure of the outflow.
+    /// Broadband turbulence noise (a heuristic, off by default): at the tail pipes ∝ the
+    /// outflow's dynamic pressure, and the throttle's hiss ∝ its momentum flux. Measured through
+    /// the physical radiation chain it buried the engine orders (an inline-4 at full throttle
+    /// went from 99 % to 55 % order energy); the tailpipe jet is to be modelled physically.
     pub flow_noise: f64,
-    /// Induction sound from the throttle flow.
+    /// Induction sound: the throttle's plane-wave tone and the 1D intake's mouth signal.
     pub intake: f64,
     /// Valvetrain clicks at every valve closing, stronger with rpm.
     pub mechanical: f64,
@@ -19,7 +22,8 @@ pub struct SoundDef {
     /// Wet level of the body/room reverb applied in the voice.
     pub reverb: f64,
     /// How much the voice lifts quiet passages (idle) toward the full-load level, in dB:
-    /// 1 = up to +12 dB, 0 = the raw dynamics of the physics.
+    /// 1 = up to +12 dB, 0 = the raw dynamics of the physics (the default: idle, overrun and
+    /// full load keep their real level differences).
     pub leveling: f64,
     /// Where the listener stands: distance from the tail pipes' centre, m, and angle off the
     /// car's axis, degrees (0 = straight behind, + to the left). Off the axis, several tails
@@ -31,12 +35,12 @@ pub struct SoundDef {
 impl Default for SoundDef {
     fn default() -> Self {
         Self {
-            flow_noise: 1.0,
+            flow_noise: 0.0,
             intake: 1.0,
             mechanical: 1.0,
             combustion_jitter: 1.0,
             reverb: 0.15,
-            leveling: 1.0,
+            leveling: 0.0,
             listener_distance_m: 3.0,
             listener_angle_deg: 30.0,
         }
@@ -128,17 +132,18 @@ impl Texture {
     }
 
     /// Induction sound from the throttle mass flow (kg/s into the plenum): the plane-wave tone
-    /// c·ṁ/A_bore plus hiss ∝ momentum flux ṁ·u / A_bore (u through the current opening).
-    /// Using the full bore keeps a nearly closed throttle (sonic, tiny ṁ) from screaming.
+    /// c·ṁ/A_bore at `level`, plus hiss ∝ momentum flux ṁ·u / A_bore (u through the current
+    /// opening) at `hiss_level`. Using the full bore keeps a nearly closed throttle (sonic,
+    /// tiny ṁ) from screaming.
     pub fn intake(
         &mut self,
         throttle_flow: f64,
         throttle_area: f64,
         bore_area: f64,
-        level: f64,
+        (level, hiss_level): (f64, f64),
         dt: f64,
     ) -> f64 {
-        if level <= 0.0 || throttle_area <= 0.0 || bore_area <= 0.0 {
+        if (level <= 0.0 && hiss_level <= 0.0) || throttle_area <= 0.0 || bore_area <= 0.0 {
             return 0.0;
         }
         let m = throttle_flow.abs();
@@ -147,7 +152,7 @@ impl Texture {
         let n = self.white();
         let hiss =
             INTAKE_NOISE_GAIN * m * u / bore_area * self.intake.process(n, 800.0, 8_000.0, dt);
-        level * (tone + hiss)
+        level * tone + hiss_level * hiss
     }
 
     /// Register a valve closing at `rpm`.
@@ -197,9 +202,9 @@ mod tests {
     }
 
     #[test]
-    fn leveling_round_trips_and_defaults_to_on_for_old_files() {
+    fn leveling_round_trips_and_defaults_to_the_raw_physics() {
         let old: SoundDef = serde_yaml_ng::from_str("reverb: 0.2\n").unwrap();
-        assert_eq!(old.leveling, 1.0);
+        assert_eq!(old.leveling, 0.0);
         let s = SoundDef {
             leveling: 0.3,
             ..SoundDef::default()
@@ -308,7 +313,7 @@ mod tests {
                         m * (1.0 + 0.5 * (k as f64 * 0.01).sin()),
                         1e-3,
                         1e-3,
-                        1.0,
+                        (1.0, 1.0),
                         DT,
                     )
                 })
@@ -325,7 +330,7 @@ mod tests {
         // nearly closed throttle: same tiny flow through a small opening stays quiet
         let mut t = Texture::new(2);
         let closed: Vec<f64> = (0..40_000)
-            .map(|_| t.intake(0.002, 2e-6, 1e-3, 1.0, DT))
+            .map(|_| t.intake(0.002, 2e-6, 1e-3, (1.0, 1.0), DT))
             .collect();
         assert!(
             rms(&closed[10_000..]) < 0.1 * level(0.1),
@@ -340,7 +345,7 @@ mod tests {
         // zero-mean, so the mean of the output is the tone.
         let mut t = Texture::new(4);
         let xs: Vec<f64> = (0..40_000)
-            .map(|_| t.intake(0.05, 1e-3, 1e-3, 1.0, DT))
+            .map(|_| t.intake(0.05, 1e-3, 1e-3, (1.0, 1.0), DT))
             .collect();
         let mean = xs.iter().sum::<f64>() / xs.len() as f64;
         assert!((mean / 2572.5 - 1.0).abs() < 0.02, "tone {mean}");
@@ -349,7 +354,7 @@ mod tests {
             let mut t = Texture::new(4);
             let tone = 0.15 * 343.0 * m / 1e-3;
             let xs: Vec<f64> = (0..40_000)
-                .map(|_| t.intake(m, 1e-3, 1e-3, 1.0, DT) - tone)
+                .map(|_| t.intake(m, 1e-3, 1e-3, (1.0, 1.0), DT) - tone)
                 .collect();
             rms(&xs[10_000..])
         };
@@ -365,7 +370,7 @@ mod tests {
             let mut t = Texture::new(4);
             let tone = 0.15 * 343.0 * 0.02 / a_bore;
             let xs: Vec<f64> = (0..40_000)
-                .map(|_| t.intake(0.02, a_throttle, a_bore, 1.0, DT) - tone)
+                .map(|_| t.intake(0.02, a_throttle, a_bore, (1.0, 1.0), DT) - tone)
                 .collect();
             rms(&xs[10_000..])
         };
@@ -377,8 +382,8 @@ mod tests {
         assert!((hiss_at(1e-3, 2e-3) / base - 0.5).abs() < 0.05, "bore area");
         // degenerate areas give silence, not infinities
         let mut t = Texture::new(4);
-        assert_eq!(t.intake(0.05, 0.0, 1e-3, 1.0, DT), 0.0);
-        assert_eq!(t.intake(0.05, 1e-3, 0.0, 1.0, DT), 0.0);
+        assert_eq!(t.intake(0.05, 0.0, 1e-3, (1.0, 1.0), DT), 0.0);
+        assert_eq!(t.intake(0.05, 1e-3, 0.0, (1.0, 1.0), DT), 0.0);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! The simulation as the app runs it: engine physics at `SUBSTEPS` × the audio rate,
 //! the DSP voice, and the data the UI draws (snapshot, pressure trace, scope).
 
-use engine_audio::dsp::Voice;
+use engine_audio::dsp::{AntiAlias, Voice};
 use engine_core::drivetrain::{Vehicle, VehicleDef};
 use engine_core::engine::{Controls, CylinderView, Engine, EngineDef};
 use engine_core::units::rpm_to_rad_s;
@@ -54,6 +54,7 @@ fn voice_for(def: &EngineDef, sample_rate: f64) -> Voice {
 pub struct Simulation {
     engine: Engine,
     voice: Voice,
+    anti_alias: AntiAlias,
     sample_rate: f64,
     pub controls: Controls,
     pub drive: DriveInput,
@@ -73,6 +74,8 @@ impl Simulation {
             vehicle: Vehicle::new(vehicle),
             drive: DriveInput::default(),
             voice: voice_for(&def, sample_rate),
+            // just under the output's Nyquist (20.2 kHz at 48 kHz), at the physics rate
+            anti_alias: AntiAlias::new(0.42 * sample_rate, sample_rate * SUBSTEPS as f64),
             engine: Engine::new(def, IDLE_START_RPM, seed),
             sample_rate,
             controls: Controls::default(),
@@ -130,7 +133,7 @@ impl Simulation {
                 let load = self.vehicle.step(dt, omega, self.drive.brake);
                 c.load_torque_nm = self.controls.load_torque_nm + load.torque_nm;
                 c.extra_inertia_kgm2 = self.controls.extra_inertia_kgm2 + load.inertia_kgm2;
-                p = self.engine.step(dt, &c);
+                p = self.anti_alias.process(self.engine.step(dt, &c));
             }
             let c0 = self.engine.cylinder(0);
             // Fill every degree passed since the last sample, so none keeps a stale value.
@@ -428,10 +431,12 @@ pub(crate) mod tests {
     #[test]
     fn a_crossplane_v8_burbles_and_a_flatplane_does_not() {
         // Uneven pulses within each bank (cross plane) put energy below the firing order; a
-        // flat plane's banks are even inline-4s, so orders 1–3 stay near zero.
+        // flat plane's banks are even inline-4s, so orders 1–3 stay near zero. Radiated as a
+        // monopole (p ∝ dQ/dt) orders 1–3 (25–75 Hz here) weigh (k/4)² of the firing order's
+        // power for the same flow; the old voice was flat below 150 Hz and measured 0.05+.
         let cross = low_order_share(EngineDef::crossplane_v8());
         let flat = low_order_share(EngineDef::flatplane_v8());
-        assert!(cross > 0.05, "cross-plane low orders {cross}");
+        assert!(cross > 0.025, "cross-plane low orders {cross}");
         assert!(cross > 5.0 * flat, "cross {cross} vs flat {flat}");
     }
 

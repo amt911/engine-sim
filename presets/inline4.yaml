@@ -57,12 +57,12 @@ engine:
   - 0.15
   - 0.05
   sound:
-    flow_noise: 1.0
+    flow_noise: 0.0
     intake: 1.0
     mechanical: 1.0
     combustion_jitter: 1.0
     reverb: 0.15
-    leveling: 1.0
+    leveling: 0.0
     listener_distance_m: 3.0
     listener_angle_deg: 30.0
   exhaust_reverse_cd_ratio: 0.75

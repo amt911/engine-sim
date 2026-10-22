@@ -560,7 +560,7 @@ mod tests {
     fn sound_sliders_edit_the_engine() {
         let mut h = harness(EngineDef::lfa_v10());
         nudge(&mut h, "Flow noise");
-        assert!(h.state().def.sound.flow_noise > 1.0);
+        assert!(h.state().def.sound.flow_noise > 0.0);
         assert!(h.state().engine_dirty);
     }
 
@@ -606,9 +606,9 @@ mod tests {
         h.get_by_role_and_label(egui::accesskit::Role::Slider, "Idle leveling")
             .focus();
         h.run();
-        h.key_press(egui::Key::ArrowLeft);
+        h.key_press(egui::Key::ArrowRight);
         h.run();
-        assert!(h.state().def.sound.leveling < 1.0);
+        assert!(h.state().def.sound.leveling > 0.0);
         assert!(h.state().engine_dirty);
     }
 

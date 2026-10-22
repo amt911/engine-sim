@@ -10,6 +10,19 @@ use serde::{Deserialize, Serialize};
 pub const C_PRIMARY: f64 = 600.0;
 pub const C_COLLECTOR: f64 = 560.0;
 pub const C_TAIL: f64 = 500.0;
+/// Characteristic impedance ρc of the tail-pipe gas, Pa·s/m: gas at atmospheric pressure whose
+/// speed of sound is `C_TAIL` (T = c²/γR = 622 K, ρ = 0.567 kg/m³). Both exhaust models hand
+/// the listener ρc·u at each outlet, u the outflow velocity.
+pub fn tail_impedance() -> f64 {
+    tail_reference_density() * C_TAIL
+}
+
+/// Density of the tail-pipe gas, kg/m³ (see [`tail_impedance`]).
+pub(crate) fn tail_reference_density() -> f64 {
+    let t = C_TAIL * C_TAIL / (crate::gas::GAMMA * crate::gas::R_AIR);
+    crate::units::ATM_PA / (crate::gas::R_AIR * t)
+}
+
 /// Amplitude loss per metre (wall friction and heat transfer), estimate.
 pub const LOSS_PER_M: f64 = 0.03;
 /// Clamp on the waves (Pa): the linear model is meaningless beyond a few bar, and two
