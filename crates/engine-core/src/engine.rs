@@ -166,8 +166,10 @@ impl EngineDef {
             burn_duration_deg: 45.0,
             flywheel_inertia_kgm2: 0.09,
             plenum_volume_m3: 8.0e-3,
-            throttle_diameter_m: 0.120,
-            idle_throttle: 0.003,
+            // Ten individual throttle bodies of the runner's 45 mm bore, as one total bore:
+            // √10 · 45 mm. Idle bypass: the same area as 0.3 % of a 120 mm throttle.
+            throttle_diameter_m: 0.045 * std::f64::consts::SQRT_2 * 5f64.sqrt(),
+            idle_throttle: 0.003 * 0.120 * 0.120 / (0.045 * 0.045 * 10.0),
             // Equal-length primaries, one 5-into-1 collector per bank (odd/even numbering
             // per bank is an assumption), dual tail pipes. Lengths and diameters estimated.
             exhaust: ExhaustDef {
@@ -183,7 +185,14 @@ impl EngineDef {
                 model: ExhaustModel::Waveguide,
                 muffler_volume_m3: 0.010,
             },
-            intake: IntakeDef::default(),
+            // Runners and trumpets estimated from the LFA's intake: 250 mm to the valve, 45 mm.
+            intake: IntakeDef {
+                model: IntakeModel::Fv,
+                runner_length_m: 0.25,
+                runner_diameter_m: 0.045,
+                individual_throttles: true,
+                ..IntakeDef::default()
+            },
             redline_rpm: 9000.0,
             starter_torque_nm: 150.0,
             // Low-friction racing build (dry sump, titanium valvetrain): estimated.
@@ -607,7 +616,7 @@ impl Engine {
         let throttle_area = self.throttle_area(c.throttle);
         let bore_area = self.throttle_area(1.0);
         // 0D: throttle into the plenum. 1D: the network steps itself (ITBs take the same area each).
-        let (throttle_dm, induction) = match &mut self.intake_net {
+        let (throttle_dm, induction, throttle_flow) = match &mut self.intake_net {
             Some(net) => {
                 // `throttle_diameter_m` is the total equivalent opening; ITBs share it.
                 let area = if self.def.intake.individual_throttles {
@@ -616,12 +625,12 @@ impl Engine {
                     throttle_area
                 };
                 let induction = net.step(area);
-                (-net.last_inducted(), induction)
+                (-net.last_inducted(), induction, net.inducted_rate())
             }
-            None => (
-                exchange_with_reservoir(&mut self.plenum, &self.atm, throttle_area, dt),
-                0.0,
-            ),
+            None => {
+                let dm = exchange_with_reservoir(&mut self.plenum, &self.atm, throttle_area, dt);
+                (dm, 0.0, dm / dt)
+            }
         };
 
         self.inducted_kg -= throttle_dm;
@@ -635,7 +644,7 @@ impl Engine {
         let audio = radiated
             + self.texture.flow_noise(radiated, snd.flow_noise, dt)
             + self.texture.intake(
-                (throttle_dm / dt).abs(),
+                throttle_flow.abs(),
                 throttle_area,
                 bore_area,
                 snd.intake,
@@ -1076,6 +1085,19 @@ mod tests {
         offsets.sort_by(f64::total_cmp);
         let expected: Vec<f64> = (0..10).map(|k| 72.0 * k as f64).collect();
         assert_eq!(offsets, expected, "even firing every 72°");
+    }
+
+    #[test]
+    fn lfa_v10_breathes_through_ten_unrestrictive_itbs() {
+        // The LR engine has one throttle body per cylinder at the trumpet (Toyota LFA press kit).
+        let d = EngineDef::lfa_v10();
+        assert_eq!(d.intake.model, IntakeModel::Fv);
+        assert!(d.intake.individual_throttles);
+        assert_eq!(d.intake.runner_length_m, 0.25);
+        assert_eq!(d.intake.runner_diameter_m, 0.045);
+        // throttle_diameter_m is the total bore the ten share: wide open, each throttle body
+        // is at least as wide as its runner (√10 · 45 mm = 142.3 mm), so the runner sets the flow
+        assert!(d.throttle_diameter_m.powi(2) / 10.0 >= d.intake.runner_diameter_m.powi(2));
     }
 
     #[test]

@@ -3,9 +3,9 @@
 //! (ITBs, like the LFA) or from a common **plenum** behind a single throttle. Gives intake (ram)
 //! tuning and induction sound. Spec: `docs/superpowers/specs/2026-10-22-intake-and-pipe-editor.md`.
 
-use crate::exhaust_fv::{CELL_M, PIPE_FRICTION, area, guard, junction_ghost};
+use crate::exhaust_fv::{CELL_M, PIPE_FRICTION, area, guard, junction_ghost, throttled_ghost};
 use crate::fv::{Boundary, Pipe1d, Prim, flux_boundary};
-use crate::gas::{CP, GasVolume, R_AIR, orifice_mass_flow};
+use crate::gas::{GasVolume, R_AIR};
 use crate::units::ATM_PA;
 use serde::{Deserialize, Serialize};
 
@@ -65,6 +65,7 @@ pub struct IntakeFv {
     acc_energy: Vec<f64>,
     radiated: f64,
     inducted: f64,
+    inducted_rate: f64,
 }
 
 impl IntakeFv {
@@ -105,6 +106,7 @@ impl IntakeFv {
             acc_energy: vec![0.0; cylinders],
             radiated: 0.0,
             inducted: 0.0,
+            inducted_rate: 0.0,
         }
     }
 
@@ -171,6 +173,7 @@ impl IntakeFv {
             radiated += self.substep(h, throttle_area) / k as f64;
         }
         self.radiated = radiated;
+        self.inducted_rate = self.inducted / dt;
         radiated
     }
 
@@ -182,20 +185,13 @@ impl IntakeFv {
         let a_itb = a_eff.min(self.a_runner * self.trumpet_cd);
         let mut radiated = 0.0;
         if self.individual {
+            // Throttle body at the trumpet: a throttled characteristic end on the atmosphere
+            // (stable; an explicit orifice flux from the cell pressure chatters at the FV rate).
+            let psi = a_itb / a;
+            let rho_atm = ATM_PA / (R_AIR * AMBIENT_T_K);
             for pipe in &mut self.runners {
-                // throttle body at the trumpet: compressible orifice between the atmosphere and
-                // the first cell, imposed as the face flux
-                let cell = pipe.prim(0);
-                let t_cell = cell.p / (cell.rho * R_AIR);
-                let (m, e) = if ATM_PA >= cell.p {
-                    let m = orifice_mass_flow(a_itb, ATM_PA, AMBIENT_T_K, cell.p);
-                    (m, m * CP * AMBIENT_T_K)
-                } else {
-                    let m = -orifice_mass_flow(a_eff, cell.p, t_cell, ATM_PA);
-                    (m, m * CP * t_cell)
-                };
-                let mf = m / a;
-                pipe.left = Boundary::Flux(flux_boundary(mf, e / a, cell));
+                let ghost = throttled_ghost(pipe.prim(0), ATM_PA, rho_atm, -1.0, psi);
+                pipe.left = Boundary::State(ghost);
                 pipe.step(h);
                 self.inducted += pipe.end_flux.0.rho * a * h;
                 radiated += C_AIR * pipe.end_flux.0.rho;
@@ -240,9 +236,16 @@ impl IntakeFv {
         }
     }
 
-    /// Air that entered from the atmosphere during the last physics step, kg.
+    /// Air that entered from the atmosphere during the last physics step, kg (the whole FV
+    /// step's air arrives on the step that advances the pipes: exact for mass bookkeeping).
     pub fn last_inducted(&self) -> f64 {
         self.inducted
+    }
+
+    /// Mean induction rate over the last FV step, kg/s, held between FV steps: what a sound
+    /// source should read (`last_inducted / dt` is a spike train at the FV rate).
+    pub fn inducted_rate(&self) -> f64 {
+        self.inducted_rate
     }
 
     pub fn total_mass(&self) -> f64 {
@@ -270,6 +273,7 @@ impl IntakeFv {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gas::CP;
 
     const DT: f64 = 1.0 / 192_000.0;
 
@@ -311,6 +315,77 @@ mod tests {
             assert!(
                 (rate / 0.02 - 1.0).abs() < 0.03,
                 "individual {individual}: {rate} kg/s"
+            );
+        }
+    }
+
+    #[test]
+    fn the_induction_rate_is_held_smooth_between_fv_steps() {
+        // The mass arrives in one lump per FV step; the rate the sound reads must not: it holds
+        // the FV step's mean (lump / dt_fv) on every physics step until the next one.
+        for individual in [true, false] {
+            let mut net = IntakeFv::new(&def(individual), 2e-3, 1, DT);
+            assert!(net.substeps > 1);
+            for _ in 0..(0.2 / DT) as usize {
+                net.add_valve_flow(0, 0.02 * DT, CP * 300.0);
+                net.step(5e-4);
+            }
+            let (mut rates, mut lumps) = (Vec::new(), Vec::new());
+            for _ in 0..net.substeps {
+                net.add_valve_flow(0, 0.02 * DT, CP * 300.0);
+                net.step(5e-4);
+                rates.push(net.inducted_rate());
+                lumps.push(net.last_inducted());
+            }
+            // exactly one FV step fell inside the window: from it on, its mean is held
+            let fv: Vec<usize> = (0..lumps.len()).filter(|&i| lumps[i] != 0.0).collect();
+            assert_eq!(fv.len(), 1, "individual {individual}: {lumps:?}");
+            let want = lumps[fv[0]] / net.dt_fv;
+            assert!(
+                (want / 0.02 - 1.0).abs() < 0.1,
+                "individual {individual}: {want}"
+            );
+            assert!(
+                rates[fv[0]..].iter().all(|&r| r == want),
+                "{rates:?} vs {want}"
+            );
+            assert!(rates[..fv[0]].windows(2).all(|w| w[0] == w[1]), "{rates:?}");
+        }
+    }
+
+    #[test]
+    fn pulsed_runners_radiate_without_step_to_step_chatter() {
+        // A 3000 rpm intake event (half-sine draw over a third of each 40 ms cycle) rings the
+        // runner at its quarter-wave (~340 Hz for 0.25 m): a smooth signal, so its step-to-step
+        // difference is far below its swing. An explicit orifice at the trumpet flips the face
+        // flux every FV step instead (Nyquist chatter, difference > swing).
+        let dt = 1.0 / 48_000.0;
+        for (individual, throttle) in [(true, 1.6e-3), (true, 2e-4), (false, 1.6e-2)] {
+            let d = IntakeDef {
+                runner_length_m: 0.25,
+                runner_diameter_m: 0.045,
+                ..def(individual)
+            };
+            let mut net = IntakeFv::new(&d, 8e-3, 1, dt);
+            let mut xs = Vec::new();
+            for k in 0..(0.6 / dt) as usize {
+                let ph = (k as f64 * dt / 0.04).fract();
+                let m = if ph < 0.33 {
+                    0.08 * (ph / 0.33 * std::f64::consts::PI).sin()
+                } else {
+                    0.0
+                };
+                net.add_valve_flow(0, m * dt, CP * 300.0);
+                xs.push(net.step(throttle));
+            }
+            let x = &xs[xs.len() / 2..];
+            let mean = x.iter().sum::<f64>() / x.len() as f64;
+            let rms = (x.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / x.len() as f64).sqrt();
+            let diff =
+                (x.windows(2).map(|w| (w[1] - w[0]).powi(2)).sum::<f64>() / x.len() as f64).sqrt();
+            assert!(
+                diff < 0.3 * rms,
+                "individual {individual}, throttle {throttle}: diff {diff} vs rms {rms}"
             );
         }
     }
