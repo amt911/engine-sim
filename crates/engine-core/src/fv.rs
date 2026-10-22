@@ -1,7 +1,13 @@
-//! Quasi-1D compressible Euler solver for pipes: finite volumes, HLLC Riemann solver,
-//! MUSCL reconstruction (minmod) and SSP-RK2 time stepping (Toro, *Riemann Solvers and
-//! Numerical Methods for Fluid Dynamics*, 3rd ed., ch. 10, 13, 14). Non-linear: pulses steepen
-//! into shocks, which is what makes a loaded exhaust sound harsh (research addendum).
+//! Quasi-1D compressible Euler solver for pipes: finite volumes, HLLC Riemann solver (Toro,
+//! *Riemann Solvers and Numerical Methods for Fluid Dynamics*, 3rd ed., ch. 10), WENO5-Z
+//! reconstruction (Borges, Carmona, Costa & Don, J. Comput. Phys. 227 (2008)) and SSP-RK3 time
+//! stepping (Shu & Osher, J. Comput. Phys. 77 (1988)). Non-linear: pulses steepen into shocks,
+//! which is what makes a loaded exhaust sound harsh (research addendum).
+//!
+//! Why fifth order: the pipes carry sound up to a few kHz at ~2–4 cells per σ of a pulse. A
+//! second-order TVD scheme (MUSCL, van Leer) kept 57 % of a smooth pulse's peak at 2.5 cells per
+//! σ after 0.34 m; WENO5-Z with RK3 keeps 89 %, and the Sod error drops by a third
+//! (`examples/fv_accuracy.rs`). The scheme's own damping no longer eats the exhaust's rasp.
 //!
 //! Conserved per cell (per unit area): ρ, ρu, E = p/(γ−1) + ½ρu². γ = 1.4 (as `gas`).
 
@@ -111,9 +117,12 @@ pub struct Pipe1d {
     pub dx: f64,
     pub left: Boundary,
     pub right: Boundary,
-    /// Scratch buffers (no allocation per step): primitive states with ghosts, face fluxes,
-    /// stage-1 copy, and the right-hand sides of both RK stages.
+    /// Scratch buffers (no allocation per step): primitive states with three ghosts a side,
+    /// each cell's reconstructed left and right edge states, face fluxes, the step's starting
+    /// state, and the right-hand side.
     w: Vec<Prim>,
+    edge_l: Vec<Prim>,
+    edge_r: Vec<Prim>,
     fluxes: Vec<Cons>,
     u0: Vec<Cons>,
     rhs: Vec<Cons>,
@@ -139,7 +148,9 @@ impl Pipe1d {
             dx: length / n as f64,
             left: Boundary::Wall,
             right: Boundary::Wall,
-            w: Vec::with_capacity(n + 4),
+            w: Vec::with_capacity(n + 6),
+            edge_l: vec![init; n + 6],
+            edge_r: vec![init; n + 6],
             fluxes: vec![Cons::default(); n + 1],
             u0: vec![Cons::default(); n],
             rhs: vec![Cons::default(); n],
@@ -190,33 +201,27 @@ impl Pipe1d {
         (self.face_area[0], self.face_area[self.cells.len()])
     }
 
-    /// Advance by `dt` (SSP-RK2 with MUSCL-minmod reconstruction).
+    /// Advance by `dt`: SSP-RK3 (Shu & Osher), U¹ = Uⁿ + Δt·L(Uⁿ), U² = ¾Uⁿ + ¼(U¹ + Δt·L(U¹)),
+    /// Uⁿ⁺¹ = ⅓Uⁿ + ⅔(U² + Δt·L(U²)); the end fluxes are weighted (1, 1, 4)/6 like the stages.
     pub fn step(&mut self, dt: f64) {
+        let n = self.cells.len();
         self.u0.copy_from_slice(&self.cells);
-        self.eval_rhs();
-        let (l1, r1) = (self.fluxes[0], self.fluxes[self.cells.len()]);
-        for (c, d) in self.cells.iter_mut().zip(&self.rhs) {
-            *c = positive(add(*c, *d, dt), self.floors.0, self.floors.1);
+        let mut ends = (Cons::default(), Cons::default());
+        for (stage, (keep, weight)) in [(0.0, 1.0), (0.75, 1.0), (1.0 / 3.0, 4.0)]
+            .into_iter()
+            .enumerate()
+        {
+            self.eval_rhs();
+            let w = weight / 6.0;
+            ends.0 = add(ends.0, self.fluxes[0], w);
+            ends.1 = add(ends.1, self.fluxes[n], w);
+            for ((c, d), c0) in self.cells.iter_mut().zip(&self.rhs).zip(&self.u0) {
+                let u = add(*c, *d, dt);
+                let next = if stage == 0 { u } else { mix(*c0, u, keep) };
+                *c = positive(next, self.floors.0, self.floors.1);
+            }
         }
-        self.eval_rhs();
-        let (l2, r2) = (self.fluxes[0], self.fluxes[self.cells.len()]);
-        for ((c, d), c0) in self.cells.iter_mut().zip(&self.rhs).zip(&self.u0) {
-            let u1 = add(*c, *d, dt);
-            *c = Cons {
-                rho: 0.5 * (c0.rho + u1.rho),
-                mom: 0.5 * (c0.mom + u1.mom),
-                e: 0.5 * (c0.e + u1.e),
-            };
-        }
-        for c in &mut self.cells {
-            *c = positive(*c, self.floors.0, self.floors.1);
-        }
-        let avg = |a: Cons, b: Cons| Cons {
-            rho: 0.5 * (a.rho + b.rho),
-            mom: 0.5 * (a.mom + b.mom),
-            e: 0.5 * (a.e + b.e),
-        };
-        self.end_flux = (avg(l1, l2), avg(r1, r2));
+        self.end_flux = ends;
     }
 
     /// Mass flow per unit area through the right end during the last step (ρu at the face).
@@ -236,6 +241,16 @@ pub fn flux_boundary(mass_flux: f64, energy_flux: f64, cell: Prim) -> Cons {
         rho: mass_flux,
         mom: mass_flux * u + cell.p,
         e: energy_flux,
+    }
+}
+
+/// `keep`·a + (1 − `keep`)·b
+fn mix(a: Cons, b: Cons, keep: f64) -> Cons {
+    let k = 1.0 - keep;
+    Cons {
+        rho: keep * a.rho + k * b.rho,
+        mom: keep * a.mom + k * b.mom,
+        e: keep * a.e + k * b.e,
     }
 }
 
@@ -276,13 +291,38 @@ fn positive(c: Cons, rho_floor: f64, p_floor: f64) -> Cons {
     }
 }
 
-fn minmod(a: f64, b: f64) -> f64 {
-    // van Leer limiter (smooth, TVD; less dissipative than minmod at a few cells per wavelength)
-    if a * b <= 0.0 {
-        0.0
-    } else {
-        2.0 * a * b / (a + b)
-    }
+/// WENO5-Z edge values of the middle cell of `v` = [v₋₂, v₋₁, v₀, v₁, v₂]: (left edge, right
+/// edge). Three third-order candidates weighted by their smoothness (Jiang & Shu, J. Comput.
+/// Phys. 126 (1996)) with the Z weights of Borges et al. (2008), which keep fifth order at
+/// smooth extrema, the crest of a sound wave. The left edge mirrors the stencil, so both share
+/// the smoothness indicators.
+fn weno5z(v: [f64; 5]) -> (f64, f64) {
+    let [a, b, c, d, e] = v;
+    let sq = |x: f64| x * x;
+    let b0 = 13.0 / 12.0 * sq(a - 2.0 * b + c) + 0.25 * sq(a - 4.0 * b + 3.0 * c);
+    let b1 = 13.0 / 12.0 * sq(b - 2.0 * c + d) + 0.25 * sq(b - d);
+    let b2 = 13.0 / 12.0 * sq(c - 2.0 * d + e) + 0.25 * sq(3.0 * c - 4.0 * d + e);
+    let tau = (b0 - b2).abs();
+    // ε guards a flat stencil (β = 0). 1e-40 (as in Borges et al.) keeps (τ/ε)² finite for
+    // any τ these pipes produce (it would overflow only past τ ≈ 1e114); a denormal-sized ε
+    // makes it infinite and the weights ∞/∞.
+    let z = |beta: f64| 1.0 + sq(tau / (beta + 1e-40));
+    let (z0, z1, z2) = (z(b0), z(b1), z(b2));
+    let right = {
+        let (a0, a1, a2) = (0.1 * z0, 0.6 * z1, 0.3 * z2);
+        let q0 = (2.0 * a - 7.0 * b + 11.0 * c) / 6.0;
+        let q1 = (-b + 5.0 * c + 2.0 * d) / 6.0;
+        let q2 = (2.0 * c + 5.0 * d - e) / 6.0;
+        (a0 * q0 + a1 * q1 + a2 * q2) / (a0 + a1 + a2)
+    };
+    let left = {
+        let (a0, a1, a2) = (0.1 * z2, 0.6 * z1, 0.3 * z0);
+        let q0 = (2.0 * e - 7.0 * d + 11.0 * c) / 6.0;
+        let q1 = (-d + 5.0 * c + 2.0 * b) / 6.0;
+        let q2 = (2.0 * c + 5.0 * b - a) / 6.0;
+        (a0 * q0 + a1 * q1 + a2 * q2) / (a0 + a1 + a2)
+    };
+    (left, right)
 }
 
 /// Ghost state beyond an end, given the adjacent interior state. `outward` = +1 for the right
@@ -321,24 +361,43 @@ impl Pipe1d {
         let gr = ghost(self.right, last, 1.0);
         let w = &mut self.w;
         w.clear();
-        w.push(gl);
-        w.push(gl);
+        w.extend([gl; 3]);
         w.extend(self.cells.iter().map(|c| c.to_prim()));
-        w.push(gr);
-        w.push(gr);
-        let w = &self.w;
-        let face = |i: usize, side: f64| -> Prim {
-            let (a, s, c) = (w[i - 1], w[i], w[i + 1]);
-            let r = Prim {
-                rho: s.rho + side * 0.5 * minmod(s.rho - a.rho, c.rho - s.rho),
-                u: s.u + side * 0.5 * minmod(s.u - a.u, c.u - s.u),
-                p: s.p + side * 0.5 * minmod(s.p - a.p, c.p - s.p),
-            };
-            if r.rho > 0.0 && r.p > 0.0 { r } else { s }
-        };
-        // face k sits between w[k] and w[k+1], k = 1..=n+1; cell j lies between faces j and j+1
+        w.extend([gr; 3]);
+        // edges of every cell next to a face: w[2..n + 4]; a reconstruction that is not
+        // physical (ρ or p ≤ 0 at a strong shock) falls back to the cell's own state
+        for i in 2..n + 4 {
+            let s = w[i];
+            let (rl, rr) = weno5z([
+                w[i - 2].rho,
+                w[i - 1].rho,
+                s.rho,
+                w[i + 1].rho,
+                w[i + 2].rho,
+            ]);
+            // velocity as volume flow u·A, continuous across a compact area step (where u
+            // itself jumps by the area ratio), back to u with this cell's area
+            let q = |k: usize| w[k].u * self.area[(k.max(3) - 3).min(n - 1)];
+            // cell i (ghosts included) has faces i − 3 (left) and i − 2 (right)
+            let face = |k: usize| self.face_area[k.clamp(3, n + 3) - 3];
+            let (ql, qr) = weno5z([q(i - 2), q(i - 1), q(i), q(i + 1), q(i + 2)]);
+            let (ul, ur) = (ql / face(i), qr / face(i + 1));
+            let (pl, pr) = weno5z([w[i - 2].p, w[i - 1].p, s.p, w[i + 1].p, w[i + 2].p]);
+            let ok = |r: Prim| if r.rho > 0.0 && r.p > 0.0 { r } else { s };
+            self.edge_l[i] = ok(Prim {
+                rho: rl,
+                u: ul,
+                p: pl,
+            });
+            self.edge_r[i] = ok(Prim {
+                rho: rr,
+                u: ur,
+                p: pr,
+            });
+        }
+        // face k sits between w[k + 2] and w[k + 3], k = 0..=n; cell j between faces j and j + 1
         for (k, f) in self.fluxes.iter_mut().enumerate() {
-            *f = hllc(face(k + 1, 1.0), face(k + 2, -1.0));
+            *f = hllc(self.edge_r[k + 2], self.edge_l[k + 3]);
         }
         // A wall passes no mass or energy; MUSCL at a mirrored ghost is not exactly symmetric,
         // so impose it (keeps closed pipes conservative to round-off).
@@ -360,9 +419,13 @@ impl Pipe1d {
             let (a, b) = (self.fluxes[j], self.fluxes[j + 1]);
             let (fa, fb) = (self.face_area[j], self.face_area[j + 1]);
             let inv = 1.0 / (self.area[j] * self.dx);
-            // geometric source p·dA/dx keeps still gas still across an area change
-            let p = self.w[j + 2].p;
-            let cell = self.w[j + 2];
+            // Geometric source ∫p dA over the cell, split at its centre: each half-cell's area
+            // change times the pressure reconstructed at that edge, consistent with the edge
+            // states the fluxes see (with the cell pressure instead, a 4:1 step transmitted 1.38
+            // where linear theory gives 1.6). Still gas: p·(A_r − A_l), so it stays still.
+            let area = self.area[j];
+            let ps = self.edge_r[j + 3].p * (fb - area) + self.edge_l[j + 3].p * (area - fa);
+            let cell = self.w[j + 3];
             let wall = if self.friction > 0.0 {
                 let d = (4.0 * self.area[j] / std::f64::consts::PI).sqrt();
                 -self.friction / (2.0 * d) * cell.rho * cell.u * cell.u.abs()
@@ -371,7 +434,7 @@ impl Pipe1d {
             };
             *r = Cons {
                 rho: -(fb * b.rho - fa * a.rho) * inv,
-                mom: -(fb * b.mom - fa * a.mom - p * (fb - fa)) * inv + wall,
+                mom: -(fb * b.mom - fa * a.mom - ps) * inv + wall,
                 e: -(fb * b.e - fa * a.e) * inv,
             };
         }
@@ -589,11 +652,13 @@ mod tests {
     fn area_step_transmits_two_a1_over_a1_plus_a2() {
         // Linear theory for a compact area step: pressure transmission 2A₁/(A₁+A₂) = 0.4 for
         // A₂ = 4A₁. Normalised by the same pipe without a step (removes numerical damping).
+        // Reconstructing velocity as volume flow at the face area converges to it (0.400 and
+        // 1.597 at 2.5 mm cells); reconstructing u itself converged to 0.37 and 1.47.
         let ratio = transmitted_peak(1e-3, 4e-3) / transmitted_peak(1e-3, 1e-3);
-        assert!((ratio - 0.4).abs() < 0.05, "transmitted {ratio:.3}");
+        assert!((ratio - 0.4).abs() < 0.03, "transmitted {ratio:.3}");
         // and into a narrower pipe (A₂ = A₁/4): 2·4/(4+1) = 1.6
         let up = transmitted_peak(4e-3, 1e-3) / transmitted_peak(4e-3, 4e-3);
-        assert!((up - 1.6).abs() < 0.15, "transmitted {up:.3}");
+        assert!((up - 1.6).abs() < 0.08, "transmitted {up:.3}");
     }
 
     #[test]
@@ -731,10 +796,10 @@ mod tests {
     }
 
     #[test]
-    fn a_smooth_pulse_keeps_its_peak_second_order() {
+    fn a_smooth_pulse_keeps_its_peak() {
         // Gaussian bump (σ = 10 mm, 500 Pa) at rest splits into two 250 Pa halves (d'Alembert).
-        // MUSCL carries the right-going half 0.34 m keeping ~78 % of its peak (the TVD limiter
-        // clips the extremum at 5 cells per σ); first-order upwinding keeps only ~36 % (measured).
+        // WENO5-Z + RK3 carries the right-going half 0.34 m keeping 98 % of its peak at 5 cells
+        // per σ (MUSCL–van Leer kept 78 %, first-order upwinding 36 %; measured).
         let air = Prim {
             rho: 1.2,
             u: 0.0,
@@ -759,7 +824,7 @@ mod tests {
             .map(|i| p.prim(i).p - 101_325.0)
             .fold(0.0, f64::max);
         assert!(
-            (0.7 * 250.0..1.05 * 250.0).contains(&peak),
+            (0.95 * 250.0..1.02 * 250.0).contains(&peak),
             "peak {peak} Pa"
         );
     }
