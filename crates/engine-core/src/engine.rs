@@ -1614,6 +1614,11 @@ mod tests {
         let mut e = idling_at(900.0, 0.1, -400.0, -10.0);
         e.idle_control(1e-3, &Controls::default());
         assert_eq!(e.iac_integral, 0.1);
+        // just fast enough: 900 − 100.2 = 799.8 within the second, so it holds (the rate
+        // filter takes 100.9 to 100.2 in this 1 ms step)
+        let mut e = idling_at(900.0, 0.1, -100.9, -10.0);
+        e.idle_control(1e-3, &Controls::default());
+        assert_eq!(e.iac_integral, 0.1);
         // drifting down at 50 rpm/s it would still be at 850: it closes
         let mut e = idling_at(900.0, 0.1, -50.0, -10.0);
         e.idle_control(1e-3, &Controls::default());
@@ -1630,6 +1635,33 @@ mod tests {
         let mut e = idling_at(1400.0, -5.0, 0.0, -10.0);
         e.idle_control(1e-3, &Controls::default());
         assert_relative_eq!(e.iac, IAC_MIN * 0.0055, max_relative = 1e-9);
+    }
+
+    #[test]
+    fn the_cut_offs_switch_with_their_hysteresis() {
+        // Inline-4: idle 800, cut-off 1500 → reactivation at min(800 + 300, 1500 − 100) = 1100;
+        // redline 7000 → the limiter resumes at 6800.
+        let at = |e: &mut Engine, rpm: f64, throttle: f64| {
+            e.omega = rpm_to_rad_s(rpm);
+            e.fuel_cutoffs(throttle);
+            (e.overrun_cut, e.limiter_cut)
+        };
+        let mut e = Engine::new(EngineDef::inline4(), 800.0, 1);
+        assert_eq!(at(&mut e, 1200.0, 0.0), (false, false), "below the cut-off");
+        assert_eq!(at(&mut e, 1600.0, 0.02), (false, false), "pedal pressed");
+        assert_eq!(at(&mut e, 1600.0, 0.0), (true, false));
+        assert_eq!(at(&mut e, 1200.0, 0.0), (true, false), "held down to 1100");
+        assert_eq!(at(&mut e, 1090.0, 0.0), (false, false));
+        assert_eq!(at(&mut e, 1200.0, 0.0), (false, false), "stays fuelled");
+        assert_eq!(at(&mut e, 7000.0, 1.0), (false, true));
+        assert_eq!(at(&mut e, 6900.0, 1.0), (false, true), "held down to 6800");
+        assert_eq!(at(&mut e, 6790.0, 1.0), (false, false));
+        assert_eq!(at(&mut e, 6900.0, 1.0), (false, false), "stays fuelled");
+        // Single: idle 1200, cut-off 1500 → min(1500, 1400) = 1400
+        let mut e = Engine::new(EngineDef::single(), 1200.0, 1);
+        assert_eq!(at(&mut e, 1600.0, 0.0), (true, false));
+        assert_eq!(at(&mut e, 1450.0, 0.0), (true, false));
+        assert_eq!(at(&mut e, 1390.0, 0.0), (false, false));
     }
 
     #[test]
