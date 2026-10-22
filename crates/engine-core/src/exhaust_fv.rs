@@ -208,11 +208,7 @@ impl ExhaustFv {
             };
             let mass_flux = scale * self.acc_mass[i] / (a * dt);
             let energy_flux = scale * self.acc_energy[i] / (a * dt);
-            let rho_up = if mass_flux >= 0.0 {
-                cell.rho.max(1e-3)
-            } else {
-                cell.rho
-            };
+            let rho_up = cell.rho.max(1e-3);
             pipe.left = Boundary::Flux(Cons {
                 rho: mass_flux,
                 mom: mass_flux * mass_flux / rho_up + cell.p,
@@ -594,6 +590,105 @@ mod tests {
         assert!((v.volume_m3 - vol).abs() < 1e-15);
         assert!((v.pressure() - 101_325.0).abs() < 1e-6);
         assert!((v.temperature() - 600.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_fresh_network_holds_its_geometric_volume_of_gas() {
+        // 2 × π/4·0.04²·0.7 primaries + junction + collector + 6 L muffler + 1.5 m tail, at
+        // 1 atm / 600 K (ρ = 0.5884 kg/m³), defaults of `ExhaustDef`, all diameters by hand.
+        let d = def();
+        let disc = |dia: f64| std::f64::consts::PI / 4.0 * dia * dia;
+        let v = 2.0 * disc(d.primary_diameter_m) * d.primary_length_m
+            + disc(d.collector_diameter_m) * 3.0 * d.collector_diameter_m
+            + disc(d.collector_diameter_m) * d.collector_length_m
+            + d.muffler_volume_m3
+            + disc(d.tail_diameter_m) * d.tail_length_m;
+        let m = ExhaustFv::new(&d, 2, DT).total_mass();
+        assert!(
+            (m / (0.5884 * v) - 1.0).abs() < 0.03,
+            "{m} kg vs {}",
+            0.5884 * v
+        );
+    }
+
+    #[test]
+    fn the_pipes_advance_once_per_fv_step() {
+        // Physics time and pipe time stay in step: dt_fv = substeps · dt, and the radiated value
+        // changes exactly once per FV step under a steady flow.
+        let mut net = ExhaustFv::new(&def(), 1, DT);
+        assert!((net.dt_fv - net.substeps as f64 * DT).abs() < 1e-18);
+        assert!(net.substeps > 1);
+        // let the flow reach the tail first (≈ 5 ms), ending on an FV step boundary
+        for _ in 0..net.substeps * 400 {
+            net.add_valve_flow(0, 0.05 * DT, 1004.5 * 900.0);
+            net.step();
+        }
+        let mut updates = 0;
+        let mut last = net.step();
+        let steps = 70 * net.substeps;
+        for _ in 1..steps {
+            net.add_valve_flow(0, 0.05 * DT, 1004.5 * 900.0);
+            let r = net.step();
+            if r != last {
+                updates += 1;
+            }
+            last = r;
+        }
+        assert!(
+            (68..=70).contains(&updates),
+            "{updates} updates in {steps} steps"
+        );
+    }
+
+    #[test]
+    fn reversion_takes_at_most_half_of_the_first_cell() {
+        for (demand, expected) in [(2.0, None), (1e-9, Some(1e-9))] {
+            let mut net = ExhaustFv::new(&def(), 1, DT);
+            let half = 0.5 * net.port_volume(0).mass_kg;
+            let m0 = net.total_mass();
+            net.add_valve_flow(0, -demand, 1004.5 * 600.0);
+            let mut vented = 0.0;
+            for _ in 0..net.substeps {
+                net.step();
+                vented += net.last_vented();
+            }
+            let taken = m0 - net.total_mass() - vented;
+            let want = expected.unwrap_or(half);
+            assert!(
+                (taken - want).abs() < 1e-6 * want,
+                "{demand}: took {taken}, want {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn outflow_radiates_a_positive_source() {
+        // Gas leaving the tail is ρu > 0: a steady exhaust flow radiates a positive mean.
+        let mut net = ExhaustFv::new(&def(), 1, DT);
+        let mut sum = 0.0;
+        let n = (0.05 / DT) as usize;
+        for k in 0..n {
+            net.add_valve_flow(0, 0.05 * DT, 1004.5 * 900.0);
+            let r = net.step();
+            if k > n / 2 {
+                sum += r;
+            }
+        }
+        assert!(sum > 0.0, "mean source {sum}");
+    }
+
+    #[test]
+    fn a_valve_jet_enters_the_primary_at_its_flow_velocity() {
+        // 50 g/s into a 40 mm primary of 0.59 kg/m³ gas: G = ṁ/A ≈ 39.8 kg/(m²·s), so the gas at
+        // the port moves at about G/ρ — tens of m/s, set by the momentum the jet brings in.
+        let mut net = ExhaustFv::new(&def(), 1, DT);
+        for _ in 0..(0.002 / DT) as usize {
+            net.add_valve_flow(0, 0.05 * DT, 1004.5 * 600.0);
+            net.step();
+        }
+        let c = net.primaries[0].prim(0);
+        let g = 0.05 / area(0.04);
+        assert!((c.u / (g / c.rho) - 1.0).abs() < 0.1, "{c:?}");
     }
 
     #[test]
