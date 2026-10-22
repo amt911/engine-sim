@@ -237,3 +237,24 @@ truly hung mutant times out again cheaply. cargo-mutants 27 adds its field-delet
 whatever `-F` says, so only the retried names are counted.
 
 Found: 2026-10-22 · tests
+
+### Never run the mutation gate on the tree you are editing
+
+**Symptom.** "The diff might be out of date with this source tree", then "FAIL: no mutants tested".
+**Cause.** The run started frozen (another session held the lock). By the time cargo-mutants read
+the source, `engine.rs` had changed under it, and `--in-diff` no longer matched.
+**Fix / workaround.** Run gates in a detached worktree at the PR commit
+(`git worktree add --detach target/wt-gate <branch>`) and keep working in the main checkout.
+
+Found: 2026-10-22 · tests
+
+### A sound source summed over outlets is not one outlet at the sum
+
+**Symptom.** The LFA at 8000 rpm WOT was 87 % broadband "air"; the inline-4 was clean.
+**Cause.** Jet noise took u from `radiated`, the c·ρu summed over every tail pipe. Two tails gave
+one jet at twice the speed, so 4× the dynamic pressure, where two incoherent jets give √2:
++9 dB.
+**Fix / workaround.** `Texture::flow_noise(radiated, outlets, …)`: per-outlet velocity, √n sum.
+Any nonlinear source (∝ u², ∝ ṁ·u) has to be evaluated per outlet.
+
+Found: 2026-10-22 · audio
