@@ -506,6 +506,17 @@ fn woschni_htc(bore_m: f64, p_pa: f64, t_k: f64, w_m_s: f64) -> f64 {
         * w_m_s.max(0.0).powf(0.8)
 }
 
+/// Mean piston speed S̄p = 2·S·N, m/s (Heywood, *ICE Fundamentals*, eq. 2.2), whichever way the
+/// crank turns.
+fn mean_piston_speed(stroke_m: f64, omega: f64) -> f64 {
+    2.0 * stroke_m * omega.abs() / (2.0 * PI)
+}
+
+/// The cylinder is exchanging gas while either valve is off its seat.
+fn gas_exchange(a_in: f64, a_ex: f64) -> bool {
+    a_in > 0.0 || a_ex > 0.0
+}
+
 /// Woschni's characteristic gas velocity, m/s: C₁·S̄p (C₁ = 6.18 with a valve open, 2.28 when
 /// closed) plus 3.24e-3·`rise_k`, the combustion term V_d·T_r·(p − p_mot)/(p_r·V_r) in K.
 fn woschni_velocity(mean_piston_speed: f64, gas_exchange: bool, rise_k: f64) -> f64 {
@@ -787,8 +798,7 @@ impl Engine {
             && self.rpm() > self.def.overrun_fuel_cut_rpm;
         let fire_ok = c.ignition && self.rpm() < self.def.redline_rpm && !overrun_cut;
         let wall_area = 2.0 * g.piston_area();
-        // mean piston speed S̄p = 2·S·N, m/s
-        let mean_piston_speed = 2.0 * g.stroke_m * self.omega.abs() / (2.0 * PI);
+        let mean_piston_speed = mean_piston_speed(g.stroke_m, self.omega);
         match self.def.intake.model {
             IntakeModel::ZeroD => self.intake_net = None,
             IntakeModel::Fv => {
@@ -937,7 +947,7 @@ impl Engine {
             // motored one, a polytropic (n = 1.32) compression from intake closing.
             let t_gas = cs.gas.temperature();
             let p_gas = cs.gas.pressure();
-            let exchange = a_in > 0.0 || a_ex > 0.0;
+            let exchange = gas_exchange(a_in, a_ex);
             let rise_k = if exchange {
                 0.0
             } else {
@@ -1212,6 +1222,63 @@ mod tests {
         assert_relative_eq!(woschni_velocity(10.0, false, 0.0), 22.8);
         assert_relative_eq!(woschni_velocity(10.0, true, 0.0), 61.8);
         assert_relative_eq!(woschni_velocity(10.0, false, 1000.0), 22.8 + 3.24);
+        // S̄p = 2·S·N (Heywood eq. 2.2): 86 mm at 3000 rpm (50 rev/s) → 8.6 m/s, either way round
+        let w = rpm_to_rad_s(3000.0);
+        assert_relative_eq!(mean_piston_speed(0.086, w), 8.6, max_relative = 1e-12);
+        assert_relative_eq!(mean_piston_speed(0.086, -w), 8.6, max_relative = 1e-12);
+        // gas exchange: either valve off its seat
+        assert!(!gas_exchange(0.0, 0.0));
+        assert!(gas_exchange(1e-6, 0.0));
+        assert!(gas_exchange(0.0, 1e-6));
+        assert!(gas_exchange(1e-6, 1e-6));
+    }
+
+    #[test]
+    fn the_spark_slews_at_half_the_crank_travel() {
+        // 3000 rpm = 18 000 °/s; a 0.1 ms step travels 1.8°, so the trim moves at most 0.9°,
+        // and the same running backwards
+        for rpm in [3000.0, -3000.0] {
+            let mut e = Engine::new(EngineDef::inline4(), 3000.0, 1);
+            e.omega = rpm_to_rad_s(rpm);
+            e.idle_spark_deg = 2.0;
+            assert_relative_eq!(e.slew_spark(12.0, 1e-4), 2.9, max_relative = 1e-12);
+            assert_relative_eq!(e.slew_spark(-8.0, 1e-4), 1.1, max_relative = 1e-12);
+            assert_relative_eq!(e.slew_spark(2.5, 1e-4), 2.5, max_relative = 1e-12);
+        }
+    }
+
+    #[test]
+    fn each_cylinder_fires_at_its_spark_angle_before_top_centre() {
+        // A charge fires on the first step past `spark_advance_at(rpm) + idle trim` degrees
+        // before its firing top centre (crank angle 720°), not half a turn late, and a retarded
+        // trim (negative) fires it later. At idle the ECU holds a retard, so the trim is real.
+        let mut e = Engine::new(EngineDef::inline4(), 800.0, 1);
+        let c = Controls::default();
+        run(&mut e, 3.0, &c);
+        let mut checked = 0;
+        let mut trims = (f64::MAX, f64::MIN);
+        for _ in 0..(0.5 / DT) as usize {
+            let armed: Vec<bool> = e.cyl.iter().map(|cs| cs.armed).collect();
+            e.step(DT, &c);
+            // the crank's travel this step, degrees
+            let travel = e.omega.abs().to_degrees() * DT;
+            let want = e.def.spark_advance_at(e.rpm()) + e.idle_spark_deg;
+            for (cs, was) in e.cyl.iter().zip(armed) {
+                if was && !cs.armed {
+                    // signed: an idle retard can put the spark just after top centre
+                    let btdc = (720.0 - cs.cycle_deg + 360.0).rem_euclid(720.0) - 360.0;
+                    assert!(
+                        btdc <= want + 0.01 && btdc > want - travel - 0.01,
+                        "fired {btdc:.3}° BTDC, spark at {want:.3}° (step {travel:.3}°)"
+                    );
+                    checked += 1;
+                    trims = (trims.0.min(e.idle_spark_deg), trims.1.max(e.idle_spark_deg));
+                }
+            }
+        }
+        // 800 rpm, 4 cylinders: 6.7 cycles/s · 4 · 0.5 s ≈ 13 firings
+        assert!(checked >= 12, "{checked} firings checked");
+        assert!(trims.1 < -1.0, "idle trim {trims:?}° should be a retard");
     }
 
     #[test]
