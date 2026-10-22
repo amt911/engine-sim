@@ -463,4 +463,131 @@ mod tests {
         }
         assert!(net.manifold_pressure() > 0.0);
     }
+
+    fn runner_energy(net: &IntakeFv) -> f64 {
+        let p = &net.runners[0];
+        p.cells
+            .iter()
+            .zip(&p.area)
+            .map(|(c, a)| c.e * a * p.dx)
+            .sum()
+    }
+
+    /// One FV step through a closed ITB (a wall: nothing enters), the valve asking `dm` with
+    /// enthalpy `h`: what the runner gave up, (Δm, ΔE).
+    fn one_closed_draw(dm: f64, h: f64) -> (f64, f64, f64) {
+        let mut net = IntakeFv::new(&def(true), 2e-3, 1, DT);
+        let last = net.runners[0].cells.len() - 1;
+        let cell_mass = net.runners[0].cells[last].rho * net.a_runner * net.runners[0].dx;
+        let (m0, e0) = (net.total_mass(), runner_energy(&net));
+        net.add_valve_flow(0, dm * cell_mass, h);
+        for _ in 0..net.substeps {
+            net.step(0.0);
+        }
+        assert_eq!(net.last_inducted(), 0.0);
+        (net.total_mass() - m0, runner_energy(&net) - e0, cell_mass)
+    }
+
+    #[test]
+    fn a_valve_takes_at_most_half_the_last_cell_per_fv_step() {
+        let h = CP * 300.0;
+        // asked for 10 cells: gets half of one, and the energy it carries scales the same
+        let (dm, de, cell) = one_closed_draw(10.0, h);
+        assert!((dm / cell + 0.5).abs() < 1e-9, "{}", dm / cell);
+        assert!((de / (cell * h) + 0.5).abs() < 1e-9, "{}", de / (cell * h));
+        // asked for a tenth: gets all of it
+        let (dm, de, cell) = one_closed_draw(0.1, h);
+        assert!((dm / cell + 0.1).abs() < 1e-9, "{}", dm / cell);
+        assert!((de / (cell * h) + 0.1).abs() < 1e-9, "{}", de / (cell * h));
+    }
+
+    #[test]
+    fn the_induction_source_is_c_times_the_mass_flux_at_the_mouth() {
+        // c·ρu with ρu = ṁ / A_runner, averaged over the FV step's sub-cycles (a coarse physics
+        // step forces several), whatever the throttle arrangement.
+        for individual in [true, false] {
+            let dt = 2e-4;
+            let mut net = IntakeFv::new(&def(individual), 2e-3, 1, dt);
+            let mut seen = 0.0_f64;
+            for _ in 0..2_000 {
+                net.add_valve_flow(0, 0.02 * dt, CP * 300.0);
+                let src = net.step(5e-4);
+                let want = C_AIR * net.inducted_rate() / net.a_runner;
+                assert!(
+                    (src - want).abs() <= 1e-9 * want.abs().max(1e-6),
+                    "{src} vs {want}"
+                );
+                seen = seen.max(src);
+            }
+            assert!(seen > 1.0, "individual {individual}: no flow ({seen})");
+        }
+    }
+
+    fn settled_vacuum(trumpet_loss: f64, throttle: f64) -> f64 {
+        let d = IntakeDef {
+            trumpet_loss,
+            ..def(true)
+        };
+        let mut net = IntakeFv::new(&d, 2e-3, 1, DT);
+        for _ in 0..(0.2 / DT) as usize {
+            net.add_valve_flow(0, 0.01 * DT, CP * 300.0);
+            net.step(throttle);
+        }
+        ATM_PA - net.manifold_pressure()
+    }
+
+    #[test]
+    fn the_throttle_flows_its_area_times_the_trumpet_cd() {
+        // loss 3 → Cd = 1/√(1 + 3) = 0.5: 4 cm² with Cd 0.5 is 2 cm² with Cd 1
+        let half = settled_vacuum(3.0, 4e-4);
+        let full = settled_vacuum(0.0, 2e-4);
+        assert!(half > 1_000.0, "{half} Pa");
+        assert!((half / full - 1.0).abs() < 1e-6, "{half} vs {full}");
+    }
+
+    #[test]
+    fn a_throttle_wider_than_its_runner_flows_as_the_runner() {
+        // Ø42 mm runner = 13.85 cm²; ten times that opens no further than the runner itself
+        let a = std::f64::consts::PI * 0.021 * 0.021;
+        let at_runner = settled_vacuum(3.0, a);
+        let wider = settled_vacuum(3.0, 10.0 * a);
+        assert!(at_runner > 1.0, "{at_runner} Pa");
+        assert!(
+            (wider / at_runner - 1.0).abs() < 1e-9,
+            "{wider} vs {at_runner}"
+        );
+    }
+
+    #[test]
+    fn the_port_is_the_last_runner_cell() {
+        // 0.3 m runner in 8 cells of 37.5 mm, Ø42 mm: 1.38544e-3 m² · 0.0375 m = 5.1954e-5 m³
+        let net = IntakeFv::new(&def(true), 2e-3, 1, DT);
+        let v = net.port_volume(0);
+        assert!(
+            (v.volume_m3 / 5.1954e-5 - 1.0).abs() < 1e-4,
+            "{}",
+            v.volume_m3
+        );
+        assert!(
+            (v.pressure() / ATM_PA - 1.0).abs() < 1e-9,
+            "{}",
+            v.pressure()
+        );
+    }
+
+    #[test]
+    fn the_itb_gauge_reads_the_runner_middle() {
+        let mut net = IntakeFv::new(&def(true), 2e-3, 1, DT);
+        let n = net.runners[0].cells.len();
+        for (i, c) in net.runners[0].cells.iter_mut().enumerate() {
+            *c = Prim {
+                rho: 1.2,
+                u: 0.0,
+                p: 90_000.0 + 1_000.0 * i as f64,
+            }
+            .to_cons();
+        }
+        assert_eq!(n, 8);
+        assert!((net.manifold_pressure() - 94_000.0).abs() < 1e-6);
+    }
 }
