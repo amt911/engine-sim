@@ -7,6 +7,8 @@ pub mod config;
 pub mod drivetrain;
 pub mod engine;
 pub mod exhaust;
+pub mod exhaust_fv;
+pub mod fv;
 pub mod gas;
 pub mod geometry;
 pub mod sound;

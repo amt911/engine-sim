@@ -425,10 +425,17 @@ mod probe {
     #[test]
     #[ignore]
     fn levels() {
+        let fv = |mut d: EngineDef| {
+            d.exhaust.model = engine_core::exhaust::ExhaustModel::Fv;
+            d.name += " (fv)";
+            d
+        };
         for d in [
             EngineDef::single(),
             EngineDef::inline4(),
             EngineDef::lfa_v10(),
+            fv(EngineDef::inline4()),
+            fv(EngineDef::lfa_v10()),
         ] {
             for (t, rpm) in [(0.0, 3000.0), (1.0, 3000.0), (0.0, 7000.0), (1.0, 7000.0)] {
                 let mut sim = Simulation::new(d.clone(), FS, 1);

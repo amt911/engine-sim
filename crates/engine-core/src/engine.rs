@@ -5,7 +5,8 @@
 //! Model ladder and references: `docs/research/simulador-motor-rust.md`.
 
 use crate::combustion::{AFR_STOICH, charge_energy, wiebe};
-use crate::exhaust::{ExhaustDef, ExhaustNet, REVERSION_TEMP_K};
+use crate::exhaust::{ExhaustDef, ExhaustModel, ExhaustNet, REVERSION_TEMP_K};
+use crate::exhaust_fv::ExhaustFv;
 use crate::gas::{
     GasVolume, Reservoir, exchange_with_reservoir, exhaust_valve_flow, plan_exchange,
 };
@@ -44,6 +45,13 @@ pub struct EngineDef {
     pub fmep_bar: [f64; 3],
     /// Sound texture levels (noise, intake, mechanics, combustion variability).
     pub sound: SoundDef,
+    /// Discharge-coefficient ratio for reverse flow through the exhaust valve (pipe → cylinder)
+    /// relative to forward flow. Estimate (Blair, *Design and Simulation of Four-Stroke Engines*,
+    /// separate inflow/outflow Cd maps); 1 = symmetric.
+    pub exhaust_reverse_cd_ratio: f64,
+    /// Deceleration fuel cut-off: with the throttle closed above this speed no fuel is injected
+    /// (what production ECUs do on overrun); 0 disables it.
+    pub overrun_fuel_cut_rpm: f64,
 }
 
 impl Default for EngineDef {
@@ -92,11 +100,15 @@ impl EngineDef {
                 tail_length_m: 1.0,
                 tail_diameter_m: 0.045,
                 muffler_transmission: 0.6,
+                model: ExhaustModel::Waveguide,
+                muffler_volume_m3: 0.003,
             },
             redline_rpm: 7500.0,
             starter_torque_nm: 25.0,
             fmep_bar: [0.97, 0.15, 0.05],
             sound: SoundDef::default(),
+            overrun_fuel_cut_rpm: 1500.0,
+            exhaust_reverse_cd_ratio: 0.75,
         }
     }
 
@@ -163,12 +175,16 @@ impl EngineDef {
                 tail_diameter_m: 0.060,
                 // Sport muffler with bypass valves: less damping than a road car.
                 muffler_transmission: 0.7,
+                model: ExhaustModel::Waveguide,
+                muffler_volume_m3: 0.010,
             },
             redline_rpm: 9000.0,
             starter_torque_nm: 150.0,
             // Low-friction racing build (dry sump, titanium valvetrain): estimated.
             fmep_bar: [0.8, 0.10, 0.015],
             sound: SoundDef::default(),
+            overrun_fuel_cut_rpm: 1500.0,
+            exhaust_reverse_cd_ratio: 0.75,
         }
     }
 
@@ -252,6 +268,8 @@ const TORQUE_AVG_TAU_S: f64 = 0.15;
 /// charge in ~0.3 s and costs ~1–2 % of the trapped mass per cycle at WOT (typical
 /// blow-by is ~1 % of intake flow; Heywood, ch. 8).
 const BLOWBY_AREA_FRACTION: f64 = 1e-4;
+/// Speed above which the idle air control opens proportionally on overrun (dashpot).
+const DASHPOT_ONSET_RPM: f64 = 1500.0;
 /// Fraction of the equalising mass a valve may move per substep (see `step`).
 const VALVE_RELAX: f64 = 0.5;
 
@@ -286,8 +304,12 @@ pub struct Engine {
     rng: u64,
     /// Exhaust waveguide network, built for the current step size.
     net: Option<ExhaustNet>,
+    /// Non-linear finite-volume exhaust, when `exhaust.model` is `fv`.
+    fv: Option<ExhaustFv>,
     flows: Vec<f64>,
     texture: Texture,
+    /// Total mass that flowed back from the exhaust into the cylinders, kg (diagnostics).
+    reversion_kg: f64,
 }
 
 /// Crank angle `a` (deg) crossed in the step (prev, cur], on the 720° circle.
@@ -328,8 +350,10 @@ impl Engine {
             combustions: 0,
             rng: seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1,
             net: None,
+            fv: None,
             flows: Vec::new(),
             texture: Texture::new(seed ^ 0x7E57),
+            reversion_kg: 0.0,
         }
     }
 
@@ -364,8 +388,11 @@ impl Engine {
 
     fn throttle_area(&self, throttle: f64) -> f64 {
         let t = throttle.clamp(0.0, 1.0);
-        let open =
-            self.def.idle_throttle + (1.0 - self.def.idle_throttle) * (1.0 - (t * PI * 0.5).cos());
+        // Idle air control opens with speed above 1500 rpm (deceleration "dashpot"), as ECUs do:
+        // a fixed idle bypass would pull the manifold to near vacuum on overrun at high rpm.
+        // Below 1500 rpm it is the plain idle bypass (no feedback on the idle speed itself).
+        let idle = self.def.idle_throttle * (self.rpm() / DASHPOT_ONSET_RPM).max(1.0);
+        let open = idle + (1.0 - idle) * (1.0 - (t * PI * 0.5).cos());
         DISCHARGE_CD * PI * 0.25 * self.def.throttle_diameter_m.powi(2) * open
     }
 
@@ -389,10 +416,26 @@ impl Engine {
         let evc = (self.def.exhaust_valve.open_deg + self.def.exhaust_valve.duration_deg)
             .rem_euclid(720.0);
         let mut valve_closings = 0;
-        let fire_ok = c.ignition && self.rpm() < self.def.redline_rpm;
+        let overrun_cut = self.def.overrun_fuel_cut_rpm > 0.0
+            && c.throttle <= 0.01
+            && self.rpm() > self.def.overrun_fuel_cut_rpm;
+        let fire_ok = c.ignition && self.rpm() < self.def.redline_rpm && !overrun_cut;
         let wall_area = 2.0 * g.piston_area();
-        if self.net.as_ref().is_none_or(|n| n.dt != dt) {
-            self.net = Some(ExhaustNet::new(&self.def.exhaust, self.cyl.len(), dt));
+        match self.def.exhaust.model {
+            ExhaustModel::Waveguide => {
+                self.fv = None;
+                if self.net.as_ref().is_none_or(|n| n.dt != dt) {
+                    self.net = Some(ExhaustNet::new(&self.def.exhaust, self.cyl.len(), dt));
+                }
+            }
+            ExhaustModel::Fv => {
+                self.net = None;
+                if self.fv.as_ref().is_none_or(|n| n.dt != dt) {
+                    self.fv = Some(ExhaustFv::new(&self.def.exhaust, self.cyl.len(), dt));
+                }
+            }
+        }
+        if self.flows.len() != self.cyl.len() {
             self.flows = vec![0.0; self.cyl.len()];
         }
         let blowby_area = BLOWBY_AREA_FRACTION * g.piston_area();
@@ -422,17 +465,34 @@ impl Engine {
                 (a_in > 0.0).then(|| plan_exchange(&self.plenum, &cs.gas, a_in, dt, VALVE_RELAX));
             // The exhaust port and its primary pipe are solved together: the flow raises the
             // pipe pressure at the port by z·ṁ (see `gas::port_flow`).
-            let f_ex = (a_ex > 0.0).then(|| {
-                exhaust_valve_flow(
+            let plan_ex = |area: f64| match &self.fv {
+                // FV: the first pipe cell is a real volume — a planned two-volume exchange.
+                Some(fv) => plan_exchange(&cs.gas, &fv.port_volume(i), area, dt, VALVE_RELAX),
+                None => exhaust_valve_flow(
                     &cs.gas,
-                    a_ex,
+                    area,
                     arriving,
                     z_port,
                     REVERSION_TEMP_K,
                     dt,
                     VALVE_RELAX,
-                )
+                ),
+            };
+            // Reverse flow (pipe → cylinder) passes the valve against the port's curve with a lower
+            // discharge coefficient than forward flow (Blair measures separate in/out maps).
+            let f_ex = (a_ex > 0.0).then(|| {
+                let f = plan_ex(a_ex);
+                if f.dm < 0.0 && self.def.exhaust_reverse_cd_ratio < 1.0 {
+                    plan_ex(a_ex * self.def.exhaust_reverse_cd_ratio)
+                } else {
+                    f
+                }
             });
+            if let Some(f) = f_ex
+                && f.dm < 0.0
+            {
+                self.reversion_kg -= f.dm;
+            }
             if let Some(f) = f_in {
                 f.apply(&mut self.plenum, &mut cs.gas);
             }
@@ -440,6 +500,9 @@ impl Engine {
                 f.apply_to(&mut cs.gas);
                 f.dm / dt
             });
+            if let (Some(fv), Some(f)) = (&mut self.fv, f_ex) {
+                fv.add_valve_flow(i, f.dm, f.h);
+            }
             // Blow-by past the rings into the (vented) crankcase. Small while running, but it
             // is what lets a charge trapped at a stop bleed off so the starter can turn it.
             exchange_with_reservoir(&mut cs.gas, &self.atm, blowby_area, dt);
@@ -498,7 +561,11 @@ impl Engine {
             }
         }
         // Acoustic source: what the tail pipes radiate.
-        let radiated = self.net.as_mut().map_or(0.0, |n| n.step(&self.flows));
+        let radiated = match (&mut self.net, &mut self.fv) {
+            (_, Some(fv)) => fv.step(),
+            (Some(net), None) => net.step(&self.flows),
+            (None, None) => 0.0,
+        };
         let throttle_area = self.throttle_area(c.throttle);
         let bore_area = self.throttle_area(1.0);
         let throttle_dm = exchange_with_reservoir(&mut self.plenum, &self.atm, throttle_area, dt);
@@ -558,9 +625,27 @@ impl Engine {
     pub fn plenum_pressure_pa(&self) -> f64 {
         self.plenum.pressure()
     }
+    /// Total exhaust reversion (pipe → cylinder) so far, kg.
+    pub fn exhaust_reversion_kg(&self) -> f64 {
+        self.reversion_kg
+    }
+
+    /// The exhaust backend running (None before the first step).
+    pub fn exhaust_model(&self) -> Option<ExhaustModel> {
+        match (&self.net, &self.fv) {
+            (_, Some(_)) => Some(ExhaustModel::Fv),
+            (Some(_), None) => Some(ExhaustModel::Waveguide),
+            (None, None) => None,
+        }
+    }
+
     /// Gauge pressure in cylinder `i`'s exhaust port (waves standing at the valve), Pa.
     pub fn exhaust_port_gauge(&self, i: usize) -> f64 {
-        self.net.as_ref().map_or(0.0, |n| n.valve_pressure(i))
+        match (&self.net, &self.fv) {
+            (_, Some(fv)) => fv.port_state(i).0 - ATM_PA,
+            (Some(n), None) => n.valve_pressure(i),
+            (None, None) => 0.0,
+        }
     }
     pub fn combustions(&self) -> u64 {
         self.combustions
@@ -963,27 +1048,23 @@ mod tests {
     fn compression_bleeds_off_when_stopped() {
         // Regression: a cylinder sealed on its compression stroke kept ~6 bar forever, a gas
         // spring the starter could not push through. Rings leak (blow-by), so it decays.
-        let mut e = stalled(EngineDef::inline4(), 0, 0.5);
+        // Find a stall where the starter traps a charge (which seed does depends on the dynamics).
         let max_p = |e: &Engine| {
             (0..4)
                 .map(|i| e.cylinder(i).pressure_pa)
                 .fold(0.0, f64::max)
         };
-        // The starter pushes cylinder 1 up its compression stroke and stalls against it.
-        run(
-            &mut e,
-            0.4,
-            &Controls {
-                ignition: false,
-                starter: true,
-                ..Controls::default()
-            },
-        );
-        assert!(
-            max_p(&e) > 4e5,
-            "precondition: trapped charge, got {}",
-            max_p(&e)
-        );
+        let crank = Controls {
+            ignition: false,
+            starter: true,
+            ..Controls::default()
+        };
+        let trapped = (0..20u64).find_map(|seed| {
+            let mut e = stalled(EngineDef::inline4(), seed, 0.5 + 0.013 * seed as f64);
+            run(&mut e, 0.4, &crank);
+            (max_p(&e) > 4e5).then_some(e)
+        });
+        let mut e = trapped.expect("no stall position trapped a compression charge");
         run(
             &mut e,
             2.0,
@@ -1160,6 +1241,238 @@ mod tests {
             wet_wot - dry_wot > wet_coast - dry_coast,
             "texture should grow with load"
         );
+    }
+
+    fn fv(mut d: EngineDef) -> EngineDef {
+        d.exhaust.model = ExhaustModel::Fv;
+        d
+    }
+
+    #[test]
+    fn the_exhaust_model_in_use_follows_the_definition() {
+        let mut e = Engine::new(fv(EngineDef::single()), 1000.0, 1);
+        run(&mut e, 0.01, &Controls::default());
+        assert_eq!(e.exhaust_model(), Some(ExhaustModel::Fv));
+        let mut e = Engine::new(EngineDef::single(), 1000.0, 1);
+        run(&mut e, 0.01, &Controls::default());
+        assert_eq!(e.exhaust_model(), Some(ExhaustModel::Waveguide));
+    }
+
+    #[test]
+    fn fv_exhaust_engine_idles_and_makes_comparable_torque() {
+        let mut e = Engine::new(fv(EngineDef::lfa_v10()), 1000.0, 1);
+        let xs = run(&mut e, 2.0, &Controls::default());
+        assert!(xs.iter().all(|x| x.is_finite()));
+        assert!((500.0..2500.0).contains(&e.rpm()), "idle {}", e.rpm());
+        let torque = |d: EngineDef| {
+            let mut e = Engine::new(d, 6800.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(6800.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.8, &c);
+            e.torque_nm()
+        };
+        let (wg, fvt) = (
+            torque(EngineDef::lfa_v10()),
+            torque(fv(EngineDef::lfa_v10())),
+        );
+        assert!(
+            (fvt / wg - 1.0).abs() < 0.25,
+            "waveguide {wg} N·m vs fv {fvt} N·m"
+        );
+    }
+
+    #[test]
+    fn fv_exhaust_is_free_of_sample_oscillation_and_vacuum() {
+        let mut e = Engine::new(fv(EngineDef::single()), 3000.0, 1);
+        let c = Controls {
+            throttle: 0.0,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.3, &c);
+        let mut worst_p = f64::MAX;
+        let mut xs = Vec::new();
+        for _ in 0..(0.1 / DT) as usize {
+            xs.push(e.step(DT, &c));
+            worst_p = worst_p.min(ATM_PA + e.exhaust_port_gauge(0));
+        }
+        assert!(worst_p > 0.0, "port {worst_p}");
+        assert!(xs.iter().all(|x| x.is_finite()));
+    }
+
+    #[test]
+    fn overrun_cuts_fuel_above_the_threshold_only() {
+        // Deceleration fuel cut-off: closed throttle above `overrun_fuel_cut_rpm` → no combustion;
+        // at idle (below it) the engine keeps firing.
+        let fires = |rpm: f64, throttle: f64| {
+            let mut e = Engine::new(EngineDef::inline4(), rpm, 1);
+            let c = Controls {
+                throttle,
+                hold_rpm: Some(rpm),
+                ..Controls::default()
+            };
+            run(&mut e, 0.2, &c);
+            let n = e.combustions();
+            run(&mut e, 0.3, &c);
+            e.combustions() - n
+        };
+        assert_eq!(fires(4000.0, 0.0), 0, "overrun at 4000 rpm must not fire");
+        assert!(fires(900.0, 0.0) > 5, "idle keeps firing");
+        assert!(fires(4000.0, 0.3) > 30, "on throttle it fires");
+        let mut d = EngineDef::inline4();
+        d.overrun_fuel_cut_rpm = 0.0;
+        let mut e = Engine::new(d, 4000.0, 1);
+        let c = Controls {
+            hold_rpm: Some(4000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.3, &c);
+        assert!(e.combustions() > 20, "0 disables the cut");
+    }
+
+    #[test]
+    fn fv_exhaust_survives_sustained_overrun_at_high_rpm() {
+        // Regression: closed throttle at 7000 rpm drove FV cells into near-vacuum with
+        // |u| + c beyond the fixed step's CFL limit; a primary reached 1000 bar after 0.4 s.
+        let mut e = Engine::new(fv(EngineDef::lfa_v10()), 7000.0, 1);
+        let c = Controls {
+            hold_rpm: Some(7000.0),
+            ..Controls::default()
+        };
+        let xs = run(&mut e, 0.6, &c);
+        assert!(xs.iter().all(|x| x.is_finite()));
+        let worst = (0..10)
+            .map(|i| e.cylinder(i).pressure_pa)
+            .fold(0.0, f64::max);
+        assert!(worst < 50e5, "cylinder at {worst} Pa while motoring");
+    }
+
+    #[test]
+    fn idle_air_opens_with_speed_on_overrun() {
+        // 0.0015 of the bore up to 1500 rpm; at 7000 rpm 7000/1500 × 0.0015 = 0.007 (hand)
+        let full = 1.00531e-3;
+        let e = Engine::new(EngineDef::single(), 900.0, 1);
+        assert_relative_eq!(e.throttle_area(0.0), 0.0015 * full, max_relative = 1e-5);
+        let e = Engine::new(EngineDef::single(), 7000.0, 1);
+        assert_relative_eq!(e.throttle_area(0.0), 0.007 * full, max_relative = 1e-5);
+        assert_relative_eq!(e.throttle_area(1.0), full, max_relative = 1e-5);
+    }
+
+    #[test]
+    fn overrun_manifold_pressure_stays_realistic() {
+        // Regression: closed throttle at 7000 rpm pulled the manifold to 0.06 bar (fixed idle air,
+        // 8× the pumping of idle), driving violent exhaust reversion. ECUs open the idle valve on
+        // deceleration (dashpot): real overrun MAP ≈ 0.2–0.3 bar.
+        for def in [EngineDef::inline4(), EngineDef::lfa_v10()] {
+            let mut e = Engine::new(def.clone(), 7000.0, 1);
+            let c = Controls {
+                hold_rpm: Some(7000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.5, &c);
+            let map = e.plenum_pressure_pa() / 1e5;
+            assert!(
+                (0.12..0.45).contains(&map),
+                "{}: overrun MAP {map:.3} bar",
+                def.name
+            );
+        }
+    }
+
+    #[test]
+    fn the_fv_exhaust_keeps_its_waves_between_steps() {
+        // The FV network is built once and carries the pulses: its tailpipe makes sound comparable
+        // to the waveguide's (a network rebuilt every step would sit at rest and stay silent).
+        let rms = |d: EngineDef| {
+            let mut e = Engine::new(d, 4000.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(4000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &c);
+            let xs = run(&mut e, 0.1, &c);
+            (xs.iter().map(|x| x * x).sum::<f64>() / xs.len() as f64).sqrt()
+        };
+        let (wg, fv_rms) = (rms(EngineDef::inline4()), rms(fv(EngineDef::inline4())));
+        assert!(fv_rms > 0.2 * wg, "fv {fv_rms} vs waveguide {wg}");
+        // and the port gauge reads those waves: blowdown pulses of tens of kPa at WOT
+        let mut e = Engine::new(fv(EngineDef::inline4()), 4000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(4000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.2, &c);
+        let mut peak: f64 = 0.0;
+        for _ in 0..(0.03 * 192_000.0) as usize {
+            e.step(1.0 / 192_000.0, &c);
+            peak = peak.max(e.exhaust_port_gauge(0));
+        }
+        assert!(
+            (10_000.0..300_000.0).contains(&peak),
+            "port gauge peak {peak} Pa"
+        );
+    }
+
+    #[test]
+    fn a_resting_fv_port_reads_atmospheric() {
+        let mut e = Engine::new(fv(EngineDef::single()), 0.0, 1);
+        let c = Controls {
+            ignition: false,
+            ..Controls::default()
+        };
+        run(&mut e, 0.001, &c);
+        let g = e.exhaust_port_gauge(0);
+        assert!(g.abs() < 2000.0, "gauge {g} Pa");
+    }
+
+    #[test]
+    fn the_reverse_cd_ratio_leaves_forward_exhaust_flow_alone() {
+        // At WOT the exhaust flow is forward: throttling only the reverse flow barely moves torque
+        // (throttling the forward flow too would raise pumping losses by several percent).
+        let torque = |ratio: f64| {
+            let mut d = EngineDef::inline4();
+            d.exhaust_reverse_cd_ratio = ratio;
+            let mut e = Engine::new(d, 6000.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(6000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.5, &c);
+            e.torque_nm()
+        };
+        let (full, half) = (torque(1.0), torque(0.4));
+        assert!((half / full - 1.0).abs() < 0.02, "{half} vs {full}");
+    }
+
+    #[test]
+    fn reverse_flow_through_the_exhaust_valve_is_throttled() {
+        // Same overrun state, reverse-flow Cd ratio 1.0 vs 0.5: reversion mass into the cylinders
+        // over the exhaust valve drops (choked inflow ∝ area); forward flow is unaffected.
+        let reverted = |ratio: f64, model: ExhaustModel| {
+            let mut d = EngineDef::inline4();
+            d.exhaust_reverse_cd_ratio = ratio;
+            d.exhaust.model = model;
+            let mut e = Engine::new(d, 6000.0, 1);
+            let c = Controls {
+                hold_rpm: Some(6000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &c);
+            let before = e.exhaust_reversion_kg();
+            run(&mut e, 0.2, &c);
+            e.exhaust_reversion_kg() - before
+        };
+        for model in [ExhaustModel::Waveguide, ExhaustModel::Fv] {
+            let (full, half) = (reverted(1.0, model), reverted(0.5, model));
+            assert!(full > 0.0, "{model:?}: no reversion measured");
+            assert!(half < 0.8 * full, "{model:?}: {half} vs {full}");
+        }
     }
 
     /// Output of an inline-4 held at `rpm` with only the given texture levels (jitter and reverb

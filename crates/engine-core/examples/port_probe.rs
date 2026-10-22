@@ -3,11 +3,14 @@ use engine_core::engine::*;
 fn main() {
     let dt = 1.0 / 192_000.0;
     for t in [0.0, 1.0] {
-        let def = if std::env::args().nth(1).as_deref() == Some("lfa") {
+        let mut def = if std::env::args().nth(1).as_deref() == Some("lfa") {
             EngineDef::lfa_v10()
         } else {
             EngineDef::single()
         };
+        if std::env::args().nth(3).as_deref() == Some("fv") {
+            def.exhaust.model = engine_core::exhaust::ExhaustModel::Fv;
+        }
         let rpm: f64 = std::env::args()
             .nth(2)
             .and_then(|a| a.parse().ok())
@@ -24,6 +27,7 @@ fn main() {
         let (mut pmin, mut pmax, mut amin, mut amax, mut cylmin, mut cylmax) =
             (f64::MAX, f64::MIN, f64::MAX, f64::MIN, f64::MAX, f64::MIN);
         let mut evo = None;
+        let mut last_lift = 1.0;
         for _ in 0..(0.02 / dt) as usize {
             let a = e.step(dt, &c);
             let v = e.cylinder(0);
@@ -34,10 +38,12 @@ fn main() {
             amax = amax.max(a);
             cylmin = cylmin.min(v.pressure_pa);
             cylmax = cylmax.max(v.pressure_pa);
-            if evo.is_none() && v.exhaust_lift_m > 0.0 {
+            if evo.is_none() && v.exhaust_lift_m > 0.0 && last_lift == 0.0 {
                 evo = Some(v.pressure_pa);
             }
+            last_lift = v.exhaust_lift_m;
         }
+        println!("plenum {:.3} bar", e.plenum_pressure_pa() / 1e5);
         println!(
             "throttle {t}: cyl {:.2}..{:.2} bar, at EVO {:.2} bar | port gauge {:.0}..{:.0} Pa | radiated {:.0}..{:.0}",
             cylmin / 1e5,

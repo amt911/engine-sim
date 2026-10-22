@@ -34,6 +34,8 @@ engine:
     tail_length_m: 1.0
     tail_diameter_m: 0.045
     muffler_transmission: 0.6
+    model: waveguide
+    muffler_volume_m3: 0.003
   redline_rpm: 7500.0
   starter_torque_nm: 25.0
   fmep_bar:
@@ -46,3 +48,5 @@ engine:
     mechanical: 1.0
     combustion_jitter: 1.0
     reverb: 0.15
+  exhaust_reverse_cd_ratio: 0.75
+  overrun_fuel_cut_rpm: 1500.0

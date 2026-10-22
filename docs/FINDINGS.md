@@ -48,6 +48,34 @@ were taken with it set and were re-checked afterwards.
 
 Found: 2026-10-22 · tests
 
+### Open (improving): FV exhaust, coast still louder than WOT at the firing order (LFA 7000)
+
+**Symptom.** Source at the tail, firing order 583 Hz: coast vs WOT was 7.4×; a real engine is
+5–10 dB quieter on overrun.
+**Found and fixed so far.**
+- The 0D merge junction was a u = 0 stagnation plenum: it passed 35 % of a straight pipe's tone.
+  Characteristic (Benson) junction → transparent.
+- Overrun manifold at 0.06 bar (fixed idle air, 8× pumping): ECU dashpot → 0.17 bar. Biggest win.
+- Inviscid pipes rang forever: Darcy wall friction (f = 0.025).
+- Overrun near-vacuum broke the fixed FV step's CFL (a primary reached 1000 bar): sub-cycling.
+**Now.** Coast/WOT = 2.2× at the firing order. Ruled out: reverse-flow Cd (added, ratio 0.75:
+no change — the coast tone is not valve-area limited). Next: compare with real recordings; the
+1D intake (induction-side reversion through the cylinder).
+**Tools.** `examples/{port_probe,sound_breakdown,spectrum_probe,blowup_probe}.rs`.
+
+Found: 2026-10-22 · physics
+
+### Other sessions run real-time gates on this machine: share the CPU lock
+
+**Symptom.** Another project's differential gates (real-time game routes) failed while our cargo
+builds/tests ran at ~1400 % CPU.
+**Cause.** Load above ~15 breaks their real-time timing.
+**Fix / workaround.** Timing-dependent jobs (benchmarks, real-time factor) run through
+`scripts/cpu-lock.sh` (flock + owner line v2 + timeout 1800). Builds/tests/lint never take the
+lock (user rule); they run via `scripts/heavy.sh` at nice 19 with cargo -j8. Agreed 2026-10-22.
+**Why it isn't obvious.** Nothing in this repo tells you another session shares the box.
+
+Found: 2026-10-22 · env
 ### `--quit-after` never closed the window when it was hidden
 
 **Symptom.** Smoke GUI phase hung for minutes; several `engine-sim --quit-after 4` processes alive.
@@ -143,3 +171,15 @@ Found: 2026-10-21 · build
 **Why it isn't obvious.** Buttons and checkboxes with the same API match exactly one node.
 
 Found: 2026-10-21 · tests
+
+### Hand sabotage that restores the file with `mv` leaves cargo on the mutant build
+
+**Symptom.** After a sabotage loop (mutate → `cargo test` → `mv file.bak file`), the next test run
+fails exactly as the last mutant would, though the source is clean.
+**Cause.** The backup's mtime is older than the mutant's, and cargo fingerprints by mtime: the
+restored file looks unchanged since the last (mutant) build, so nothing is rebuilt.
+**Fix / workaround.** `touch` the file after restoring it (the sabotage script does).
+**Why it isn't obvious.** Each mutant does rebuild (it is newer), so every verdict is right; only
+the run *after* the loop silently tests stale code.
+
+Found: 2026-10-22 · tests

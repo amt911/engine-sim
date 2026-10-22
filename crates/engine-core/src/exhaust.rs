@@ -37,6 +37,18 @@ pub struct ExhaustDef {
     /// Amplitude a wave keeps crossing the muffler (absorptive silencer, lumped into the tail;
     /// a transfer-matrix muffler is a later refinement — Munjal). 1 = straight pipe.
     pub muffler_transmission: f64,
+    /// Exhaust model: linear waveguides (cheap) or non-linear 1D finite volumes (`fv`).
+    pub model: ExhaustModel,
+    /// Muffler expansion-chamber volume, m³ (finite-volume model).
+    pub muffler_volume_m3: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExhaustModel {
+    #[default]
+    Waveguide,
+    Fv,
 }
 
 impl Default for ExhaustDef {
@@ -50,6 +62,8 @@ impl Default for ExhaustDef {
             tail_length_m: 1.5,
             tail_diameter_m: 0.050,
             muffler_transmission: 0.5,
+            model: ExhaustModel::Waveguide,
+            muffler_volume_m3: 0.006,
         }
     }
 }
