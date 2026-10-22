@@ -320,3 +320,38 @@ which real cars cover with a throttle dashpot and closed-loop idle air and spark
 Tests: `every_preset_holds_its_idle_speed`, `every_preset_starts_idles_and_survives_a_blip`.
 
 Found: 2026-10-22 · physics
+
+### Overrun sounded as loud as full power: three source errors, one still open
+
+**Symptom.** Downshifts sounded wrong. The acoustic (DC-free) output on overrun with fuel cut
+came out at −5 to +6 dB of full throttle at the same rpm, on both exhaust models and at every
+speed. Motored tailpipe noise is well below fired. The leveler made it worse by compressing
+whatever was left.
+**Cause.** Three physics errors, measured one at a time:
+- **Mass instead of volume.** An open end radiates volume velocity (p = ρ₀/4πr · dQ/dt). FV
+  radiated c·(ρu) and the waveguide injected c·ṁ/A as if all gas were at its hot reference, so
+  cold, dense reversion gas counted ~3× (+9.5 dB).
+- **A fixed reversion temperature.** The waveguide pushed reversion back at a fixed 800 K, even
+  when the primaries held cold pumped air.
+- **FV valve chatter.** The FV valve exchanged with a port cell that only updates every pipe
+  step, so on overrun its flow flipped direction every pipe step (127 reversals in 7 cycles), a
+  27 kHz sawtooth heard as "air".
+
+**Fix / workaround.**
+- `exhaust_source_flow`: the volume flow, ṁ·T/T_ref, about C_PRIMARY's gas.
+- FV radiates ρ_ref·c·u.
+- A 0D primary gas temperature: mixing, plus cooling to a slow wall.
+- The FV valve uses the waveguide's implicit port against the first cell's characteristic
+  (impedance c/A).
+
+The valve's volume source is now ≥ 8 dB down on overrun.
+
+**Still open.** The *radiated* level on overrun stays close to full power. The tail spectrum is
+dominated by the firing fundamental in both cases, so the open question is muffler acoustics
+(no absorption, and frequency-independent duct losses). Data requested in the local
+PAPERS.md. Tests: `the_exhaust_source_is_the_volume_flow`,
+`overrun_pumps_less_volume_through_the_valve_than_full_power`,
+`reversion_gas_is_as_hot_as_the_primary_holds`,
+`the_fv_exhaust_valve_does_not_chatter_on_overrun`, `the_port_holds_what_the_valve_already_pushed`.
+
+Found: 2026-10-22 · physics

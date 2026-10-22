@@ -5,7 +5,7 @@
 //! Model ladder and references: `docs/research/simulador-motor-rust.md`.
 
 use crate::combustion::{AFR_STOICH, charge_energy, wiebe};
-use crate::exhaust::{ExhaustDef, ExhaustModel, ExhaustNet, REVERSION_TEMP_K};
+use crate::exhaust::{ExhaustDef, ExhaustModel, ExhaustNet};
 use crate::exhaust_fv::ExhaustFv;
 use crate::gas::{
     GasVolume, Reservoir, exchange_with_reservoir, exhaust_valve_flow, plan_exchange,
@@ -474,9 +474,9 @@ const DASHPOT_ONSET_RPM: f64 = 1500.0;
 /// Air path: trim of the bypass, per unit of the air the engine swallows at idle.
 const IAC_KP: f64 = 0.05;
 const IAC_KI_PER_S: f64 = 0.5;
-/// Never shuts more than 70 % of the base bypass, and an idle actuator passes a few percent
-/// of the bore at most.
-const IAC_MIN: f64 = -0.7;
+/// An electronic throttle closes nearly to its stop (5 % of the base opening is left as the
+/// plate's leakage), and an idle actuator passes a few percent of the bore at most.
+const IAC_MIN: f64 = -0.95;
 const IAC_MAX_AREA: f64 = 0.03;
 /// Spark path: idle timing sits this far retarded from the engine's advance, and the loop
 /// moves it by up to the reserve each way, degrees.
@@ -532,6 +532,10 @@ struct CylinderState {
     /// The charge trapped at intake closing still awaits its spark: one spark per charge,
     /// whatever the ECU does with the timing meanwhile.
     armed: bool,
+    /// Gas temperature in this cylinder's exhaust primary, and the primary's wall temperature,
+    /// K: what reversion pushes back, and how much volume it is.
+    port_t: f64,
+    wall_t: f64,
     /// State at intake closing (p_r, V_r, T_r): Woschni's reference for the motored pressure.
     ref_p: f64,
     ref_v: f64,
@@ -587,13 +591,58 @@ pub struct Engine {
     inducted_kg: f64,
 }
 
-/// Crank angle `a` (deg) crossed in the step (prev, cur], on the 720° circle.
+/// Gas held in one primary, kg: its volume π/4·d²·L at atmospheric pressure and `t_k`.
+fn primary_gas_mass(ex: &crate::exhaust::ExhaustDef, t_k: f64) -> f64 {
+    let v = PI * 0.25 * ex.primary_diameter_m.powi(2) * ex.primary_length_m;
+    ATM_PA / (crate::gas::R_AIR * t_k) * v
+}
+
+/// Exhaust port gas: heat-transfer coefficient to the primary's wall, W/(m²·K) (Heywood, ICE
+/// Fundamentals, §12.6: 100–500 in exhaust ports), and the wall's own time constant, s (a
+/// steel pipe's thermal mass; estimate).
+const PORT_HTC: f64 = 200.0;
+const PIPE_WALL_TAU_S: f64 = 60.0;
+/// Temperature the exhaust pipes start at, K (a cold engine).
+const PIPE_COLD_K: f64 = 320.0;
+
+/// Gas in a primary at `t` K (mass `m` kg, wall area `a_wall`) after `dm` kg at `t_in` mixes in
+/// (outflow only: reversion takes the pipe's own gas out) and the wall at `t_wall` cools it for
+/// `dt`, an exact first-order step with τ = m·c_p / (h·A).
+fn port_gas_temperature(
+    t: f64,
+    m: f64,
+    dm: f64,
+    t_in: f64,
+    t_wall: f64,
+    a_wall: f64,
+    dt: f64,
+) -> f64 {
+    let mixed = if dm > 0.0 {
+        (m * t + dm * t_in) / (m + dm)
+    } else {
+        t
+    };
+    let tau = m.max(1e-9) * crate::gas::CP / (PORT_HTC * a_wall.max(1e-9));
+    t_wall + (mixed - t_wall) * (-dt / tau).exp()
+}
+
+/// The waveguide exhaust's source for a valve mass flow `dm_dt` (kg/s) carrying specific total
+/// enthalpy `h`: the mass of reference gas with the same volume. An open end radiates volume
+/// velocity (monopole, p = ρ₀/4πr · dQ/dt; Kinsler et al., *Fundamentals of Acoustics*, §7.4),
+/// and the linear pipes model gas at `C_PRIMARY`; at the pipe's pressure the volume of a flow
+/// scales with its temperature, so a flow at T counts T/T_ref of its mass.
+fn exhaust_source_flow(dm_dt: f64, h: f64) -> f64 {
+    let t_ref = crate::exhaust::C_PRIMARY.powi(2) / (crate::gas::GAMMA * crate::gas::R_AIR);
+    dm_dt * (h / crate::gas::CP).max(1.0) / t_ref
+}
+
 /// Fraction of the plate's area a pedal position opens: 1 − cos(t·π/2), progressive at the
 /// bottom as a throttle cam is.
 fn pedal_opening(t: f64) -> f64 {
     1.0 - (t * PI * 0.5).cos()
 }
 
+/// Crank angle `a` (deg) crossed in the step (prev, cur], on the 720° circle.
 fn crossed(prev: f64, cur: f64, a: f64) -> bool {
     let span = (cur - prev).rem_euclid(720.0);
     let to_a = (a - prev).rem_euclid(720.0);
@@ -614,6 +663,8 @@ impl Engine {
                     gas: GasVolume::at(ATM_PA, AMBIENT_K, g.volume(deg_to_rad(cycle_deg))),
                     trapped_kg: 0.0,
                     armed: false,
+                    port_t: PIPE_COLD_K,
+                    wall_t: PIPE_COLD_K,
                     ref_p: ATM_PA,
                     ref_v: 1.0,
                     ref_t: AMBIENT_K,
@@ -861,16 +912,16 @@ impl Engine {
             // pipe pressure at the port by z·ṁ (see `gas::port_flow`).
             let plan_ex = |area: f64| match &self.fv {
                 // FV: the first pipe cell is a real volume — a planned two-volume exchange.
-                Some(fv) => plan_exchange(&cs.gas, &fv.port_volume(i), area, dt, VALVE_RELAX),
-                None => exhaust_valve_flow(
-                    &cs.gas,
-                    area,
-                    arriving,
-                    z_port,
-                    REVERSION_TEMP_K,
-                    dt,
-                    VALVE_RELAX,
-                ),
+                // FV: on the short time scale between pipe steps the primary is its
+                // characteristic impedance to the valve, driven by the wave its first cell sends
+                // back (the waveguide's implicit port, so the flow does not step at the FV rate).
+                Some(fv) => {
+                    let (arriving_fv, z_fv, t_fv) = fv.port_wave(i);
+                    exhaust_valve_flow(&cs.gas, area, arriving_fv, z_fv, t_fv, dt, VALVE_RELAX)
+                }
+                None => {
+                    exhaust_valve_flow(&cs.gas, area, arriving, z_port, cs.port_t, dt, VALVE_RELAX)
+                }
             };
             // Reverse flow (pipe → cylinder) passes the valve against the port's curve with a lower
             // discharge coefficient than forward flow (Blair measures separate in/out maps).
@@ -899,8 +950,16 @@ impl Engine {
             }
             self.flows[i] = f_ex.map_or(0.0, |f| {
                 f.apply_to(&mut cs.gas);
-                f.dm / dt
+                exhaust_source_flow(f.dm / dt, f.h)
             });
+            {
+                let ex = &self.def.exhaust;
+                let m = primary_gas_mass(ex, cs.port_t);
+                let (dm, t_in) = f_ex.map_or((0.0, cs.port_t), |f| (f.dm, f.h / crate::gas::CP));
+                let a_wall = PI * ex.primary_diameter_m * ex.primary_length_m;
+                cs.port_t = port_gas_temperature(cs.port_t, m, dm, t_in, cs.wall_t, a_wall, dt);
+                cs.wall_t += (cs.port_t - cs.wall_t) * (dt / PIPE_WALL_TAU_S);
+            }
             if let (Some(fv), Some(f)) = (&mut self.fv, f_ex) {
                 fv.add_valve_flow(i, f.dm, f.h);
             }
@@ -1205,6 +1264,151 @@ mod tests {
                 "jump earlier {jump_earlier}: {fired} firings"
             );
         }
+    }
+
+    #[test]
+    fn a_primary_holds_its_volume_of_gas_at_one_atmosphere() {
+        // 40 mm × 0.7 m: V = π/4·0.04²·0.7 = 8.7965e-4 m³; at 900 K,
+        // ρ = 101 325/(287·900) = 0.39228 kg/m³ → 3.4506e-4 kg
+        let ex = crate::exhaust::ExhaustDef::default();
+        assert_relative_eq!(primary_gas_mass(&ex, 900.0), 3.4506e-4, max_relative = 1e-4);
+    }
+
+    #[test]
+    fn the_primary_wall_warms_with_a_minute_time_constant() {
+        // A first-order lag, dT_w/dt = (T_gas − T_w)/60 s: over one second from cold (320 K)
+        // the wall rises by the mean excess of the gas over it divided by 60.
+        let mut e = Engine::new(EngineDef::inline4(), 3000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        let (mut excess, n) = (0.0, (1.0 / DT) as usize);
+        for _ in 0..n {
+            excess += e.cyl[0].port_t - e.cyl[0].wall_t;
+            e.step(DT, &c);
+        }
+        let rise = e.cyl[0].wall_t - 320.0;
+        let want = excess / n as f64 / 60.0;
+        assert!(want > 3.0, "the gas should be hot: {want} K/s");
+        assert_relative_eq!(rise, want, max_relative = 0.02);
+    }
+
+    #[test]
+    fn primary_gas_mixes_and_cools_to_its_wall() {
+        // equal masses at 300 and 900 K mix to 600 K (no time for the wall)
+        assert_relative_eq!(
+            port_gas_temperature(300.0, 1e-3, 1e-3, 900.0, 400.0, 0.1, 0.0),
+            600.0
+        );
+        // no inflow, one τ = m·c_p/(h·A) = 1e-3·1004.5/(200·0.1) = 0.0502 s: 900 → 400 + 500/e
+        let t = port_gas_temperature(900.0, 1e-3, 0.0, 0.0, 400.0, 0.1, 0.050_225);
+        assert_relative_eq!(t, 400.0 + 500.0 / std::f64::consts::E, max_relative = 1e-4);
+        // reversion takes pipe gas out: the rest keeps its temperature
+        assert_eq!(
+            port_gas_temperature(700.0, 1e-3, -5e-4, 300.0, 700.0, 0.1, 1e-3),
+            700.0
+        );
+    }
+
+    #[test]
+    fn reversion_gas_is_as_hot_as_the_primary_holds() {
+        // At full power the primaries fill with burnt gas (~800 K and up); after a second of
+        // fuel cut they hold pumped air cooled towards the wall, and that is what reversion
+        // pushes back into the cylinder (it was a fixed 800 K).
+        let mut e = Engine::new(EngineDef::inline4(), 4400.0, 1);
+        let hold = |t: f64| Controls {
+            throttle: t,
+            hold_rpm: Some(4400.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.5, &hold(1.0));
+        let hot = e.cyl[0].port_t;
+        run(&mut e, 1.0, &hold(0.0));
+        let cold = e.cyl[0].port_t;
+        assert!(hot > 700.0, "full power: {hot} K");
+        assert!(cold < 600.0, "after a second of overrun: {cold} K");
+    }
+
+    #[test]
+    fn the_exhaust_source_is_the_volume_flow() {
+        // An open pipe end radiates its volume velocity (Q = ṁ·R·T/p at the pipe's pressure),
+        // not its mass flow: the waveguide is linear about gas at C_PRIMARY = 600 m/s, i.e.
+        // T_ref = 600² / (1.4 · 287) = 895.97 K. A kilogram of gas at twice that is twice the
+        // volume; cold reversion gas at 300 K is a third of it.
+        let cp = crate::gas::CP;
+        assert_relative_eq!(
+            exhaust_source_flow(0.1, cp * 895.97),
+            0.1,
+            max_relative = 1e-4
+        );
+        assert_relative_eq!(
+            exhaust_source_flow(0.1, cp * 2.0 * 895.97),
+            0.2,
+            max_relative = 1e-4
+        );
+        assert_relative_eq!(
+            exhaust_source_flow(-0.1, cp * 300.0),
+            -0.03348,
+            max_relative = 1e-3
+        );
+    }
+
+    #[test]
+    fn the_fv_exhaust_valve_does_not_chatter_on_overrun() {
+        // Between pipe steps the valve must see the primary as its characteristic impedance,
+        // not a port cell that only updates at the FV rate: against that stale cell the flow
+        // flipped direction on every pipe step (127 reversals in 7 cycles). An honest exchange
+        // turns around about twice a cycle (blowdown or reversion, then the exhaust stroke).
+        let mut d = EngineDef::inline4();
+        d.exhaust.model = ExhaustModel::Fv;
+        let mut e = Engine::new(d, 4400.0, 1);
+        let c = Controls {
+            hold_rpm: Some(4400.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.5, &c);
+        let (mut flips, mut prev) = (0, 0.0_f64);
+        for _ in 0..(0.2 / DT) as usize {
+            e.step(DT, &c);
+            let f = e.flows[0];
+            if f * prev < 0.0 {
+                flips += 1;
+            }
+            if f != 0.0 {
+                prev = f;
+            }
+        }
+        // 4400 rpm: 36.7 cycles/s · 0.2 s = 7.3 cycles
+        assert!(flips <= 25, "{flips} reversals in 7 cycles");
+    }
+
+    #[test]
+    fn overrun_pumps_less_volume_through_the_valve_than_full_power() {
+        // Fuel cut on a closed throttle: the cylinder reaches its exhaust opening at ~0.3 bar
+        // instead of ~4.7 bar, so the valve's volume flow swings far less: the blowdown step
+        // (1 − 0.32) against (4.74 − 1) bar is 5.5×, 15 dB. Counted as mass, cold reversion
+        // gas made it ~0 dB; as volume (the waveguide's source) it must be at least 8 dB down.
+        let ac_source = |throttle: f64| {
+            let mut e = Engine::new(EngineDef::inline4(), 4400.0, 1);
+            let c = Controls {
+                throttle,
+                hold_rpm: Some(4400.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.5, &c);
+            let q: Vec<f64> = (0..(0.2 / DT) as usize)
+                .map(|_| {
+                    e.step(DT, &c);
+                    e.flows[0]
+                })
+                .collect();
+            let m = q.iter().sum::<f64>() / q.len() as f64;
+            (q.iter().map(|v| (v - m) * (v - m)).sum::<f64>() / q.len() as f64).sqrt()
+        };
+        let db = 20.0 * (ac_source(0.0) / ac_source(1.0)).log10();
+        assert!(db < -8.0, "overrun source {db:.1} dB against full power");
     }
 
     #[test]
