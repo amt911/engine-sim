@@ -284,18 +284,17 @@ impl ExhaustFv {
 
     /// Total gas mass in the network (pipes, junctions, chambers), kg.
     pub fn total_mass(&self) -> f64 {
-        let pipe_mass = |p: &Pipe1d, scale: f64| {
+        let pipe_mass = |p: &Pipe1d| {
             p.cells
                 .iter()
                 .zip(&p.area)
                 .map(|(c, a)| c.rho * a)
                 .sum::<f64>()
                 * p.dx
-                * scale
         };
-        let mut m: f64 = self.primaries.iter().map(|p| pipe_mass(p, 1.0)).sum();
+        let mut m: f64 = self.primaries.iter().map(|p| pipe_mass(p)).sum();
         for b in &self.branches {
-            m += b.junction.mass_kg + pipe_mass(&b.out, 1.0);
+            m += b.junction.mass_kg + pipe_mass(&b.out);
         }
         m
     }
@@ -689,6 +688,9 @@ mod tests {
         let c = net.primaries[0].prim(0);
         let g = 0.05 / area(0.04);
         assert!((c.u / (g / c.rho) - 1.0).abs() < 0.1, "{c:?}");
+        // and it brings its enthalpy: 600 K stagnation gas keeps the port near 600 K, not cold
+        let (_, t) = net.port_state(0);
+        assert!((520.0..620.0).contains(&t), "port at {t} K");
     }
 
     #[test]

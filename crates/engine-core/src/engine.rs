@@ -1399,6 +1399,23 @@ mod tests {
         };
         let (wg, fv_rms) = (rms(EngineDef::inline4()), rms(fv(EngineDef::inline4())));
         assert!(fv_rms > 0.2 * wg, "fv {fv_rms} vs waveguide {wg}");
+        // and the port gauge reads those waves: blowdown pulses of tens of kPa at WOT
+        let mut e = Engine::new(fv(EngineDef::inline4()), 4000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(4000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.2, &c);
+        let mut peak: f64 = 0.0;
+        for _ in 0..(0.03 * 192_000.0) as usize {
+            e.step(1.0 / 192_000.0, &c);
+            peak = peak.max(e.exhaust_port_gauge(0));
+        }
+        assert!(
+            (10_000.0..300_000.0).contains(&peak),
+            "port gauge peak {peak} Pa"
+        );
     }
 
     #[test]

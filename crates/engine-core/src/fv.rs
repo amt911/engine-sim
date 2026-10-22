@@ -795,6 +795,21 @@ mod tests {
     }
 
     #[test]
+    fn hllc_is_symmetric_for_a_head_on_collision() {
+        // Mirror-image states colliding: by symmetry nothing crosses the interface (no mass, no
+        // energy), only the star pressure pushes.
+        let l = Prim {
+            rho: 1.0,
+            u: 100.0,
+            p: 1.0e5,
+        };
+        let f = hllc(l, Prim { u: -100.0, ..l });
+        assert!(f.rho.abs() < 1e-9, "mass {}", f.rho);
+        assert!(f.e.abs() < 1e-6, "energy {}", f.e);
+        assert!(f.mom > 1.0e5, "star pressure {}", f.mom);
+    }
+
+    #[test]
     fn hllc_resolves_a_moving_contact_exactly() {
         // Same p and u, different density: the exact flux is the upwind (left) state's flux,
         // and HLLC reproduces isolated contacts exactly (Toro §10.4).
