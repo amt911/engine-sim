@@ -102,6 +102,13 @@ pub(crate) fn junction_ghost(cell: Prim, p_j: f64, rho_j: f64, sigma: f64) -> Pr
 /// orifice of that area passes (no pressure recovery past the throat), solved together with
 /// the outgoing characteristic, so the boundary stays stable where an explicit orifice flux
 /// chatters. `psi` ≥ 1 is the open end; 0 is a wall.
+/// Density of gas at atmospheric pressure whose speed of sound is `C_TAIL`, kg/m³
+/// (T = c²/γR = 622 K): the reference the tail's acoustic source is scaled about.
+fn tail_reference_density() -> f64 {
+    let t = C_TAIL * C_TAIL / (crate::gas::GAMMA * R_AIR);
+    ATM_PA / (R_AIR * t)
+}
+
 pub(crate) fn throttled_ghost(cell: Prim, p_j: f64, rho_j: f64, sigma: f64, psi: f64) -> Prim {
     let g = crate::gas::GAMMA;
     let k = 0.5 * (g - 1.0);
@@ -291,11 +298,25 @@ impl ExhaustFv {
         let c = pipe.cells[0];
         let v = self.a_primary * pipe.dx;
         let prim = c.to_prim();
+        // Plus what the valve has pushed since the last FV step (its enthalpy as internal
+        // energy, as the junctions take it): against the stale cell alone the valve overshoots
+        // and the flow flips direction every physics step.
         GasVolume {
-            mass_kg: c.rho * v,
-            energy_j: prim.p / (crate::gas::GAMMA - 1.0) * v,
+            mass_kg: (c.rho * v + self.acc_mass[i]).max(1e-9),
+            energy_j: (prim.p / (crate::gas::GAMMA - 1.0) * v + self.acc_energy[i]).max(1e-9),
             volume_m3: v,
         }
+    }
+
+    /// The primary as the valve sees it between pipe steps: the wave its first cell sends back
+    /// towards the valve (gauge Pa, the linear left-running part (p′ − ρc·u)/2), its impedance
+    /// to a mass flow c/A (Pa per kg/s), and the gas temperature there (K) for reversion.
+    pub fn port_wave(&self, i: usize) -> (f64, f64, f64) {
+        let c = self.primaries[i].prim(0);
+        let a = c.sound_speed();
+        let arriving = 0.5 * ((c.p - ATM_PA) - c.rho * a * c.u);
+        let t = c.p / (c.rho * R_AIR);
+        (arriving, a / self.a_primary, t)
     }
 
     /// Register this physics step's valve flow: `dm` kg into the pipe (negative = back into
@@ -392,9 +413,13 @@ impl ExhaustFv {
             guard(&mut b.junction);
             let o = b.out.end_flux.1;
             self.vented += o.rho * a_out * h;
-            // ρc·u at the outlet: c·(ρu), the same source quantity as the waveguide model
-            radiated += C_TAIL * o.rho;
-            self.tails[bi] += weight * C_TAIL * o.rho;
+            // The outlet radiates its volume velocity (a monopole: p = ρ₀/4πr · dQ/dt; Kinsler et
+            // al., Fundamentals of Acoustics, §7.4), not its mass flux: u = (ρu)/ρ at the exit,
+            // scaled as ρ_ref·c·u about gas at C_TAIL, the waveguide's tail reference.
+            let rho_exit = b.out.prim(b.out.cells.len() - 1).rho.max(1e-3);
+            let source = C_TAIL * tail_reference_density() * o.rho / rho_exit;
+            radiated += source;
+            self.tails[bi] += weight * source;
         }
         radiated
     }
@@ -1097,6 +1122,22 @@ mod tests {
         assert!(
             (coarse_tails / coarse - 1.0).abs() < 1e-9,
             "{coarse_tails} vs {coarse}"
+        );
+    }
+
+    #[test]
+    fn the_port_holds_what_the_valve_already_pushed() {
+        // Between FV steps the valve sees the port cell as a 0D volume: with this step's flow
+        // already in it (mass, and its enthalpy as internal energy), or it overshoots and chatters.
+        let mut net = ExhaustFv::new(&def(), 1, DT);
+        let before = net.port_volume(0);
+        net.add_valve_flow(0, 1e-6, 1004.5 * 900.0);
+        let after = net.port_volume(0);
+        approx::assert_relative_eq!(after.mass_kg - before.mass_kg, 1e-6, max_relative = 1e-9);
+        approx::assert_relative_eq!(
+            after.energy_j - before.energy_j,
+            1e-6 * 1004.5 * 900.0,
+            max_relative = 1e-9
         );
     }
 }

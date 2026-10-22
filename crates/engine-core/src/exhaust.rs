@@ -12,8 +12,6 @@ pub const C_COLLECTOR: f64 = 560.0;
 pub const C_TAIL: f64 = 500.0;
 /// Amplitude loss per metre (wall friction and heat transfer), estimate.
 pub const LOSS_PER_M: f64 = 0.03;
-/// Temperature of exhaust gas pushed back into a cylinder (reversion), K.
-pub const REVERSION_TEMP_K: f64 = 800.0;
 /// Clamp on the waves (Pa): the linear model is meaningless beyond a few bar, and two
 /// superposed rarefactions must never take the absolute pressure below vacuum.
 const WAVE_LIMIT_PA: f64 = 3.0e5;
