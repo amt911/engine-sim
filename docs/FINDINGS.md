@@ -225,3 +225,15 @@ the flow, and hiss ∝ ṁ·u goes as substeps².
 bookkeeping keeps `last_inducted()`.
 
 Found: 2026-10-22 · audio
+
+### A frozen mutation run scores its mutants as timeouts
+
+**Symptom.** While another session held the CPU lock, a diff gate tested 6 mutants in 40 minutes,
+and all 6 were timeouts.
+**Cause.** `yield-cpu.sh` freezes the whole scope, cargo-mutants included. Its timeout is
+wall-clock, so on thaw every running test has already used up its 90 s.
+**Fix / workaround.** `mutants.sh` retries the timeouts twice by exact name (`-F '^…$'`). A
+truly hung mutant times out again cheaply. cargo-mutants 27 adds its field-deletion mutants
+whatever `-F` says, so only the retried names are counted.
+
+Found: 2026-10-22 · tests
