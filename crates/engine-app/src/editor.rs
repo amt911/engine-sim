@@ -247,6 +247,12 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
             0.01,
             "Idle air (% of throttle)",
         );
+        ui.add(
+            egui::Slider::new(&mut d.idle_rpm, 400.0..=2000.0)
+                .step_by(50.0)
+                .text("Idle speed (rpm)"),
+        )
+        .on_hover_text("The ECU trims the idle air to hold this speed with the pedal released");
         let it = &mut d.intake;
         ui.horizontal(|ui| {
             ui.radio_value(&mut it.model, IntakeModel::ZeroD, "0D plenum");

@@ -28,6 +28,7 @@ engine:
   plenum_volume_m3: 0.0015
   throttle_diameter_m: 0.04
   idle_throttle: 0.0015
+  idle_rpm: 1200.0
   exhaust:
     primary_length_m: 0.8
     primary_diameter_m: 0.04

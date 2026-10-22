@@ -180,6 +180,10 @@ pub fn validate(def: &EngineDef) -> Result<(), ConfigError> {
         within(def.idle_throttle, 0.0, 1.0),
         "idle throttle must be in [0, 1]",
     );
+    check(
+        within(def.idle_rpm, 200.0, 0.5 * def.redline_rpm),
+        "idle speed must be 200 rpm to half the redline",
+    );
     let x = &def.exhaust;
     check(
         within(x.primary_length_m, 0.05, 10.0)
@@ -322,6 +326,8 @@ mod tests {
         assert_eq!(def.cylinders, 2);
         assert_eq!(def.geometry, EngineDef::single().geometry);
         assert_eq!(def.phase_offsets_deg(), vec![0.0, 360.0]);
+        // written before idle speed control: a generic car idle, not the single's 1200
+        assert_eq!(def.idle_rpm, 900.0);
     }
 
     #[test]
@@ -415,6 +421,7 @@ mod tests {
                     d.layout.banks = vec![vec![1, 2], vec![2, 4]];
                 }),
             ),
+            ("idle speed", Box::new(|d| d.idle_rpm = 5000.0)),
         ];
         for (needle, mutate) in cases {
             let mut d = EngineDef::single();

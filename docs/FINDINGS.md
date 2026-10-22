@@ -278,8 +278,45 @@ and pulled from higher rpm.
 **Cause.** Advance is fixed at 28° BTDC. At 900 rpm a full 12.5:1 charge burns early enough to
 push against the crank, and a 0.08 kg·m² flywheel has too little energy to carry it through.
 Real ECUs retard the spark at low rpm and high load.
-**Fix / workaround.** Flywheel 0.12 kg·m² for now, plus the test
-`every_preset_revs_up_from_idle_at_full_throttle`. The real fix is a spark advance map against
-rpm and load (roadmap).
+**Fix / workaround.** `EngineDef::spark_advance_at(rpm)`: the configured advance applies from
+4000 rpm and is retarded below that, × (0.35 + 0.65·rpm/4000), as an ECU map does. The flat-plane
+is back on its 0.08 kg·m² flywheel. Tests: `every_preset_revs_up_from_idle_at_full_throttle`,
+`a_retarded_idle_spark_lets_a_light_flywheel_rev_up`.
+
+Found: 2026-10-22 · physics
+
+### A spark angle that moves between steps misfires or fires twice; it looked like idle hunting
+
+**Symptom.** Under closed-loop idle control, the LFA and the V8s hunted by ±40 % and stalled. Gain
+sweeps hardly changed this. The same engines idled smoothly at a fixed spark advance.
+**Cause.** A spark was detected as "the crank crossed the spark angle between the previous and
+current step". When the ECU advanced the timing past a crank sitting just before the old angle,
+the crossing never happened (misfire). Retarding it past a crank that had just fired made it fire
+again, restarting the burn. In a run where it jumped one way and crept back, this measured 200
+firings for the expected 100.
+**Fix / workaround.** One spark per charge. Intake closing arms the cylinder, and it fires on the
+first step at or past its spark angle (within the following half cycle). Test:
+`a_moving_spark_fires_each_charge_exactly_once`. After the fix, idle holds within a few percent.
+Lesson: when gains don't move a control symptom, look for a discontinuity in the plant first.
+
+Found: 2026-10-22 · physics
+
+### A constant wall heat coefficient starves a throttled engine; the idle physics was otherwise sane
+
+**Symptom.** The cross-plane could not idle below ~1000 rpm, and falling from a blip it stalled.
+**Cause.** Partly the constant 350 W/(m²·K) stand-in for Woschni: at 26 kPa manifold pressure it
+over-cools the thin charge. An energy balance at 700 rpm (gross IMEP 2.07 bar, PMEP 0.76, FMEP
+1.09) otherwise matched a hand calculation. Woschni added only ~3 N·m there. The falls were
+mostly manifold dynamics: the manifold drains during the overrun cut and refills too late,
+which real cars cover with a throttle dashpot and closed-loop idle air and spark.
+**Fix / workaround.**
+- `woschni_htc` and `woschni_velocity` (heat now scales as p^0.8 with load; test against the
+  published correlation, and the heat-vs-load ratio within 15 % of (charge ratio)^0.8).
+- A throttle dashpot (2 % hold, τ = 1 s).
+- An ECU idle-speed control: PI on the bypass, scaled by the air the engine swallows at idle,
+  plus spark P+D from a 10° retarded reserve.
+- `idle_rpm` per engine.
+
+Tests: `every_preset_holds_its_idle_speed`, `every_preset_starts_idles_and_survives_a_blip`.
 
 Found: 2026-10-22 · physics

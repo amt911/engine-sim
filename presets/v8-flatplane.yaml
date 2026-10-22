@@ -39,10 +39,11 @@ engine:
     diameter_m: 0.043
   spark_advance_deg: 28.0
   burn_duration_deg: 45.0
-  flywheel_inertia_kgm2: 0.12
+  flywheel_inertia_kgm2: 0.08
   plenum_volume_m3: 0.007
   throttle_diameter_m: 0.095
   idle_throttle: 0.003
+  idle_rpm: 1000.0
   exhaust:
     primary_length_m: 0.45
     primary_diameter_m: 0.042

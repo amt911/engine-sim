@@ -44,6 +44,10 @@ pub struct EngineDef {
     pub throttle_diameter_m: f64,
     /// Fraction of throttle area open at zero pedal (idle air).
     pub idle_throttle: f64,
+    /// Idle speed the ECU's idle-speed control holds with the pedal released, rpm. Files
+    /// written before it existed get a generic 900 rpm (not the default engine's).
+    #[serde(default = "default_idle_rpm")]
+    pub idle_rpm: f64,
     pub exhaust: ExhaustDef,
     /// Intake system (0D plenum, or 1D runners with ITBs / plenum).
     pub intake: IntakeDef,
@@ -60,6 +64,10 @@ pub struct EngineDef {
     /// Deceleration fuel cut-off: with the throttle closed above this speed no fuel is injected
     /// (what production ECUs do on overrun); 0 disables it.
     pub overrun_fuel_cut_rpm: f64,
+}
+
+fn default_idle_rpm() -> f64 {
+    900.0
 }
 
 impl Default for EngineDef {
@@ -100,6 +108,8 @@ impl EngineDef {
             plenum_volume_m3: 1.5e-3,
             throttle_diameter_m: 0.040,
             idle_throttle: 0.0015,
+            // motorcycle singles idle at 1200–1500 rpm (estimate)
+            idle_rpm: 1200.0,
             exhaust: ExhaustDef {
                 primary_length_m: 0.8,
                 primary_diameter_m: 0.040,
@@ -135,6 +145,8 @@ impl EngineDef {
             plenum_volume_m3: 4.0e-3,
             throttle_diameter_m: 0.060,
             idle_throttle: 0.0055,
+            // a typical car idle (estimate)
+            idle_rpm: 800.0,
             exhaust: ExhaustDef::default(),
             intake: IntakeDef::default(),
             redline_rpm: 7000.0,
@@ -184,6 +196,8 @@ impl EngineDef {
             // √10 · 45 mm. Idle bypass: the same area as 0.3 % of a 120 mm throttle.
             throttle_diameter_m: 0.045 * std::f64::consts::SQRT_2 * 5f64.sqrt(),
             idle_throttle: 0.003 * 0.120 * 0.120 / (0.045 * 0.045 * 10.0),
+            // no published figure; a typical high-revving V10 idle (estimate)
+            idle_rpm: 900.0,
             // Equal-length primaries, one 5-into-1 collector per bank (odd/even numbering
             // per bank is an assumption), dual tail pipes. Lengths and diameters estimated.
             exhaust: ExhaustDef {
@@ -254,11 +268,12 @@ impl EngineDef {
             },
             spark_advance_deg: 28.0,
             burn_duration_deg: 45.0,
-            // 0.08 stalled when floored from idle (fixed 28° advance on a full 12.5:1 charge)
-            flywheel_inertia_kgm2: 0.12,
+            flywheel_inertia_kgm2: 0.08,
             plenum_volume_m3: 7.0e-3,
             throttle_diameter_m: 0.095,
             idle_throttle: 0.003,
+            // a flat-plane supercar idle (estimate)
+            idle_rpm: 1000.0,
             // One 4-into-1 per bank, short primaries for the top end, two tails.
             exhaust: ExhaustDef {
                 primary_length_m: 0.45,
@@ -324,6 +339,8 @@ impl EngineDef {
             throttle_diameter_m: 0.090,
             // a 6.2 L on LS friction needs more bypass air (0.3 % stalls; 0.65 % idles ~1050)
             idle_throttle: 0.0065,
+            // a pushrod V8 idle (estimate)
+            idle_rpm: 700.0,
             // One 4-into-1 per bank, dual exhaust.
             exhaust: ExhaustDef {
                 primary_length_m: 0.75,
@@ -347,6 +364,13 @@ impl EngineDef {
             overrun_fuel_cut_rpm: 1300.0,
             exhaust_reverse_cd_ratio: 0.75,
         }
+    }
+
+    /// Spark advance (° BTDC) at `rpm`: `spark_advance_deg` is the full-speed value, retarded at
+    /// low speed as an ECU's map does, × (0.35 + 0.65·rpm/4000) up to 1: the burn takes about a
+    /// fixed time, so its MBT advance grows with speed (Heywood, *ICE Fundamentals*, §9.3).
+    pub fn spark_advance_at(&self, rpm: f64) -> f64 {
+        self.spark_advance_deg * (0.35 + 0.65 * rpm.max(0.0) / 4000.0).min(1.0)
     }
 
     pub fn displacement_m3(&self) -> f64 {
@@ -418,9 +442,6 @@ const IGNITION_DELAY_DEG: f64 = 5.0;
 const COMBUSTION_EFFICIENCY: f64 = 0.85;
 /// Cycle-to-cycle variation of released energy (±), drives the "lumpy" idle.
 const CYCLE_VARIATION: f64 = 0.04;
-/// Lumped in-cylinder wall heat-transfer coefficient, W/(m²·K). A constant stand-in
-/// for Woschni (SAE 670931), which is a later phase.
-const WALL_HTC: f64 = 350.0;
 const WALL_TEMP_K: f64 = 400.0;
 const AMBIENT_K: f64 = 300.0;
 const DISCHARGE_CD: f64 = 0.8;
@@ -432,8 +453,39 @@ const BLOWBY_AREA_FRACTION: f64 = 1e-4;
 /// Level of the 1D intake's induction source relative to the exhaust (lumped: trumpets sit in the
 /// engine bay, further from the listener than the tail pipes). Estimate.
 const INTAKE_SOUND_GAIN: f64 = 0.3;
+/// Throttle plate actuator speed, full travel per second (0.1 s closed to wide open).
+const PLATE_TRAVEL_PER_S: f64 = 10.0;
+/// Throttle dashpot: the opening (fraction of the plate's area) it holds when released, and
+/// its closing time constant. A few percent and about a second (estimates).
+const DASHPOT_HOLD: f64 = 0.02;
+const DASHPOT_TAU_S: f64 = 1.0;
 /// Speed above which the idle air control opens proportionally on overrun (dashpot).
 const DASHPOT_ONSET_RPM: f64 = 1500.0;
+/// Idle-speed control (Bosch, *Automotive Handbook*, "Idle-speed control"; Hrovat & Sun, "Models
+/// and control methodologies for IC engine idle speed control design", Control Eng. Practice 5
+/// (1997)): two paths on the relative speed error. The air path (bypass) carries the steady
+/// state but acts through the manifold's filling delay, so it is slow and integral-led; the
+/// spark path acts on the next firing, so it takes the fast proportional and damping action
+/// from a retarded idle timing that keeps torque in reserve both ways.
+///
+/// Gains from sweeps over the five presets' start → idle → full-throttle blip → release
+/// journey (smallest worst-case dip, then idle accuracy).
+///
+/// Air path: trim of the bypass, per unit of the air the engine swallows at idle.
+const IAC_KP: f64 = 0.05;
+const IAC_KI_PER_S: f64 = 0.5;
+/// Never shuts more than 70 % of the base bypass, and an idle actuator passes a few percent
+/// of the bore at most.
+const IAC_MIN: f64 = -0.7;
+const IAC_MAX_AREA: f64 = 0.03;
+/// Spark path: idle timing sits this far retarded from the engine's advance, and the loop
+/// moves it by up to the reserve each way, degrees.
+const IDLE_SPARK_RESERVE_DEG: f64 = 10.0;
+const IDLE_SPARK_KP_DEG: f64 = 80.0;
+const IDLE_SPARK_KD_DEG_S: f64 = 10.0;
+/// Time constant of the speed-rate filter, s: longer than a firing interval at idle, so the
+/// loop follows the mean speed, not the ripple between firings.
+const IAC_RATE_TAU_S: f64 = 0.15;
 /// Fraction of the equalising mass a valve may move per substep (see `step`).
 const VALVE_RELAX: f64 = 0.5;
 
@@ -445,11 +497,45 @@ struct Burn {
     released: f64,
 }
 
+/// Woschni's heat-transfer coefficient (SAE 670931; Heywood, *ICE Fundamentals*, eq. 12.19),
+/// W/(m²·K): h = 3.26·B^−0.2·p^0.8·T^−0.55·w^0.8 with p in kPa, B in m, w in m/s.
+fn woschni_htc(bore_m: f64, p_pa: f64, t_k: f64, w_m_s: f64) -> f64 {
+    3.26 * bore_m.powf(-0.2)
+        * (p_pa.max(0.0) / 1000.0).powf(0.8)
+        * t_k.max(1.0).powf(-0.55)
+        * w_m_s.max(0.0).powf(0.8)
+}
+
+/// Mean piston speed S̄p = 2·S·N, m/s (Heywood, *ICE Fundamentals*, eq. 2.2), whichever way the
+/// crank turns.
+fn mean_piston_speed(stroke_m: f64, omega: f64) -> f64 {
+    2.0 * stroke_m * omega.abs() / (2.0 * PI)
+}
+
+/// The cylinder is exchanging gas while either valve is off its seat.
+fn gas_exchange(a_in: f64, a_ex: f64) -> bool {
+    a_in > 0.0 || a_ex > 0.0
+}
+
+/// Woschni's characteristic gas velocity, m/s: C₁·S̄p (C₁ = 6.18 with a valve open, 2.28 when
+/// closed) plus 3.24e-3·`rise_k`, the combustion term V_d·T_r·(p − p_mot)/(p_r·V_r) in K.
+fn woschni_velocity(mean_piston_speed: f64, gas_exchange: bool, rise_k: f64) -> f64 {
+    let c1 = if gas_exchange { 6.18 } else { 2.28 };
+    c1 * mean_piston_speed + 3.24e-3 * rise_k.max(0.0)
+}
+
 #[derive(Debug, Clone)]
 struct CylinderState {
     offset_deg: f64,
     gas: GasVolume,
     trapped_kg: f64,
+    /// The charge trapped at intake closing still awaits its spark: one spark per charge,
+    /// whatever the ECU does with the timing meanwhile.
+    armed: bool,
+    /// State at intake closing (p_r, V_r, T_r): Woschni's reference for the motored pressure.
+    ref_p: f64,
+    ref_v: f64,
+    ref_t: f64,
     burn: Option<Burn>,
     cycle_deg: f64,
 }
@@ -464,7 +550,24 @@ pub struct Engine {
     theta: f64,
     omega: f64,
     torque_avg: f64,
+    /// Idle air the idle-speed control adds to `idle_throttle` (fraction of the full throttle
+    /// area; negative closes the bypass), and its integral term (per idle-air scale).
+    iac: f64,
+    iac_integral: f64,
+    /// Filtered d(rpm)/dt for the derivative action, rpm/s, and the rpm it was last taken at.
+    iac_rate: f64,
+    iac_last_rpm: f64,
+    /// The idle-speed control's spark trim, degrees (negative = retarded); 0 off idle.
+    idle_spark_deg: f64,
+    /// Opening the throttle dashpot holds (fraction of the plate's area), decaying.
+    dashpot: f64,
+    /// Throttle plate position in pedal units (0..=1), following the pedal at the actuator's
+    /// speed.
+    plate: f64,
     combustions: u64,
+    /// Running totals for energy balances: heat lost to the walls, and fuel energy released, J.
+    wall_heat_j: f64,
+    fuel_energy_j: f64,
     rng: u64,
     /// Exhaust waveguide network, built for the current step size.
     net: Option<ExhaustNet>,
@@ -485,6 +588,12 @@ pub struct Engine {
 }
 
 /// Crank angle `a` (deg) crossed in the step (prev, cur], on the 720° circle.
+/// Fraction of the plate's area a pedal position opens: 1 − cos(t·π/2), progressive at the
+/// bottom as a throttle cam is.
+fn pedal_opening(t: f64) -> f64 {
+    1.0 - (t * PI * 0.5).cos()
+}
+
 fn crossed(prev: f64, cur: f64, a: f64) -> bool {
     let span = (cur - prev).rem_euclid(720.0);
     let to_a = (a - prev).rem_euclid(720.0);
@@ -504,6 +613,10 @@ impl Engine {
                     offset_deg,
                     gas: GasVolume::at(ATM_PA, AMBIENT_K, g.volume(deg_to_rad(cycle_deg))),
                     trapped_kg: 0.0,
+                    armed: false,
+                    ref_p: ATM_PA,
+                    ref_v: 1.0,
+                    ref_t: AMBIENT_K,
                     burn: None,
                     cycle_deg,
                 }
@@ -520,7 +633,16 @@ impl Engine {
             theta: 0.0,
             omega: rpm_to_rad_s(initial_rpm),
             torque_avg: 0.0,
+            iac: 0.0,
+            iac_integral: 0.0,
+            iac_rate: 0.0,
+            idle_spark_deg: 0.0,
+            dashpot: 0.0,
+            plate: 0.0,
+            iac_last_rpm: initial_rpm,
             combustions: 0,
+            wall_heat_j: 0.0,
+            fuel_energy_j: 0.0,
             rng: seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1,
             net: None,
             fv: None,
@@ -566,13 +688,85 @@ impl Engine {
         (x >> 11) as f64 / (1u64 << 52) as f64 - 1.0
     }
 
+    /// Trim the idle air towards `idle_rpm` while the pedal is released and the engine runs
+    /// on its own; hold the trim otherwise (pedal pressed, cranking, overrun above the dashpot,
+    /// ignition off), so the loop does not wind up while it cannot act.
+    fn idle_control(&mut self, dt: f64, c: &Controls) {
+        let rpm = self.rpm();
+        let target = self.def.idle_rpm;
+        let raw = (rpm - self.iac_last_rpm) / dt;
+        self.iac_last_rpm = rpm;
+        self.iac_rate += (raw - self.iac_rate) * (dt / IAC_RATE_TAU_S).min(1.0);
+        if c.throttle > 0.01 || !c.ignition || rpm < 0.4 * target || rpm > DASHPOT_ONSET_RPM {
+            self.idle_spark_deg = self.slew_spark(0.0, dt);
+            return;
+        }
+        let err = (target - rpm) / target;
+        // the bypass trim, in units of the air this engine swallows at its idle
+        let scale = self.idle_air_scale();
+        let lo = IAC_MIN * self.def.idle_throttle / scale;
+        let hi = (IAC_MAX_AREA - self.def.idle_throttle).max(0.0) / scale;
+        // Integrate only towards the target or while the speed has stopped moving away from
+        // it: falling from a blip, the spark path catches the engine and the integral does not
+        // wind down into a stall.
+        if err > 0.0 || self.iac_rate >= 0.0 {
+            self.iac_integral = (self.iac_integral + IAC_KI_PER_S * err * dt).clamp(lo, hi);
+        }
+        self.iac = scale * (self.iac_integral + IAC_KP * err).clamp(lo, hi);
+        let r = IDLE_SPARK_RESERVE_DEG;
+        let trim = IDLE_SPARK_KP_DEG * err - IDLE_SPARK_KD_DEG_S * self.iac_rate / target;
+        self.idle_spark_deg = self.slew_spark(trim.clamp(-r, r) - r, dt);
+    }
+
+    /// The air an engine swallows at its idle speed, as a fraction of its full throttle area:
+    /// ṁ = ρ·V_d·N/120 at a typical idle manifold (30 kPa, 300 K), through a choked orifice
+    /// from the atmosphere. The idle loop's gains are per this, so they mean the same on a
+    /// 500 cc single and a 6.2 L V8.
+    fn idle_air_scale(&self) -> f64 {
+        let rho = 30e3 / (crate::gas::R_AIR * 300.0);
+        let mdot = rho * self.def.displacement_m3() * self.def.idle_rpm / 120.0;
+        let flux = crate::gas::orifice_mass_flow(1.0, ATM_PA, 300.0, 30e3);
+        let full = DISCHARGE_CD * PI * 0.25 * self.def.throttle_diameter_m.powi(2);
+        (mdot / flux / full).max(1e-6)
+    }
+
+    /// Move the spark trim towards `want` no faster than half the crank's own travel this
+    /// step: a spark angle that jumped ahead of the crank between two steps would never be
+    /// crossed, and that cylinder would misfire.
+    fn slew_spark(&self, want: f64, dt: f64) -> f64 {
+        let max = 0.5 * self.omega.abs().to_degrees() * dt;
+        self.idle_spark_deg + (want - self.idle_spark_deg).clamp(-max, max)
+    }
+
+    /// The throttle plate follows the pedal no faster than its actuator travels: an electronic
+    /// throttle body sweeps closed to wide open in about 0.1 s (Bosch, *Automotive Handbook*,
+    /// "electronic throttle control"), and a foot on a cable is no quicker. An instant opening
+    /// steps the throttle's mass flow, which the induction sound turns into a click.
+    fn plate_step(&mut self, throttle: f64, dt: f64) {
+        let max = PLATE_TRAVEL_PER_S * dt;
+        self.plate += (throttle.clamp(0.0, 1.0) - self.plate).clamp(-max, max);
+    }
+
+    /// The throttle's dashpot (the damper on a cable throttle, the closing follower of an
+    /// electronic one; Bosch, *Automotive Handbook*): released, the plate is caught at a small
+    /// opening and closes from it over about a second, so the manifold does not empty and drop
+    /// a decelerating engine through its idle.
+    fn dashpot_step(&mut self, throttle: f64, dt: f64) {
+        let pedal = pedal_opening(throttle.clamp(0.0, 1.0));
+        if pedal >= self.dashpot {
+            self.dashpot = pedal.min(DASHPOT_HOLD);
+        } else {
+            self.dashpot *= (-dt / DASHPOT_TAU_S).exp();
+        }
+    }
+
     fn throttle_area(&self, throttle: f64) -> f64 {
         let t = throttle.clamp(0.0, 1.0);
         // Idle air control opens with speed above 1500 rpm (deceleration "dashpot"), as ECUs do:
         // a fixed idle bypass would pull the manifold to near vacuum on overrun at high rpm.
-        // Below 1500 rpm it is the plain idle bypass (no feedback on the idle speed itself).
-        let idle = self.def.idle_throttle * (self.rpm() / DASHPOT_ONSET_RPM).max(1.0);
-        let open = idle + (1.0 - idle) * (1.0 - (t * PI * 0.5).cos());
+        // Below 1500 rpm it is the idle bypass, trimmed by the idle-speed control.
+        let idle = (self.def.idle_throttle + self.iac) * (self.rpm() / DASHPOT_ONSET_RPM).max(1.0);
+        let open = idle + ((1.0 - idle) * pedal_opening(t)).max(self.dashpot);
         DISCHARGE_CD * PI * 0.25 * self.def.throttle_diameter_m.powi(2) * open
     }
 
@@ -590,7 +784,10 @@ impl Engine {
     pub fn step(&mut self, dt: f64, c: &Controls) -> f64 {
         let g = self.def.geometry;
         let crank_deg = self.theta.to_degrees();
-        let spark_deg = 720.0 - self.def.spark_advance_deg;
+        self.idle_control(dt, c);
+        self.plate_step(c.throttle, dt);
+        self.dashpot_step(self.plate, dt);
+        let spark_deg = 720.0 - (self.def.spark_advance_at(self.rpm()) + self.idle_spark_deg);
         let ivc =
             (self.def.intake_valve.open_deg + self.def.intake_valve.duration_deg).rem_euclid(720.0);
         let evc = (self.def.exhaust_valve.open_deg + self.def.exhaust_valve.duration_deg)
@@ -601,6 +798,7 @@ impl Engine {
             && self.rpm() > self.def.overrun_fuel_cut_rpm;
         let fire_ok = c.ignition && self.rpm() < self.def.redline_rpm && !overrun_cut;
         let wall_area = 2.0 * g.piston_area();
+        let mean_piston_speed = mean_piston_speed(g.stroke_m, self.omega);
         match self.def.intake.model {
             IntakeModel::ZeroD => self.intake_net = None,
             IntakeModel::Fv => {
@@ -716,10 +914,18 @@ impl Engine {
             }
             if crossed(prev, cur, ivc) {
                 cs.trapped_kg = cs.gas.mass_kg;
+                cs.armed = true;
+                cs.ref_p = cs.gas.pressure();
+                cs.ref_v = cs.gas.volume_m3;
+                cs.ref_t = cs.gas.temperature();
             }
             let mut new_burn = false;
-            if crossed(prev, cur, spark_deg) && fire_ok && cs.trapped_kg > 0.0 {
-                new_burn = true;
+            // The spark fires on the first step at or past its angle (within the half cycle
+            // after it), so a timing that moved earlier past the crank still fires this charge,
+            // and one that moved later cannot fire it again. A cut cylinder's charge passes.
+            if cs.armed && (cur - spark_deg).rem_euclid(720.0) < 360.0 {
+                cs.armed = false;
+                new_burn = fire_ok && cs.trapped_kg > 0.0;
             }
             if let Some(b) = &mut cs.burn {
                 // Signed angle since the burn start, in (−360, 360]: the burn is created at
@@ -730,17 +936,30 @@ impl Engine {
                 }
                 let x = wiebe(since, b.duration_deg);
                 cs.gas.energy_j += b.energy_j * (x - b.released);
+                self.fuel_energy_j += b.energy_j * (x - b.released);
                 b.released = x;
                 if since > 2.0 * b.duration_deg {
                     cs.burn = None;
                 }
             }
 
-            // Wall heat loss (simplified Newton cooling).
+            // Wall heat loss, Woschni. The combustion term compares the pressure with the
+            // motored one, a polytropic (n = 1.32) compression from intake closing.
             let t_gas = cs.gas.temperature();
+            let p_gas = cs.gas.pressure();
+            let exchange = gas_exchange(a_in, a_ex);
+            let rise_k = if exchange {
+                0.0
+            } else {
+                let p_mot = cs.ref_p * (cs.ref_v / v_new).powf(1.32);
+                g.displacement() * cs.ref_t * (p_gas - p_mot) / (cs.ref_p * cs.ref_v)
+            };
+            let w = woschni_velocity(mean_piston_speed, exchange, rise_k);
+            let htc = woschni_htc(g.bore_m, p_gas, t_gas, w);
             let area = wall_area + PI * g.bore_m * (v_new / g.piston_area());
-            let q = (WALL_HTC * area * (t_gas - WALL_TEMP_K) * dt).min(0.5 * cs.gas.energy_j);
+            let q = (htc * area * (t_gas - WALL_TEMP_K) * dt).min(0.5 * cs.gas.energy_j);
             cs.gas.energy_j -= q;
+            self.wall_heat_j += q;
 
             gas_torque += (cs.gas.pressure() - ATM_PA) * g.piston_area() * g.dpos_dtheta(theta_c);
 
@@ -789,7 +1008,7 @@ impl Engine {
             Some((_, l)) if !tails.is_empty() => l.process(tails),
             _ => radiated,
         };
-        let throttle_area = self.throttle_area(c.throttle);
+        let throttle_area = self.throttle_area(self.plate);
         let bore_area = self.throttle_area(1.0);
         // 0D: throttle into the plenum. 1D: the network steps itself (ITBs take the same area each).
         let (throttle_dm, induction, throttle_flow) = match &mut self.intake_net {
@@ -945,6 +1164,352 @@ mod tests {
         // order 1-3-4-2 every 180°: cyl1 0°, cyl3 180°, cyl4 360°, cyl2 540°
         assert_eq!(d.phase_offsets_deg(), vec![0.0, 540.0, 180.0, 360.0]);
         assert_eq!(EngineDef::single().phase_offsets_deg(), vec![0.0]);
+    }
+
+    #[test]
+    fn a_moving_spark_fires_each_charge_exactly_once() {
+        // The ECU moves the spark between cycles (rpm map, idle trim). A 30° jump earlier must
+        // not skip the cylinder whose crank sits between the two angles, nor one later fire a
+        // charge twice: one spark per charge. Each run jumps one way and creeps back the other
+        // (slower than the crank, which is always safe), so misses and doubles cannot cancel.
+        for jump_earlier in [true, false] {
+            let mut e = Engine::new(EngineDef::inline4(), 3000.0, 1);
+            let c = Controls {
+                throttle: 0.5,
+                hold_rpm: Some(3000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.2, &c);
+            let c0 = e.combustions;
+            let (lo, hi) = (5.0, 35.0);
+            e.def.spark_advance_deg = if jump_earlier { lo } else { hi };
+            for k in 0..(1.0 / DT) as usize {
+                let a = &mut e.def.spark_advance_deg;
+                if k % (0.02 / DT) as usize == 0 {
+                    *a = if jump_earlier { hi } else { lo };
+                } else {
+                    // creep back over the 20 ms: 1.5 °/ms against the crank's 18 °/ms
+                    let creep = (hi - lo) * DT / 0.02;
+                    *a = if jump_earlier {
+                        (*a - creep).max(lo)
+                    } else {
+                        (*a + creep).min(hi)
+                    };
+                }
+                e.step(DT, &c);
+            }
+            // 3000 rpm, 4 cylinders: 25 cycles/s · 4 = 100 firings
+            let fired = e.combustions - c0;
+            assert!(
+                (99..=101).contains(&fired),
+                "jump earlier {jump_earlier}: {fired} firings"
+            );
+        }
+    }
+
+    #[test]
+    fn woschni_gives_the_published_correlation() {
+        // h = 3.26·B^−0.2·p^0.8·T^−0.55·w^0.8 (Heywood eq. 12.19, p in kPa): B = 0.1 m,
+        // p = 5000 kPa, T = 2000 K, w = 10 m/s → 3.26 · 1.58489 · 910.28 · 0.015291 · 6.30957
+        // = 453.8 W/(m²·K)
+        assert_relative_eq!(
+            woschni_htc(0.1, 5.0e6, 2000.0, 10.0),
+            453.76,
+            max_relative = 1e-4
+        );
+        // the gas velocity: 2.28·S̄p while compressing; 6.18·S̄p during gas exchange; plus the
+        // combustion term 3.24e-3·(V_d·T_r / p_r·V_r)·(p − p_mot)
+        assert_relative_eq!(woschni_velocity(10.0, false, 0.0), 22.8);
+        assert_relative_eq!(woschni_velocity(10.0, true, 0.0), 61.8);
+        assert_relative_eq!(woschni_velocity(10.0, false, 1000.0), 22.8 + 3.24);
+        // S̄p = 2·S·N (Heywood eq. 2.2): 86 mm at 3000 rpm (50 rev/s) → 8.6 m/s, either way round
+        let w = rpm_to_rad_s(3000.0);
+        assert_relative_eq!(mean_piston_speed(0.086, w), 8.6, max_relative = 1e-12);
+        assert_relative_eq!(mean_piston_speed(0.086, -w), 8.6, max_relative = 1e-12);
+        // gas exchange: either valve off its seat
+        assert!(!gas_exchange(0.0, 0.0));
+        assert!(gas_exchange(1e-6, 0.0));
+        assert!(gas_exchange(0.0, 1e-6));
+        assert!(gas_exchange(1e-6, 1e-6));
+    }
+
+    #[test]
+    fn the_spark_slews_at_half_the_crank_travel() {
+        // 3000 rpm = 18 000 °/s; a 0.1 ms step travels 1.8°, so the trim moves at most 0.9°,
+        // and the same running backwards
+        for rpm in [3000.0, -3000.0] {
+            let mut e = Engine::new(EngineDef::inline4(), 3000.0, 1);
+            e.omega = rpm_to_rad_s(rpm);
+            e.idle_spark_deg = 2.0;
+            assert_relative_eq!(e.slew_spark(12.0, 1e-4), 2.9, max_relative = 1e-12);
+            assert_relative_eq!(e.slew_spark(-8.0, 1e-4), 1.1, max_relative = 1e-12);
+            assert_relative_eq!(e.slew_spark(2.5, 1e-4), 2.5, max_relative = 1e-12);
+        }
+    }
+
+    #[test]
+    fn each_cylinder_fires_at_its_spark_angle_before_top_centre() {
+        // A charge fires on the first step past `spark_advance_at(rpm) + idle trim` degrees
+        // before its firing top centre (crank angle 720°), not half a turn late, and a retarded
+        // trim (negative) fires it later. At idle the ECU holds a retard, so the trim is real.
+        let mut e = Engine::new(EngineDef::inline4(), 800.0, 1);
+        let c = Controls::default();
+        run(&mut e, 3.0, &c);
+        let mut checked = 0;
+        let mut trims = (f64::MAX, f64::MIN);
+        for _ in 0..(0.5 / DT) as usize {
+            let armed: Vec<bool> = e.cyl.iter().map(|cs| cs.armed).collect();
+            e.step(DT, &c);
+            // the crank's travel this step, degrees
+            let travel = e.omega.abs().to_degrees() * DT;
+            let want = e.def.spark_advance_at(e.rpm()) + e.idle_spark_deg;
+            for (cs, was) in e.cyl.iter().zip(armed) {
+                if was && !cs.armed {
+                    // signed: an idle retard can put the spark just after top centre
+                    let btdc = (720.0 - cs.cycle_deg + 360.0).rem_euclid(720.0) - 360.0;
+                    assert!(
+                        btdc <= want + 0.01 && btdc > want - travel - 0.01,
+                        "fired {btdc:.3}° BTDC, spark at {want:.3}° (step {travel:.3}°)"
+                    );
+                    checked += 1;
+                    trims = (trims.0.min(e.idle_spark_deg), trims.1.max(e.idle_spark_deg));
+                }
+            }
+        }
+        // 800 rpm, 4 cylinders: 6.7 cycles/s · 4 · 0.5 s ≈ 13 firings
+        assert!(checked >= 12, "{checked} firings checked");
+        assert!(trims.1 < -1.0, "idle trim {trims:?}° should be a retard");
+    }
+
+    #[test]
+    fn the_walls_take_a_textbook_share_of_the_fuel_energy() {
+        // Heat to the combustion-chamber walls is ~15–35 % of the fuel energy at part load
+        // (Heywood, ICE Fundamentals, §12.1); a Woschni coefficient lands an inline-4 at
+        // 3000 rpm, half throttle, inside that band. And it grows with load: h ∝ p^0.8, so a
+        // full cylinder loses about (charge ratio)^0.8 more per cycle than a throttled one.
+        let heat = |throttle: f64| {
+            let mut e = Engine::new(EngineDef::inline4(), 3000.0, 1);
+            let c = Controls {
+                throttle,
+                hold_rpm: Some(3000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &c);
+            let (q0, f0) = (e.wall_heat_j, e.fuel_energy_j);
+            run(&mut e, 0.5, &c);
+            (e.wall_heat_j - q0, e.fuel_energy_j - f0)
+        };
+        let (q, f) = heat(0.5);
+        let share = q / f;
+        assert!(
+            (0.15..0.35).contains(&share),
+            "wall heat {share:.3} of the fuel"
+        );
+        let ((q_full, f_full), (q_light, f_light)) = (heat(1.0), heat(0.15));
+        let load = f_full / f_light;
+        let ratio = q_full / q_light;
+        assert!(
+            (ratio / load.powf(0.8) - 1.0).abs() < 0.15,
+            "heat ratio {ratio:.2} for a charge ratio {load:.2} (want ≈ {:.2})",
+            load.powf(0.8)
+        );
+    }
+
+    /// An inline-4 at `rpm` with the idle loop's state set by hand, for one controller step.
+    fn idling_at(rpm: f64, integral: f64, rate: f64, spark: f64) -> Engine {
+        let mut e = Engine::new(EngineDef::inline4(), rpm, 1);
+        e.omega = rpm_to_rad_s(rpm);
+        e.iac_last_rpm = rpm;
+        e.iac_integral = integral;
+        e.iac_rate = rate;
+        e.idle_spark_deg = spark;
+        e
+    }
+
+    #[test]
+    fn the_idle_air_scale_is_what_the_engine_swallows_at_idle() {
+        // inline-4, 86 × 86 mm (1.9982 L), idle 800 rpm, Ø60 mm throttle:
+        // ρ(30 kPa, 300 K) = 0.34843 kg/m³; ṁ = 0.34843 · 1.9982e-3 · 800/120 = 4.6416e-3 kg/s;
+        // choked flux from the atmosphere 0.040418 · 101325/√300 = 236.45 kg/(s·m²);
+        // Cd·A = 0.8 · π/4 · 0.06² = 2.2619e-3 m² → 4.6416e-3 / 236.45 / 2.2619e-3 = 0.0086787
+        let e = Engine::new(EngineDef::inline4(), 800.0, 1);
+        assert_relative_eq!(e.idle_air_scale(), 0.008_678_7, max_relative = 1e-4);
+    }
+
+    #[test]
+    fn one_idle_control_step_by_hand() {
+        let dt = 1e-3;
+        let scale = 0.008_678_7;
+        // 780 rpm against 800: err = 0.025; falling at 400 rpm/s (filtered: no new change,
+        // so the rate decays by dt/τ = 1/150 → 397.33)
+        let mut e = idling_at(780.0, 0.0, -400.0, -3.0);
+        e.idle_control(dt, &Controls::default());
+        assert_relative_eq!(e.iac_rate, -397.333, max_relative = 1e-5);
+        // integral 0.5 · 0.025 · 1e-3 = 1.25e-5; air = scale · (1.25e-5 + 0.05 · 0.025)
+        assert_relative_eq!(e.iac_integral, 1.25e-5, max_relative = 1e-9);
+        assert_relative_eq!(e.iac, scale * 1.2625e-3, max_relative = 1e-4);
+        // spark: 80 · 0.025 + 10 · 397.33/800 = 6.9667 from the −10° reserve → −3.0333°
+        assert_relative_eq!(e.idle_spark_deg, -3.0333, max_relative = 1e-4);
+        // a new speed reading: 700 → 720 rpm in 1 ms is 20 000 rpm/s, filtered by 1/150
+        let mut e = idling_at(720.0, 0.0, 0.0, -10.0);
+        e.iac_last_rpm = 700.0;
+        e.idle_control(dt, &Controls::default());
+        assert_relative_eq!(e.iac_rate, 133.333, max_relative = 1e-5);
+    }
+
+    #[test]
+    fn the_idle_integral_holds_while_falling_from_above_and_saturates() {
+        // above target and falling: it holds (the spark path catches the engine)
+        let mut e = idling_at(900.0, 0.1, -400.0, -10.0);
+        e.idle_control(1e-3, &Controls::default());
+        assert_eq!(e.iac_integral, 0.1);
+        // above target and steady: it closes
+        let mut e = idling_at(900.0, 0.1, 0.0, -10.0);
+        e.idle_control(1e-3, &Controls::default());
+        assert!(e.iac_integral < 0.1);
+        // the bypass stops at 3 % of the bore: 0.03 − 0.0055 added
+        let mut e = idling_at(330.0, 5.0, 0.0, -10.0);
+        e.idle_control(1e-3, &Controls::default());
+        assert_relative_eq!(e.iac, 0.03 - 0.0055, max_relative = 1e-9);
+        // and closes no further than its floor below the base bypass
+        let mut e = idling_at(1400.0, -5.0, 0.0, -10.0);
+        e.idle_control(1e-3, &Controls::default());
+        assert_relative_eq!(e.iac, IAC_MIN * 0.0055, max_relative = 1e-9);
+    }
+
+    #[test]
+    fn the_idle_loop_acts_only_on_a_released_pedal_and_a_running_engine() {
+        let acts = |rpm: f64, c: Controls| {
+            let mut e = idling_at(rpm, 0.0, 0.0, -10.0);
+            e.idle_control(1e-3, &c);
+            e.iac_integral != 0.0
+        };
+        let idle = Controls::default();
+        // 800 rpm target: above 0.4 · 800 = 320 rpm it runs on its own; the dashpot owns > 1500
+        assert!(acts(321.0, idle));
+        assert!(!acts(300.0, idle), "cranking");
+        assert!(acts(1500.0, idle));
+        assert!(!acts(1501.0, idle), "overrun");
+        assert!(acts(
+            700.0,
+            Controls {
+                throttle: 0.01,
+                ..idle
+            }
+        ));
+        assert!(
+            !acts(
+                700.0,
+                Controls {
+                    throttle: 0.02,
+                    ..idle
+                }
+            ),
+            "pedal pressed"
+        );
+        assert!(
+            !acts(
+                700.0,
+                Controls {
+                    ignition: false,
+                    ..idle
+                }
+            ),
+            "ignition off"
+        );
+        // inactive, the spark trim returns towards 0 (slewed)
+        let mut e = idling_at(700.0, 0.0, 0.0, -10.0);
+        e.idle_control(
+            1e-3,
+            &Controls {
+                throttle: 0.5,
+                ..idle
+            },
+        );
+        assert!(e.idle_spark_deg > -10.0);
+    }
+
+    /// The user's journey on one engine: crank on the starter, let it idle, floor it for 0.3 s,
+    /// let go. The ECU's idle control must hold `idle_rpm`, and overrun fuel cut, the dashpot
+    /// and the idle control must bring it back from the blip. The single used to stall at idle,
+    /// the big engines on the way down.
+    fn starts_idles_and_survives_a_blip(d: EngineDef) {
+        let target = d.idle_rpm;
+        let mut e = Engine::new(d.clone(), 0.0, 1);
+        let crank = Controls {
+            starter: true,
+            ..Controls::default()
+        };
+        run(&mut e, 1.0, &crank);
+        // after the start flare the ECU brings the idle down over ~10 s, as a car does
+        run(&mut e, 11.0, &Controls::default());
+        let idle: Vec<f64> = (0..(2.0 / DT) as usize)
+            .map(|_| {
+                e.step(DT, &Controls::default());
+                e.rpm()
+            })
+            .collect();
+        let mean = idle.iter().sum::<f64>() / idle.len() as f64;
+        let low = idle.iter().copied().fold(f64::INFINITY, f64::min);
+        assert!(
+            (mean / target - 1.0).abs() < 0.08,
+            "{}: idle {mean} vs {target}",
+            d.name
+        );
+        // a lumpy idle swings; a stall is 0
+        assert!(low > 0.55 * target, "{}: idle dipped to {low}", d.name);
+        let blip = Controls {
+            throttle: 1.0,
+            ..Controls::default()
+        };
+        run(&mut e, 0.3, &blip);
+        assert!(
+            e.rpm() > 1.3 * target,
+            "{}: blip only to {}",
+            d.name,
+            e.rpm()
+        );
+        let mut low = f64::INFINITY;
+        for _ in 0..(4.0 / DT) as usize {
+            e.step(DT, &Controls::default());
+            low = low.min(e.rpm());
+        }
+        assert!(
+            low > 0.3 * target,
+            "{}: fell to {low} after the blip",
+            d.name
+        );
+        assert!(
+            (e.rpm() / target - 1.0).abs() < 0.25,
+            "{}: back at {} vs {target}",
+            d.name,
+            e.rpm()
+        );
+    }
+
+    #[test]
+    fn the_single_starts_idles_and_survives_a_blip() {
+        starts_idles_and_survives_a_blip(EngineDef::single());
+    }
+
+    #[test]
+    fn the_inline4_starts_idles_and_survives_a_blip() {
+        starts_idles_and_survives_a_blip(EngineDef::inline4());
+    }
+
+    #[test]
+    fn the_lfa_starts_idles_and_survives_a_blip() {
+        starts_idles_and_survives_a_blip(EngineDef::lfa_v10());
+    }
+
+    #[test]
+    fn the_flatplane_starts_idles_and_survives_a_blip() {
+        starts_idles_and_survives_a_blip(EngineDef::flatplane_v8());
+    }
+
+    #[test]
+    fn the_crossplane_starts_idles_and_survives_a_blip() {
+        starts_idles_and_survives_a_blip(EngineDef::crossplane_v8());
     }
 
     #[test]
@@ -1465,8 +2030,8 @@ mod tests {
 
     #[test]
     fn every_preset_revs_up_from_idle_at_full_throttle() {
-        // Flooring it from 900 rpm must not stall (the flat-plane did: a light flywheel against
-        // a fixed 28° advance on a full 12.5:1 charge).
+        // Flooring it from 900 rpm must not stall (the flat-plane did on a fixed 28° advance:
+        // see `spark_advance_follows_an_rpm_curve`).
         for d in [
             EngineDef::single(),
             EngineDef::inline4(),
@@ -1534,6 +2099,30 @@ mod tests {
                 want[k]
             );
         }
+    }
+
+    #[test]
+    fn spark_advance_follows_an_rpm_curve() {
+        // The burn takes about a fixed time, so its MBT advance grows with speed (Heywood §9.3).
+        // Configured 28°: × (0.35 + 0.65·900/4000) = 13.895° at 900 rpm; full from 4000 rpm.
+        let d = EngineDef::flatplane_v8();
+        assert_relative_eq!(d.spark_advance_at(900.0), 13.895, max_relative = 1e-9);
+        assert_relative_eq!(d.spark_advance_at(4000.0), 28.0);
+        assert_relative_eq!(d.spark_advance_at(9000.0), 28.0);
+    }
+
+    #[test]
+    fn a_retarded_idle_spark_lets_a_light_flywheel_rev_up() {
+        // The flat-plane stalled when floored from idle on a fixed 28° with 0.08 kg·m².
+        let mut d = EngineDef::flatplane_v8();
+        d.flywheel_inertia_kgm2 = 0.08;
+        let mut e = Engine::new(d, 900.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            ..Controls::default()
+        };
+        run(&mut e, 0.5, &c);
+        assert!(e.rpm() > 2000.0, "{} rpm", e.rpm());
     }
 
     #[test]
@@ -1838,6 +2427,52 @@ mod tests {
         }
         assert!(worst_p > 0.0, "port {worst_p}");
         assert!(xs.iter().all(|x| x.is_finite()));
+    }
+
+    #[test]
+    fn the_throttle_plate_takes_a_tenth_of_a_second_to_open() {
+        let mut e = Engine::new(EngineDef::inline4(), 3000.0, 1);
+        for _ in 0..(0.05 / DT) as usize {
+            e.plate_step(1.0, DT);
+        }
+        assert_relative_eq!(e.plate, 0.5, max_relative = 1e-3);
+        for _ in 0..(0.06 / DT) as usize {
+            e.plate_step(1.0, DT);
+        }
+        assert_eq!(e.plate, 1.0);
+        // and back down at the same speed (the dashpot then holds the last few percent)
+        for _ in 0..(0.05 / DT) as usize {
+            e.plate_step(0.0, DT);
+        }
+        assert_relative_eq!(e.plate, 0.5, max_relative = 1e-3);
+    }
+
+    #[test]
+    fn the_dashpot_lets_the_throttle_close_slowly() {
+        // Lifting off WOT, the plate is caught at 2 % of its area and closes from there with
+        // τ = 1 s: e^−1 = 0.368 of the hold after 1 s. Pressing again opens it at once.
+        let mut e = Engine::new(EngineDef::inline4(), 3000.0, 1);
+        let full = e.throttle_area(1.0);
+        let idle = e.throttle_area(0.0);
+        let wot = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.1, &wot);
+        e.dashpot_step(0.0, DT);
+        let held = e.throttle_area(0.0);
+        assert_relative_eq!(held, idle + 0.02 * full, max_relative = 1e-3);
+        for _ in 0..(1.0 / DT) as usize {
+            e.dashpot_step(0.0, DT);
+        }
+        assert_relative_eq!(
+            e.throttle_area(0.0),
+            idle + 0.02 * 0.3679 * full,
+            max_relative = 1e-3
+        );
+        e.dashpot_step(1.0, DT);
+        assert_relative_eq!(e.throttle_area(1.0), full, max_relative = 1e-9);
     }
 
     #[test]
