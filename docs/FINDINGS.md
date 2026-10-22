@@ -173,3 +173,15 @@ Found: 2026-10-21 · build
 **Why it isn't obvious.** Buttons and checkboxes with the same API match exactly one node.
 
 Found: 2026-10-21 · tests
+
+### Hand sabotage that restores the file with `mv` leaves cargo on the mutant build
+
+**Symptom.** After a sabotage loop (mutate → `cargo test` → `mv file.bak file`), the next test run
+fails exactly as the last mutant would, though the source is clean.
+**Cause.** The backup's mtime is older than the mutant's, and cargo fingerprints by mtime: the
+restored file looks unchanged since the last (mutant) build, so nothing is rebuilt.
+**Fix / workaround.** `touch` the file after restoring it (the sabotage script does).
+**Why it isn't obvious.** Each mutant does rebuild (it is newer), so every verdict is right; only
+the run *after* the loop silently tests stale code.
+
+Found: 2026-10-22 · tests

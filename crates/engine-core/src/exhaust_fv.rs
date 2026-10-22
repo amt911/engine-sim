@@ -279,18 +279,17 @@ impl ExhaustFv {
 
     /// Total gas mass in the network (pipes, junctions, chambers), kg.
     pub fn total_mass(&self) -> f64 {
-        let pipe_mass = |p: &Pipe1d, scale: f64| {
+        let pipe_mass = |p: &Pipe1d| {
             p.cells
                 .iter()
                 .zip(&p.area)
                 .map(|(c, a)| c.rho * a)
                 .sum::<f64>()
                 * p.dx
-                * scale
         };
-        let mut m: f64 = self.primaries.iter().map(|p| pipe_mass(p, 1.0)).sum();
+        let mut m: f64 = self.primaries.iter().map(pipe_mass).sum();
         for b in &self.branches {
-            m += b.junction.mass_kg + pipe_mass(&b.out, 1.0);
+            m += b.junction.mass_kg + pipe_mass(&b.out);
         }
         m
     }
@@ -467,6 +466,244 @@ mod tests {
             (0.6..1.6).contains(&ratio),
             "junction transmits {ratio:.2} of a straight pipe ({through_net} vs {through_straight})"
         );
+    }
+
+    /// Riemann invariant J = u + σ·2c/(γ−1) carried by the characteristic leaving the pipe.
+    fn invariant(s: Prim, sigma: f64) -> f64 {
+        s.u + sigma * 2.0 / (crate::gas::GAMMA - 1.0) * s.sound_speed()
+    }
+
+    #[test]
+    fn junction_ghost_keeps_the_outgoing_characteristic() {
+        // Outflow through either end into a lower junction pressure: the ghost sits at p_j, keeps
+        // the invariant leaving the pipe and expands isentropically from the cell (p/ρ^γ kept).
+        let g = crate::gas::GAMMA;
+        for (sigma, u) in [(1.0, 30.0), (-1.0, -30.0)] {
+            let cell = Prim {
+                rho: 1.0,
+                u,
+                p: 1.5e5,
+            };
+            let b = junction_ghost(cell, 1.2e5, 0.7, sigma);
+            assert!((b.p - 1.2e5).abs() < 1e-6, "σ {sigma}: {b:?}");
+            assert!((invariant(b, sigma) - invariant(cell, sigma)).abs() < 1e-9);
+            let entropy = |s: Prim| s.p / s.rho.powf(g);
+            assert!(
+                (entropy(b) / entropy(cell) - 1.0).abs() < 1e-12,
+                "σ {sigma}: {b:?}"
+            );
+            assert!(
+                sigma * b.u > sigma * cell.u,
+                "expansion accelerates the outflow"
+            );
+        }
+    }
+
+    #[test]
+    fn gas_entering_a_pipe_from_a_junction_has_the_junction_density() {
+        // Right end, flow into the pipe (u < 0), junction above the cell pressure.
+        let cell = Prim {
+            rho: 1.0,
+            u: -30.0,
+            p: 1.0e5,
+        };
+        let b = junction_ghost(cell, 1.3e5, 0.7, 1.0);
+        assert_eq!(b.rho, 0.7);
+        assert!(b.u < -30.0);
+        // At rest nothing leaves the pipe, so the boundary gas is the junction's.
+        let rest = Prim { u: 0.0, ..cell };
+        assert_eq!(junction_ghost(rest, 1.0e5, 0.7, 1.0).rho, 0.7);
+        assert_eq!(junction_ghost(rest, 1.0e5, 0.7, -1.0).rho, 0.7);
+    }
+
+    #[test]
+    fn junction_ghost_clamps_the_pressure_ratio_and_chokes() {
+        let cell = Prim {
+            rho: 1.0,
+            u: 0.0,
+            p: 1.0e5,
+        };
+        assert!((junction_ghost(cell, 1.0e7, 0.7, 1.0).p - 20.0e5).abs() < 1e-6);
+        let b = junction_ghost(cell, 1.0, 0.7, 1.0);
+        assert!((b.p - 0.05e5).abs() < 1e-6);
+        // The expansion to 5% would be supersonic: the ghost is choked at exactly sonic.
+        let c = (crate::gas::GAMMA * b.p / b.rho).sqrt();
+        assert!((b.u - c).abs() < 1e-9 * c, "{b:?} c {c}");
+    }
+
+    #[test]
+    fn guard_floors_mass_and_energy() {
+        let mut v = GasVolume {
+            mass_kg: f64::NAN,
+            energy_j: f64::NAN,
+            volume_m3: 2.0,
+        };
+        guard(&mut v);
+        assert_eq!(v.mass_kg, 2.0e-6);
+        // 50 K worth of internal energy: m·cv·T
+        assert!((v.energy_j - 2.0e-6 * 717.5 * 50.0).abs() < 1e-12);
+        let mut neg = GasVolume {
+            mass_kg: -1.0,
+            energy_j: -1.0,
+            volume_m3: 2.0,
+        };
+        guard(&mut neg);
+        assert_eq!(neg.mass_kg, 2.0e-6);
+        assert!(neg.energy_j > 0.0);
+        // A healthy volume is left alone.
+        let ok = GasVolume::at(1.0e5, 600.0, 1.0e-3);
+        let mut same = ok;
+        guard(&mut same);
+        assert_eq!((same.mass_kg, same.energy_j), (ok.mass_kg, ok.energy_j));
+        // Finite mass with NaN energy still gets the energy floor.
+        let mut half = GasVolume {
+            energy_j: f64::NAN,
+            ..ok
+        };
+        guard(&mut half);
+        assert_eq!(half.mass_kg, ok.mass_kg);
+        assert!(half.energy_j.is_finite());
+    }
+
+    #[test]
+    fn area_is_the_circle_of_the_diameter() {
+        // 50 mm bore: π/4 · 0.05² = 1.9635e-3 m²
+        assert!((area(0.05) - 1.963_495e-3).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_fresh_port_holds_the_initial_gas() {
+        let n = ExhaustFv::new(&def(), 4, DT);
+        let (p, t) = n.port_state(2);
+        assert!(
+            (p - 101_325.0).abs() < 1e-6 && (t - 600.0).abs() < 1e-9,
+            "{p} {t}"
+        );
+        let v = n.port_volume(2);
+        let pipe = &n.primaries[2];
+        let vol = area(def().primary_diameter_m) * pipe.dx;
+        assert!((v.volume_m3 - vol).abs() < 1e-15);
+        assert!((v.pressure() - 101_325.0).abs() < 1e-6);
+        assert!((v.temperature() - 600.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_fresh_network_holds_its_geometric_volume_of_gas() {
+        // 2 × π/4·0.04²·0.7 primaries + junction + collector + 6 L muffler + 1.5 m tail, at
+        // 1 atm / 600 K (ρ = 0.5884 kg/m³), defaults of `ExhaustDef`, all diameters by hand.
+        let d = def();
+        let disc = |dia: f64| std::f64::consts::PI / 4.0 * dia * dia;
+        let v = 2.0 * disc(d.primary_diameter_m) * d.primary_length_m
+            + disc(d.collector_diameter_m) * 3.0 * d.collector_diameter_m
+            + disc(d.collector_diameter_m) * d.collector_length_m
+            + d.muffler_volume_m3
+            + disc(d.tail_diameter_m) * d.tail_length_m;
+        let m = ExhaustFv::new(&d, 2, DT).total_mass();
+        assert!(
+            (m / (0.5884 * v) - 1.0).abs() < 0.03,
+            "{m} kg vs {}",
+            0.5884 * v
+        );
+    }
+
+    #[test]
+    fn the_pipes_advance_once_per_fv_step() {
+        // Physics time and pipe time stay in step: dt_fv = substeps · dt, and the radiated value
+        // changes exactly once per FV step under a steady flow.
+        let mut net = ExhaustFv::new(&def(), 1, DT);
+        assert!((net.dt_fv - net.substeps as f64 * DT).abs() < 1e-18);
+        assert!(net.substeps > 1);
+        // let the flow reach the tail first (≈ 5 ms), ending on an FV step boundary
+        for _ in 0..net.substeps * 400 {
+            net.add_valve_flow(0, 0.05 * DT, 1004.5 * 900.0);
+            net.step();
+        }
+        let mut updates = 0;
+        let mut last = net.step();
+        let steps = 70 * net.substeps;
+        for _ in 1..steps {
+            net.add_valve_flow(0, 0.05 * DT, 1004.5 * 900.0);
+            let r = net.step();
+            if r != last {
+                updates += 1;
+            }
+            last = r;
+        }
+        assert!(
+            (68..=70).contains(&updates),
+            "{updates} updates in {steps} steps"
+        );
+    }
+
+    #[test]
+    fn reversion_takes_at_most_half_of_the_first_cell() {
+        let energy = |p: &Pipe1d| {
+            p.cells
+                .iter()
+                .zip(&p.area)
+                .map(|(c, a)| c.e * a)
+                .sum::<f64>()
+                * p.dx
+        };
+        for (demand, expected) in [(2.0, None), (1e-9, Some(1e-9))] {
+            let mut net = ExhaustFv::new(&def(), 1, DT);
+            let half = 0.5 * net.port_volume(0).mass_kg;
+            let m0 = net.total_mass();
+            let e0 = energy(&net.primaries[0]);
+            net.add_valve_flow(0, -demand, 1004.5 * 600.0);
+            let mut vented = 0.0;
+            for _ in 0..net.substeps {
+                net.step();
+                vented += net.last_vented();
+            }
+            let taken = m0 - net.total_mass() - vented;
+            let want = expected.unwrap_or(half);
+            assert!(
+                (taken - want).abs() < 1e-6 * want,
+                "{demand}: took {taken}, want {want}"
+            );
+            // the energy is limited with the mass: every kilogram leaves with its h = cp·T
+            // (the far end is still at rest after one FV step, so only the valve face moved it)
+            let e_taken = e0 - energy(&net.primaries[0]);
+            let e_want = want * 1004.5 * 600.0;
+            assert!(
+                (e_taken - e_want).abs() < 1e-6 * e_want,
+                "{demand}: took {e_taken} J, want {e_want} J"
+            );
+        }
+    }
+
+    #[test]
+    fn outflow_radiates_a_positive_source() {
+        // Gas leaving the tail is ρu > 0: a steady exhaust flow radiates a positive mean.
+        let mut net = ExhaustFv::new(&def(), 1, DT);
+        let mut sum = 0.0;
+        let n = (0.05 / DT) as usize;
+        for k in 0..n {
+            net.add_valve_flow(0, 0.05 * DT, 1004.5 * 900.0);
+            let r = net.step();
+            if k > n / 2 {
+                sum += r;
+            }
+        }
+        assert!(sum > 0.0, "mean source {sum}");
+    }
+
+    #[test]
+    fn a_valve_jet_enters_the_primary_at_its_flow_velocity() {
+        // 50 g/s into a 40 mm primary of 0.59 kg/m³ gas: G = ṁ/A ≈ 39.8 kg/(m²·s), so the gas at
+        // the port moves at about G/ρ — tens of m/s, set by the momentum the jet brings in.
+        let mut net = ExhaustFv::new(&def(), 1, DT);
+        for _ in 0..(0.002 / DT) as usize {
+            net.add_valve_flow(0, 0.05 * DT, 1004.5 * 600.0);
+            net.step();
+        }
+        let c = net.primaries[0].prim(0);
+        let g = 0.05 / area(0.04);
+        assert!((c.u / (g / c.rho) - 1.0).abs() < 0.1, "{c:?}");
+        // and it brings its enthalpy: 600 K stagnation gas keeps the port near 600 K, not cold
+        let (_, t) = net.port_state(0);
+        assert!((520.0..620.0).contains(&t), "port at {t} K");
     }
 
     #[test]

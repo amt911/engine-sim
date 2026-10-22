@@ -1453,6 +1453,74 @@ mod tests {
     }
 
     #[test]
+    fn the_fv_exhaust_keeps_its_waves_between_steps() {
+        // The FV network is built once and carries the pulses: its tailpipe makes sound comparable
+        // to the waveguide's (a network rebuilt every step would sit at rest and stay silent).
+        let rms = |d: EngineDef| {
+            let mut e = Engine::new(d, 4000.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(4000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &c);
+            let xs = run(&mut e, 0.1, &c);
+            (xs.iter().map(|x| x * x).sum::<f64>() / xs.len() as f64).sqrt()
+        };
+        let (wg, fv_rms) = (rms(EngineDef::inline4()), rms(fv(EngineDef::inline4())));
+        assert!(fv_rms > 0.2 * wg, "fv {fv_rms} vs waveguide {wg}");
+        // and the port gauge reads those waves: blowdown pulses of tens of kPa at WOT
+        let mut e = Engine::new(fv(EngineDef::inline4()), 4000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(4000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.2, &c);
+        let mut peak: f64 = 0.0;
+        for _ in 0..(0.03 * 192_000.0) as usize {
+            e.step(1.0 / 192_000.0, &c);
+            peak = peak.max(e.exhaust_port_gauge(0));
+        }
+        assert!(
+            (10_000.0..300_000.0).contains(&peak),
+            "port gauge peak {peak} Pa"
+        );
+    }
+
+    #[test]
+    fn a_resting_fv_port_reads_atmospheric() {
+        let mut e = Engine::new(fv(EngineDef::single()), 0.0, 1);
+        let c = Controls {
+            ignition: false,
+            ..Controls::default()
+        };
+        run(&mut e, 0.001, &c);
+        let g = e.exhaust_port_gauge(0);
+        assert!(g.abs() < 2000.0, "gauge {g} Pa");
+    }
+
+    #[test]
+    fn the_reverse_cd_ratio_leaves_forward_exhaust_flow_alone() {
+        // At WOT the exhaust flow is forward: throttling only the reverse flow barely moves torque
+        // (throttling the forward flow too would raise pumping losses by several percent).
+        let torque = |ratio: f64| {
+            let mut d = EngineDef::inline4();
+            d.exhaust_reverse_cd_ratio = ratio;
+            let mut e = Engine::new(d, 6000.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(6000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.5, &c);
+            e.torque_nm()
+        };
+        let (full, half) = (torque(1.0), torque(0.4));
+        assert!((half / full - 1.0).abs() < 0.02, "{half} vs {full}");
+    }
+
+    #[test]
     fn reverse_flow_through_the_exhaust_valve_is_throttled() {
         // Same overrun state, reverse-flow Cd ratio 1.0 vs 0.5: reversion mass into the cylinders
         // over the exhaust valve drops (choked inflow ∝ area); forward flow is unaffected.
