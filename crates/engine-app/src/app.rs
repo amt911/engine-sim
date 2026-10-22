@@ -306,6 +306,8 @@ mod tests {
             (Preset::Single, 0.0),
             (Preset::Inline4, 0.4),
             (Preset::LfaV10, 1.0),
+            (Preset::FlatplaneV8, 1.0),
+            (Preset::CrossplaneV8, 0.3),
         ] {
             let mut sim = Simulation::with_vehicle(preset.def(), preset.vehicle(), 48_000.0, 1);
             sim.controls = Controls {

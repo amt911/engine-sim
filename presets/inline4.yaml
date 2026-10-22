@@ -39,6 +39,7 @@ engine:
     muffler_transmission: 0.5
     model: waveguide
     muffler_volume_m3: 0.006
+    tail_spacing_m: 0.9
   intake:
     model: zero_d
     runner_length_m: 0.3
@@ -58,5 +59,7 @@ engine:
     combustion_jitter: 1.0
     reverb: 0.15
     leveling: 1.0
+    listener_distance_m: 3.0
+    listener_angle_deg: 30.0
   exhaust_reverse_cd_ratio: 0.75
   overrun_fuel_cut_rpm: 1500.0

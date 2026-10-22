@@ -55,6 +55,7 @@ engine:
     muffler_transmission: 0.7
     model: waveguide
     muffler_volume_m3: 0.01
+    tail_spacing_m: 0.25
   intake:
     model: fv
     runner_length_m: 0.25
@@ -74,5 +75,7 @@ engine:
     combustion_jitter: 1.0
     reverb: 0.15
     leveling: 1.0
+    listener_distance_m: 3.0
+    listener_angle_deg: 30.0
   exhaust_reverse_cd_ratio: 0.75
   overrun_fuel_cut_rpm: 1500.0

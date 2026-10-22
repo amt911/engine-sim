@@ -229,6 +229,31 @@ pub(crate) mod tests {
         assert!(share >= 0.85, "harmonic share {share}");
     }
 
+    /// Share of the energy in cycle orders 1–3 (below the firing order of a V8) at 3000 rpm WOT.
+    fn low_order_share(def: EngineDef) -> f64 {
+        let mut sim = Simulation::new(def, FS, 1);
+        sim.controls = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        render_secs(&mut sim, 1.0);
+        let x = render_secs(&mut sim, 1.0);
+        let o = orders(&x, 3000.0);
+        let total: f64 = o.iter().map(|a| a * a).sum();
+        o[..3].iter().map(|a| a * a).sum::<f64>() / total
+    }
+
+    #[test]
+    fn a_crossplane_v8_burbles_and_a_flatplane_does_not() {
+        // Uneven pulses within each bank (cross plane) put energy below the firing order; a
+        // flat plane's banks are even inline-4s, so orders 1–3 stay near zero.
+        let cross = low_order_share(EngineDef::crossplane_v8());
+        let flat = low_order_share(EngineDef::flatplane_v8());
+        assert!(cross > 0.05, "cross-plane low orders {cross}");
+        assert!(cross > 5.0 * flat, "cross {cross} vs flat {flat}");
+    }
+
     #[test]
     fn the_voice_follows_the_engines_leveling() {
         let mut def = EngineDef::inline4();

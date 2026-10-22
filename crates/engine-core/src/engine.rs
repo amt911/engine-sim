@@ -12,6 +12,7 @@ use crate::gas::{
 };
 use crate::geometry::CylinderGeometry;
 use crate::intake_fv::{IntakeDef, IntakeFv, IntakeModel};
+use crate::listener::Listener;
 use crate::sound::{BURN_DURATION_JITTER, BURN_START_JITTER_DEG, SoundDef, Texture};
 use crate::units::{ATM_PA, deg_to_rad, rad_s_to_rpm, rpm_to_rad_s};
 use crate::valve::ValveTiming;
@@ -105,6 +106,8 @@ impl EngineDef {
                 muffler_transmission: 0.6,
                 model: ExhaustModel::Waveguide,
                 muffler_volume_m3: 0.003,
+                // one tail: no spread
+                tail_spacing_m: 0.9,
             },
             intake: IntakeDef::default(),
             redline_rpm: 7500.0,
@@ -184,6 +187,8 @@ impl EngineDef {
                 muffler_transmission: 0.7,
                 model: ExhaustModel::Waveguide,
                 muffler_volume_m3: 0.010,
+                // the tips sit together in the centre of the rear diffuser
+                tail_spacing_m: 0.25,
             },
             // Runners and trumpets estimated from the LFA's intake: 250 mm to the valve, 45 mm.
             intake: IntakeDef {
@@ -199,6 +204,127 @@ impl EngineDef {
             fmep_bar: [0.8, 0.10, 0.015],
             sound: SoundDef::default(),
             overrun_fuel_cut_rpm: 1500.0,
+            exhaust_reverse_cd_ratio: 0.75,
+        }
+    }
+
+    /// Flat-plane V8 after the Ferrari F136 F (458 Italia): 4,497 cc from 94 × 81 mm,
+    /// 12.5:1, 570 PS at 9,000 rpm, 540 N·m at 6,000 (Ferrari press kit). The flat crank
+    /// fires the banks alternately (1-5-3-7-4-8-2-6, banks 1–4 and 5–8): each bank is an
+    /// even-firing inline-4, its order-4 pulses half a period from the other bank's, so order
+    /// 8 dominates (the high, clean scream). Not public, estimated: rod, cams, valve sizes
+    /// (4 valves lumped into one), exhaust lengths, inertia.
+    pub fn flatplane_v8() -> Self {
+        Self {
+            name: "Flat-plane V8 4.5".into(),
+            geometry: CylinderGeometry {
+                bore_m: 0.094,
+                stroke_m: 0.081,
+                rod_m: 0.140,
+                compression_ratio: 12.5,
+            },
+            cylinders: 8,
+            firing_order: vec![1, 5, 3, 7, 4, 8, 2, 6],
+            intake_valve: ValveTiming {
+                open_deg: 340.0,
+                duration_deg: 270.0,
+                max_lift_m: 0.0115,
+                diameter_m: 0.050,
+            },
+            exhaust_valve: ValveTiming {
+                open_deg: 125.0,
+                duration_deg: 265.0,
+                max_lift_m: 0.0105,
+                diameter_m: 0.043,
+            },
+            spark_advance_deg: 28.0,
+            burn_duration_deg: 45.0,
+            flywheel_inertia_kgm2: 0.08,
+            plenum_volume_m3: 7.0e-3,
+            throttle_diameter_m: 0.095,
+            idle_throttle: 0.003,
+            // One 4-into-1 per bank, short primaries for the top end, two tails.
+            exhaust: ExhaustDef {
+                primary_length_m: 0.45,
+                primary_diameter_m: 0.042,
+                collectors: vec![vec![1, 2, 3, 4], vec![5, 6, 7, 8]],
+                collector_length_m: 0.3,
+                collector_diameter_m: 0.065,
+                tail_length_m: 1.3,
+                tail_diameter_m: 0.065,
+                muffler_transmission: 0.7,
+                model: ExhaustModel::Waveguide,
+                muffler_volume_m3: 0.010,
+                // the tips sit together in the centre (458 Italia)
+                tail_spacing_m: 0.25,
+            },
+            intake: IntakeDef::default(),
+            redline_rpm: 9000.0,
+            starter_torque_nm: 150.0,
+            fmep_bar: [0.8, 0.10, 0.015],
+            sound: SoundDef::default(),
+            overrun_fuel_cut_rpm: 1500.0,
+            exhaust_reverse_cd_ratio: 0.75,
+        }
+    }
+
+    /// Cross-plane V8 after the GM LS3 (C6 Corvette): 6,162 cc from 103.25 × 92 mm, 10.7:1,
+    /// 2 valves (55 / 40.4 mm, 14 mm lift), 6.098 in rods, 430 hp at 5,900 rpm, 575 N·m at
+    /// 4,600, 6,600 rpm (GM Performance Parts LS3 spec). Fires 1-8-7-2-6-5-4-3 with the odd
+    /// cylinders on the left bank: 90° apart overall, 90/180/180/270 within each bank — the
+    /// uneven bank pulses are the burble. Estimated: cam timing, exhaust, inertia.
+    pub fn crossplane_v8() -> Self {
+        Self {
+            name: "Cross-plane V8 6.2".into(),
+            geometry: CylinderGeometry {
+                bore_m: 0.10325,
+                stroke_m: 0.092,
+                rod_m: 0.1549,
+                compression_ratio: 10.7,
+            },
+            cylinders: 8,
+            firing_order: vec![1, 8, 7, 2, 6, 5, 4, 3],
+            intake_valve: ValveTiming {
+                open_deg: 350.0,
+                duration_deg: 250.0,
+                max_lift_m: 0.014,
+                diameter_m: 0.055,
+            },
+            exhaust_valve: ValveTiming {
+                open_deg: 130.0,
+                duration_deg: 250.0,
+                max_lift_m: 0.0138,
+                diameter_m: 0.0404,
+            },
+            spark_advance_deg: 26.0,
+            burn_duration_deg: 50.0,
+            // heavy cross-plane counterweights
+            flywheel_inertia_kgm2: 0.16,
+            plenum_volume_m3: 6.0e-3,
+            throttle_diameter_m: 0.090,
+            // a 6.2 L on LS friction needs more bypass air (0.3 % stalls; 0.65 % idles ~1050)
+            idle_throttle: 0.0065,
+            // One 4-into-1 per bank, dual exhaust.
+            exhaust: ExhaustDef {
+                primary_length_m: 0.75,
+                primary_diameter_m: 0.044,
+                collectors: vec![vec![1, 3, 5, 7], vec![2, 4, 6, 8]],
+                collector_length_m: 0.3,
+                collector_diameter_m: 0.075,
+                tail_length_m: 2.0,
+                tail_diameter_m: 0.065,
+                muffler_transmission: 0.6,
+                model: ExhaustModel::Waveguide,
+                muffler_volume_m3: 0.012,
+                // two tips each side (C6 Corvette)
+                tail_spacing_m: 1.1,
+            },
+            intake: IntakeDef::default(),
+            redline_rpm: 6600.0,
+            starter_torque_nm: 200.0,
+            fmep_bar: [0.97, 0.15, 0.05],
+            sound: SoundDef::default(),
+            overrun_fuel_cut_rpm: 1300.0,
             exhaust_reverse_cd_ratio: 0.75,
         }
     }
@@ -328,6 +454,8 @@ pub struct Engine {
     intake_net: Option<IntakeFv>,
     /// Tail pipes (one per collector group): each is its own jet for the flow noise.
     tail_pipes: usize,
+    /// Where the listener hears the tails from, built for the step size it was made with.
+    listener: Option<(f64, Listener)>,
     flows: Vec<f64>,
     texture: Texture,
     /// Total mass that flowed back from the exhaust into the cylinders, kg (diagnostics).
@@ -378,6 +506,7 @@ impl Engine {
             fv: None,
             intake_net: None,
             tail_pipes,
+            listener: None,
             flows: Vec::new(),
             texture: Texture::new(seed ^ 0x7E57),
             reversion_kg: 0.0,
@@ -400,6 +529,9 @@ impl Engine {
             && d.plenum_volume_m3 == def.plenum_volume_m3
             && d.exhaust == def.exhaust;
         if same {
+            if self.def.sound != def.sound {
+                self.listener = None;
+            }
             self.def = def;
         }
         same
@@ -617,6 +749,26 @@ impl Engine {
             (Some(net), None) => net.step(&self.flows),
             (None, None) => 0.0,
         };
+        if self.listener.as_ref().is_none_or(|l| l.0 != dt) {
+            let (ex, snd) = (&self.def.exhaust, &self.def.sound);
+            let l = Listener::new(
+                self.tail_pipes,
+                ex.tail_spacing_m,
+                snd.listener_distance_m,
+                snd.listener_angle_deg,
+                dt,
+            );
+            self.listener = Some((dt, l));
+        }
+        let tails = match (&self.net, &self.fv) {
+            (_, Some(fv)) => fv.last_tails(),
+            (Some(net), None) => net.last_tails(),
+            (None, None) => &[],
+        };
+        let heard = match &mut self.listener {
+            Some((_, l)) if !tails.is_empty() => l.process(tails),
+            _ => radiated,
+        };
         let throttle_area = self.throttle_area(c.throttle);
         let bore_area = self.throttle_area(1.0);
         // 0D: throttle into the plenum. 1D: the network steps itself (ITBs take the same area each).
@@ -645,7 +797,7 @@ impl Engine {
         for _ in 0..valve_closings {
             self.texture.valve_closed(rpm, snd.mechanical);
         }
-        let audio = radiated
+        let audio = heard
             + self
                 .texture
                 .flow_noise(radiated, self.tail_pipes, snd.flow_noise, dt)
@@ -1106,6 +1258,126 @@ mod tests {
         assert!(d.throttle_diameter_m.powi(2) / 10.0 >= d.intake.runner_diameter_m.powi(2));
     }
 
+    /// Firing intervals (deg) between consecutive pulses into each exhaust bank, sorted.
+    fn bank_intervals(d: &EngineDef) -> Vec<Vec<f64>> {
+        let off = d.phase_offsets_deg();
+        d.exhaust
+            .groups(d.cylinders)
+            .into_iter()
+            .map(|g| {
+                let mut a: Vec<f64> = g.iter().map(|&c| off[c]).collect();
+                a.sort_by(f64::total_cmp);
+                let mut iv: Vec<f64> = a.windows(2).map(|w| w[1] - w[0]).collect();
+                iv.push(720.0 - a[a.len() - 1] + a[0]);
+                iv.sort_by(f64::total_cmp);
+                iv
+            })
+            .collect()
+    }
+
+    #[test]
+    fn flatplane_v8_fires_each_bank_evenly() {
+        // A flat crank is two inline-4s at 90°: every bank gets a pulse each 180°.
+        let d = EngineDef::flatplane_v8();
+        // 8 · π/4 · 0.094² · 0.081 = 4.4966e-3 m³ (Ferrari F136 F: 4,497 cc)
+        assert_relative_eq!(d.displacement_m3(), 4.4966e-3, max_relative = 1e-4);
+        assert_eq!(bank_intervals(&d), vec![vec![180.0; 4]; 2]);
+    }
+
+    #[test]
+    fn crossplane_v8_fires_each_bank_unevenly() {
+        // The cross crank fires 90° apart overall but 90/180/180/270 within a bank: the burble.
+        let d = EngineDef::crossplane_v8();
+        // 8 · π/4 · 0.10325² · 0.092 = 6.1625e-3 m³ (GM LS3: 6,162 cc)
+        assert_relative_eq!(d.displacement_m3(), 6.1625e-3, max_relative = 1e-4);
+        let mut off = d.phase_offsets_deg();
+        off.sort_by(f64::total_cmp);
+        assert_eq!(off, (0..8).map(|k| 90.0 * k as f64).collect::<Vec<_>>());
+        assert_eq!(bank_intervals(&d), vec![vec![90.0, 180.0, 180.0, 270.0]; 2]);
+    }
+
+    #[test]
+    fn both_v8s_idle_and_make_power() {
+        // Published: F136 F 540 N·m @ 6000; LS3 575 N·m @ 4600. Model bands, not calibration.
+        for (d, rpm) in [
+            (EngineDef::flatplane_v8(), 6000.0),
+            (EngineDef::crossplane_v8(), 4600.0),
+        ] {
+            let mut e = Engine::new(d.clone(), 1000.0, 1);
+            run(&mut e, 2.0, &Controls::default());
+            assert!(
+                (450.0..1800.0).contains(&e.rpm()),
+                "{}: idle {}",
+                d.name,
+                e.rpm()
+            );
+            let mut e = Engine::new(d.clone(), rpm, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(rpm),
+                ..Controls::default()
+            };
+            run(&mut e, 1.0, &c);
+            assert!(
+                (300.0..800.0).contains(&e.torque_nm()),
+                "{}: {}",
+                d.name,
+                e.torque_nm()
+            );
+        }
+    }
+
+    /// Output of `def` at 3000 rpm WOT with the listener at `angle` (texture off: tonal only).
+    fn heard_at(mut def: EngineDef, angle: f64) -> Vec<f64> {
+        def.sound = crate::sound::SoundDef {
+            flow_noise: 0.0,
+            intake: 0.0,
+            mechanical: 0.0,
+            combustion_jitter: 0.0,
+            listener_angle_deg: angle,
+            ..crate::sound::SoundDef::default()
+        };
+        let mut e = Engine::new(def, 3000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.3, &c)
+    }
+
+    #[test]
+    fn the_engine_is_heard_through_the_listener() {
+        // One tail: where you stand changes nothing (only the common path, which is dropped).
+        assert_eq!(
+            heard_at(EngineDef::inline4(), 0.0),
+            heard_at(EngineDef::inline4(), 60.0)
+        );
+        // Two tails heard from the side: the far one arrives later, so the sum changes.
+        let a = heard_at(EngineDef::crossplane_v8(), 0.0);
+        let b = heard_at(EngineDef::crossplane_v8(), 60.0);
+        let diff: f64 = a.iter().zip(&b).map(|(x, y)| (x - y).powi(2)).sum();
+        let total: f64 = a.iter().map(|x| x * x).sum();
+        assert!(
+            diff > 0.01 * total,
+            "listener angle had no effect: {diff} vs {total}"
+        );
+    }
+
+    #[test]
+    fn moving_the_listener_retunes_in_place() {
+        // A tuning change, not a rebuild: the engine keeps running and builds a new listener.
+        let mut e = Engine::new(EngineDef::crossplane_v8(), 3000.0, 1);
+        run(&mut e, 0.01, &Controls::default());
+        assert!(e.listener.is_some());
+        let mut d = EngineDef::crossplane_v8();
+        d.sound.listener_angle_deg = 75.0;
+        assert!(e.retune(d));
+        assert!(e.listener.is_none());
+        run(&mut e, 0.001, &Controls::default());
+        assert!(e.listener.is_some());
+    }
+
     #[test]
     fn the_intake_model_in_use_is_reported() {
         let mut e = Engine::new(EngineDef::inline4(), 1000.0, 1);
@@ -1385,6 +1657,7 @@ mod tests {
             combustion_jitter: 0.0,
             reverb: 0.0,
             leveling: 0.0,
+            ..crate::sound::SoundDef::default()
         };
         let on = crate::sound::SoundDef::default();
         let (dry_wot, wet_wot) = (hf(off.clone(), 1.0), hf(on.clone(), 1.0));
@@ -1639,6 +1912,7 @@ mod tests {
             combustion_jitter: 0.0,
             reverb: 0.0,
             leveling: 0.0,
+            ..crate::sound::SoundDef::default()
         };
         let mut e = Engine::new(d, rpm, 1);
         let c = Controls {

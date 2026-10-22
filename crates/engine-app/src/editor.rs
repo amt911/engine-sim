@@ -309,6 +309,15 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
                 1.0,
                 "Tail pipe Ø (mm)",
             );
+            ui.add_enabled_ui(x.groups(d.cylinders).len() > 1, |ui| {
+                ui.add(
+                    egui::Slider::new(&mut x.tail_spacing_m, 0.1..=2.0)
+                        .step_by(0.05)
+                        .text("Tail spacing (m)"),
+                );
+            })
+            .response
+            .on_disabled_hover_text("One tail pipe: nothing to spread");
         });
 
     egui::CollapsingHeader::new("Sound")
@@ -347,6 +356,19 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
             )
             .on_hover_text(
                 "Lifts quiet running (idle) up to +12 dB toward full load; 0 = raw dynamics",
+            );
+            ui.add(
+                egui::Slider::new(&mut snd.listener_distance_m, 0.5..=30.0)
+                    .step_by(0.5)
+                    .text("Listener distance (m)"),
+            );
+            ui.add(
+                egui::Slider::new(&mut snd.listener_angle_deg, -90.0..=90.0)
+                    .step_by(5.0)
+                    .text("Listener angle (°)"),
+            )
+            .on_hover_text(
+                "0 = straight behind; off the axis, each tail pipe arrives at its own time",
             );
         });
 
@@ -395,8 +417,10 @@ mod tests {
     use engine_core::engine::EngineDef;
 
     fn harness(def: EngineDef) -> Harness<'static, UiState> {
+        // as the app does on loading a preset: the text fields start from the engine
         let state = UiState {
             firing_text: format_firing_order(&def.firing_order),
+            collectors_text: format_collectors(&def.exhaust.collectors),
             def,
             ..UiState::default()
         };
@@ -553,6 +577,19 @@ mod tests {
         h.key_press(egui::Key::ArrowLeft);
         h.run();
         assert!(h.state().def.sound.leveling < 1.0);
+        assert!(h.state().engine_dirty);
+    }
+
+    #[test]
+    fn listener_and_tail_spacing_controls_edit_the_engine() {
+        let mut h = harness(EngineDef::crossplane_v8());
+        nudge(&mut h, "Listener distance (m)");
+        assert!(h.state().def.sound.listener_distance_m > 3.0);
+        nudge(&mut h, "Listener angle (°)");
+        assert!(h.state().def.sound.listener_angle_deg > 30.0);
+        // the Exhaust section is open by default
+        nudge(&mut h, "Tail spacing (m)");
+        assert!(h.state().def.exhaust.tail_spacing_m > 1.1);
         assert!(h.state().engine_dirty);
     }
 

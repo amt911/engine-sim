@@ -12,15 +12,25 @@ pub enum Preset {
     Single,
     Inline4,
     LfaV10,
+    FlatplaneV8,
+    CrossplaneV8,
 }
 
 impl Preset {
-    pub const ALL: [Preset; 3] = [Preset::Single, Preset::Inline4, Preset::LfaV10];
+    pub const ALL: [Preset; 5] = [
+        Preset::Single,
+        Preset::Inline4,
+        Preset::LfaV10,
+        Preset::FlatplaneV8,
+        Preset::CrossplaneV8,
+    ];
     pub fn def(self) -> EngineDef {
         match self {
             Preset::Single => EngineDef::single(),
             Preset::Inline4 => EngineDef::inline4(),
             Preset::LfaV10 => EngineDef::lfa_v10(),
+            Preset::FlatplaneV8 => EngineDef::flatplane_v8(),
+            Preset::CrossplaneV8 => EngineDef::crossplane_v8(),
         }
     }
     /// The car this engine is fitted to (kept outside `EngineDef` so engine files stay as is).
@@ -29,6 +39,8 @@ impl Preset {
             Preset::Single => VehicleDef::single(),
             Preset::Inline4 => VehicleDef::inline4(),
             Preset::LfaV10 => VehicleDef::lfa_v10(),
+            Preset::FlatplaneV8 => VehicleDef::flatplane_v8(),
+            Preset::CrossplaneV8 => VehicleDef::crossplane_v8(),
         }
     }
     /// File/CLI name, as in `presets/<slug>.yaml` and `--preset <slug>`.
@@ -37,6 +49,8 @@ impl Preset {
             Preset::Single => "single",
             Preset::Inline4 => "inline4",
             Preset::LfaV10 => "lfa-v10",
+            Preset::FlatplaneV8 => "v8-flatplane",
+            Preset::CrossplaneV8 => "v8-crossplane",
         }
     }
     pub fn from_slug(slug: &str) -> Option<Preset> {
@@ -47,6 +61,8 @@ impl Preset {
             Preset::Single => "Single 500",
             Preset::Inline4 => "Inline-4 2.0",
             Preset::LfaV10 => "Lexus LFA V10",
+            Preset::FlatplaneV8 => "V8 4.5 flat-plane (European)",
+            Preset::CrossplaneV8 => "V8 6.2 cross-plane (American)",
         }
     }
 }

@@ -21,6 +21,11 @@ pub struct SoundDef {
     /// How much the voice lifts quiet passages (idle) toward the full-load level, in dB:
     /// 1 = up to +12 dB, 0 = the raw dynamics of the physics.
     pub leveling: f64,
+    /// Where the listener stands: distance from the tail pipes' centre, m, and angle off the
+    /// car's axis, degrees (0 = straight behind, + to the left). Off the axis, several tails
+    /// arrive with different delays.
+    pub listener_distance_m: f64,
+    pub listener_angle_deg: f64,
 }
 
 impl Default for SoundDef {
@@ -32,6 +37,8 @@ impl Default for SoundDef {
             combustion_jitter: 1.0,
             reverb: 0.15,
             leveling: 1.0,
+            listener_distance_m: 3.0,
+            listener_angle_deg: 30.0,
         }
     }
 }
@@ -170,6 +177,24 @@ mod tests {
     use super::*;
 
     const DT: f64 = 1.0 / 192_000.0;
+
+    #[test]
+    fn listener_round_trips_and_defaults_for_old_files() {
+        let old: SoundDef = serde_yaml_ng::from_str("reverb: 0.2\n").unwrap();
+        assert_eq!(
+            (old.listener_distance_m, old.listener_angle_deg),
+            (3.0, 30.0)
+        );
+        let s = SoundDef {
+            listener_distance_m: 7.5,
+            listener_angle_deg: -45.0,
+            ..SoundDef::default()
+        };
+        let json: SoundDef = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        let yaml: SoundDef =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&s).unwrap()).unwrap();
+        assert_eq!((json, yaml), (s.clone(), s));
+    }
 
     #[test]
     fn leveling_round_trips_and_defaults_to_on_for_old_files() {
