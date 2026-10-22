@@ -641,10 +641,19 @@ mod tests {
 
     #[test]
     fn reversion_takes_at_most_half_of_the_first_cell() {
+        let energy = |p: &Pipe1d| {
+            p.cells
+                .iter()
+                .zip(&p.area)
+                .map(|(c, a)| c.e * a)
+                .sum::<f64>()
+                * p.dx
+        };
         for (demand, expected) in [(2.0, None), (1e-9, Some(1e-9))] {
             let mut net = ExhaustFv::new(&def(), 1, DT);
             let half = 0.5 * net.port_volume(0).mass_kg;
             let m0 = net.total_mass();
+            let e0 = energy(&net.primaries[0]);
             net.add_valve_flow(0, -demand, 1004.5 * 600.0);
             let mut vented = 0.0;
             for _ in 0..net.substeps {
@@ -656,6 +665,14 @@ mod tests {
             assert!(
                 (taken - want).abs() < 1e-6 * want,
                 "{demand}: took {taken}, want {want}"
+            );
+            // the energy is limited with the mass: every kilogram leaves with its h = cp·T
+            // (the far end is still at rest after one FV step, so only the valve face moved it)
+            let e_taken = e0 - energy(&net.primaries[0]);
+            let e_want = want * 1004.5 * 600.0;
+            assert!(
+                (e_taken - e_want).abs() < 1e-6 * e_want,
+                "{demand}: took {e_taken} J, want {e_want} J"
             );
         }
     }
