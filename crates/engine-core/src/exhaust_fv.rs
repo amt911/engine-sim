@@ -711,6 +711,23 @@ mod tests {
     }
 
     #[test]
+    fn rising_root_stops_when_the_bracket_is_relatively_tight() {
+        // Scaled up 10⁶ (x³ − 2·10¹⁸ on [0, 2·10⁶]) the root is never hit exactly: the search
+        // ends when the bracket is within 1e-13 of hi, long before the 40-step cap.
+        let calls = std::cell::Cell::new(0);
+        let r = rising_root(
+            |x| {
+                calls.set(calls.get() + 1);
+                x * x * x - 2e18
+            },
+            0.0,
+            2e6,
+        );
+        assert!((r / 1_259_921.049_894_873 - 1.0).abs() < 1e-12, "{r}");
+        assert!(calls.get() <= 20, "{} evaluations", calls.get());
+    }
+
+    #[test]
     fn a_throttled_end_passes_what_its_orifice_passes() {
         // ψ = 0.3 of the pipe area: the face mass flux equals a compressible orifice of that area
         // (per pipe area), fed from the junction at rest inward and from the face's own
