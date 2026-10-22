@@ -292,7 +292,7 @@ impl ExhaustFv {
                 .sum::<f64>()
                 * p.dx
         };
-        let mut m: f64 = self.primaries.iter().map(|p| pipe_mass(p)).sum();
+        let mut m: f64 = self.primaries.iter().map(pipe_mass).sum();
         for b in &self.branches {
             m += b.junction.mass_kg + pipe_mass(&b.out);
         }
