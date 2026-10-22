@@ -39,6 +39,12 @@ engine:
     muffler_transmission: 0.5
     model: waveguide
     muffler_volume_m3: 0.006
+  intake:
+    model: zero_d
+    runner_length_m: 0.3
+    runner_diameter_m: 0.042
+    individual_throttles: false
+    trumpet_loss: 0.1
   redline_rpm: 7000.0
   starter_torque_nm: 60.0
   fmep_bar:
@@ -51,5 +57,6 @@ engine:
     mechanical: 1.0
     combustion_jitter: 1.0
     reverb: 0.15
+    leveling: 1.0
   exhaust_reverse_cd_ratio: 0.75
   overrun_fuel_cut_rpm: 1500.0

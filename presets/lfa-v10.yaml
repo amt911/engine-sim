@@ -73,5 +73,6 @@ engine:
     mechanical: 1.0
     combustion_jitter: 1.0
     reverb: 0.15
+    leveling: 1.0
   exhaust_reverse_cd_ratio: 0.75
   overrun_fuel_cut_rpm: 1500.0

@@ -18,6 +18,9 @@ pub struct SoundDef {
     pub combustion_jitter: f64,
     /// Wet level of the body/room reverb applied in the voice.
     pub reverb: f64,
+    /// How much the voice lifts quiet passages (idle) toward the full-load level, in dB:
+    /// 1 = up to +12 dB, 0 = the raw dynamics of the physics.
+    pub leveling: f64,
 }
 
 impl Default for SoundDef {
@@ -28,6 +31,7 @@ impl Default for SoundDef {
             mechanical: 1.0,
             combustion_jitter: 1.0,
             reverb: 0.15,
+            leveling: 1.0,
         }
     }
 }
@@ -43,8 +47,10 @@ const RHO_EXHAUST: f64 = 0.6;
 const RHO_AIR: f64 = 1.2;
 const C_AIR: f64 = 343.0;
 /// Fraction of the outflow dynamic pressure radiated as broadband noise (calibrated by ear
-/// against the tonal level; a free parameter of this lumped model).
-const FLOW_NOISE_GAIN: f64 = 0.6;
+/// against the tonal level; a free parameter of this lumped model). 0.6 drowned a screaming
+/// V10 in "air" (user report 2026-10-22; 53 % of the energy in engine orders at 8000 rpm);
+/// 0.2 keeps the noise ~10 dB under the firing orders there.
+const FLOW_NOISE_GAIN: f64 = 0.2;
 const INTAKE_TONE_GAIN: f64 = 0.15;
 const INTAKE_NOISE_GAIN: f64 = 0.4;
 const CLICK_GAIN_PER_KRPM: f64 = 60.0;
@@ -100,16 +106,18 @@ impl Texture {
         (x >> 11) as f64 / (1u64 << 52) as f64 - 1.0
     }
 
-    /// Jet noise for the radiated outflow signal `radiated` (= ρc·u, Pa): band-passed noise
-    /// with amplitude `level`·k·½ρu² (dynamic pressure; only outflow makes a jet).
-    pub fn flow_noise(&mut self, radiated: f64, level: f64, dt: f64) -> f64 {
+    /// Jet noise for the radiated outflow signal `radiated` (= ρc·u, Pa, summed over
+    /// `outlets` equal tail pipes): band-passed noise with amplitude `level`·k·½ρu² per jet
+    /// (dynamic pressure; only outflow makes a jet), the jets adding incoherently (×√n).
+    pub fn flow_noise(&mut self, radiated: f64, outlets: usize, level: f64, dt: f64) -> f64 {
         if level <= 0.0 {
             return 0.0;
         }
-        let u = (radiated / RHO_C_EXHAUST).max(0.0);
+        let n_out = outlets.max(1) as f64;
+        let u = (radiated / (n_out * RHO_C_EXHAUST)).max(0.0);
         let q = 0.5 * RHO_EXHAUST * u * u;
         let n = self.white();
-        level * FLOW_NOISE_GAIN * q * self.jet.process(n, 400.0, 6_000.0, dt)
+        level * FLOW_NOISE_GAIN * n_out.sqrt() * q * self.jet.process(n, 400.0, 6_000.0, dt)
     }
 
     /// Induction sound from the throttle mass flow (kg/s into the plenum): the plane-wave tone
@@ -162,6 +170,21 @@ mod tests {
     use super::*;
 
     const DT: f64 = 1.0 / 192_000.0;
+
+    #[test]
+    fn leveling_round_trips_and_defaults_to_on_for_old_files() {
+        let old: SoundDef = serde_yaml_ng::from_str("reverb: 0.2\n").unwrap();
+        assert_eq!(old.leveling, 1.0);
+        let s = SoundDef {
+            leveling: 0.3,
+            ..SoundDef::default()
+        };
+        let json: SoundDef = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        let yaml: SoundDef =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&s).unwrap()).unwrap();
+        assert_eq!(json, s);
+        assert_eq!(yaml, s);
+    }
 
     fn rms(x: &[f64]) -> f64 {
         (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt()
@@ -222,11 +245,23 @@ mod tests {
     }
 
     #[test]
+    fn each_tail_pipe_is_its_own_jet() {
+        // `radiated` sums the outlets. Two tails carrying 2·r are two jets at the velocity of
+        // r, whose noises add incoherently: √2 × one jet, not the 4× of one jet at twice u.
+        let (mut one, mut two) = (Texture::new(7), Texture::new(7));
+        for _ in 0..2_000 {
+            let a = one.flow_noise(6_000.0, 1, 1.0, DT);
+            let b = two.flow_noise(12_000.0, 2, 1.0, DT);
+            assert!((b - std::f64::consts::SQRT_2 * a).abs() <= 1e-12 * a.abs().max(1e-30));
+        }
+    }
+
+    #[test]
     fn flow_noise_scales_with_dynamic_pressure_and_needs_outflow() {
         let level = |radiated: f64| {
             let mut t = Texture::new(1);
             let xs: Vec<f64> = (0..40_000)
-                .map(|_| t.flow_noise(radiated, 1.0, DT))
+                .map(|_| t.flow_noise(radiated, 1, 1.0, DT))
                 .collect();
             rms(&xs[10_000..])
         };
@@ -235,7 +270,7 @@ mod tests {
         assert!((fast / slow - 4.0).abs() < 0.2, "{slow} → {fast}");
         assert_eq!(level(-6_000.0), 0.0, "inflow makes no jet");
         let mut t = Texture::new(1);
-        assert_eq!(t.flow_noise(6_000.0, 0.0, DT), 0.0, "level 0 disables");
+        assert_eq!(t.flow_noise(6_000.0, 1, 0.0, DT), 0.0, "level 0 disables");
     }
 
     #[test]

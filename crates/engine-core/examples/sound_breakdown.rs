@@ -16,6 +16,7 @@ fn main() {
         mechanical: 0.0,
         combustion_jitter: 0.0,
         reverb: 0.0,
+        leveling: 0.0,
     };
     let parts: [(&str, SoundDef); 4] = [
         ("tonal", off.clone()),

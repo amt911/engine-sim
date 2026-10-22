@@ -340,6 +340,14 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
                     .step_by(0.01)
                     .text("Room reverb"),
             );
+            ui.add(
+                egui::Slider::new(&mut snd.leveling, 0.0..=1.0)
+                    .step_by(0.05)
+                    .text("Idle leveling"),
+            )
+            .on_hover_text(
+                "Lifts quiet running (idle) up to +12 dB toward full load; 0 = raw dynamics",
+            );
         });
 
     egui::CollapsingHeader::new("Mechanics").show(ui, |ui| {
@@ -533,6 +541,19 @@ mod tests {
         let v = h.state().def.plenum_volume_m3;
         nudge(&mut h, "Plenum (L)");
         assert_eq!(h.state().def.plenum_volume_m3, v);
+    }
+
+    #[test]
+    fn idle_leveling_slider_edits_the_sound() {
+        // the Sound section is open by default
+        let mut h = harness(EngineDef::inline4());
+        h.get_by_role_and_label(egui::accesskit::Role::Slider, "Idle leveling")
+            .focus();
+        h.run();
+        h.key_press(egui::Key::ArrowLeft);
+        h.run();
+        assert!(h.state().def.sound.leveling < 1.0);
+        assert!(h.state().engine_dirty);
     }
 
     #[test]

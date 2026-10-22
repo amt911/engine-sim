@@ -326,6 +326,8 @@ pub struct Engine {
     fv: Option<ExhaustFv>,
     /// 1D intake runners, when `intake.model` is `fv`.
     intake_net: Option<IntakeFv>,
+    /// Tail pipes (one per collector group): each is its own jet for the flow noise.
+    tail_pipes: usize,
     flows: Vec<f64>,
     texture: Texture,
     /// Total mass that flowed back from the exhaust into the cylinders, kg (diagnostics).
@@ -344,6 +346,7 @@ fn crossed(prev: f64, cur: f64, a: f64) -> bool {
 impl Engine {
     pub fn new(def: EngineDef, initial_rpm: f64, seed: u64) -> Self {
         let g = def.geometry;
+        let tail_pipes = def.exhaust.groups(def.cylinders).len();
         let cyl = def
             .phase_offsets_deg()
             .into_iter()
@@ -374,6 +377,7 @@ impl Engine {
             net: None,
             fv: None,
             intake_net: None,
+            tail_pipes,
             flows: Vec::new(),
             texture: Texture::new(seed ^ 0x7E57),
             reversion_kg: 0.0,
@@ -642,7 +646,9 @@ impl Engine {
             self.texture.valve_closed(rpm, snd.mechanical);
         }
         let audio = radiated
-            + self.texture.flow_noise(radiated, snd.flow_noise, dt)
+            + self
+                .texture
+                .flow_noise(radiated, self.tail_pipes, snd.flow_noise, dt)
             + self.texture.intake(
                 throttle_flow.abs(),
                 throttle_area,
@@ -1148,6 +1154,13 @@ mod tests {
     }
 
     #[test]
+    fn each_collector_is_a_tail_pipe_jet() {
+        // two 5-into-1 banks, two tails; the inline-4's 4-into-1 has one
+        assert_eq!(Engine::new(EngineDef::lfa_v10(), 1000.0, 1).tail_pipes, 2);
+        assert_eq!(Engine::new(EngineDef::inline4(), 1000.0, 1).tail_pipes, 1);
+    }
+
+    #[test]
     fn lfa_v10_idles_and_makes_big_power() {
         let mut e = Engine::new(EngineDef::lfa_v10(), 1000.0, 1);
         run(&mut e, 2.0, &Controls::default());
@@ -1371,6 +1384,7 @@ mod tests {
             mechanical: 0.0,
             combustion_jitter: 0.0,
             reverb: 0.0,
+            leveling: 0.0,
         };
         let on = crate::sound::SoundDef::default();
         let (dry_wot, wet_wot) = (hf(off.clone(), 1.0), hf(on.clone(), 1.0));
@@ -1624,6 +1638,7 @@ mod tests {
             mechanical: mech,
             combustion_jitter: 0.0,
             reverb: 0.0,
+            leveling: 0.0,
         };
         let mut e = Engine::new(d, rpm, 1);
         let c = Controls {
