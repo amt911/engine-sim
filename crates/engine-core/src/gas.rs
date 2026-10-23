@@ -13,6 +13,12 @@ pub const CV: f64 = R_AIR / (GAMMA - 1.0);
 /// ρ ∝ y^5 and p ∝ y^7, so they take multiplications, not `powf`.
 pub(crate) const ISENTROPIC_RHO_POW: i32 = 5;
 pub(crate) const ISENTROPIC_P_POW: i32 = 7;
+/// Critical pressure ratio (2/(γ+1))^(γ/(γ−1)) for γ = 1.4 (Anderson, *Modern Compressible
+/// Flow*, Table A.1: p*/p₀ = 0.5283): below it the orifice is choked. Written out: `powf` is
+/// not folded at compile time, and the orifice is the hottest path.
+pub const CRITICAL_PRESSURE_RATIO: f64 = 0.528_281_787_717_174_2;
+/// √γ·(2/(γ+1))^((γ+1)/(2(γ−1))) for γ = 1.4: the choked mass flow per p₀·A/√(R·T₀).
+pub const CHOKED_FLOW_FACTOR: f64 = 0.684_731_456_377_270_4;
 pub const CP: f64 = GAMMA * CV;
 
 /// A control volume: mass, internal energy and (externally imposed) volume.
@@ -59,10 +65,9 @@ pub fn orifice_mass_flow(cd_area: f64, p_up: f64, t_up: f64, p_down: f64) -> f64
     }
     let g = GAMMA;
     let base = cd_area * p_up / (R_AIR * t_up).sqrt();
-    let crit = (2.0 / (g + 1.0)).powf(g / (g - 1.0));
     let pr = p_down / p_up;
-    if pr <= crit {
-        base * g.sqrt() * (2.0 / (g + 1.0)).powf((g + 1.0) / (2.0 * (g - 1.0)))
+    if pr <= CRITICAL_PRESSURE_RATIO {
+        base * CHOKED_FLOW_FACTOR
     } else {
         // pr^(1/γ) = pr / pr^((γ−1)/γ): one pow instead of two on the hottest path
         let q = pr.powf((g - 1.0) / g);
@@ -165,6 +170,21 @@ pub fn plan_with_reservoir(
 /// Nyquist — with Illinois regula falsi on h(ṁ) = ṁ − f(p(ṁ)), which is monotone.
 /// Gas flowing back into `a` comes at `t_back`.
 pub fn port_flow(cd_area: f64, a: &GasVolume, p_base: f64, t_back: f64, z: f64) -> f64 {
+    port_flow_from(cd_area, a, p_base, t_back, z, 0.0)
+}
+
+/// [`port_flow`] searched from `start` (the last step's flow, which at the physics rate is
+/// close): f falls with ṁ (more flow, more back-pressure), so h′ = 1 − f′ ≥ 1 and the step
+/// ṁ₁ = start − h(start) lands across the root — a bracket with no search, as tight as the
+/// start is good. From 0 it is the bracket [0, f(0)].
+pub fn port_flow_from(
+    cd_area: f64,
+    a: &GasVolume,
+    p_base: f64,
+    t_back: f64,
+    z: f64,
+    start: f64,
+) -> f64 {
     let (pa, ta) = (a.pressure(), a.temperature());
     let f = |m: f64| {
         let pv = p_base + z * m;
@@ -174,23 +194,32 @@ pub fn port_flow(cd_area: f64, a: &GasVolume, p_base: f64, t_back: f64, z: f64) 
             -orifice_mass_flow(cd_area, pv, t_back, pa)
         }
     };
-    let m0 = f(0.0);
-    if m0 == 0.0 {
+    if cd_area <= 0.0 || pa == p_base {
         return 0.0;
     }
-    // h(0) and h(m0) bracket the root: h(0) = −m0 and h(m0) has the opposite sign.
     let h = |m: f64| m - f(m);
-    let (mut lo, mut hi) = (0.0, m0);
+    let (mut lo, mut hi) = (start, start - h(start));
     let (mut hlo, mut hhi) = (h(lo), h(hi));
+    if hlo == 0.0 {
+        return lo;
+    }
     if hhi == 0.0 {
         return hi;
     }
+    if (hlo > 0.0) == (hhi > 0.0) {
+        // round-off broke the slope bound: the bracket from no flow, always valid
+        let m0 = f(0.0);
+        (lo, hi, hlo, hhi) = (0.0, m0, -m0, h(m0));
+        if hhi == 0.0 {
+            return hi;
+        }
+    }
     let mut side = 0;
-    let tol = 1e-9 * m0.abs();
     for _ in 0..60 {
         let m = (lo * hhi - hi * hlo) / (hhi - hlo);
         let hm = h(m);
-        if hm.abs() <= tol {
+        // relative to the answer, so a far start does not loosen it
+        if hm.abs() <= 1e-9 * m.abs() {
             return m;
         }
         if (hm > 0.0) == (hhi > 0.0) {
@@ -224,6 +253,7 @@ pub fn exhaust_valve_flow(
     t_back: f64,
     dt: f64,
     relax: f64,
+    start: f64,
 ) -> Flow {
     if area <= 0.0 {
         return Flow {
@@ -233,7 +263,7 @@ pub fn exhaust_valve_flow(
     }
     let atm = crate::units::ATM_PA;
     let p_base = (atm + 2.0 * arriving).max(0.05 * atm);
-    let m = port_flow(area, gas, p_base, t_back, z);
+    let m = port_flow_from(area, gas, p_base, t_back, z, start);
     let pv = p_base + z * m;
     let h = if m >= 0.0 {
         CP * gas.temperature()
@@ -270,6 +300,18 @@ mod tests {
             2.0 * GAMMA / (GAMMA - 1.0),
             f64::from(ISENTROPIC_P_POW),
             max_relative = 1e-12
+        );
+        // and the choked orifice's constants, p*/p₀ = 0.5283 (Anderson, Table A.1)
+        assert_relative_eq!(CRITICAL_PRESSURE_RATIO, 0.5283, epsilon = 5e-5);
+        assert_relative_eq!(
+            CRITICAL_PRESSURE_RATIO,
+            (2.0 / (GAMMA + 1.0)).powf(GAMMA / (GAMMA - 1.0)),
+            max_relative = 1e-15
+        );
+        assert_relative_eq!(
+            CHOKED_FLOW_FACTOR,
+            GAMMA.sqrt() * (2.0 / (GAMMA + 1.0)).powf((GAMMA + 1.0) / (2.0 * (GAMMA - 1.0))),
+            max_relative = 1e-15
         );
     }
     use approx::assert_relative_eq;
@@ -398,6 +440,27 @@ mod tests {
     }
 
     #[test]
+    fn the_port_flow_is_the_same_from_any_start() {
+        // the search from the last step's flow ends where the search from no flow does
+        let z = 600.0 / (std::f64::consts::PI * 0.25 * 0.04 * 0.04);
+        for (p, base) in [(5e5, 1e5), (1.2e5, 1e5), (0.3e5, 1e5), (1e5, 1.0001e5)] {
+            let a = GasVolume::at(p, 900.0, 5e-4);
+            let m = port_flow(7e-4, &a, base, 800.0, z);
+            for start in [m, 1.001 * m, 0.5 * m, -m, 10.0 * m, 1e3] {
+                let from = port_flow_from(7e-4, &a, base, 800.0, z, start);
+                assert!(
+                    (from - m).abs() <= 2e-9 * m.abs(),
+                    "p {p}, start {start}: {from} vs {m}"
+                );
+            }
+        }
+        // closed, or no pressure difference: no flow, whatever the start
+        let a = GasVolume::at(2e5, 900.0, 5e-4);
+        assert_eq!(port_flow_from(0.0, &a, 1e5, 800.0, z, 0.3), 0.0);
+        assert_eq!(port_flow_from(7e-4, &a, a.pressure(), 800.0, z, 0.3), 0.0);
+    }
+
+    #[test]
     fn port_flow_solves_the_coupled_equation() {
         let z = 600.0 / (std::f64::consts::PI * 0.25 * 0.04 * 0.04);
         for (p, base) in [
@@ -435,17 +498,17 @@ mod tests {
     fn exhaust_valve_blowdown_and_reversion() {
         // Blowdown: hot 5 bar cylinder, quiet pipe → outflow with the cylinder's enthalpy.
         let hot = GasVolume::at(5e5, 1200.0, 4e-4);
-        let f = exhaust_valve_flow(&hot, 5e-4, 0.0, Z, 800.0, 5e-6, 0.5);
+        let f = exhaust_valve_flow(&hot, 5e-4, 0.0, Z, 800.0, 5e-6, 0.5, 0.0);
         let m = port_flow(5e-4, &hot, 1.01325e5, 800.0, Z);
         assert_relative_eq!(f.dm, m * 5e-6, max_relative = 1e-12);
         assert_relative_eq!(f.h, CP * 1200.0, max_relative = 1e-12);
         // Reversion: 0.3 bar cylinder → inflow carrying the pipe gas enthalpy (800 K).
         let cold = GasVolume::at(0.3e5, 400.0, 4e-4);
-        let f = exhaust_valve_flow(&cold, 5e-4, 0.0, Z, 800.0, 5e-6, 0.5);
+        let f = exhaust_valve_flow(&cold, 5e-4, 0.0, Z, 800.0, 5e-6, 0.5, 0.0);
         assert!(f.dm < 0.0);
         assert_relative_eq!(f.h, CP * 800.0, max_relative = 1e-12);
         // An arriving compression wave (+0.3 bar) raises the port base by twice its amplitude.
-        let with_wave = exhaust_valve_flow(&hot, 5e-4, 0.3e5, Z, 800.0, 5e-6, 0.5);
+        let with_wave = exhaust_valve_flow(&hot, 5e-4, 0.3e5, Z, 800.0, 5e-6, 0.5, 0.0);
         let m = port_flow(5e-4, &hot, 1.01325e5 + 0.6e5, 800.0, Z);
         assert_relative_eq!(with_wave.dm, m * 5e-6, max_relative = 1e-12);
     }
@@ -454,21 +517,21 @@ mod tests {
     fn exhaust_valve_limits() {
         let hot = GasVolume::at(5e5, 1200.0, 4e-4);
         // Huge step: limited to `relax` of the equalising mass towards the port pressure.
-        let f = exhaust_valve_flow(&hot, 5e-4, 0.0, Z, 800.0, 1.0, 0.25);
+        let f = exhaust_valve_flow(&hot, 5e-4, 0.0, Z, 800.0, 1.0, 0.25, 0.0);
         let m = port_flow(5e-4, &hot, 1.01325e5, 800.0, Z);
         let pv = 1.01325e5 + Z * m;
         let eq = (5e5 - pv) * 4e-4 / ((GAMMA - 1.0) * CP * 1200.0);
         assert_relative_eq!(f.dm, 0.25 * eq, max_relative = 1e-9);
         // Never more than half the cylinder's mass.
-        let f = exhaust_valve_flow(&hot, 5e-4, 0.0, 1e-3, 800.0, 1.0, 1.0);
+        let f = exhaust_valve_flow(&hot, 5e-4, 0.0, 1e-3, 800.0, 1.0, 1.0, 0.0);
         assert!(f.dm <= 0.5 * hot.mass_kg * (1.0 + 1e-12));
         // A rarefaction deeper than vacuum is floored at 5 % of an atmosphere.
-        let deep = exhaust_valve_flow(&hot, 5e-4, -2.0e5, Z, 800.0, 5e-6, 0.5);
+        let deep = exhaust_valve_flow(&hot, 5e-4, -2.0e5, Z, 800.0, 5e-6, 0.5, 0.0);
         let m = port_flow(5e-4, &hot, 0.05 * 1.01325e5, 800.0, Z);
         assert_relative_eq!(deep.dm, m * 5e-6, max_relative = 1e-12);
         // Valve shut: nothing moves.
         assert_eq!(
-            exhaust_valve_flow(&hot, 0.0, 0.0, Z, 800.0, 5e-6, 0.5).dm,
+            exhaust_valve_flow(&hot, 0.0, 0.0, Z, 800.0, 5e-6, 0.5, 0.0).dm,
             0.0
         );
     }
