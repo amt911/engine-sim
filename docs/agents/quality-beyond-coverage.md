@@ -95,6 +95,13 @@ the mutation and agrees with it — 100% line and branch coverage, zero verifica
 | Python | **mutmut** (or **cosmic-ray**) | `mutmut run` + a score check on `mutmut results` |
 | Rust | **cargo-mutants** | `cargo mutants --in-place --error-percent 40` |
 
+**Make each mutant cheap.** A mutant costs its build plus the tests that run until one fails. Here
+cargo-mutants runs them under **nextest** (`.cargo/mutants.toml`), which stops at the first failure:
+a caught mutant costs the test that catches it, not the suite (measured 2026-10-23: 108 s against
+200 s per mutant). Only a missed mutant pays for the whole suite, so the suite's **critical path** —
+its longest single test — bounds it: split a test that loops over presets into one test per preset
+(same asserts, run side by side) rather than letting one test run them all in sequence.
+
 **A mutation run is a heavy job** — it forks one JVM/worker per core and sizes nothing for you. Run it
 inside the memory cgroup and cap the worker count: see
 [Heavy jobs run inside a memory cgroup](../../AGENTS.md#-heavy-jobs-run-inside-a-memory-cgroup-mandatory).
