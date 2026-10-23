@@ -9,6 +9,10 @@ use serde::{Deserialize, Serialize};
 pub const R_AIR: f64 = 287.0;
 pub const GAMMA: f64 = 1.4;
 pub const CV: f64 = R_AIR / (GAMMA - 1.0);
+/// 2/(γ − 1) for air (γ = 1.4): the isentropic exponents in y = (p/p₀)^((γ−1)/2γ) are integers,
+/// ρ ∝ y^5 and p ∝ y^7, so they take multiplications, not `powf`.
+pub(crate) const ISENTROPIC_RHO_POW: i32 = 5;
+pub(crate) const ISENTROPIC_P_POW: i32 = 7;
 pub const CP: f64 = GAMMA * CV;
 
 /// A control volume: mass, internal energy and (externally imposed) volume.
@@ -60,7 +64,9 @@ pub fn orifice_mass_flow(cd_area: f64, p_up: f64, t_up: f64, p_down: f64) -> f64
     if pr <= crit {
         base * g.sqrt() * (2.0 / (g + 1.0)).powf((g + 1.0) / (2.0 * (g - 1.0)))
     } else {
-        base * pr.powf(1.0 / g) * (2.0 * g / (g - 1.0) * (1.0 - pr.powf((g - 1.0) / g))).sqrt()
+        // pr^(1/γ) = pr / pr^((γ−1)/γ): one pow instead of two on the hottest path
+        let q = pr.powf((g - 1.0) / g);
+        base * (pr / q) * (2.0 * g / (g - 1.0) * (1.0 - q)).sqrt()
     }
 }
 
@@ -251,6 +257,21 @@ fn equalising_mass(dp: f64, h: f64, inv_volumes: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_isentropic_exponents_are_airs() {
+        // in y = (p/p₀)^((γ−1)/2γ): ρ ∝ y^(2/(γ−1)), p ∝ y^(2γ/(γ−1)); γ = 1.4 gives 5 and 7
+        assert_relative_eq!(
+            2.0 / (GAMMA - 1.0),
+            f64::from(ISENTROPIC_RHO_POW),
+            max_relative = 1e-12
+        );
+        assert_relative_eq!(
+            2.0 * GAMMA / (GAMMA - 1.0),
+            f64::from(ISENTROPIC_P_POW),
+            max_relative = 1e-12
+        );
+    }
     use approx::assert_relative_eq;
     use proptest::prelude::*;
 

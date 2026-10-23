@@ -530,10 +530,10 @@ struct Burn {
 /// Woschni's heat-transfer coefficient (SAE 670931; Heywood, *ICE Fundamentals*, eq. 12.19),
 /// W/(m²·K): h = 3.26·B^−0.2·p^0.8·T^−0.55·w^0.8 with p in kPa, B in m, w in m/s.
 fn woschni_htc(bore_m: f64, p_pa: f64, t_k: f64, w_m_s: f64) -> f64 {
+    // p and w share the exponent: three pows, not four
     3.26 * bore_m.powf(-0.2)
-        * (p_pa.max(0.0) / 1000.0).powf(0.8)
+        * (p_pa.max(0.0) / 1000.0 * w_m_s.max(0.0)).powf(0.8)
         * t_k.max(1.0).powf(-0.55)
-        * w_m_s.max(0.0).powf(0.8)
 }
 
 /// Mean piston speed S̄p = 2·S·N, m/s (Heywood, *ICE Fundamentals*, eq. 2.2), whichever way the
