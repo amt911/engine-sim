@@ -150,6 +150,9 @@ mod tests {
             p = l.process(&[unit_ramp(n), 2.0 * unit_ramp(n)]);
         }
         assert_relative_eq!(p, 3.0 * 0.031_584, max_relative = 1e-4);
+        for r in l.distances() {
+            assert_relative_eq!(*r, 3.0336, max_relative = 1e-4);
+        }
     }
 
     /// Sample index and value of the strongest output for an impulse fed to tail `k`.
@@ -183,6 +186,17 @@ mod tests {
         let (near, g_near) = arrival(&mut l, 1);
         assert_eq!(far - near, 560);
         assert_relative_eq!(g_near / g_far, 1.4, max_relative = 1e-9);
+    }
+
+    #[test]
+    fn a_shared_signal_radiates_at_the_tails_mean_gain() {
+        // the beside-the-car tails (r = 3.5 and 2.5 m), one ramp from both: the mean of the
+        // two monopoles, 1.204/(4π)·(1/3.5 + 1/2.5)/2 = 0.032850 Pa, steady along the ramp
+        let mut l = Listener::new(2, 1.0, 3.0, 90.0, A, DT);
+        let p: Vec<f64> = (0..100).map(|n| l.radiate_shared(unit_ramp(n))).collect();
+        for p in &p[1..] {
+            assert_relative_eq!(*p, 0.032_850, max_relative = 1e-4);
+        }
     }
 
     #[test]

@@ -83,15 +83,17 @@ impl JetNoise {
         let p_rms = P_REF * 10f64.powf(level / 20.0);
         let fs = 1.0 / dt;
         let fc = (PEAK_STROUHAL * v / d).clamp(20.0, 0.2 * fs);
-        // white noise through a peak-gain-1 band-pass keeps π·fc/(Q·fs) of its variance
-        let norm = (BAND_Q * fs / (PI * fc)).sqrt();
+        // white noise through the peak-gain-1 band-pass keeps α/(1 + α) of its variance (the
+        // sum of its squared impulse response, exact; π·fc/(Q·fs) only while fc ≪ fs)
+        let alpha = band_alpha(fc, dt);
+        let norm = ((1.0 + alpha) / alpha).sqrt();
         p_rms * norm * self.band(n, fc, dt)
     }
 
     /// RBJ band-pass (0 dB peak) at `fc`, Q = BAND_Q.
     fn band(&mut self, x: f64, fc: f64, dt: f64) -> f64 {
         let w0 = 2.0 * PI * fc * dt;
-        let alpha = w0.sin() / (2.0 * BAND_Q);
+        let alpha = band_alpha(fc, dt);
         let a0 = 1.0 + alpha;
         let (b0, b2) = (alpha / a0, -alpha / a0);
         let (a1, a2) = (-2.0 * w0.cos() / a0, (1.0 - alpha) / a0);
@@ -100,6 +102,11 @@ impl JetNoise {
         self.s2 = b2 * x - a2 * y;
         y
     }
+}
+
+/// The RBJ band-pass's α = sin(ω₀)/(2Q) (Bristow-Johnson, "Audio EQ Cookbook").
+fn band_alpha(fc: f64, dt: f64) -> f64 {
+    (2.0 * PI * fc * dt).sin() / (2.0 * BAND_Q)
 }
 
 #[cfg(test)]
@@ -144,6 +151,51 @@ mod tests {
         let mut j = JetNoise::new(1);
         let dt = 1.0 / 192_000.0;
         assert!((0..1000).all(|_| j.step(-50.0, 0.05, 1.2, 7.5, dt) == 0.0));
+        // nor does a closed pipe or a listener at the outlet itself
+        assert_eq!(jet_oaspl_db(100.0, 0.0, 1.2, 7.5), f64::NEG_INFINITY);
+        assert_eq!(jet_oaspl_db(100.0, 0.05, 1.2, 0.0), f64::NEG_INFINITY);
+    }
+
+    #[test]
+    fn a_fast_jet_loses_a_little_to_its_mach_term() {
+        // M = 2 (V = 686 m/s), cold, D = 50 mm, R = 7.5 m: 141 + 75·log(2) − 10·log(1 + 0.01·2^4.5)
+        // + 10·log(1.9635e-3) − 20·log(7.5) = 141 + 22.577 − 0.886 − 27.069 − 17.501 = 118.12 dB
+        assert_relative_eq!(
+            jet_oaspl_db(686.0, 0.05, 1.204, 7.5),
+            118.120,
+            epsilon = 0.01
+        );
+    }
+
+    #[test]
+    fn the_noise_is_vignas_xorshift64_star() {
+        // the first draws for seed 7, from the published algorithm (Vigna 2016, "An experimental
+        // exploration of Marsaglia's xorshift generators, scrambled", xorshift64*: shifts 12, 25,
+        // 27, multiplier 2685821657736338717) run independently, top 53 bits to [−√3, √3)
+        let mut j = JetNoise::new(7);
+        assert_eq!(
+            [j.white(), j.white(), j.white()],
+            [
+                -0.336_660_087_749_421_47,
+                -0.326_175_457_211_438,
+                0.315_383_878_342_838_76
+            ]
+        );
+    }
+
+    #[test]
+    fn a_thin_fast_jet_keeps_its_level_with_its_peak_past_nyquist() {
+        // V = 300 m/s through D = 2 mm peaks at 0.2·V/D = 30 kHz, past the 24 kHz Nyquist of a
+        // 48 kHz step: the band is held at 0.2·fs and the signal still carries the level
+        let dt = 1.0 / 48_000.0;
+        let mut j = JetNoise::new(3);
+        let xs: Vec<f64> = (0..200_000)
+            .map(|_| j.step(300.0, 0.002, 1.204, 7.5, dt))
+            .skip(10_000)
+            .collect();
+        let rms = (xs.iter().map(|x| x * x).sum::<f64>() / xs.len() as f64).sqrt();
+        let level = 20e-6 * 10f64.powf(jet_oaspl_db(300.0, 0.002, 1.204, 7.5) / 20.0);
+        assert_relative_eq!(rms, level, max_relative = 0.1);
     }
 
     #[test]
