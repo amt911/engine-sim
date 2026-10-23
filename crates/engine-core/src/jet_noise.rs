@@ -168,6 +168,23 @@ mod tests {
     }
 
     #[test]
+    fn the_band_peaks_at_its_strouhal_frequency_two_octaves_wide() {
+        // fc = 400 Hz ≪ fs = 192 kHz, so the analog band-pass H = (jω/Qω₀)/(1 − ω²/ω₀² + jω/Qω₀):
+        // 1 at ω₀, and an octave either side (2/0.7)/√((1 − 4)² + (2/0.7)²) = 0.6897
+        let dt = 1.0 / 192_000.0;
+        let gain = |f: f64| {
+            let mut j = JetNoise::new(1);
+            let y: Vec<f64> = (0..192_000)
+                .map(|n| j.band((2.0 * PI * f * n as f64 * dt).sin(), 400.0, dt))
+                .collect();
+            y[96_000..].iter().fold(0.0f64, |m, v| m.max(v.abs()))
+        };
+        assert_relative_eq!(gain(400.0), 1.0, max_relative = 2e-3);
+        assert_relative_eq!(gain(800.0), 0.6897, max_relative = 2e-3);
+        assert_relative_eq!(gain(200.0), 0.6897, max_relative = 2e-3);
+    }
+
+    #[test]
     fn the_noise_is_vignas_xorshift64_star() {
         // the first draws for seed 7, from the published algorithm (Vigna 2016, "An experimental
         // exploration of Marsaglia's xorshift generators, scrambled", xorshift64*: shifts 12, 25,
