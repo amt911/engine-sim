@@ -984,9 +984,11 @@ impl Engine {
                     exhaust_valve_flow(
                         &cs.gas,
                         area,
-                        arriving_fv,
-                        z_fv,
-                        t_fv,
+                        crate::gas::Port {
+                            arriving: arriving_fv,
+                            z: z_fv,
+                            t_back: t_fv,
+                        },
                         dt,
                         VALVE_RELAX,
                         cs.port_flow,
@@ -995,9 +997,11 @@ impl Engine {
                 None => exhaust_valve_flow(
                     &cs.gas,
                     area,
-                    arriving,
-                    z_port,
-                    cs.port_t,
+                    crate::gas::Port {
+                        arriving,
+                        z: z_port,
+                        t_back: cs.port_t,
+                    },
                     dt,
                     VALVE_RELAX,
                     cs.port_flow,

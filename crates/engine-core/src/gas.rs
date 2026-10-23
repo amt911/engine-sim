@@ -241,6 +241,15 @@ pub fn port_flow_from(
     (lo * hhi - hi * hlo) / (hhi - hlo)
 }
 
+/// What the exhaust valve sees of its port: the wave arriving at it (gauge Pa), the port
+/// impedance `z` = c/A and the temperature of gas flowing back.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Port {
+    pub arriving: f64,
+    pub z: f64,
+    pub t_back: f64,
+}
+
 /// One step of flow through an exhaust valve into its primary pipe, given the wave arriving at
 /// the port (`arriving`, gauge Pa), the port impedance `z` = c/A and the reversion gas
 /// temperature. Solves the port implicitly ([`port_flow`]), then limits the step to `relax` of
@@ -248,9 +257,7 @@ pub fn port_flow_from(
 pub fn exhaust_valve_flow(
     gas: &GasVolume,
     area: f64,
-    arriving: f64,
-    z: f64,
-    t_back: f64,
+    port: Port,
     dt: f64,
     relax: f64,
     start: f64,
@@ -261,6 +268,11 @@ pub fn exhaust_valve_flow(
             h: CP * gas.temperature(),
         };
     }
+    let Port {
+        arriving,
+        z,
+        t_back,
+    } = port;
     let atm = crate::units::ATM_PA;
     let p_base = (atm + 2.0 * arriving).max(0.05 * atm);
     let m = port_flow_from(area, gas, p_base, t_back, z, start);
@@ -498,17 +510,50 @@ mod tests {
     fn exhaust_valve_blowdown_and_reversion() {
         // Blowdown: hot 5 bar cylinder, quiet pipe → outflow with the cylinder's enthalpy.
         let hot = GasVolume::at(5e5, 1200.0, 4e-4);
-        let f = exhaust_valve_flow(&hot, 5e-4, 0.0, Z, 800.0, 5e-6, 0.5, 0.0);
+        let f = exhaust_valve_flow(
+            &hot,
+            5e-4,
+            Port {
+                arriving: 0.0,
+                z: Z,
+                t_back: 800.0,
+            },
+            5e-6,
+            0.5,
+            0.0,
+        );
         let m = port_flow(5e-4, &hot, 1.01325e5, 800.0, Z);
         assert_relative_eq!(f.dm, m * 5e-6, max_relative = 1e-12);
         assert_relative_eq!(f.h, CP * 1200.0, max_relative = 1e-12);
         // Reversion: 0.3 bar cylinder → inflow carrying the pipe gas enthalpy (800 K).
         let cold = GasVolume::at(0.3e5, 400.0, 4e-4);
-        let f = exhaust_valve_flow(&cold, 5e-4, 0.0, Z, 800.0, 5e-6, 0.5, 0.0);
+        let f = exhaust_valve_flow(
+            &cold,
+            5e-4,
+            Port {
+                arriving: 0.0,
+                z: Z,
+                t_back: 800.0,
+            },
+            5e-6,
+            0.5,
+            0.0,
+        );
         assert!(f.dm < 0.0);
         assert_relative_eq!(f.h, CP * 800.0, max_relative = 1e-12);
         // An arriving compression wave (+0.3 bar) raises the port base by twice its amplitude.
-        let with_wave = exhaust_valve_flow(&hot, 5e-4, 0.3e5, Z, 800.0, 5e-6, 0.5, 0.0);
+        let with_wave = exhaust_valve_flow(
+            &hot,
+            5e-4,
+            Port {
+                arriving: 0.3e5,
+                z: Z,
+                t_back: 800.0,
+            },
+            5e-6,
+            0.5,
+            0.0,
+        );
         let m = port_flow(5e-4, &hot, 1.01325e5 + 0.6e5, 800.0, Z);
         assert_relative_eq!(with_wave.dm, m * 5e-6, max_relative = 1e-12);
     }
@@ -517,21 +562,66 @@ mod tests {
     fn exhaust_valve_limits() {
         let hot = GasVolume::at(5e5, 1200.0, 4e-4);
         // Huge step: limited to `relax` of the equalising mass towards the port pressure.
-        let f = exhaust_valve_flow(&hot, 5e-4, 0.0, Z, 800.0, 1.0, 0.25, 0.0);
+        let f = exhaust_valve_flow(
+            &hot,
+            5e-4,
+            Port {
+                arriving: 0.0,
+                z: Z,
+                t_back: 800.0,
+            },
+            1.0,
+            0.25,
+            0.0,
+        );
         let m = port_flow(5e-4, &hot, 1.01325e5, 800.0, Z);
         let pv = 1.01325e5 + Z * m;
         let eq = (5e5 - pv) * 4e-4 / ((GAMMA - 1.0) * CP * 1200.0);
         assert_relative_eq!(f.dm, 0.25 * eq, max_relative = 1e-9);
         // Never more than half the cylinder's mass.
-        let f = exhaust_valve_flow(&hot, 5e-4, 0.0, 1e-3, 800.0, 1.0, 1.0, 0.0);
+        let f = exhaust_valve_flow(
+            &hot,
+            5e-4,
+            Port {
+                arriving: 0.0,
+                z: 1e-3,
+                t_back: 800.0,
+            },
+            1.0,
+            1.0,
+            0.0,
+        );
         assert!(f.dm <= 0.5 * hot.mass_kg * (1.0 + 1e-12));
         // A rarefaction deeper than vacuum is floored at 5 % of an atmosphere.
-        let deep = exhaust_valve_flow(&hot, 5e-4, -2.0e5, Z, 800.0, 5e-6, 0.5, 0.0);
+        let deep = exhaust_valve_flow(
+            &hot,
+            5e-4,
+            Port {
+                arriving: -2.0e5,
+                z: Z,
+                t_back: 800.0,
+            },
+            5e-6,
+            0.5,
+            0.0,
+        );
         let m = port_flow(5e-4, &hot, 0.05 * 1.01325e5, 800.0, Z);
         assert_relative_eq!(deep.dm, m * 5e-6, max_relative = 1e-12);
         // Valve shut: nothing moves.
         assert_eq!(
-            exhaust_valve_flow(&hot, 0.0, 0.0, Z, 800.0, 5e-6, 0.5, 0.0).dm,
+            exhaust_valve_flow(
+                &hot,
+                0.0,
+                Port {
+                    arriving: 0.0,
+                    z: Z,
+                    t_back: 800.0
+                },
+                5e-6,
+                0.5,
+                0.0
+            )
+            .dm,
             0.0
         );
     }

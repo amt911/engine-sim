@@ -52,7 +52,7 @@ fn jet_p_rms(v: f64, d: f64, rho_jet: f64, r: f64) -> f64 {
         return 0.0;
     }
     // P_REF·10^(141/20)
-    const P_141: f64 = 224.403_690_860_392_63;
+    const P_141: f64 = P_REF * 11_220_184.543_019_63;
     let m = v / C_AMBIENT;
     let sm = m.sqrt();
     let m35 = m * m * m * sm;
