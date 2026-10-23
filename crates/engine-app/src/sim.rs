@@ -325,7 +325,7 @@ pub(crate) mod tests {
     #[ignore]
     fn scorecard() {
         let mut lines = vec![
-            "preset,wot_dbfs,coast_db,off_order_pct,low_pct,mid_pct,high_pct,blip_rpm,settle_rpm,idle_jitter_rpm".to_string(),
+            "preset,wot_dbfs,coast_db,off_order_pct,low_pct,mid_pct,high_pct,blip_rpm,settle_rpm,idle_jitter_rpm,thump_db".to_string(),
         ];
         for (name, def) in [
             ("single", EngineDef::single()),
@@ -363,17 +363,22 @@ pub(crate) mod tests {
                 (idle.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / idle.len() as f64).sqrt();
             sim.controls.throttle = 1.0;
             let mut peak: f64 = 0.0;
+            let mut blip = Vec::new();
             for _ in 0..25 {
-                render_secs(&mut sim, 0.01);
+                blip.extend(render_secs(&mut sim, 0.01));
                 peak = peak.max(sim.engine().rpm());
             }
+            // the throttle's onset (first 60 ms) against the rev it starts (100–250 ms)
+            let top = |x: &[f32]| x.iter().fold(0f32, |m, v| m.max(v.abs())).max(1e-9);
+            let ms = |t: f64| (t * FS) as usize;
+            let thump = 20.0 * (top(&blip[..ms(0.06)]) / top(&blip[ms(0.1)..ms(0.25)])).log10();
             sim.controls.throttle = 0.0;
             for _ in 0..300 {
                 render_secs(&mut sim, 0.01);
                 peak = peak.max(sim.engine().rpm());
             }
             lines.push(format!(
-                "{name},{:.1},{:.1},{off:.1},{:.0},{:.0},{:.0},{peak:.0},{:.0},{jitter:.1}",
+                "{name},{:.1},{:.1},{off:.1},{:.0},{:.0},{:.0},{peak:.0},{:.0},{jitter:.1},{thump:.1}",
                 db(&wot),
                 db(&coast) - db(&wot),
                 100.0 * b[0],
