@@ -58,6 +58,46 @@ pub struct ExhaustDef {
     /// Distance between the outermost tail pipes across the car, m (several tails are spread
     /// evenly between them); where the listener hears each one from.
     pub tail_spacing_m: f64,
+    /// What follows each collector, in order, to the open end. Empty: a can of
+    /// `muffler_volume_m3` lined with `muffler_packing`, then the tail pipe (the fields above).
+    pub after_collector: Vec<Segment>,
+}
+
+/// One piece of the exhaust after the collector.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Segment {
+    /// A plain pipe.
+    Pipe { length_m: f64, diameter_m: f64 },
+    /// A silencer: a shell of `diameter_m` × `length_m`. With a `tube_diameter_m` > 0 a
+    /// perforated straight-through tube of that bore runs inside, the annulus packed with fibre
+    /// of `packing_resistivity` (Pa·s/m²) and `packing_porosity` (an absorptive silencer); with
+    /// 0 the shell is an empty expansion chamber.
+    Muffler {
+        length_m: f64,
+        diameter_m: f64,
+        #[serde(default)]
+        tube_diameter_m: f64,
+        #[serde(default = "default_resistivity")]
+        packing_resistivity: f64,
+        #[serde(default = "default_porosity")]
+        packing_porosity: f64,
+    },
+    /// A catalytic converter: a ceramic monolith of square channels, `cells_per_in2` of them
+    /// per square inch of its `diameter_m` face, walls `wall_m` thick, `length_m` long.
+    Catalyst {
+        length_m: f64,
+        diameter_m: f64,
+        cells_per_in2: f64,
+        wall_m: f64,
+    },
+}
+
+fn default_resistivity() -> f64 {
+    crate::lining::Packing::default().flow_resistivity
+}
+fn default_porosity() -> f64 {
+    crate::lining::Packing::default().porosity
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -83,11 +123,56 @@ impl Default for ExhaustDef {
             muffler_volume_m3: 0.006,
             muffler_packing: crate::lining::Packing::default(),
             tail_spacing_m: 0.9,
+            after_collector: Vec::new(),
         }
     }
 }
 
 impl ExhaustDef {
+    /// What follows each collector: the designed segments, or the can and tail of the older
+    /// fields (a can no wider than the tail is none; its packing leaves at least the tail's bore).
+    pub fn path(&self) -> Vec<Segment> {
+        if !self.after_collector.is_empty() {
+            return self.after_collector.clone();
+        }
+        let tail = Segment::Pipe {
+            length_m: self.tail_length_m,
+            diameter_m: self.tail_diameter_m,
+        };
+        let tail_area = std::f64::consts::PI * 0.25 * self.tail_diameter_m.powi(2);
+        if self.muffler_volume_m3 / CHAMBER_LENGTH_M <= tail_area {
+            return vec![tail];
+        }
+        let (passage, _, packing) =
+            chamber_passage(self.muffler_volume_m3, self.muffler_packing, tail_area);
+        let can_d = (4.0 * self.muffler_volume_m3 / CHAMBER_LENGTH_M / std::f64::consts::PI).sqrt();
+        let tube = if packing.thickness_m > 0.0 {
+            (4.0 * passage / std::f64::consts::PI).sqrt()
+        } else {
+            0.0
+        };
+        vec![
+            Segment::Muffler {
+                length_m: CHAMBER_LENGTH_M,
+                diameter_m: can_d,
+                tube_diameter_m: tube,
+                packing_resistivity: packing.flow_resistivity,
+                packing_porosity: packing.porosity,
+            },
+            tail,
+        ]
+    }
+
+    /// Bore of the open end, m (the last segment's).
+    pub fn outlet_diameter(&self) -> f64 {
+        match self.path().last() {
+            Some(Segment::Pipe { diameter_m, .. })
+            | Some(Segment::Muffler { diameter_m, .. })
+            | Some(Segment::Catalyst { diameter_m, .. }) => *diameter_m,
+            None => self.tail_diameter_m,
+        }
+    }
+
     /// Collector groups as 0-based cylinder indices (empty → all cylinders in one).
     pub fn groups(&self, cylinders: usize) -> Vec<Vec<usize>> {
         // Invalid indices are dropped (validation reports them; the sim must not panic).
@@ -239,6 +324,25 @@ impl ExhaustNet {
         }
     }
 
+    /// Mean mass flows, kg/s: through each cylinder's primary and each branch's collector and
+    /// what follows it (their turbulent friction, [`Pipe::set_mean_flow`]).
+    pub fn set_mean_flow(&mut self, per_cylinder: &[f64], per_branch: &[f64]) {
+        for (p, m) in self.primaries.iter_mut().zip(per_cylinder) {
+            p.set_mean_flow(*m);
+        }
+        for (b, m) in self.branches.iter_mut().zip(per_branch) {
+            b.collector.set_mean_flow(*m);
+            b.tail.set_mean_flow(*m);
+        }
+    }
+
+    /// Mean outflow Mach number at each tail's open end (see [`OpenEnd::set_outflow_mach`]).
+    pub fn set_outflow_mach(&mut self, mach: &[f64]) {
+        for (b, m) in self.branches.iter_mut().zip(mach) {
+            b.end.set_outflow_mach(*m);
+        }
+    }
+
     /// Radiated pressure at each tail pipe in the last step; they sum to `step`'s result.
     pub fn last_tails(&self) -> &[f64] {
         &self.tails
@@ -313,6 +417,82 @@ impl ExhaustNet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_old_file_reads_as_a_packed_can_and_a_tail() {
+        // the default: a 6 L can of 0.4 m (shell r = √(0.006/0.4/π) = 69.10 mm) lined with
+        // 25 mm of packing, so a 88.20 mm perforated tube, then the 1.5 m × 50 mm tail
+        let path = ExhaustDef::default().path();
+        assert_eq!(path.len(), 2);
+        let Segment::Muffler {
+            length_m,
+            diameter_m,
+            tube_diameter_m,
+            packing_resistivity,
+            packing_porosity,
+        } = path[0]
+        else {
+            panic!("{:?}", path[0])
+        };
+        assert_eq!(length_m, 0.4);
+        assert!((diameter_m - 0.138_198).abs() < 1e-5, "{diameter_m}");
+        assert!(
+            (tube_diameter_m - 0.088_198).abs() < 1e-5,
+            "{tube_diameter_m}"
+        );
+        assert_eq!((packing_resistivity, packing_porosity), (16_000.0, 0.95));
+        assert_eq!(
+            path[1],
+            Segment::Pipe {
+                length_m: 1.5,
+                diameter_m: 0.05
+            }
+        );
+        assert_eq!(ExhaustDef::default().outlet_diameter(), 0.05);
+        // a can no wider than the tail is no can
+        let bare = ExhaustDef {
+            muffler_volume_m3: 0.0,
+            ..ExhaustDef::default()
+        };
+        assert_eq!(bare.path().len(), 1);
+    }
+
+    #[test]
+    fn a_designed_path_wins_and_round_trips() {
+        let def = ExhaustDef {
+            after_collector: vec![
+                Segment::Catalyst {
+                    length_m: 0.12,
+                    diameter_m: 0.11,
+                    cells_per_in2: 400.0,
+                    wall_m: 0.000_165,
+                },
+                Segment::Pipe {
+                    length_m: 0.8,
+                    diameter_m: 0.055,
+                },
+                Segment::Muffler {
+                    length_m: 0.5,
+                    diameter_m: 0.2,
+                    tube_diameter_m: 0.0,
+                    packing_resistivity: 16_000.0,
+                    packing_porosity: 0.95,
+                },
+                Segment::Pipe {
+                    length_m: 0.4,
+                    diameter_m: 0.06,
+                },
+            ],
+            ..ExhaustDef::default()
+        };
+        assert_eq!(def.path(), def.after_collector);
+        assert_eq!(def.outlet_diameter(), 0.06);
+        let yaml = serde_yaml_ng::to_string(&def).unwrap();
+        assert!(yaml.contains("kind: catalyst"), "{yaml}");
+        assert_eq!(serde_yaml_ng::from_str::<ExhaustDef>(&yaml).unwrap(), def);
+        let json = serde_json::to_string(&def).unwrap();
+        assert_eq!(serde_json::from_str::<ExhaustDef>(&json).unwrap(), def);
+    }
 
     const DT: f64 = 1.0 / 192_000.0;
 

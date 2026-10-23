@@ -27,6 +27,9 @@ pub struct Listener {
     pos: usize,
     /// For a signal radiated from all the tails alike (at their mean gain, no delay).
     shared_last: f64,
+    flow_last: f64,
+    mean_distance: f64,
+    dt: f64,
 }
 
 impl Listener {
@@ -66,6 +69,7 @@ impl Listener {
             .map(|ri| RHO_AMBIENT / (4.0 * std::f64::consts::PI * ri) * to_q / dt)
             .collect();
         let len = delay.iter().copied().max().unwrap_or(0) + 1;
+        let mean_distance = r.iter().sum::<f64>() / r.len() as f64;
         Self {
             distance: r,
             delay,
@@ -74,6 +78,9 @@ impl Listener {
             last: vec![0.0; n],
             pos: 0,
             shared_last: 0.0,
+            flow_last: 0.0,
+            mean_distance,
+            dt,
         }
     }
 
@@ -92,6 +99,16 @@ impl Listener {
         let g = self.gain.iter().sum::<f64>() / self.gain.len() as f64;
         let p = g * (x - self.shared_last);
         self.shared_last = x;
+        p
+    }
+
+    /// A volume flow `q` (m³/s, out of the source) from a point at the tails' mean distance:
+    /// the monopole's p = ρ₀/(4πr)·dQ/dt (Kinsler §7.2), Pa.
+    pub fn radiate_flow(&mut self, q: f64) -> f64 {
+        let p = RHO_AMBIENT / (4.0 * std::f64::consts::PI * self.mean_distance)
+            * (q - self.flow_last)
+            / self.dt;
+        self.flow_last = q;
         p
     }
 

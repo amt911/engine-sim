@@ -1,6 +1,7 @@
-//! Sound texture beyond the tonal pulses: turbulent flow noise, intake roar, valvetrain
-//! clicks and combustion variability. Spec: `docs/superpowers/specs/2026-10-21-sound-realism.md`.
-//! Deterministic (seeded), SI, pure; the engine calls it once per step.
+//! What the listener hears beyond the exhaust's pulses, as levels of physical sources: the
+//! jets' mixing noise, the intake mouth, combustion variability, the room. Every source is a
+//! physical model; 1 is its physical level (the earlier ear-tuned layers — a throttle tone and
+//! hiss, valvetrain clicks — are gone: they put most of the background "air" in).
 
 use serde::{Deserialize, Serialize};
 
@@ -13,9 +14,10 @@ pub struct SoundDef {
     /// with the throttle hiss, buried the engine orders (an inline-4 at full throttle went
     /// from 99 % to 55 % order energy).
     pub flow_noise: f64,
-    /// Induction sound: the throttle's plane-wave tone and the 1D intake's mouth signal.
+    /// The intake mouth: a monopole of the air the engine draws (1 = physical, 0 = off).
     pub intake: f64,
-    /// Valvetrain clicks at every valve closing, stronger with rpm.
+    /// Valvetrain noise. No physical model yet (valve seating radiated by the block): kept so
+    /// older files load; it has no effect.
     pub mechanical: f64,
     /// Cycle-to-cycle combustion variability (1 = ±1.5° burn start, ±5 % duration).
     pub combustion_jitter: f64,
@@ -52,94 +54,9 @@ impl Default for SoundDef {
 pub const BURN_START_JITTER_DEG: f64 = 1.5;
 pub const BURN_DURATION_JITTER: f64 = 0.05;
 
-const C_AIR: f64 = 343.0;
-const INTAKE_TONE_GAIN: f64 = 0.15;
-const CLICK_GAIN_PER_KRPM: f64 = 60.0;
-const CLICK_DECAY_S: f64 = 0.0004;
-
-/// One-pole band-pass (high-pass then low-pass) with state.
-#[derive(Debug, Clone, Default)]
-struct Band {
-    hp_x: f64,
-    hp_y: f64,
-    lp: f64,
-}
-
-impl Band {
-    fn process(&mut self, x: f64, lo_hz: f64, hi_hz: f64, dt: f64) -> f64 {
-        let a = (-2.0 * std::f64::consts::PI * lo_hz * dt).exp();
-        let hp = a * (self.hp_y + x - self.hp_x);
-        self.hp_x = x;
-        self.hp_y = hp;
-        let k = 1.0 - (-2.0 * std::f64::consts::PI * hi_hz * dt).exp();
-        self.lp += k * (hp - self.lp);
-        self.lp
-    }
-}
-
-/// Runtime state of the texture sources.
-#[derive(Debug, Clone)]
-pub struct Texture {
-    rng: u64,
-    click: Band,
-    click_env: f64,
-}
-
-impl Texture {
-    pub fn new(seed: u64) -> Self {
-        Self {
-            rng: seed.wrapping_mul(0xD1B5_4A32_D192_ED03) | 1,
-            click: Band::default(),
-            click_env: 0.0,
-        }
-    }
-
-    /// Uniform white noise in [-1, 1) (xorshift64*).
-    pub fn white(&mut self) -> f64 {
-        self.rng ^= self.rng >> 12;
-        self.rng ^= self.rng << 25;
-        self.rng ^= self.rng >> 27;
-        let x = self.rng.wrapping_mul(0x2545_F491_4F6C_DD1D);
-        (x >> 11) as f64 / (1u64 << 52) as f64 - 1.0
-    }
-
-    /// Induction sound from the throttle mass flow (kg/s into the plenum): the plane-wave tone
-    /// c·ṁ/A_bore at `level`. Using the full bore keeps a nearly closed throttle (sonic, tiny
-    /// ṁ) from screaming.
-    pub fn intake(&mut self, throttle_flow: f64, bore_area: f64, level: f64) -> f64 {
-        if level <= 0.0 || bore_area <= 0.0 {
-            return 0.0;
-        }
-        level * INTAKE_TONE_GAIN * C_AIR * throttle_flow.abs() / bore_area
-    }
-
-    /// Register a valve closing at `rpm`.
-    pub fn valve_closed(&mut self, rpm: f64, level: f64) {
-        if level > 0.0 {
-            self.click_env += level * CLICK_GAIN_PER_KRPM * rpm / 1000.0;
-        }
-    }
-
-    /// Valvetrain click output for this step (decaying high-passed noise bursts).
-    pub fn clicks(&mut self, dt: f64) -> f64 {
-        if self.click_env == 0.0 {
-            return 0.0;
-        }
-        let n = self.white();
-        let out = self.click_env * self.click.process(n, 2_000.0, 12_000.0, dt);
-        self.click_env *= (-dt / CLICK_DECAY_S).exp();
-        if self.click_env < 1e-4 {
-            self.click_env = 0.0;
-        }
-        out
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const DT: f64 = 1.0 / 192_000.0;
 
     #[test]
     fn listener_round_trips_and_defaults_for_old_files() {
@@ -172,142 +89,5 @@ mod tests {
             serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&s).unwrap()).unwrap();
         assert_eq!(json, s);
         assert_eq!(yaml, s);
-    }
-
-    fn rms(x: &[f64]) -> f64 {
-        (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt()
-    }
-
-    #[test]
-    fn white_noise_is_uniform_and_deterministic() {
-        let mut t = Texture::new(5);
-        let xs: Vec<f64> = (0..20_000).map(|_| t.white()).collect();
-        assert!(xs.iter().all(|x| (-1.0..1.0).contains(x)));
-        let mean = xs.iter().sum::<f64>() / xs.len() as f64;
-        assert!(mean.abs() < 0.02);
-        // uniform(-1, 1): rms 1/√3 = 0.577
-        assert!((rms(&xs) - 0.577).abs() < 0.01, "{}", rms(&xs));
-        assert_eq!(Texture::new(5).white(), xs[0]);
-    }
-
-    #[test]
-    fn band_passes_the_band_and_rejects_dc_and_extremes() {
-        // one-pole high-pass 400 Hz then one-pole low-pass 6 kHz, at 192 kHz
-        let gain = |f: f64| {
-            let mut b = Band::default();
-            let mut peak: f64 = 0.0;
-            for n in 0..40_000 {
-                let y = b.process(
-                    (2.0 * std::f64::consts::PI * f * n as f64 * DT).sin(),
-                    400.0,
-                    6_000.0,
-                    DT,
-                );
-                if n > 20_000 {
-                    peak = peak.max(y.abs());
-                }
-            }
-            peak
-        };
-        // |H| ≈ 1/√(1+(400/f)²) · 1/√(1+(f/6000)²): 2 kHz → 0.93; 100 Hz → 0.24; 60 kHz → 0.10
-        assert!((gain(2_000.0) - 0.93).abs() < 0.05, "{}", gain(2_000.0));
-        assert!(gain(100.0) < 0.3, "{}", gain(100.0));
-        assert!(gain(60_000.0) < 0.2, "{}", gain(60_000.0));
-        let mut b = Band::default();
-        let mut y = 1.0;
-        for _ in 0..20_000 {
-            y = b.process(1.0, 400.0, 6_000.0, DT);
-        }
-        assert!(y.abs() < 1e-3, "DC must be rejected: {y}");
-    }
-
-    #[test]
-    fn white_noise_is_uncorrelated() {
-        let mut t = Texture::new(9);
-        let xs: Vec<f64> = (0..50_000).map(|_| t.white()).collect();
-        let r1 = xs.windows(2).map(|w| w[0] * w[1]).sum::<f64>() / xs.len() as f64 / (1.0 / 3.0);
-        assert!(r1.abs() < 0.02, "lag-1 correlation {r1}");
-        // uniform(−1, 1): fourth moment 1/5
-        let m4 = xs.iter().map(|x| x.powi(4)).sum::<f64>() / xs.len() as f64;
-        assert!((m4 - 0.2).abs() < 0.01, "{m4}");
-    }
-
-    #[test]
-    fn intake_tone_is_the_plane_wave_of_the_throttle_flow() {
-        // tone = level · 0.15 · c · ṁ / A_bore = 0.15 · 343 · 0.05 / 1e-3 = 2572.5 Pa, either
-        // flow direction, steady (no noise of its own)
-        let mut t = Texture::new(4);
-        approx::assert_relative_eq!(t.intake(0.05, 1e-3, 1.0), 2572.5, max_relative = 1e-12);
-        approx::assert_relative_eq!(t.intake(-0.05, 1e-3, 2.0), 5145.0, max_relative = 1e-12);
-        // level 0 or a degenerate bore: silence, not infinities
-        assert_eq!(t.intake(0.05, 1e-3, 0.0), 0.0);
-        assert_eq!(t.intake(0.05, 0.0, 1.0), 0.0);
-    }
-
-    #[test]
-    fn a_valve_closing_adds_level_times_60_per_krpm() {
-        let mut t = Texture::new(1);
-        t.valve_closed(3_000.0, 2.0);
-        assert_eq!(t.click_env, 2.0 * 60.0 * 3.0);
-        t.valve_closed(1_000.0, 1.0);
-        assert_eq!(t.click_env, 360.0 + 60.0);
-        // one step decays by exp(−dt/0.4 ms); the burst is bounded by the envelope
-        let before = t.click_env;
-        let out = t.clicks(DT);
-        assert!((t.click_env / before - (-DT / 0.0004f64).exp()).abs() < 1e-12);
-        assert!(
-            out.abs() <= before,
-            "output {out} beyond its envelope {before}"
-        );
-        // the burst is zero-mean noise shaped by the envelope
-        let mut t2 = Texture::new(8);
-        t2.valve_closed(5_000.0, 1.0);
-        let env0 = t2.click_env;
-        let xs: Vec<f64> = (0..200).map(|_| t2.clicks(DT)).collect();
-        let mean = xs.iter().sum::<f64>() / xs.len() as f64;
-        assert!(
-            mean.abs() < 0.05 * env0,
-            "click mean {mean} vs envelope {env0}"
-        );
-        // below 1e-4 the envelope snaps to exactly zero
-        // (1.5e-4 → 1e-4 takes ln(1.5)·0.4 ms / dt ≈ 31 steps)
-        t.click_env = 1.5e-4;
-        for _ in 0..40 {
-            t.clicks(DT);
-        }
-        assert_eq!(t.click_env, 0.0);
-    }
-
-    const REFERENCE_WHITE_SEED5: [f64; 3] =
-        [-0.856932398150813, 0.04843985850807053, 0.43598306058512826];
-
-    #[test]
-    fn white_matches_the_reference_xorshift64_star() {
-        // Vigna's xorshift64* (shifts 12, 25, 27; multiplier 0x2545F4914F6CDD1D), seeded here as
-        // seed·0xD1B54A32D192ED03 | 1; reference values from an independent Python implementation.
-        let mut t = Texture::new(5);
-        let got: Vec<f64> = (0..3).map(|_| t.white()).collect();
-        let want = REFERENCE_WHITE_SEED5;
-        for (g, w) in got.iter().zip(want) {
-            assert!((g - w).abs() < 1e-15, "{got:?}");
-        }
-    }
-
-    #[test]
-    fn valve_clicks_decay_and_grow_with_rpm() {
-        let energy = |rpm: f64| {
-            let mut t = Texture::new(3);
-            t.valve_closed(rpm, 1.0);
-            let xs: Vec<f64> = (0..2_000).map(|_| t.clicks(DT)).collect();
-            let late: f64 = (1_500..2_000).map(|k| xs[k].abs()).sum();
-            (rms(&xs), late)
-        };
-        let (low, _) = energy(1_000.0);
-        let (high, late) = energy(8_000.0);
-        assert!(high > 4.0 * low, "{low} → {high}");
-        assert!(late < 1e-6, "clicks must die out (~0.4 ms): {late}");
-        let mut t = Texture::new(3);
-        t.valve_closed(8_000.0, 0.0);
-        assert!((0..100).all(|_| t.clicks(DT) == 0.0));
     }
 }

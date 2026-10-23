@@ -53,6 +53,11 @@ pub struct Pipe {
     pub fwd: DelayLine,
     pub bwd: DelayLine,
     gain: f64,
+    /// Per-trip factor without flow (`gain` is it times the flow's friction loss).
+    still_gain: f64,
+    length_m: f64,
+    diameter_m: f64,
+    sound_speed: f64,
 }
 
 impl Pipe {
@@ -64,12 +69,28 @@ impl Pipe {
             fwd: DelayLine::new(delay),
             bwd: DelayLine::new(delay),
             gain: (1.0 - loss_per_m).powf(length_m),
+            still_gain: (1.0 - loss_per_m).powf(length_m),
+            length_m,
+            diameter_m,
+            sound_speed,
         }
     }
     /// Extra per-trip amplitude factor (e.g. a muffler in this pipe).
     pub fn with_extra_gain(mut self, g: f64) -> Self {
         self.gain *= g;
+        self.still_gain *= g;
         self
+    }
+
+    /// The pipe's mean mass flow, kg/s, of gas at its sound speed and an atmosphere: turbulent
+    /// wall friction, ½ρu|u|·f/D per unit volume, linearized about the mean velocity U damps a
+    /// wave by α = f·M/D per metre (M = U/c; Darcy f of [`crate::exhaust_fv::PIPE_FRICTION`]):
+    /// the faster the gas, the more a pipe's resonances are worn down.
+    pub fn set_mean_flow(&mut self, mass_flow: f64) {
+        let rho_c = crate::gas::GAMMA * crate::units::ATM_PA / self.sound_speed;
+        let mach = (mass_flow / (rho_c * self.area_m2)).abs();
+        let alpha = crate::exhaust_fv::PIPE_FRICTION * mach / self.diameter_m;
+        self.gain = self.still_gain * (-alpha * self.length_m).exp();
     }
 
     /// Wave arriving at the far end this step.
@@ -195,6 +216,12 @@ impl Duct {
     pub fn at_near(&self) -> f64 {
         self.pipes[0].at_near()
     }
+    /// The mean mass flow through every pipe of the duct, kg/s ([`Pipe::set_mean_flow`]).
+    pub fn set_mean_flow(&mut self, mass_flow: f64) {
+        for p in &mut self.pipes {
+            p.set_mean_flow(mass_flow);
+        }
+    }
     /// Send this step's waves into the ends; the inner area changes scatter what arrives at
     /// them this step.
     pub fn send(&mut self, from_near: f64, from_far: f64) {
@@ -239,6 +266,8 @@ pub struct OpenEnd {
     r: f64,
     k: f64,
     lp: f64,
+    /// Reflection factor of the outflow's jet, (1 − M)/(1 + M).
+    jet: f64,
 }
 
 impl OpenEnd {
@@ -250,13 +279,23 @@ impl OpenEnd {
             r: 0.98,
             k: 1.0 - (-2.0 * std::f64::consts::PI * fc * dt).exp(),
             lp: 0.0,
+            jet: 1.0,
         }
+    }
+    /// Mean outflow at the end, as a Mach number. At low Strouhal number the jet sheds the
+    /// sound energy the flow convects out as vorticity (a Kutta condition at the edge): the
+    /// reflection of a pipe without convection falls by (1 − M)/(1 + M) (Munt 1977, Rienstra
+    /// 1983; measured by Peters, Hirschberg, Reijnen & Wijnands, JFM 256, 1993). Inflow (a
+    /// reversing pulse) gets no such sink.
+    pub fn set_outflow_mach(&mut self, mach: f64) {
+        let m = mach.clamp(0.0, 0.99);
+        self.jet = (1.0 - m) / (1.0 + m);
     }
     /// Given the arriving wave, returns (reflected wave, outflow volume velocity × ρc =
     /// p − reflected). The far-field sound is the time derivative of the latter (monopole).
     pub fn process(&mut self, arriving: f64) -> (f64, f64) {
         self.lp += self.k * (arriving - self.lp);
-        let reflected = -self.r * self.lp;
+        let reflected = -self.r * self.jet * self.lp;
         (reflected, arriving - reflected)
     }
 }
@@ -319,6 +358,57 @@ mod tests {
                 "{f} Hz: {got:.2} dB, want {db}"
             );
         }
+    }
+
+    #[test]
+    fn a_flowing_pipe_wears_its_waves_down() {
+        // D = 50 mm, 1 m, c = 500 m/s (ρc = γp/c = 283.71): 0.0557 kg/s is M = 0.2; f = 0.025
+        // → α = f·M/D = 0.1 Np/m: a wave keeps e^(−0.1) = 0.904837 of itself, on top of the
+        // still pipe's (1 − 0.03)¹
+        let dt = 1.0 / 192_000.0;
+        let mut p = Pipe::new(1.0, 0.05, 500.0, dt, 0.03);
+        let still = 0.97;
+        let a = std::f64::consts::PI * 0.25 * 0.05 * 0.05;
+        p.set_mean_flow(0.2 * 283.71 * a);
+        p.send(1.0, 1.0);
+        for _ in 0..400 {
+            p.send(0.0, 0.0);
+            if p.fwd.read() != 0.0 {
+                break;
+            }
+        }
+        assert!(
+            (p.gain / still - 0.904_837).abs() < 1e-5,
+            "{}",
+            p.gain / still
+        );
+        // and the flow's direction does not matter
+        p.set_mean_flow(-0.2 * 283.71 * a);
+        assert!((p.gain / still - 0.904_837).abs() < 1e-5);
+        p.set_mean_flow(0.0);
+        assert_eq!(p.gain, still);
+    }
+
+    #[test]
+    fn an_outflow_takes_sound_energy_out_of_the_open_end() {
+        // A slow wave (far below ka = 1) meets the open end: without flow it comes back
+        // inverted at r = 0.98; with outflow at Mach M the jet carries off the convected energy,
+        // the reflection falling by (1 − M)/(1 + M) at low Strouhal number (Munt 1977; measured
+        // by Peters, Hirschberg et al., JFM 256, 1993): M = 0.17 → 0.98·0.83/1.17 = 0.6952.
+        let dt = 1.0 / 192_000.0;
+        let settle = |m: f64| {
+            let mut end = OpenEnd::new(0.05, dt);
+            end.set_outflow_mach(m);
+            let mut r = 0.0;
+            for _ in 0..2000 {
+                r = end.process(1.0).0;
+            }
+            r
+        };
+        assert!((settle(0.0) + 0.98).abs() < 1e-9);
+        assert!((settle(0.17) + 0.695_2).abs() < 1e-4, "{}", settle(0.17));
+        // inflow (a reversing pulse) gets no such sink here
+        assert!((settle(-0.2) + 0.98).abs() < 1e-9);
     }
 
     #[test]
