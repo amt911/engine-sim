@@ -367,8 +367,8 @@ pub(crate) fn chamber_passage(
 }
 
 /// Lined can segments, m: the packing's lumped line converges at about 1 cm (see the
-/// waveguide test: 5 % at 4 kHz).
-const LINING_SEGMENT_M: f64 = 0.01;
+/// waveguide test: 5 % at 4 kHz; 2 cm is 17 % there, where it has already cut 30 dB).
+pub const LINING_SEGMENT_M: f64 = 0.01;
 
 /// Gas temperature after the collector, K (the waveguide's tail sound speed, T = c²/(γR)).
 const TAIL_T: f64 = C_TAIL * C_TAIL / (crate::gas::GAMMA * crate::gas::R_AIR);
@@ -379,7 +379,7 @@ const TAIL_T: f64 = C_TAIL * C_TAIL / (crate::gas::GAMMA * crate::gas::R_AIR);
 /// (ch. 3); catalysts as their open channels plus their laminar resistance; resonators as
 /// side branches between their neighbours. `muffler_transmission` stays an extra lumped loss on
 /// the last pipe (1 = none).
-fn after_collector(def: &ExhaustDef, dt: f64) -> Duct {
+fn after_collector(def: &ExhaustDef, dt: f64, lining_m: f64) -> Duct {
     let rho_c = crate::gas::GAMMA * crate::units::ATM_PA / C_TAIL;
     let pipe = |len: f64, d: f64| Pipe::new(len, d, C_TAIL, dt, LOSS_PER_M);
     let mut duct: Option<Duct> = None;
@@ -408,7 +408,7 @@ fn after_collector(def: &ExhaustDef, dt: f64) -> Duct {
                 packing_porosity,
             } => {
                 if tube_diameter_m > 0.0 && tube_diameter_m < diameter_m {
-                    let n = (length_m / LINING_SEGMENT_M).round().max(2.0) as usize;
+                    let n = (length_m / lining_m).round().max(2.0) as usize;
                     let pipes = (0..n)
                         .map(|_| pipe(length_m / n as f64, tube_diameter_m))
                         .collect();
@@ -484,6 +484,11 @@ pub struct ExhaustNet {
 
 impl ExhaustNet {
     pub fn new(def: &ExhaustDef, cylinders: usize, dt: f64) -> Self {
+        Self::with_lining(def, cylinders, dt, LINING_SEGMENT_M)
+    }
+
+    /// [`ExhaustNet::new`] with the silencers' packing cut into `lining_m` segments.
+    pub fn with_lining(def: &ExhaustDef, cylinders: usize, dt: f64, lining_m: f64) -> Self {
         let primaries = (0..cylinders)
             .map(|_| {
                 Pipe::new(
@@ -507,7 +512,7 @@ impl ExhaustNet {
                     dt,
                     LOSS_PER_M,
                 ),
-                tail: after_collector(def, dt),
+                tail: after_collector(def, dt, lining_m),
                 end: OpenEnd::new(def.tail_diameter_m, dt),
             })
             .collect();

@@ -635,10 +635,22 @@ struct CylinderState {
 
 /// How finely an engine is simulated (not part of its definition: the same engine at
 /// another fidelity). The default is the reference.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Fidelity {
     /// Scheme of every 1D pipe (intake runners, FV exhaust).
     pub pipe_scheme: crate::fv::Scheme,
+    /// Length of the waveguide silencers' lined segments, m (finer is closer to the
+    /// transmission line at high frequencies, and dearer).
+    pub lining_segment_m: f64,
+}
+
+impl Default for Fidelity {
+    fn default() -> Self {
+        Self {
+            pipe_scheme: crate::fv::Scheme::default(),
+            lining_segment_m: crate::exhaust::LINING_SEGMENT_M,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1029,7 +1041,12 @@ impl Engine {
             ExhaustModel::Waveguide => {
                 self.fv = None;
                 if self.net.as_ref().is_none_or(|n| n.dt != dt) {
-                    self.net = Some(ExhaustNet::new(&self.def.exhaust, self.cyl.len(), dt));
+                    self.net = Some(ExhaustNet::with_lining(
+                        &self.def.exhaust,
+                        self.cyl.len(),
+                        dt,
+                        self.fidelity.lining_segment_m,
+                    ));
                 }
             }
             ExhaustModel::Fv => {
@@ -2056,6 +2073,7 @@ mod tests {
         let weno = run(Fidelity::default());
         let muscl = run(Fidelity {
             pipe_scheme: crate::fv::Scheme::MusclRk2,
+            ..Fidelity::default()
         });
         assert!(muscl.iter().all(|x| x.is_finite()));
         let rms = |x: &[f64]| (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
