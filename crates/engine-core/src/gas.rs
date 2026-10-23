@@ -480,6 +480,9 @@ mod tests {
         let r = unit_slope_root(count(|x| 2.0 * (x - 3.0) + (x - 3.0).powi(3)), 2.9, cold);
         assert!((r - 3.0).abs() < 1e-9, "{r}");
         assert!(calls.get() <= 6, "{} calls", calls.get());
+        // and from above the root, where h(start) > 0
+        let r = unit_slope_root(|x| 2.0 * (x - 3.0) + (x - 3.0).powi(3), 3.1, cold);
+        assert!((r - 3.0).abs() < 1e-9, "{r}");
         assert!(!cold_used.get());
         // a slope under 1 breaks the bound: the step does not cross, the cold bracket does
         let r = unit_slope_root(
