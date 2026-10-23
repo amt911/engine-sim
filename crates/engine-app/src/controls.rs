@@ -2,6 +2,7 @@
 //! Logic-bearing UI, so it is tested with `egui_kittest`.
 
 use crate::dyno::DynoPoint;
+use crate::quality::{Quality, QualityChoice};
 use crate::sim::DriveInput;
 use eframe::egui;
 use engine_core::drivetrain::VehicleDef;
@@ -94,6 +95,10 @@ pub struct UiState {
     pub dyno_curve: Vec<DynoPoint>,
     pub dyno_running: bool,
     pub dyno_request: bool,
+    /// Simulation quality, sent to the sim when `quality_dirty`, and the level it runs at.
+    pub quality: QualityChoice,
+    pub quality_dirty: bool,
+    pub quality_running: Option<Quality>,
 }
 
 impl UiState {
@@ -153,6 +158,9 @@ impl Default for UiState {
             gear: 0,
             clutch_held: false,
             brake_held: false,
+            quality: QualityChoice::Auto,
+            quality_dirty: false,
+            quality_running: None,
             dyno_curve: Vec::new(),
             dyno_running: false,
             dyno_request: false,
@@ -237,6 +245,29 @@ fn drive_keys(ui: &egui::Ui, state: &mut UiState) {
     state.brake_held = brake;
 }
 
+/// Quality: Auto (the best level this machine keeps in real time) or a fixed one.
+fn quality_row(ui: &mut egui::Ui, state: &mut UiState) {
+    ui.horizontal(|ui| {
+        ui.label("Quality");
+        let mut pick = |ui: &mut egui::Ui, choice: QualityChoice, label: &str| {
+            if ui
+                .selectable_label(state.quality == choice, label)
+                .clicked()
+            {
+                state.quality = choice;
+                state.quality_dirty = true;
+            }
+        };
+        pick(ui, QualityChoice::Auto, "Auto");
+        for q in Quality::ALL.into_iter().rev() {
+            pick(ui, QualityChoice::Fixed(q), q.label());
+        }
+    });
+    if let Some(q) = state.quality_running {
+        ui.small(format!("running: {}", q.label()));
+    }
+}
+
 /// Draw the panel; mutates `state`.
 pub fn controls_panel(ui: &mut egui::Ui, state: &mut UiState) {
     ui.heading("Engine");
@@ -249,6 +280,7 @@ pub fn controls_panel(ui: &mut egui::Ui, state: &mut UiState) {
             state.preset = Some(p);
         }
     }
+    quality_row(ui, state);
     ui.separator();
     ui.heading("Driver");
     ui.checkbox(&mut state.ignition, "Ignition");
@@ -329,6 +361,25 @@ mod tests {
         h.get_by_label("Ignition").click();
         h.run();
         assert!(!h.state().controls().ignition);
+    }
+
+    #[test]
+    fn the_quality_row_picks_a_level_or_auto() {
+        let mut h = harness();
+        assert_eq!(h.state().quality, QualityChoice::Auto);
+        h.get_by_label("Low").click();
+        h.run();
+        assert_eq!(h.state().quality, QualityChoice::Fixed(Quality::Low));
+        assert!(h.state().quality_dirty);
+        h.state_mut().quality_dirty = false;
+        h.get_by_label("Auto").click();
+        h.run();
+        assert_eq!(h.state().quality, QualityChoice::Auto);
+        assert!(h.state().quality_dirty);
+        // what Auto settled on is shown
+        h.state_mut().quality_running = Some(Quality::High);
+        h.run();
+        assert!(h.query_by_label("running: High").is_some());
     }
 
     #[test]

@@ -4,6 +4,7 @@ mod dyno;
 mod editor;
 mod files;
 mod headless;
+mod quality;
 mod runner;
 mod sim;
 mod view;
@@ -44,6 +45,10 @@ struct Cli {
     /// Fail (exit 1) if the headless render is silent, out of range, NaN or stalled.
     #[arg(long)]
     check: bool,
+    /// Simulation quality: auto (the best level this machine keeps in real time), low, medium,
+    /// high or ultra. Headless renders offline: auto means ultra there.
+    #[arg(long, default_value = "auto")]
+    quality: quality::QualityChoice,
     /// Close the window after this many seconds (smoke tests).
     #[arg(long)]
     quit_after: Option<f64>,
@@ -88,7 +93,11 @@ fn main() -> ExitCode {
     }
     if cli.headless {
         let name = def.name.clone();
-        let (samples, report) = headless::render(def, cli.seconds, cli.throttle, 48_000.0);
+        let level = match cli.quality {
+            quality::QualityChoice::Fixed(q) => q,
+            quality::QualityChoice::Auto => quality::Quality::Ultra,
+        };
+        let (samples, report) = headless::render(def, cli.seconds, cli.throttle, 48_000.0, level);
         println!(
             "{name}: {} samples, rms {:.4}, peak {:.3}, final {:.0} rpm",
             report.samples, report.rms, report.peak, report.final_rpm
@@ -109,6 +118,7 @@ fn main() -> ExitCode {
     }
     let state = UiState {
         preset: cli.engine.is_none().then_some(preset),
+        quality: cli.quality,
         ..UiState::with_engine(def)
     };
     let options = eframe::NativeOptions {
