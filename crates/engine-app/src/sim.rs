@@ -306,6 +306,12 @@ pub(crate) mod tests {
         bands.map(|b| b / t)
     }
 
+    /// `def` with the finite-volume exhaust.
+    fn fv_exhaust(mut def: EngineDef) -> EngineDef {
+        def.exhaust.model = engine_core::exhaust::ExhaustModel::Fv;
+        def
+    }
+
     /// The sound scorecard (run by hand; `scripts/scorecard.sh` compares it with the committed
     /// baseline): objective numbers per preset, as the app plays it, so every change to the sound
     /// is measured, not guessed. Steady points are held at 0.7 × redline (+ 13 rpm, so the
@@ -330,6 +336,9 @@ pub(crate) mod tests {
             ("lfa-v10", EngineDef::lfa_v10()),
             ("v8-flatplane", EngineDef::flatplane_v8()),
             ("v8-crossplane", EngineDef::crossplane_v8()),
+            // the non-linear 1D exhaust, the model that is to become the default
+            ("inline4-fv", fv_exhaust(EngineDef::inline4())),
+            ("lfa-v10-fv", fv_exhaust(EngineDef::lfa_v10())),
         ] {
             let rpm = (0.7 * def.redline_rpm).round() + 13.0;
             let steady = |throttle: f64| {

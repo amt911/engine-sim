@@ -24,9 +24,11 @@
 
 use crate::fv::{Cons, Pipe1d};
 use crate::gas::{CP, CV, GAMMA, GasVolume};
+use serde::{Deserialize, Serialize};
 
-/// Fibre packing behind a perforated wall.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Fibre packing behind a perforated wall. Zero thickness: no packing (a bare can).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Packing {
     /// Layer thickness, m.
     pub thickness_m: f64,
@@ -34,6 +36,19 @@ pub struct Packing {
     pub flow_resistivity: f64,
     /// Open fraction of the packed volume.
     pub porosity: f64,
+}
+
+impl Default for Packing {
+    /// A road-car silencer: 25 mm of glass-fibre wool. Muffler fibre packed at 100–200 g/L has
+    /// a flow resistivity of roughly 5–40 kPa·s/m² and a porosity near 0.95 (estimates from
+    /// the range of fibrous absorbers, Delany & Bazley 1970; to be checked against PAPERS.md).
+    fn default() -> Self {
+        Self {
+            thickness_m: 0.025,
+            flow_resistivity: 16_000.0,
+            porosity: 0.95,
+        }
+    }
 }
 
 /// The packing along a run of cells of one pipe.
@@ -46,18 +61,18 @@ pub struct Lining {
 }
 
 impl Lining {
-    /// Lines `cells` of `pipe` with `packing`, facing the duct along `perimeter_m`, its pores
-    /// filled with gas at `p` and `t_k`.
+    /// Lines `cells` of `pipe` with `packing` of cross-section `packed_area_m2`, facing the duct
+    /// along `perimeter_m`, its pores filled with gas at `p` and `t_k`.
     pub fn new(
         pipe: &Pipe1d,
         cells: std::ops::Range<usize>,
         perimeter_m: f64,
+        packed_area_m2: f64,
         packing: Packing,
-        p: f64,
-        t_k: f64,
+        (p, t_k): (f64, f64),
     ) -> Self {
         let face = perimeter_m * pipe.dx;
-        let pore = packing.porosity * perimeter_m * packing.thickness_m * pipe.dx;
+        let pore = packing.porosity * packed_area_m2 * pipe.dx;
         let n = cells.len();
         Self {
             first: cells.start,
@@ -73,6 +88,11 @@ impl Lining {
             let v_cell = pipe.area[i] * pipe.dx;
             exchange(&mut pipe.cells[i], v_cell, pocket, r, dt);
         }
+    }
+
+    /// Gas held in the pores, kg.
+    pub fn mass_kg(&self) -> f64 {
+        self.pockets.iter().map(|p| p.mass_kg).sum()
     }
 
     /// Pressure in each pocket, Pa.
@@ -207,6 +227,24 @@ mod tests {
         assert_relative_eq!(cell.mom / cell.rho, 40.0, max_relative = 1e-12);
     }
 
+    #[test]
+    fn packing_round_trips_and_old_files_get_the_default() {
+        let k = Packing {
+            thickness_m: 0.03,
+            flow_resistivity: 9_000.0,
+            porosity: 0.9,
+        };
+        let json = serde_json::to_string(&k).unwrap();
+        assert_eq!(serde_json::from_str::<Packing>(&json).unwrap(), k);
+        let yaml = serde_yaml_ng::to_string(&k).unwrap();
+        assert_eq!(serde_yaml_ng::from_str::<Packing>(&yaml).unwrap(), k);
+        // an exhaust written before the packing existed loads with the road-car default
+        let old: crate::exhaust::ExhaustDef =
+            serde_yaml_ng::from_str("tail_length_m: 1.2").unwrap();
+        assert_eq!(old.muffler_packing, Packing::default());
+        assert_eq!(Packing::default().thickness_m, 0.025);
+    }
+
     /// Single-bin DFT amplitude of `x` at `f` (sample step `dt`).
     fn amplitude(x: &[f64], f: f64, dt: f64) -> f64 {
         let w = 2.0 * std::f64::consts::PI * f * dt;
@@ -268,7 +306,8 @@ mod tests {
             }
             let open = Boundary::Open { p: p0, rho: rho0 };
             (pipe.left, pipe.right) = (open, open);
-            let mut lining = lined.then(|| Lining::new(&pipe, 400..1600, 0.35, packing, p0, t0));
+            let mut lining =
+                lined.then(|| Lining::new(&pipe, 400..1600, 0.35, 0.35 * 0.025, packing, (p0, t0)));
             let dt = 0.5 * pipe.dx / c0;
             let (i1, i2) = (600, 800);
             let (mut s1, mut s2) = (Vec::new(), Vec::new());
