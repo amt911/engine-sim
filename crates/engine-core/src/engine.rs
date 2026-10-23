@@ -3243,6 +3243,78 @@ mod tests {
             .collect()
     }
 
+    /// The LFA held at 6000 rpm, full throttle, with `snd`: (audio, texture signal) per step.
+    fn heard_with(snd: crate::sound::SoundDef) -> (Vec<f64>, Vec<f64>) {
+        let mut d = EngineDef::lfa_v10();
+        d.sound = snd;
+        let mut e = Engine::new(d, 6000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(6000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.2, &c);
+        (0..(0.1 / DT) as usize)
+            .map(|_| (e.step(DT, &c), e.texture_signal))
+            .unzip()
+    }
+
+    #[test]
+    fn the_jets_add_to_the_sound_in_proportion_to_their_level() {
+        // flow_noise only scales the jets' pressure at the listener (the gas does not hear it):
+        // with the same seed, the sound at level 2 minus the sound at 0 is exactly twice the
+        // sound at level 1 minus it, and not nothing
+        let at = |k: f64| {
+            heard_with(crate::sound::SoundDef {
+                flow_noise: k,
+                ..crate::sound::SoundDef::default()
+            })
+            .0
+        };
+        let (a0, a1, a2) = (at(0.0), at(1.0), at(2.0));
+        let (_, one) = mean_rms_of_difference(&a1, &a0);
+        let (_, two) = mean_rms_of_difference(&a2, &a0);
+        assert!(one > 1e-6, "no jets: {one}");
+        assert_relative_eq!(two, 2.0 * one, max_relative = 1e-9);
+    }
+
+    #[test]
+    fn the_texture_radiates_like_a_monopole_from_the_tails() {
+        // The intake layer's share of the sound (level 1 minus level 0) is the shared
+        // radiation of its share of the texture signal: a monopole, p ∝ dQ/dt with a positive
+        // constant, so it follows the signal's rate of change with the same polarity.
+        let quiet = crate::sound::SoundDef {
+            flow_noise: 0.0,
+            intake: 0.0,
+            ..crate::sound::SoundDef::default()
+        };
+        let (a0, t0) = heard_with(quiet.clone());
+        let (a1, t1) = heard_with(crate::sound::SoundDef {
+            intake: 1.0,
+            ..quiet
+        });
+        let heard: Vec<f64> = a1.iter().zip(&a0).map(|(x, y)| x - y).collect();
+        let rate: Vec<f64> = t1
+            .iter()
+            .zip(&t0)
+            .map(|(x, y)| x - y)
+            .collect::<Vec<_>>()
+            .windows(2)
+            .map(|w| w[1] - w[0])
+            .collect();
+        // the listener's delay shifts it; take the best lag within 30 ms
+        let corr = |lag: usize| {
+            let (x, y) = (&heard[lag + 1..], &rate[..rate.len() - lag]);
+            let n = x.len().min(y.len());
+            let dot: f64 = (0..n).map(|i| x[i] * y[i]).sum();
+            let nx: f64 = x[..n].iter().map(|v| v * v).sum::<f64>().sqrt();
+            let ny: f64 = y[..n].iter().map(|v| v * v).sum::<f64>().sqrt();
+            dot / (nx * ny)
+        };
+        let best = (0..(0.03 / DT) as usize).map(corr).fold(f64::MIN, f64::max);
+        assert!(best > 0.9, "best correlation {best}");
+    }
+
     fn mean_rms_of_difference(a: &[f64], b: &[f64]) -> (f64, f64) {
         let d: Vec<f64> = a.iter().zip(b).map(|(x, y)| x - y).collect();
         let m = d.iter().sum::<f64>() / d.len() as f64;
