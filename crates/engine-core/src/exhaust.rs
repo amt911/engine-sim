@@ -2,7 +2,7 @@
 //! collectors (N-port junctions), each collector into its own tail pipe, which radiates.
 //! Spec: `docs/superpowers/specs/2026-10-21-exhaust-waveguides.md`.
 
-use crate::waveguide::{OpenEnd, Pipe, junction};
+use crate::waveguide::{Duct, OpenEnd, Pipe, junction};
 use serde::{Deserialize, Serialize};
 
 /// Speeds of sound along the system: gas cools from the port to the tail (≈ 900 → 600 K).
@@ -110,8 +110,34 @@ impl ExhaustDef {
 struct Branch {
     members: Vec<usize>,
     collector: Pipe,
-    tail: Pipe,
+    /// Muffler can and tail pipe.
+    tail: Duct,
     end: OpenEnd,
+}
+
+/// Length of the muffler can, m (a typical silencer; its area follows from the volume).
+pub(crate) const CHAMBER_LENGTH_M: f64 = 0.4;
+
+/// The muffler can and the tail pipe after it: the can is a pipe as wide as its volume over
+/// its length, so the area steps at its ends reflect sound back like a real expansion chamber
+/// (Munjal, ch. 3); `muffler_transmission` is the absorption of its packing, per pass. A can no
+/// wider than the tail is just the absorption.
+fn muffled_tail(def: &ExhaustDef, dt: f64) -> Duct {
+    let tail = Pipe::new(
+        def.tail_length_m,
+        def.tail_diameter_m,
+        C_TAIL,
+        dt,
+        LOSS_PER_M,
+    );
+    let a_can = def.muffler_volume_m3 / CHAMBER_LENGTH_M;
+    if a_can <= tail.area_m2 {
+        return Duct::new(vec![tail.with_extra_gain(def.muffler_transmission)]);
+    }
+    let d_can = (4.0 * a_can / std::f64::consts::PI).sqrt();
+    let can = Pipe::new(CHAMBER_LENGTH_M, d_can, C_TAIL, dt, LOSS_PER_M)
+        .with_extra_gain(def.muffler_transmission);
+    Duct::new(vec![can, tail])
 }
 
 /// Runtime network for one engine at one time step.
@@ -151,14 +177,7 @@ impl ExhaustNet {
                     dt,
                     LOSS_PER_M,
                 ),
-                tail: Pipe::new(
-                    def.tail_length_m,
-                    def.tail_diameter_m,
-                    C_TAIL,
-                    dt,
-                    LOSS_PER_M,
-                )
-                .with_extra_gain(def.muffler_transmission),
+                tail: muffled_tail(def, dt),
                 end: OpenEnd::new(def.tail_diameter_m, dt),
             })
             .collect();
@@ -222,7 +241,7 @@ impl ExhaustNet {
             let collector_near = clamp_wave(outgoing[b.members.len()]);
             let mut two = [0.0; 2];
             junction(
-                &[b.collector.area_m2, b.tail.area_m2],
+                &[b.collector.area_m2, b.tail.end_areas().0],
                 &[b.collector.at_far(), b.tail.at_near()],
                 &mut two,
             );
@@ -391,9 +410,10 @@ mod tests {
 
     #[test]
     fn pulse_reaches_the_tail_after_the_travel_time() {
-        // 0.7/600 + 0.25/560 + 1.5/500 = 1.167 + 0.446 + 3.0 = 4.613 ms = 885.7 steps at 192 kHz
+        // primary, collector, muffler can (0.4 m) and tail: 0.7/600 + 0.25/560 + 0.4/500 + 1.5/500
+        // = 1.167 + 0.446 + 0.8 + 3.0 = 5.413 ms = 1039.3 steps at 192 kHz
         let k = first_arrival(&ExhaustDef::default(), 4);
-        assert!((880..=900).contains(&k), "arrived at step {k}");
+        assert!((1030..=1050).contains(&k), "arrived at step {k}");
     }
 
     #[test]

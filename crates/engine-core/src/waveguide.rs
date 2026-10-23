@@ -78,6 +78,58 @@ impl Pipe {
     }
 }
 
+/// Pipes of different areas in series. Each change of area scatters a plane wave (the
+/// two-port pressure junction below), which is how a muffler's chambers reflect sound back
+/// (Munjal, *Acoustics of Ducts and Mufflers*, ch. 3) and how a stepped pipe shapes it.
+#[derive(Debug, Clone)]
+pub struct Duct {
+    pipes: Vec<Pipe>,
+}
+
+impl Duct {
+    /// `pipes` from the near end to the far end; at least one.
+    pub fn new(pipes: Vec<Pipe>) -> Self {
+        assert!(!pipes.is_empty(), "a duct needs a pipe");
+        Self { pipes }
+    }
+    /// Area of the near (first) and far (last) pipe, m².
+    pub fn end_areas(&self) -> (f64, f64) {
+        (
+            self.pipes[0].area_m2,
+            self.pipes[self.pipes.len() - 1].area_m2,
+        )
+    }
+    /// Wave arriving at the far end this step.
+    pub fn at_far(&self) -> f64 {
+        self.pipes[self.pipes.len() - 1].at_far()
+    }
+    /// Wave arriving back at the near end this step.
+    pub fn at_near(&self) -> f64 {
+        self.pipes[0].at_near()
+    }
+    /// Send this step's waves into the ends; the inner area changes scatter what arrives at
+    /// them this step.
+    pub fn send(&mut self, from_near: f64, from_far: f64) {
+        let n = self.pipes.len();
+        let mut into_near = from_near;
+        for k in 0..n {
+            let (back, onward) = if k + 1 < n {
+                let mut out = [0.0; 2];
+                junction(
+                    &[self.pipes[k].area_m2, self.pipes[k + 1].area_m2],
+                    &[self.pipes[k].at_far(), self.pipes[k + 1].at_near()],
+                    &mut out,
+                );
+                (out[0], out[1])
+            } else {
+                (from_far, 0.0)
+            };
+            self.pipes[k].send(into_near, back);
+            into_near = onward;
+        }
+    }
+}
+
 /// N-port pressure junction (Kelly–Lochbaum, admittance ∝ area):
 /// p_J = 2·ΣAᵢ·pᵢ / ΣAᵢ, outgoing pᵢ' = p_J − pᵢ. Returns p_J; writes outgoing waves.
 pub fn junction(areas: &[f64], incoming: &[f64], outgoing: &mut [f64]) -> f64 {
@@ -121,6 +173,46 @@ impl OpenEnd {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Steady transmitted amplitude (re a unit incident sine at `f`) through `duct` with an
+    /// anechoic source and termination.
+    fn transmission(mut duct: Duct, f: f64, dt: f64) -> f64 {
+        let n = (0.3 / dt) as usize;
+        let mut peak: f64 = 0.0;
+        for k in 0..n {
+            let x = (2.0 * std::f64::consts::PI * f * k as f64 * dt).sin();
+            if k > n / 2 {
+                peak = peak.max(duct.at_far().abs());
+            }
+            duct.send(x, 0.0);
+        }
+        peak
+    }
+
+    #[test]
+    fn an_expansion_chamber_has_munjals_transmission_loss() {
+        // m = 8 (A₂/A₁), L = 0.4 m, c = 500 m/s, lossless: TL = 10·log[1 + ¼(m − 1/m)²·sin²(kL)]
+        // (Munjal, *Acoustics of Ducts and Mufflers*, 1987, ch. 3, the simple expansion chamber):
+        // kL = π/4 at 156.25 Hz → 9.42 dB; π/2 at 312.5 Hz → 12.17 dB; π at 625 Hz → 0 dB
+        let dt = 1.0 / 192_000.0;
+        let d1 = 0.05;
+        let d2 = d1 * 8f64.sqrt();
+        let chamber = || {
+            Duct::new(vec![
+                Pipe::new(1.0, d1, 500.0, dt, 0.0),
+                Pipe::new(0.4, d2, 500.0, dt, 0.0),
+                Pipe::new(1.0, d1, 500.0, dt, 0.0),
+            ])
+        };
+        for (f, tl) in [(156.25, 9.42), (312.5, 12.17), (625.0, 0.0)] {
+            let got = -20.0 * transmission(chamber(), f, dt).log10();
+            assert!((got - tl).abs() < 0.3, "{f} Hz: {got:.2} dB, want {tl}");
+        }
+        // a straight duct passes everything
+        let straight = Duct::new(vec![Pipe::new(2.4, d1, 500.0, dt, 0.0)]);
+        assert!((transmission(straight, 312.5, dt) - 1.0).abs() < 1e-3);
+    }
+
     use approx::assert_relative_eq;
 
     #[test]

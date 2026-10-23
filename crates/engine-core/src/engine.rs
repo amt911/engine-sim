@@ -2945,7 +2945,11 @@ mod tests {
             leveling: 0.0,
             ..crate::sound::SoundDef::default()
         };
-        let on = crate::sound::SoundDef::default();
+        // the flow textures (the valvetrain's clicks do not depend on load)
+        let on = crate::sound::SoundDef {
+            mechanical: 0.0,
+            ..crate::sound::SoundDef::default()
+        };
         let (dry_wot, wet_wot) = (hf(off.clone(), 1.0), hf(on.clone(), 1.0));
         let (dry_coast, wet_coast) = (hf(off, 0.0), hf(on, 0.0));
         assert!(wet_wot > 1.3 * dry_wot, "WOT: {dry_wot} → {wet_wot}");

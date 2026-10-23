@@ -23,8 +23,7 @@ struct Branch {
     out: Pipe1d,
 }
 
-/// Muffler chamber length, m (typical silencer can); its diameter follows from the volume.
-const CHAMBER_LENGTH_M: f64 = 0.4;
+use crate::exhaust::CHAMBER_LENGTH_M;
 
 #[derive(Debug, Clone)]
 pub struct ExhaustFv {
