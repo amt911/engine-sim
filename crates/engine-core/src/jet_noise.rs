@@ -97,8 +97,10 @@ impl JetNoise {
         let n = self.white();
         let p_rms = jet_p_rms(v, d, rho_jet, r);
         if p_rms == 0.0 {
-            // keep the filter running down quietly
-            return self.band(n * 0.0, 1_000.0, dt);
+            // nothing blows out: no jet, no sound. The band-pass runs down on silence, so the
+            // next outflow starts from rest (its state is unit noise, not pascals)
+            self.band(0.0, 20.0, dt);
+            return 0.0;
         }
         let fs = 1.0 / dt;
         let fc = (PEAK_STROUHAL * v / d).clamp(20.0, 0.2 * fs);
@@ -132,6 +134,30 @@ fn band_alpha(fc: f64, dt: f64) -> f64 {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+
+    #[test]
+    fn no_outflow_makes_no_jet_noise() {
+        // an idling engine's tail flow swings through zero every pulse: while nothing blows out
+        // there is no jet, so no mixing noise — not the band-pass's leftover state
+        let dt = 1.0 / 192_000.0;
+        let mut j = JetNoise::new(7);
+        for _ in 0..2_000 {
+            j.step(20.0, 0.05, 0.6, 3.0, dt);
+        }
+        for k in 0..2_000 {
+            let p = j.step(-3.0, 0.05, 0.6, 3.0, dt);
+            assert_eq!(p, 0.0, "step {k}: {p} Pa with the flow reversed");
+        }
+        // and blowing again, it is back at the correlation's level
+        let n = 20_000;
+        let rms = ((0..n)
+            .map(|_| j.step(20.0, 0.05, 0.6, 3.0, dt).powi(2))
+            .sum::<f64>()
+            / n as f64)
+            .sqrt();
+        let want = jet_p_rms(20.0, 0.05, 0.6, 3.0);
+        assert!((rms / want - 1.0).abs() < 0.15, "{rms} vs {want}");
+    }
 
     #[test]
     fn a_cold_jet_has_the_correlations_level() {
