@@ -191,6 +191,7 @@ cargo run -p engine-app --release -- --preset inline4      # single | inline4 | 
 cargo run -p engine-app --release -- --engine presets/lfa-v10.yaml   # any .yaml/.yml/.json
 cargo run -p engine-app --release -- --preset lfa-v10 --save my.yaml # write an engine file
 cargo run -p engine-app --release -- --preset lfa-v10 --dyno         # WOT sweep as CSV rpm,torque_nm,power_hp
+cargo run -p engine-app --release -- --preset lfa-v10 --render drive --out drive.wav  # offline, Reference quality (drive | sweep | loops → folder)
 cargo test -p engine-app render_screens -- --ignored    # off-screen UI renders → target/screens/
 cargo run -p engine-app --release -- --headless --seconds 3 --wav /tmp/out.wav --check
 cargo test --workspace                                  # all tests
