@@ -57,3 +57,14 @@ _None yet._
 - Contrast (p98/median of the band envelope) ≈ 7.5 dB is stationary noise; real idles 10–19 dB above 500 Hz.
 - Block radiation (structure response × cylinder pressure) adds mostly 250 Hz–1 kHz: the Wiebe pressure has a
   cliff above 1 kHz (CPL 184 → 144 dB from 1 to 2 kHz at 5000 rpm WOT).
+
+## The packed silencer against a measured one (2026-10-23)
+Selamet, Lee & Huff, JSV 262 (2003), Fig. 7: L = 257.2 mm, perforated tube d1 = 49 mm (8 %), shell d2 = 164.4 mm,
+fibre R = 4896 rayl/m. Our lining (`Shunt::lining`, low-frequency limit of a rigid-backed layer, distributed along
+the tube; plane waves) gives TL 3.7 / 10.3 / 20.0 / 32.7 / 47.2 / 62.7 dB at 0.5 / 1 / 1.5 / 2 / 2.5 / 3 kHz; measured
+21 / 29 / 36 / 30 / 22 / 18. Too little below 1.5 kHz, up to 45 dB too much above (TL rising ~f² instead of the
+measured dome). A thick layer is far from its low-frequency limit (t = 58 mm), and above the shell's cut-on the
+measured TL falls (beaming) where any 1D model keeps rising. Check: `papers/dl-silencer/compare_lining.py`
+(local). Plan: the silencer's two-port from a 2D axisymmetric mode-matching model (Selamet, Xu, Lee, JASA 117,
+2005), realised in the time domain by a rational fit of its scattering matrix (vector fitting, Gustavsen &
+Semlyen 1999) — a few biquads per silencer.
