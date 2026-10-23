@@ -386,3 +386,23 @@ Found: 2026-10-22 · physics
 
 Tests: `released_from_high_revs_every_engine_settles_at_its_idle`,
 `the_rev_limiter_bounces_off_the_redline`, `overrun_pulls_the_manifold_to_a_deep_vacuum`.
+
+### Overrun ≈ full power at the tail: the firing orders barely drop (open)
+
+**Measured** (`coast_chain`, an ignored test in engine.rs; held at 0.7 × redline):
+- The valve's volume source falls 14 dB on overrun (inline-4; V10 −13.6; V8 −11.4), close to
+  the choked-flow estimate (−16 dB).
+- At the tail it falls only 1–5 dB.
+- None of these explain it:
+  - the synthetic layers (±2 dB);
+  - the waveguide's wave clamp (unchanged without it);
+  - valve chatter (1–2 flow reversals per cycle in both states).
+- **Per order**, the source drop is all in the low orders. For the inline-4 at 4900 rpm the
+  source changes by −21, −16, −12, −8, −3, −2, 0, +4 dB at orders 1–8. The tail only carries the
+  firing orders (4, 8, 12), which drop 2–8 dB.
+- Either the full-power blowdown is too smooth (too little high-order energy), or the overrun
+  valve event is too sharp. A real tailpipe drops 15–25 dBA at part throttle on the half order
+  (US patent 11391195).
+
+**Next.** Compare against a measured source or tail spectrum, and redo this under the
+non-linear 1D model (temperature-dependent c, steepening of the blowdown).
