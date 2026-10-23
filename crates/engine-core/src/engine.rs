@@ -532,6 +532,40 @@ struct Burn {
     released: f64,
 }
 
+/// Stagnation temperature of the gas leaving the tail, K: the waveguide's tail sound speed,
+/// T = c²/(γR).
+const TAIL_T_K: f64 =
+    crate::exhaust::C_TAIL * crate::exhaust::C_TAIL / (crate::gas::GAMMA * crate::gas::R_AIR);
+/// Speed of a sonic (choked) exit from gas at [`TAIL_T_K`]: c* = c·√(2/(γ+1)), m/s.
+const TAIL_SONIC: f64 = crate::exhaust::C_TAIL * 0.912_870_929_175_276_9;
+
+/// The tail pipe's exit, quasi-steady at the mean exhaust flow `m` (kg/s): (backpressure, Pa;
+/// exit velocity, m/s). The open end is an orifice of the tail's bore into the atmosphere (the
+/// compressible orifice of [`crate::gas::orifice_mass_flow`], solved backwards for the
+/// pressure that passes `m` — past the critical ratio it chokes, and the pressure behind
+/// it climbs), plus the tail's wall friction f·L/D·½ρu² (Darcy). The jet leaves at the
+/// isentropic speed of that expansion, at most sonic.
+fn tail_exit(m: f64, ex: &crate::exhaust::ExhaustDef) -> (f64, f64) {
+    if m <= 0.0 {
+        return (0.0, 0.0);
+    }
+    let atm = crate::units::ATM_PA;
+    let a = PI * 0.25 * ex.tail_diameter_m * ex.tail_diameter_m;
+    let flow = |p: f64| crate::gas::orifice_mass_flow(a, p, TAIL_T_K, atm) - m;
+    let p0 = crate::exhaust_fv::rising_root(flow, atm, 100.0 * atm);
+    let g = crate::gas::GAMMA;
+    let ratio = (atm / p0).max(crate::gas::CRITICAL_PRESSURE_RATIO);
+    let u = (2.0 * crate::gas::CP * TAIL_T_K * (1.0 - ratio.powf((g - 1.0) / g)))
+        .sqrt()
+        .min(TAIL_SONIC);
+    let rho = p0 / (crate::gas::R_AIR * TAIL_T_K);
+    let friction = crate::exhaust_fv::PIPE_FRICTION * ex.tail_length_m / ex.tail_diameter_m
+        * 0.5
+        * rho
+        * (m / (rho * a)).powi(2);
+    (p0 - atm + friction, u)
+}
+
 /// Woschni's heat-transfer coefficient (SAE 670931; Heywood, *ICE Fundamentals*, eq. 12.19),
 /// W/(m²·K): h = 3.26·B^−0.2·p^0.8·T^−0.55·w^0.8 with p in kPa, B in m, w in m/s.
 fn woschni_htc(bore_m: f64, p_pa: f64, t_k: f64, w_m_s: f64) -> f64 {
@@ -633,6 +667,8 @@ pub struct Engine {
     tail_mean_flow: Vec<f64>,
     tail_dc: Vec<f64>,
     tail_u: Vec<f64>,
+    /// Mean backpressure each tail puts on its cylinders' exhaust ports, Pa.
+    tail_backpressure: Vec<f64>,
     flows: Vec<f64>,
     texture: Texture,
     /// Total mass that flowed back from the exhaust into the cylinders, kg (diagnostics).
@@ -759,6 +795,7 @@ impl Engine {
             tail_mean_flow: Vec::new(),
             tail_dc: Vec::new(),
             tail_u: Vec::new(),
+            tail_backpressure: Vec::new(),
             flows: Vec::new(),
             texture: Texture::new(seed ^ 0x7E57),
             reversion_kg: 0.0,
@@ -964,6 +1001,13 @@ impl Engine {
         let z_port = self.net.as_ref().map_or(1.0, |n| n.port_impedance());
         for i in 0..self.cyl.len() {
             let arriving = self.net.as_ref().map_or(0.0, |n| n.arriving(i));
+            let back_at_port = self
+                .tail_groups
+                .iter()
+                .position(|g| g.contains(&i))
+                .and_then(|t| self.tail_backpressure.get(t))
+                .copied()
+                .unwrap_or(0.0);
             let prev = self.cyl[i].cycle_deg;
             let cur = (crank_deg - self.cyl[i].offset_deg).rem_euclid(720.0);
             let theta_c = deg_to_rad(cur);
@@ -1012,7 +1056,8 @@ impl Engine {
                     &cs.gas,
                     area,
                     crate::gas::Port {
-                        arriving,
+                        // the tail's mean backpressure adds to the port's base p_atm + 2p⁻
+                        arriving: arriving + 0.5 * back_at_port,
                         z: z_port,
                         t_back: cs.port_t,
                     },
@@ -1217,13 +1262,10 @@ impl Engine {
             self.tail_mean_flow = vec![0.0; tails.len()];
             self.tail_dc = vec![0.0; tails.len()];
             self.tail_u = vec![0.0; tails.len()];
+            self.tail_backpressure = vec![0.0; tails.len()];
         }
         {
             let z = crate::exhaust::tail_impedance();
-            let rho_a = crate::exhaust::tail_reference_density()
-                * PI
-                * 0.25
-                * self.def.exhaust.tail_diameter_m.powi(2);
             // one engine cycle (two turns), bounded for a stopped or racing crank
             let k = (dt * self.omega.abs() / (4.0 * PI)).clamp(dt, 1.0);
             for (t, &signal) in tails.iter().enumerate() {
@@ -1233,7 +1275,10 @@ impl Engine {
                     .sum();
                 self.tail_mean_flow[t] += (m - self.tail_mean_flow[t]) * k;
                 self.tail_dc[t] += (signal - self.tail_dc[t]) * k;
-                self.tail_u[t] = self.tail_mean_flow[t] / rho_a + (signal - self.tail_dc[t]) / z;
+                let (back, u_mean) = tail_exit(self.tail_mean_flow[t], &self.def.exhaust);
+                self.tail_backpressure[t] = back;
+                // the swing rides on the mean; no exit blows past sound (it chokes first)
+                self.tail_u[t] = (u_mean + (signal - self.tail_dc[t]) / z).min(TAIL_SONIC);
             }
         }
         let mut jets = 0.0;
@@ -3418,6 +3463,47 @@ mod tests {
             u += e.tail_exit_velocity()[0] / n as f64;
         }
         assert!((70.0..100.0).contains(&u), "mean exit velocity {u} m/s");
+    }
+
+    /// Brake torque and the tail's exit velocities of an inline-4 at 5000 rpm WOT with a tail
+    /// of `d` metres.
+    fn with_tail(d: f64) -> (f64, Vec<f64>) {
+        let mut def = EngineDef::inline4();
+        def.exhaust.tail_diameter_m = d;
+        let mut e = Engine::new(def, 5000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(5000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.6, &c);
+        let mut u = Vec::new();
+        for _ in 0..(0.2 / DT) as usize {
+            e.step(DT, &c);
+            u.push(e.tail_exit_velocity()[0]);
+        }
+        (e.torque_nm(), u)
+    }
+
+    #[test]
+    fn a_choked_tail_pipe_holds_the_engine_back() {
+        // 0.094 kg/s through 15 mm would leave at ~900 m/s: past sonic (c = 500 m/s in the
+        // 622 K gas), so the exit chokes — the pressure behind it rises until the sonic flow
+        // passes it (p* = 0.528 p₀): ≈ 2.9 bar of backpressure, which costs torque. The exit
+        // never blows faster than sound; a 50 mm tail barely notices (≈ 2 kPa).
+        let (t50, u50) = with_tail(0.050);
+        let (t15, u15) = with_tail(0.015);
+        let fastest = u15.iter().cloned().fold(f64::MIN, f64::max);
+        assert!(
+            fastest <= 1.05 * crate::exhaust::C_TAIL,
+            "exit at {fastest} m/s"
+        );
+        assert!(t15 < 0.8 * t50, "torque {t15} with a 15 mm tail vs {t50}");
+        let mean50 = u50.iter().sum::<f64>() / u50.len() as f64;
+        assert!(
+            (70.0..100.0).contains(&mean50),
+            "50 mm mean exit {mean50} m/s"
+        );
     }
 
     #[test]
