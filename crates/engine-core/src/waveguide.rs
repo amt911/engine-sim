@@ -131,6 +131,8 @@ pub struct Shunt {
     a: [f64; 2],
     p: [f64; 2],
     q: [f64; 2],
+    /// 1/(A₀ + A₁ + b₀): the node's pipes never change, so the division is done once.
+    inv: f64,
 }
 
 /// What happens where two pipes of a [`Duct`] meet.
@@ -198,6 +200,7 @@ impl Shunt {
             a,
             p: [0.0; 2],
             q: [0.0; 2],
+            inv: f64::NAN,
         }
     }
 
@@ -207,8 +210,10 @@ impl Shunt {
         let hist = self.b[1] * self.p[0] + self.b[2] * self.p[1]
             - self.a[0] * self.q[0]
             - self.a[1] * self.q[1];
-        let pj = (2.0 * (areas[0] * incoming[0] + areas[1] * incoming[1]) - hist)
-            / (areas[0] + areas[1] + self.b[0]);
+        if self.inv.is_nan() {
+            self.inv = 1.0 / (areas[0] + areas[1] + self.b[0]);
+        }
+        let pj = (2.0 * (areas[0] * incoming[0] + areas[1] * incoming[1]) - hist) * self.inv;
         let q = self.b[0] * pj + hist;
         self.p = [pj, self.p[0]];
         self.q = [q, self.q[0]];
