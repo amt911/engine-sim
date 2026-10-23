@@ -40,7 +40,7 @@ engine:
     collector_diameter_m: 0.055
     tail_length_m: 1.5
     tail_diameter_m: 0.05
-    muffler_transmission: 0.5
+    muffler_transmission: 1.0
     model: waveguide
     muffler_volume_m3: 0.006
     muffler_packing:

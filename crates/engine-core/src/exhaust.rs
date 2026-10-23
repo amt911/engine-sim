@@ -2,7 +2,7 @@
 //! collectors (N-port junctions), each collector into its own tail pipe, which radiates.
 //! Spec: `docs/superpowers/specs/2026-10-21-exhaust-waveguides.md`.
 
-use crate::waveguide::{Duct, OpenEnd, Pipe, junction};
+use crate::waveguide::{Duct, OpenEnd, Pipe, Shunt, junction};
 use serde::{Deserialize, Serialize};
 
 /// Speeds of sound along the system: gas cools from the port to the tail (≈ 900 → 600 K).
@@ -45,8 +45,9 @@ pub struct ExhaustDef {
     pub collector_diameter_m: f64,
     pub tail_length_m: f64,
     pub tail_diameter_m: f64,
-    /// Amplitude a wave keeps crossing the muffler (absorptive silencer, lumped into the tail;
-    /// a transfer-matrix muffler is a later refinement — Munjal). 1 = straight pipe.
+    /// Extra lumped loss on the tail pipe, amplitude kept per pass (1 = none). The muffler
+    /// itself is modelled from `muffler_volume_m3` and `muffler_packing`; this field predates
+    /// that and stays for files that set it.
     pub muffler_transmission: f64,
     /// Exhaust model: linear waveguides (cheap) or non-linear 1D finite volumes (`fv`).
     pub model: ExhaustModel,
@@ -77,7 +78,7 @@ impl Default for ExhaustDef {
             collector_diameter_m: 0.055,
             tail_length_m: 1.5,
             tail_diameter_m: 0.050,
-            muffler_transmission: 0.5,
+            muffler_transmission: 1.0,
             model: ExhaustModel::Waveguide,
             muffler_volume_m3: 0.006,
             muffler_packing: crate::lining::Packing::default(),
@@ -121,10 +122,39 @@ struct Branch {
 /// Length of the muffler can, m (a typical silencer; its area follows from the volume).
 pub(crate) const CHAMBER_LENGTH_M: f64 = 0.4;
 
-/// The muffler can and the tail pipe after it: the can is a pipe as wide as its volume over
-/// its length, so the area steps at its ends reflect sound back like a real expansion chamber
-/// (Munjal, ch. 3); `muffler_transmission` is the absorption of its packing, per pass. A can no
-/// wider than the tail is just the absorption.
+/// The gas passage of a muffler can of `volume` (length [`CHAMBER_LENGTH_M`]) lined with
+/// `packing`: (area, perimeter, packing as fitted). The packing fills an annulus inside the
+/// can wall, leaving at least the tail pipe's own bore open (a straight-through perforate).
+pub(crate) fn chamber_passage(
+    volume: f64,
+    packing: crate::lining::Packing,
+    tail_area: f64,
+) -> (f64, f64, crate::lining::Packing) {
+    let can_area = volume.max(1e-5) / CHAMBER_LENGTH_M;
+    let can_r = (can_area / std::f64::consts::PI).sqrt();
+    let min_r = (tail_area / std::f64::consts::PI).sqrt();
+    let r = (can_r - packing.thickness_m.max(0.0)).max(min_r.min(can_r));
+    let fitted = crate::lining::Packing {
+        thickness_m: can_r - r,
+        ..packing
+    };
+    (
+        std::f64::consts::PI * r * r,
+        2.0 * std::f64::consts::PI * r,
+        fitted,
+    )
+}
+
+/// Lined can segments, m: the packing's lumped line converges at about 1 cm (see the
+/// waveguide test: 5 % at 4 kHz).
+const LINING_SEGMENT_M: f64 = 0.01;
+
+/// The muffler can and the tail pipe after it. The can's gas passage (what its packing leaves
+/// open, at least the tail's bore) steps the area at both ends, reflecting sound like an
+/// expansion chamber (Munjal ch. 3), and its packing absorbs through the passage wall, cut into
+/// 1 cm segments that each breathe into the fibres (a lumped lossy line, Munjal ch. 6):
+/// little below 500 Hz, most of it above 2 kHz, as real silencers do. `muffler_transmission`
+/// stays an extra lumped loss on the tail (1 = none).
 fn muffled_tail(def: &ExhaustDef, dt: f64) -> Duct {
     let tail = Pipe::new(
         def.tail_length_m,
@@ -132,15 +162,31 @@ fn muffled_tail(def: &ExhaustDef, dt: f64) -> Duct {
         C_TAIL,
         dt,
         LOSS_PER_M,
-    );
-    let a_can = def.muffler_volume_m3 / CHAMBER_LENGTH_M;
-    if a_can <= tail.area_m2 {
-        return Duct::new(vec![tail.with_extra_gain(def.muffler_transmission)]);
+    )
+    .with_extra_gain(def.muffler_transmission);
+    let can_area = def.muffler_volume_m3 / CHAMBER_LENGTH_M;
+    if can_area <= tail.area_m2 {
+        return Duct::new(vec![tail]);
     }
-    let d_can = (4.0 * a_can / std::f64::consts::PI).sqrt();
-    let can = Pipe::new(CHAMBER_LENGTH_M, d_can, C_TAIL, dt, LOSS_PER_M)
-        .with_extra_gain(def.muffler_transmission);
-    Duct::new(vec![can, tail])
+    let (passage, perimeter, packing) =
+        chamber_passage(def.muffler_volume_m3, def.muffler_packing, tail.area_m2);
+    let n = (CHAMBER_LENGTH_M / LINING_SEGMENT_M).round() as usize;
+    let d = (4.0 * passage / std::f64::consts::PI).sqrt();
+    let pipes = (0..n)
+        .map(|_| Pipe::new(CHAMBER_LENGTH_M / n as f64, d, C_TAIL, dt, LOSS_PER_M))
+        .collect();
+    // the hot gas's impedance: ρc = γp/c
+    let rho_c = crate::gas::GAMMA * crate::units::ATM_PA / C_TAIL;
+    let can = if packing.thickness_m > 0.0 {
+        let per_node = CHAMBER_LENGTH_M / (n - 1) as f64;
+        Duct::with_shunts(
+            pipes,
+            Shunt::lining(packing, perimeter, per_node, rho_c, dt),
+        )
+    } else {
+        Duct::new(pipes)
+    };
+    can.then(Duct::new(vec![tail]))
 }
 
 /// Runtime network for one engine at one time step.

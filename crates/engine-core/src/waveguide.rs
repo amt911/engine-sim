@@ -84,13 +84,92 @@ impl Pipe {
 #[derive(Debug, Clone)]
 pub struct Duct {
     pipes: Vec<Pipe>,
+    /// What the wall draws at each inner node (none where it is hard).
+    shunts: Vec<Option<Shunt>>,
+}
+
+/// A wall that breathes at a node of a duct: the packing behind a perforate, a pocket of pore
+/// gas (compliance C) behind the fibres' resistance R, drawing a volume flow q = Y(s)·p with
+/// Y(s) = sC/(1 + sRC) — the lumped element of the locally reacting lining (Munjal ch. 6;
+/// [`crate::lining`] for R and C). Discretized by the bilinear transform; the node solves it
+/// with the pipes' waves at once, so it is stable for any element.
+#[derive(Debug, Clone)]
+pub struct Shunt {
+    /// q[n] = b0·p[n] + b1·p[n−1] − a1·q[n−1], in units of area × pressure (×ρc).
+    b0: f64,
+    b1: f64,
+    a1: f64,
+    p_last: f64,
+    q_last: f64,
+}
+
+impl Shunt {
+    /// The packing along `length_m` of a duct whose passage faces it over `perimeter_m`, in gas
+    /// of impedance `rho_c` (kg/(m²·s)), at step `dt`. Per metre r = σt/(3P) and c = φPt/(γp):
+    /// the low-frequency limit of a rigid-backed porous layer (Allard & Atalla).
+    pub fn lining(
+        packing: crate::lining::Packing,
+        perimeter_m: f64,
+        length_m: f64,
+        rho_c: f64,
+        dt: f64,
+    ) -> Self {
+        let r = packing.flow_resistivity * packing.thickness_m / 3.0 / perimeter_m;
+        let c = packing.porosity * perimeter_m * packing.thickness_m
+            / (crate::gas::GAMMA * crate::units::ATM_PA);
+        // Y(s) = K·s/(1 + sτ), per node; ×ρc to speak in the junction's area units
+        let (k, tau, a) = (rho_c * c * length_m, r * c, 2.0 / dt);
+        let den = 1.0 + a * tau;
+        Self {
+            b0: k * a / den,
+            b1: -k * a / den,
+            a1: (1.0 - a * tau) / den,
+            p_last: 0.0,
+            q_last: 0.0,
+        }
+    }
+
+    /// Node pressure where pipes of `areas` meet with waves `incoming`, this shunt drawing its
+    /// flow: Σ Aᵢ(2pᵢ − p) = q(p). Writes the outgoing waves; advances the shunt.
+    fn node(&mut self, areas: &[f64; 2], incoming: &[f64; 2], outgoing: &mut [f64; 2]) {
+        let hist = self.b1 * self.p_last - self.a1 * self.q_last;
+        let pj = (2.0 * (areas[0] * incoming[0] + areas[1] * incoming[1]) - hist)
+            / (areas[0] + areas[1] + self.b0);
+        self.q_last = self.b0 * pj + hist;
+        self.p_last = pj;
+        outgoing[0] = pj - incoming[0];
+        outgoing[1] = pj - incoming[1];
+    }
 }
 
 impl Duct {
     /// `pipes` from the near end to the far end; at least one.
     pub fn new(pipes: Vec<Pipe>) -> Self {
         assert!(!pipes.is_empty(), "a duct needs a pipe");
-        Self { pipes }
+        Self {
+            pipes,
+            shunts: Vec::new(),
+        }
+    }
+    /// A duct whose every inner node breathes through a copy of `shunt` (a lined passage
+    /// cut into short pipes: the lumped transmission line).
+    pub fn with_shunts(pipes: Vec<Pipe>, shunt: Shunt) -> Self {
+        let n = pipes.len().saturating_sub(1);
+        Self {
+            shunts: vec![Some(shunt); n],
+            ..Self::new(pipes)
+        }
+    }
+    /// This duct, then `next` after it (a hard node between them).
+    pub fn then(mut self, next: Duct) -> Self {
+        let n = self.pipes.len();
+        self.shunts.resize(n - 1, None);
+        self.shunts.push(None);
+        let mut rest = next.shunts;
+        rest.resize(next.pipes.len() - 1, None);
+        self.shunts.extend(rest);
+        self.pipes.extend(next.pipes);
+        self
     }
     /// Area of the near (first) and far (last) pipe, m².
     pub fn end_areas(&self) -> (f64, f64) {
@@ -114,12 +193,15 @@ impl Duct {
         let mut into_near = from_near;
         for k in 0..n {
             let (back, onward) = if k + 1 < n {
+                let areas = [self.pipes[k].area_m2, self.pipes[k + 1].area_m2];
+                let incoming = [self.pipes[k].at_far(), self.pipes[k + 1].at_near()];
                 let mut out = [0.0; 2];
-                junction(
-                    &[self.pipes[k].area_m2, self.pipes[k + 1].area_m2],
-                    &[self.pipes[k].at_far(), self.pipes[k + 1].at_near()],
-                    &mut out,
-                );
+                match self.shunts.get_mut(k) {
+                    Some(Some(s)) => s.node(&areas, &incoming, &mut out),
+                    _ => {
+                        junction(&areas, &incoming, &mut out);
+                    }
+                }
                 (out[0], out[1])
             } else {
                 (from_far, 0.0)
@@ -187,6 +269,47 @@ mod tests {
             duct.send(x, 0.0);
         }
         peak
+    }
+
+    /// A lined duct of `n` segments over `length`: the packing of the test below.
+    fn lined(length: f64, n: usize, dt: f64) -> Duct {
+        // passage r = 44.1 mm (a 0.006 m³ can of 0.4 m, 25 mm packing): A = 6.1095e-3 m²,
+        // P = 0.27708 m; σ = 16 kPa·s/m², φ = 0.95, gas at 622.2 K (c = 500 m/s, ρ = 0.56742)
+        let a = 6.109_476_6e-3;
+        let d = (4.0 * a / std::f64::consts::PI).sqrt();
+        let pipes = (0..n)
+            .map(|_| Pipe::new(length / n as f64, d, 500.0, dt, 0.0))
+            .collect();
+        // each of the n − 1 inner nodes carries the lining of length/(n − 1)
+        let shunt = Shunt::lining(
+            crate::lining::Packing::default(),
+            0.277_081_12,
+            length / (n - 1) as f64,
+            0.567_42 * 500.0,
+            dt,
+        );
+        Duct::with_shunts(pipes, shunt)
+    }
+
+    #[test]
+    fn a_packed_duct_attenuates_as_its_transmission_line() {
+        // Per metre, by hand: r = σt/3/P = 481.21 Pa·s/m², c = φPt/(γp) = 4.6390e-8 m³/Pa,
+        // y = jωc/(1 + jωrc); z = jωρ/A, Y₀ = jωA/(ρc²); γ = √(z·(Y₀ + y)) (Munjal ch. 6, the
+        // locally reacting lining): Re γ = 0.6488, 2.4839, 8.4981 Np/m at 1, 2 and 4 kHz. The
+        // pocket's compliance is as large as the duct's own here, so the first-order α = Re(y)
+        // ρc/2A (0.93, 3.52, 11.55) is 40 % off: the lining slows the wave too. 0.4 m more of
+        // duct cuts the transmission by e^(−0.4·Re γ): 2.25, 8.63 and 29.5 dB. Cut into 1 cm
+        // pipes the lumped line measures 2.33, 8.78 and 30.99 dB (2 cm: 34.7 dB at 4 kHz).
+        let dt = 1.0 / 192_000.0;
+        for (f, db) in [(1000.0, 2.254), (2000.0, 8.630), (4000.0, 29.526)] {
+            let short = transmission(lined(0.4, 40, dt), f, dt);
+            let long = transmission(lined(0.8, 80, dt), f, dt);
+            let got = 20.0 * (short / long).log10();
+            assert!(
+                (got - db).abs() < 0.06 * db + 0.1,
+                "{f} Hz: {got:.2} dB, want {db}"
+            );
+        }
     }
 
     #[test]

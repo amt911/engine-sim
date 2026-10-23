@@ -3,10 +3,10 @@
 //! two small 0D junctions: reactive muffler with frequency-dependent loss, Munjal) → tail pipe →
 //! atmosphere. Pulses steepen with amplitude, which the linear waveguides cannot do.
 
-use crate::exhaust::{C_TAIL, CHAMBER_LENGTH_M, ExhaustDef};
+use crate::exhaust::{C_TAIL, CHAMBER_LENGTH_M, ExhaustDef, chamber_passage};
 use crate::fv::{Boundary, Pipe1d, Prim, flux_boundary};
 use crate::gas::{GasVolume, ISENTROPIC_P_POW, ISENTROPIC_RHO_POW, R_AIR};
-use crate::lining::{Lining, Packing};
+use crate::lining::Lining;
 use crate::units::ATM_PA;
 
 /// Target cell size, m (≈ 7.5 cells per wavelength at 2 kHz in hot gas; cost ∝ 1/dx²).
@@ -24,25 +24,6 @@ struct Branch {
     out: Pipe1d,
     /// The can's packing, along its cells of `out`.
     lining: Option<Lining>,
-}
-
-/// The gas passage of a muffler can of `volume` (length [`CHAMBER_LENGTH_M`]) lined with
-/// `packing`: (area, perimeter, packing as fitted). The packing fills an annulus inside the
-/// can wall, leaving at least the tail pipe's own bore open (a straight-through perforate).
-fn chamber_passage(volume: f64, packing: Packing, tail_area: f64) -> (f64, f64, Packing) {
-    let can_area = volume.max(1e-5) / CHAMBER_LENGTH_M;
-    let can_r = (can_area / std::f64::consts::PI).sqrt();
-    let min_r = (tail_area / std::f64::consts::PI).sqrt();
-    let r = (can_r - packing.thickness_m.max(0.0)).max(min_r.min(can_r));
-    let fitted = Packing {
-        thickness_m: can_r - r,
-        ..packing
-    };
-    (
-        std::f64::consts::PI * r * r,
-        2.0 * std::f64::consts::PI * r,
-        fitted,
-    )
 }
 
 #[derive(Debug, Clone)]
@@ -493,6 +474,7 @@ mod tests {
     use crate::exhaust::ExhaustModel;
     use crate::fv::Cons;
     use crate::gas::orifice_mass_flow;
+    use crate::lining::Packing;
     use approx::assert_relative_eq;
 
     const DT: f64 = 1.0 / 192_000.0;
