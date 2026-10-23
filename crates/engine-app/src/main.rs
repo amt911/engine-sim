@@ -4,6 +4,7 @@ mod dyno;
 mod editor;
 mod files;
 mod headless;
+mod offline;
 mod quality;
 mod runner;
 mod sim;
@@ -49,6 +50,14 @@ struct Cli {
     /// high or ultra. Headless renders offline: auto means ultra there.
     #[arg(long, default_value = "auto")]
     quality: quality::QualityChoice,
+    /// Render a scene offline at the finest quality (no real-time limit) and exit: `drive`
+    /// (idle, blips, a pull, lift-off) or `sweep` (full throttle idle → redline) into the
+    /// `--out` WAV; `loops` (held speeds × loads, each seamless) into the `--out` folder.
+    #[arg(long)]
+    render: Option<offline::Scene>,
+    /// Where `--render` writes: a .wav file, or a folder for `loops`.
+    #[arg(long)]
+    out: Option<PathBuf>,
     /// Close the window after this many seconds (smoke tests).
     #[arg(long)]
     quit_after: Option<f64>,
@@ -90,6 +99,28 @@ fn main() -> ExitCode {
             );
         }
         return ExitCode::SUCCESS;
+    }
+    if let Some(scene) = cli.render {
+        let quality = match cli.quality {
+            quality::QualityChoice::Fixed(q) => q,
+            quality::QualityChoice::Auto => quality::Quality::Reference,
+        };
+        let Some(out) = cli.out.as_deref() else {
+            eprintln!("--render needs --out (a .wav, or a folder for loops)");
+            return ExitCode::FAILURE;
+        };
+        return match offline::render_scene(&def, scene, out, quality) {
+            Ok(files) => {
+                for f in files {
+                    println!("{}", f.display());
+                }
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("render failed: {e}");
+                ExitCode::FAILURE
+            }
+        };
     }
     if cli.headless {
         let name = def.name.clone();

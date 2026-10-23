@@ -17,8 +17,10 @@ pub enum Quality {
     Medium,
     /// 3× the audio rate.
     High,
-    /// 4× the audio rate (192 kHz at 48 kHz): the reference.
+    /// 4× the audio rate (192 kHz at 48 kHz): the best real time.
     Ultra,
+    /// 8× the audio rate, for offline renders only (never real time, never Auto's).
+    Reference,
 }
 
 impl Quality {
@@ -31,6 +33,7 @@ impl Quality {
             Quality::Low | Quality::Medium => 2,
             Quality::High => 3,
             Quality::Ultra => 4,
+            Quality::Reference => 8,
         }
     }
 
@@ -38,6 +41,11 @@ impl Quality {
     pub fn fidelity(self) -> Fidelity {
         match self {
             Quality::Ultra => Fidelity::default(),
+            // offline: half Ultra's segments, as it steps at twice Ultra's rate
+            Quality::Reference => Fidelity {
+                lining_segment_m: 0.005,
+                ..Fidelity::default()
+            },
             // silencers' packing in 2 cm segments (17 % off at 4 kHz, where it has cut 30 dB)
             Quality::High => Fidelity {
                 lining_segment_m: 0.02,
@@ -66,12 +74,14 @@ impl Quality {
             Quality::Medium => "Medium",
             Quality::High => "High",
             Quality::Ultra => "Ultra",
+            Quality::Reference => "Reference",
         }
     }
 
     /// One level down, if there is one.
     pub fn lower(self) -> Option<Quality> {
         match self {
+            Quality::Reference => Some(Quality::Ultra),
             Quality::Ultra => Some(Quality::High),
             Quality::High => Some(Quality::Medium),
             Quality::Medium => Some(Quality::Low),
@@ -96,8 +106,9 @@ impl std::str::FromStr for QualityChoice {
             "medium" => Ok(QualityChoice::Fixed(Quality::Medium)),
             "high" => Ok(QualityChoice::Fixed(Quality::High)),
             "ultra" => Ok(QualityChoice::Fixed(Quality::Ultra)),
+            "reference" => Ok(QualityChoice::Fixed(Quality::Reference)),
             _ => Err(format!(
-                "unknown quality '{s}' (auto, low, medium, high, ultra)"
+                "unknown quality '{s}' (auto, low, medium, high, ultra, reference)"
             )),
         }
     }
@@ -167,14 +178,23 @@ mod tests {
         assert_eq!(Quality::High.substeps(), 3);
         assert_eq!(Quality::Medium.substeps(), 2);
         assert_eq!(Quality::Low.substeps(), 2);
+        // offline only: twice Ultra's rate, and Auto never picks it
+        assert_eq!(Quality::Reference.substeps(), 8);
+        assert!(!Quality::ALL.contains(&Quality::Reference));
+        assert_eq!(Quality::Reference.lower(), Some(Quality::Ultra));
+        assert_eq!(
+            "reference".parse(),
+            Ok(QualityChoice::Fixed(Quality::Reference))
+        );
         // Medium steps the 1D pipes with the cheap scheme; High and Ultra with the reference;
-        // the silencers' packing gets coarser below Ultra
+        // the silencers' packing gets coarser below Ultra and finer for offline renders
         assert_eq!(Quality::Medium.fidelity().pipe_scheme, Scheme::MusclRk2);
         assert_eq!(Quality::High.fidelity().pipe_scheme, Scheme::Weno5Rk3);
         assert_eq!(Quality::Ultra.fidelity(), Fidelity::default());
         assert_eq!(Quality::Ultra.fidelity().lining_segment_m, 0.01);
         assert_eq!(Quality::High.fidelity().lining_segment_m, 0.02);
         assert_eq!(Quality::Low.fidelity().lining_segment_m, 0.04);
+        assert_eq!(Quality::Reference.fidelity().lining_segment_m, 0.005);
     }
 
     #[test]
@@ -221,6 +241,7 @@ mod tests {
             Quality::High => 1.6,
             Quality::Medium => 2.4,
             Quality::Low => 5.0,
+            Quality::Reference => unreachable!("Auto never tries Reference"),
         };
         assert_eq!(pick(rtf), Quality::High);
         // the first that reaches it ends the search (no level below is measured)
