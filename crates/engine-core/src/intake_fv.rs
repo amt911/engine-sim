@@ -3,7 +3,7 @@
 //! (ITBs, like the LFA) or from a common **plenum** behind a single throttle. Gives intake (ram)
 //! tuning and induction sound. Spec: `docs/superpowers/specs/2026-10-22-intake-and-pipe-editor.md`.
 
-use crate::exhaust_fv::{CELL_M, PIPE_FRICTION, area, guard, junction_ghost, throttled_ghost_from};
+use crate::exhaust_fv::{CELL_M, PIPE_FRICTION, area, guard, junction_ghost, throttled_ghost};
 use crate::fv::{Boundary, Pipe1d, Prim, flux_boundary};
 use crate::gas::{GasVolume, R_AIR};
 use crate::units::ATM_PA;
@@ -51,9 +51,6 @@ impl Default for IntakeDef {
 #[derive(Debug, Clone)]
 pub struct IntakeFv {
     runners: Vec<Pipe1d>,
-    /// Each trumpet's throttle-boundary root from the last FV step (where the next search
-    /// starts; NaN before the first).
-    ghost_roots: Vec<f64>,
     a_runner: f64,
     individual: bool,
     /// Common plenum (unused with individual throttles).
@@ -104,7 +101,6 @@ impl IntakeFv {
         let dt_target = 0.8 * CELL_M / 700.0;
         let substeps = ((dt_target / dt).floor() as usize).max(1);
         Self {
-            ghost_roots: vec![f64::NAN; cylinders],
             runners,
             a_runner,
             individual: def.individual_throttles,
@@ -201,8 +197,8 @@ impl IntakeFv {
             // (stable; an explicit orifice flux from the cell pressure chatters at the FV rate).
             let psi = a_itb / a;
             let rho_atm = ATM_PA / (R_AIR * AMBIENT_T_K);
-            for (pipe, last) in self.runners.iter_mut().zip(&mut self.ghost_roots) {
-                let ghost = throttled_ghost_from(pipe.prim(0), ATM_PA, rho_atm, -1.0, psi, last);
+            for pipe in &mut self.runners {
+                let ghost = throttled_ghost(pipe.prim(0), ATM_PA, rho_atm, -1.0, psi);
                 pipe.left = Boundary::State(ghost);
                 pipe.step(h);
                 self.inducted += pipe.end_flux.0.rho * a * h;

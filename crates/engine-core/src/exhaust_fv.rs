@@ -51,41 +51,8 @@ pub struct ExhaustFv {
 /// of regula falsi (Dowell & Jarratt 1971): bracketing like bisection, superlinear like the
 /// secant; a dozen evaluations reach 1e-12 where bisection takes forty. Returns the bracket's
 /// end if `f` does not change sign.
-pub(crate) fn rising_root(f: impl Fn(f64) -> f64, lo: f64, hi: f64) -> f64 {
-    let (f_lo, f_hi) = (f(lo), f(hi));
-    bracketed_root(f, (lo, f_lo), (hi, f_hi))
-}
-
-/// Half-width of the first bracket [`rising_root_from`] tries around its guess, relative.
-const GUESS_SPAN: f64 = 1e-3;
-
-/// [`rising_root`], searched first within ±0.1 % of `guess` (the last step's root, which a
-/// boundary state barely moves between steps): a bracket that tight closes in a few
-/// evaluations. A guess that misses still narrows the search; one outside (lo, hi), or NaN,
-/// leaves the cold search.
-pub(crate) fn rising_root_from(f: impl Fn(f64) -> f64, lo: f64, hi: f64, guess: f64) -> f64 {
-    if !(lo < guess && guess < hi) {
-        return rising_root(f, lo, hi);
-    }
-    let d = GUESS_SPAN * guess.abs().max(f64::MIN_POSITIVE);
-    let (a, b) = ((guess - d).max(lo), (guess + d).min(hi));
-    let (f_a, f_b) = (f(a), f(b));
-    if f_a >= 0.0 {
-        // the root lies at or below a
-        bracketed_root(&f, (lo, f(lo)), (a, f_a))
-    } else if f_b <= 0.0 {
-        bracketed_root(&f, (b, f_b), (hi, f(hi)))
-    } else {
-        bracketed_root(&f, (a, f_a), (b, f_b))
-    }
-}
-
-/// The Illinois search of [`rising_root`] on [lo, hi] with f already known at both ends.
-fn bracketed_root(
-    f: impl Fn(f64) -> f64,
-    (mut lo, mut f_lo): (f64, f64),
-    (mut hi, mut f_hi): (f64, f64),
-) -> f64 {
+pub(crate) fn rising_root(f: impl Fn(f64) -> f64, mut lo: f64, mut hi: f64) -> f64 {
+    let (mut f_lo, mut f_hi) = (f(lo), f(hi));
     if f_lo >= 0.0 {
         return lo;
     }
@@ -147,20 +114,6 @@ pub(crate) fn junction_ghost(cell: Prim, p_j: f64, rho_j: f64, sigma: f64) -> Pr
 /// the outgoing characteristic, so the boundary stays stable where an explicit orifice flux
 /// chatters. `psi` ≥ 1 is the open end; 0 is a wall.
 pub(crate) fn throttled_ghost(cell: Prim, p_j: f64, rho_j: f64, sigma: f64, psi: f64) -> Prim {
-    let mut cold = f64::NAN;
-    throttled_ghost_from(cell, p_j, rho_j, sigma, psi, &mut cold)
-}
-
-/// [`throttled_ghost`] whose root search starts from `last`, the root of this boundary's last
-/// step (any value is safe; NaN searches cold), and leaves this step's root there.
-pub(crate) fn throttled_ghost_from(
-    cell: Prim,
-    p_j: f64,
-    rho_j: f64,
-    sigma: f64,
-    psi: f64,
-    last: &mut f64,
-) -> Prim {
     let g = crate::gas::GAMMA;
     let k = 0.5 * (g - 1.0);
     let psi = psi.max(0.0);
@@ -204,8 +157,7 @@ pub(crate) fn throttled_ghost_from(
         }
         let y_hi = 1.0 + k * sigma * cell.u / c_c;
         // excess falls with y: its negative rises through 0
-        let y = rising_root_from(|y| -excess(cell_state(y)), y_j, y_hi.max(y_j), *last);
-        *last = y;
+        let y = rising_root(|y| -excess(cell_state(y)), y_j, y_hi.max(y_j));
         return cell_state(y);
     }
     // Inflow: a contact between the cell gas and the junction gas, with the same p and u on both
@@ -235,8 +187,7 @@ pub(crate) fn throttled_ghost_from(
     } else {
         // w_c − w_a rises monotonically on [x_lo, 1] and changes sign (bracketed: Newton would
         // stall on w_j's infinite slope at x = 1)
-        let x = rising_root_from(|x| w_c(x) - w_a(x), x_lo, 1.0, *last);
-        *last = x;
+        let x = rising_root(|x| w_c(x) - w_a(x), x_lo, 1.0);
         // the pipe side's speed: smooth at x = 1, where w_j is not
         (x, w_c(x).max(0.0))
     };
@@ -869,39 +820,6 @@ mod tests {
         }
         // the blowing bank radiates more than the resting one
         assert!(seen > 0.0);
-    }
-
-    #[test]
-    fn a_search_from_a_good_guess_takes_few_evaluations_and_any_guess_is_safe() {
-        // x³ − 2 on [0, 2]: from the root's neighbourhood (the last step's root) the search
-        // closes in 9 evaluations where the cold one takes 13, to the same root
-        let calls = std::cell::Cell::new(0);
-        let f = |x: f64| {
-            calls.set(calls.get() + 1);
-            x * x * x - 2.0
-        };
-        let root = 1.259_921_049_894_873;
-        let r = rising_root_from(f, 0.0, 2.0, root * (1.0 + 2e-4));
-        assert!((r - root).abs() < 1e-12, "{r}");
-        assert!(calls.get() <= 9, "{} evaluations", calls.get());
-        // a poor guess, one beyond the bracket, an end, NaN: still the root
-        for guess in [
-            0.3,
-            1.9,
-            1.26 * 1.002,
-            1.26 / 1.002,
-            -4.0,
-            9.0,
-            0.0,
-            2.0,
-            f64::NAN,
-        ] {
-            let r = rising_root_from(|x| x * x * x - 2.0, 0.0, 2.0, guess);
-            assert!((r - root).abs() < 1e-12, "guess {guess}: {r}");
-        }
-        // no sign change: the end, as the cold search
-        assert_eq!(rising_root_from(|x| x + 1.0, 0.0, 1.0, 0.5), 0.0);
-        assert_eq!(rising_root_from(|x| x - 5.0, 0.0, 1.0, 0.5), 1.0);
     }
 
     #[test]
