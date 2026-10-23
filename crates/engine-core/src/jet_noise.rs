@@ -44,6 +44,26 @@ pub fn jet_oaspl_db(v: f64, d: f64, rho_jet: f64, r: f64) -> f64 {
         - 20.0 * r.log10()
 }
 
+/// [`jet_oaspl_db`] as an rms pressure, Pa, worked out in linear terms for the per-step path
+/// (one `powf` where the decibel form takes four and five logarithms):
+/// p = P_REF·10^7.05·(ρⱼ/ρₐ)^(w/2)·M^3.75/√(1 + 0.01·M^4.5)·√Aⱼ/R. No outflow: 0.
+fn jet_p_rms(v: f64, d: f64, rho_jet: f64, r: f64) -> f64 {
+    if v <= 0.0 || d <= 0.0 || r <= 0.0 {
+        return 0.0;
+    }
+    // P_REF·10^(141/20)
+    const P_141: f64 = P_REF * 11_220_184.543_019_63;
+    let m = v / C_AMBIENT;
+    let sm = m.sqrt();
+    let m35 = m * m * m * sm;
+    let w = 3.0 * m35 / (0.6 + m35) - 1.0;
+    let area = PI * 0.25 * d * d;
+    P_141 * (rho_jet / RHO_AMBIENT).powf(0.5 * w) * m * m * m * (sm * sm.sqrt())
+        / (1.0 + 0.01 * m35 * m).sqrt()
+        * area.sqrt()
+        / r
+}
+
 /// The jet noise of one tail pipe as a pressure signal at the listener: seeded white noise
 /// through a band-pass that follows the exit velocity, scaled to the correlation's level.
 #[derive(Debug, Clone)]
@@ -75,12 +95,11 @@ impl JetNoise {
     /// One step of `dt`: the jet's sound pressure at the listener, Pa.
     pub fn step(&mut self, v: f64, d: f64, rho_jet: f64, r: f64, dt: f64) -> f64 {
         let n = self.white();
-        let level = jet_oaspl_db(v, d, rho_jet, r);
-        if !level.is_finite() {
+        let p_rms = jet_p_rms(v, d, rho_jet, r);
+        if p_rms == 0.0 {
             // keep the filter running down quietly
             return self.band(n * 0.0, 1_000.0, dt);
         }
-        let p_rms = P_REF * 10f64.powf(level / 20.0);
         let fs = 1.0 / dt;
         let fc = (PEAK_STROUHAL * v / d).clamp(20.0, 0.2 * fs);
         // white noise through the peak-gain-1 band-pass keeps α/(1 + α) of its variance (the
@@ -154,6 +173,27 @@ mod tests {
         // nor does a closed pipe or a listener at the outlet itself
         assert_eq!(jet_oaspl_db(100.0, 0.0, 1.2, 7.5), f64::NEG_INFINITY);
         assert_eq!(jet_oaspl_db(100.0, 0.05, 1.2, 0.0), f64::NEG_INFINITY);
+    }
+
+    #[test]
+    fn the_linear_level_is_the_decibel_one() {
+        // the per-step pressure is the correlation's level, 20 µPa·10^(L/20), to round-off
+        for (v, d, rho, r) in [
+            (100.0, 0.05, 1.204, 7.5),
+            (100.0, 0.05, 0.567, 7.5),
+            (686.0, 0.05, 1.204, 7.5),
+            (30.0, 0.08, 0.4, 3.0),
+            (300.0, 0.002, 1.204, 15.0),
+        ] {
+            assert_relative_eq!(
+                jet_p_rms(v, d, rho, r),
+                20e-6 * 10f64.powf(jet_oaspl_db(v, d, rho, r) / 20.0),
+                max_relative = 1e-12
+            );
+        }
+        assert_eq!(jet_p_rms(0.0, 0.05, 1.2, 7.5), 0.0);
+        assert_eq!(jet_p_rms(100.0, 0.0, 1.2, 7.5), 0.0);
+        assert_eq!(jet_p_rms(100.0, 0.05, 1.2, 0.0), 0.0);
     }
 
     #[test]

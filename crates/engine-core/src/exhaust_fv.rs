@@ -5,7 +5,7 @@
 
 use crate::exhaust::{C_TAIL, ExhaustDef};
 use crate::fv::{Boundary, Pipe1d, Prim, flux_boundary};
-use crate::gas::{GasVolume, R_AIR};
+use crate::gas::{GasVolume, ISENTROPIC_P_POW, ISENTROPIC_RHO_POW, R_AIR};
 use crate::units::ATM_PA;
 
 /// Target cell size, m (≈ 7.5 cells per wavelength at 2 kHz in hot gas; cost ∝ 1/dx²).
@@ -128,8 +128,8 @@ pub(crate) fn throttled_ghost(cell: Prim, p_j: f64, rho_j: f64, sigma: f64, psi:
     if out_speed(y_j) > 0.0 {
         // Outflow. Open end: expand to p_j, at most sonic (choked).
         let cell_state = |y: f64| {
-            let rho = cell.rho * y.powf(1.0 / k);
-            let p = cell.p * y.powf(g / k);
+            let rho = cell.rho * y.powi(ISENTROPIC_RHO_POW);
+            let p = cell.p * y.powi(ISENTROPIC_P_POW);
             let c = (g * p / rho).sqrt();
             Prim {
                 rho,
@@ -148,7 +148,9 @@ pub(crate) fn throttled_ghost(cell: Prim, p_j: f64, rho_j: f64, sigma: f64, psi:
             let t = s.p / (s.rho * crate::gas::R_AIR);
             let c2 = g * s.p / s.rho;
             let t0 = t * (1.0 + k * s.u * s.u / c2);
-            let p0f = s.p * (t0 / t).powf(g / (g - 1.0));
+            // (t0/t)^(γ/(γ−1)) = r^3.5
+            let r = t0 / t;
+            let p0f = s.p * r * r * r * r.sqrt();
             let a = crate::gas::orifice_mass_flow(psi, p0f, t0, p_j);
             s.rho * s.u.abs() - a
         };
@@ -178,7 +180,7 @@ pub(crate) fn throttled_ghost(cell: Prim, p_j: f64, rho_j: f64, sigma: f64, psi:
             return w_j(x);
         }
         let xt = x.max(x_star);
-        psi * (xt / x).powf(1.0 / k) * w_j(xt)
+        psi * (xt / x).powi(ISENTROPIC_RHO_POW) * w_j(xt)
     };
     // A throttled face may sit below p* (choked throat); an open one stops at sonic.
     let x_lo = if psi >= 1.0 { x_star } else { 0.3 };
@@ -192,8 +194,8 @@ pub(crate) fn throttled_ghost(cell: Prim, p_j: f64, rho_j: f64, sigma: f64, psi:
         (x, w_c(x).max(0.0))
     };
     // p = p₀·x^(2γ/(γ−1)), ρ = ρ₀·x^(2/(γ−1)) (isentropic from the junction), at most sonic
-    let rho = rho0 * x.powf(1.0 / k);
-    let p = p0 * x.powf(g / k);
+    let rho = rho0 * x.powi(ISENTROPIC_RHO_POW);
+    let p = p0 * x.powi(ISENTROPIC_P_POW);
     let c = (g * p / rho).sqrt();
     Prim {
         rho,
