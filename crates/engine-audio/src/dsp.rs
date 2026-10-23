@@ -508,6 +508,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn voice_keeps_its_calibration_through_a_reset() {
+        // a runaway resets the filters but not the full scale it was given: a 2 Pa tone against 4 Pa
+        // full scale peaks at tanh(0.5) = 0.4621 after it
+        let mut v = Voice::new(FS);
+        v.full_scale_pa = 4.0;
+        v.leveler.amount = 0.0;
+        v.reverb_mix = 0.0;
+        // a finite input past what the filters can hold overflows them: the voice resets
+        // (the DC blocker's difference of −MAX and MAX is infinite)
+        v.process(-f64::MAX);
+        assert_eq!(v.process(f64::MAX), 0.0);
+        v.leveler.amount = 0.0;
+        // the peak of a 2 Pa, 200 Hz tone, once the filters have settled
+        let peak = (0..FS as usize)
+            .map(|i| v.process(2.0 * (2.0 * PI * 200.0 * i as f64 / FS).sin()) as f64)
+            .skip(FS as usize / 2)
+            .fold(0.0f64, |m, y| m.max(y.abs()));
+        assert_relative_eq!(peak, 0.4621, max_relative = 0.01);
+    }
+
     proptest! {
         #[test]
         fn voice_output_bounded(xs in proptest::collection::vec(-1e7f64..1e7, 1..500)) {

@@ -3622,6 +3622,55 @@ mod tests {
     }
 
     #[test]
+    fn the_inline4_has_its_own_flywheel() {
+        // a car's dual-mass flywheel and clutch, heavier than the single's 0.12 kg·m²
+        assert_eq!(EngineDef::inline4().flywheel_inertia_kgm2, 0.15);
+    }
+
+    #[test]
+    fn the_tail_exit_by_hand() {
+        // Gas at c = 500 m/s: T = 500²/(1.4·287) = 622.22 K. Through a 50 mm outlet
+        // (A = 1.9635e-3 m²) the choked flow from p₀ = 3 atm is
+        // A·p₀/√(R·T)·0.68473 = 1.9635e-3·303975/422.58·0.68473 = 0.96711 kg/s: the pressure
+        // that passes it is 2 atm over the street's, and the jet leaves at c* = 500·√(2/2.4)
+        let losses = |friction: f64, laminar: f64| crate::exhaust::ExitLosses {
+            outlet_area: 1.963_495e-3,
+            friction,
+            laminar,
+        };
+        let (back, u) = tail_exit(0.967_11, &losses(0.0, 0.0));
+        assert!((back / 202_650.0 - 1.0).abs() < 1e-3, "{back} Pa");
+        assert!((u - 456.435).abs() < 0.05, "{u} m/s");
+        // the pipes' friction and the catalyst's laminar resistance add at ρ = p₀/(R·T) =
+        // 1.70222 kg/m³: 1000·m²/(2ρ) = 274.73 Pa and 1000·m/ρ = 568.15 Pa
+        let (with, _) = tail_exit(0.967_11, &losses(1000.0, 1000.0));
+        assert!((with - back - 842.88).abs() < 1.0, "{} Pa", with - back);
+        // no flow, no backpressure
+        assert_eq!(tail_exit(0.0, &losses(1000.0, 1000.0)), (0.0, 0.0));
+    }
+
+    #[test]
+    fn no_tail_blows_past_sound() {
+        // a 15 mm tail at full throttle: the pulses would drive it far past sonic, but a choked
+        // exit leaves at c* = 500·√(2/2.4) = 456.435 m/s, and no faster
+        let (_, u15) = with_tail(0.015);
+        let fastest = u15.iter().cloned().fold(f64::MIN, f64::max);
+        assert!((fastest - 456.435).abs() < 0.01, "exit at {fastest} m/s");
+    }
+
+    #[test]
+    fn a_two_branch_engine_sizes_each_road_exhaust_for_its_half() {
+        // the LFA's two banks each feed one road exhaust: half of 4.8048e-3 m³ swept, so its
+        // catalyst brick (0.13 m long) is √(4·2.4024e-3/(π·0.13)) = 0.1534 m across
+        let d = EngineDef::lfa_v10();
+        let brick = d.exhaust.after_collector.iter().find_map(|s| match s {
+            crate::exhaust::Segment::Catalyst { diameter_m, .. } => Some(*diameter_m),
+            _ => None,
+        });
+        assert_eq!(brick, Some(0.1534));
+    }
+
+    #[test]
     fn only_the_fresh_charge_burns() {
         // At part throttle the residual (the mass left when the exhaust valve closed) is a fair
         // share of what is trapped (measured 7.3 % here): each burn's energy is the fresh
