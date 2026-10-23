@@ -3656,6 +3656,80 @@ mod tests {
     }
 
     #[test]
+    fn the_mean_exhaust_flows_are_the_valves_cycle_averages() {
+        // mass conservation over a cycle: what leaves each tail on average is what its cylinders'
+        // exhaust valves pass, averaged over exactly whole cycles (5000 rpm: 24 ms per cycle).
+        // The running means follow one cycle's window, so they sit within a few percent of it.
+        let mut e = Engine::new(EngineDef::inline4(), 5000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(5000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.4, &c);
+        let cycle = (0.024 / DT).round() as usize;
+        let (mut tail, mut cyl0, mut track) = (0.0, 0.0, Vec::new());
+        for _ in 0..4 * cycle {
+            e.step(DT, &c);
+            tail += e.cyl.iter().map(|cs| cs.port_flow).sum::<f64>();
+            cyl0 += e.cyl[0].port_flow;
+            track.push((e.tail_mean_flow[0], e.cyl_mean_flow[0]));
+        }
+        let (tail, cyl0) = (tail / (4 * cycle) as f64, cyl0 / (4 * cycle) as f64);
+        // four cylinders' pulses overlap: the tail's running mean barely ripples
+        for &(t, _) in &track {
+            assert!(
+                (t / tail - 1.0).abs() < 0.05,
+                "tail mean {t} vs {tail} kg/s"
+            );
+        }
+        // one cylinder pulses once a cycle: its running mean ripples, but over whole cycles it
+        // averages to the valve's flow
+        let c0 = track.iter().map(|p| p.1).sum::<f64>() / track.len() as f64;
+        assert!(
+            (c0 / cyl0 - 1.0).abs() < 0.01,
+            "cylinder mean {c0} vs {cyl0} kg/s"
+        );
+    }
+
+    #[test]
+    fn the_tail_jet_swings_with_the_tail_wave_around_its_mean() {
+        // u = ū + (s − s̄)/ρc: over whole cycles the swing averages out (the mean exit velocity
+        // is the continuity one, Mach ū/c), and it follows the outgoing wave s = ρc·u with slope
+        // 1/ρc, ρc = 1.4·101325/500 = 283.71 kg/(m²·s) in the tail's reference gas
+        let mut e = Engine::new(EngineDef::inline4(), 5000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(5000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.4, &c);
+        let n = 4 * (0.024 / DT).round() as usize;
+        let (mut swing, mut wave, mut us, mut mach) = (Vec::new(), Vec::new(), 0.0, 0.0);
+        for _ in 0..n {
+            e.step(DT, &c);
+            let s = e.net.as_ref().unwrap().last_tails()[0];
+            // ū this step is the continuity one, c·Mach
+            swing.push(e.tail_u[0] - 500.0 * e.tail_mach[0]);
+            wave.push(s - e.tail_dc[0]);
+            us += e.tail_u[0];
+            mach += e.tail_mach[0];
+        }
+        let (us, u_bar) = (us / n as f64, 500.0 * mach / n as f64);
+        assert!(
+            (us / u_bar - 1.0).abs() < 0.03,
+            "mean exit {us} vs ū {u_bar} m/s"
+        );
+        let cov: f64 = swing.iter().zip(&wave).map(|(u, s)| u * s).sum();
+        let var: f64 = wave.iter().map(|s| s * s).sum();
+        let slope = cov / var;
+        assert!(
+            (slope * 283.71 - 1.0).abs() < 0.002,
+            "slope {slope} vs 1/283.71"
+        );
+    }
+
+    #[test]
     fn the_tail_exit_by_hand() {
         // Gas at c = 500 m/s: T = 500²/(1.4·287) = 622.22 K. Through a 50 mm outlet
         // (A = 1.9635e-3 m²) the choked flow from p₀ = 3 atm is

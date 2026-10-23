@@ -620,6 +620,108 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_catalyst_brick_resists_as_laminar_channels() {
+        // 400 cpsi, 0.165 mm walls: pitch 25.4/√400 = 1.27 mm, channel 1.105 mm, open frontal
+        // area (1.105/1.27)² = 0.75704. A 0.13 m × 110 mm brick at 600 K (μ = 3.0164e-5):
+        // 28.45·μ·L/d_h²/(OFA·A) = 28.45·3.0164e-5·0.13/1.105e-3²/(0.75704·9.5033e-3)
+        // = 12 699.6 Pa·s/m³
+        let (r, ofa) = catalyst_resistance(0.13, 0.11, 400.0, 0.000_165, 600.0);
+        assert!((r / 12_699.6 - 1.0).abs() < 1e-4, "{r}");
+        assert!((ofa - 0.757_04).abs() < 1e-5, "{ofa}");
+    }
+
+    #[test]
+    fn the_exit_losses_add_up_each_piece_by_hand() {
+        // Darcy f = 0.025 over each passage: f·L/(d·A²) — a 1 m and a 0.4 m length of 50 mm
+        // (the packed silencer's tube) and 0.3 m of an empty 100 mm shell:
+        // 0.025·(1.4/(0.05·(1.9635e-3)²) + 0.3/(0.1·(7.8540e-3)²)) = 182 783 m⁻⁴; the catalyst's
+        // laminar resistance at the tail's 622.2 K (μ = 3.0888e-5): 13 004.5 Pa·s/m³
+        let d = ExhaustDef {
+            after_collector: vec![
+                Segment::Pipe {
+                    length_m: 1.0,
+                    diameter_m: 0.05,
+                },
+                Segment::Muffler {
+                    length_m: 0.4,
+                    diameter_m: 0.12,
+                    tube_diameter_m: 0.05,
+                    packing_resistivity: 16_000.0,
+                    packing_porosity: 0.95,
+                },
+                Segment::Muffler {
+                    length_m: 0.3,
+                    diameter_m: 0.1,
+                    tube_diameter_m: 0.0,
+                    packing_resistivity: 16_000.0,
+                    packing_porosity: 0.95,
+                },
+                Segment::Catalyst {
+                    length_m: 0.13,
+                    diameter_m: 0.11,
+                    cells_per_in2: 400.0,
+                    wall_m: 0.000_165,
+                },
+                Segment::Pipe {
+                    length_m: 0.0,
+                    diameter_m: 0.05,
+                },
+            ],
+            ..ExhaustDef::default()
+        };
+        let l = d.exit_losses();
+        assert!(
+            (l.friction / 182_783.4 - 1.0).abs() < 1e-5,
+            "{}",
+            l.friction
+        );
+        assert!((l.laminar / 13_004.5 - 1.0).abs() < 1e-4, "{}", l.laminar);
+        assert!((l.outlet_area - 1.963_495e-3).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_silencer_file_without_packing_gets_road_car_fibre() {
+        let s: Segment =
+            serde_yaml_ng::from_str("kind: muffler\nlength_m: 0.3\ndiameter_m: 0.12\n").unwrap();
+        assert_eq!(
+            s,
+            Segment::Muffler {
+                length_m: 0.3,
+                diameter_m: 0.12,
+                tube_diameter_m: 0.0,
+                packing_resistivity: 16_000.0,
+                packing_porosity: 0.95,
+            }
+        );
+    }
+
+    #[test]
+    fn an_old_can_wider_than_the_tail_is_a_can_and_unpacked_is_empty() {
+        // 1.5 L over the 0.4 m can: 3.75e-3 m² of shell against the 1.9635e-3 m² tail — a can
+        let mut d = ExhaustDef {
+            muffler_volume_m3: 0.0015,
+            ..ExhaustDef::default()
+        };
+        assert_eq!(d.path().len(), 2);
+        // without packing the can is an empty chamber: no inner tube
+        d.muffler_packing.thickness_m = 0.0;
+        let Segment::Muffler {
+            tube_diameter_m, ..
+        } = d.path()[0]
+        else {
+            panic!("{:?}", d.path()[0])
+        };
+        assert_eq!(tube_diameter_m, 0.0);
+    }
+
+    #[test]
+    fn exhaust_gas_viscosity_follows_sutherland() {
+        // 1.458e-6·600^1.5/(600 + 110.4) = 1.458e-6·14696.94/710.4 = 3.0164e-5 Pa·s at 600 K
+        // (White's table for air: 3.06e-5)
+        assert!((gas_viscosity(600.0) / 3.0164e-5 - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
     fn an_old_file_reads_as_a_packed_can_and_a_tail() {
         // the default: a 6 L can of 0.4 m (shell r = √(0.006/0.4/π) = 69.10 mm) lined with
         // 25 mm of packing, so a 88.20 mm perforated tube, then the 1.5 m × 50 mm tail
