@@ -1313,6 +1313,17 @@ mod tests {
     }
 
     #[test]
+    fn each_preset_names_itself_and_sizes_its_plenum_to_its_displacement() {
+        // the multi-cylinder presets size their plenum at 1–3 times the displacement (our
+        // estimate: big enough to damp the intake pulses, small enough for a quick throttle)
+        for d in [EngineDef::inline4(), EngineDef::lfa_v10()] {
+            let ratio = d.plenum_volume_m3 / d.displacement_m3();
+            assert!((1.0..=3.0).contains(&ratio), "{}: {ratio}", d.name);
+        }
+        assert_eq!(EngineDef::inline4().name, "Inline-4 2.0");
+    }
+
+    #[test]
     fn a_moving_spark_fires_each_charge_exactly_once() {
         // The ECU moves the spark between cycles (rpm map, idle trim). A 30° jump earlier must
         // not skip the cylinder whose crank sits between the two angles, nor one later fire a
@@ -1496,6 +1507,92 @@ mod tests {
         };
         let db = 20.0 * (ac_source(0.0) / ac_source(1.0)).log10();
         assert!(db < -8.0, "overrun source {db:.1} dB against full power");
+    }
+
+    /// Diagnostic (prints): where the overrun-vs-full-power level difference is lost, from the
+    /// valve's mass flow to what the tail radiates, per preset.
+    /// `cargo test -p engine-core --release coast_chain -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn coast_chain() {
+        let ac = |v: &[f64]| {
+            let m = v.iter().sum::<f64>() / v.len() as f64;
+            (v.iter().map(|x| (x - m).powi(2)).sum::<f64>() / v.len() as f64).sqrt()
+        };
+        for (d, layers) in [
+            EngineDef::inline4(),
+            EngineDef::lfa_v10(),
+            EngineDef::crossplane_v8(),
+        ]
+        .into_iter()
+        .flat_map(|d| [(d.clone(), true), (d, false)])
+        {
+            let mut d = d;
+            if !layers {
+                d.sound.flow_noise = 0.0;
+                d.sound.intake = 0.0;
+                d.sound.mechanical = 0.0;
+            }
+            let rpm = (0.7 * d.redline_rpm).round();
+            let probe = |throttle: f64| {
+                let mut e = Engine::new(d.clone(), rpm, 1);
+                let c = Controls {
+                    throttle,
+                    hold_rpm: Some(rpm),
+                    ..Controls::default()
+                };
+                run(&mut e, 0.6, &c);
+                let (mut m, mut q, mut out, mut pevo) = (vec![], vec![], vec![], 0.0f64);
+                for _ in 0..(0.2 / DT) as usize {
+                    out.push(e.step(DT, &c));
+                    let f = e.flows[0];
+                    m.push(f);
+                    q.push(exhaust_source_flow(f, crate::gas::CP * e.cyl[0].port_t));
+                    pevo = pevo.max(e.cylinder(0).pressure_pa);
+                }
+                (ac(&m), ac(&q), ac(&out), pevo, out, q, m)
+            };
+            let (w, c) = (probe(1.0), probe(0.0));
+            if !layers {
+                // per cycle order: tail and source, overrun relative to full power (dB)
+                let amp = |x: &[f64], k: usize| {
+                    let w0 = 2.0 * PI * rpm / 120.0 * k as f64 * DT;
+                    let (mut re, mut im) = (0.0, 0.0);
+                    for (n, v) in x.iter().enumerate() {
+                        re += v * (w0 * n as f64).cos();
+                        im += v * (w0 * n as f64).sin();
+                    }
+                    (re * re + im * im).sqrt()
+                };
+                let row: Vec<String> = (1..=12)
+                    .map(|k| {
+                        format!(
+                            "{k}:{:+.0}/{:+.0}",
+                            20.0 * (amp(&c.5, k) / amp(&w.5, k)).log10(),
+                            20.0 * (amp(&c.4, k) / amp(&w.4, k)).log10()
+                        )
+                    })
+                    .collect();
+                eprintln!("   order: source/tail dB  {}", row.join(" "));
+                let flips = |m: &[f64]| m.windows(2).filter(|w| w[0] * w[1] < 0.0).count();
+                let cycles = 0.2 * rpm / 120.0;
+                eprintln!(
+                    "   valve flow reversals per cycle: full {:.1}, overrun {:.1}",
+                    flips(&w.6) as f64 / cycles,
+                    flips(&c.6) as f64 / cycles
+                );
+            }
+            let db = |a: f64, b: f64| 20.0 * (b / a).log10();
+            eprintln!(
+                "{:22} layers {layers:5} {rpm}: mass {:+.1} dB, volume {:+.1} dB, radiated {:+.1} dB; peak p {:.1}/{:.1} bar",
+                d.name,
+                db(w.0, c.0),
+                db(w.1, c.1),
+                db(w.2, c.2),
+                w.3 / 1e5,
+                c.3 / 1e5
+            );
+        }
     }
 
     #[test]

@@ -1,0 +1,7 @@
+# v0.10.1 (main, MUSCL-RK2)
+preset,wot_dbfs,coast_db,off_order_pct,low_pct,mid_pct,high_pct,blip_rpm,settle_rpm,idle_jitter_rpm
+single,-15.2,-4.4,3.2,99,1,0,1848,1281,81.2
+inline4,-20.9,-0.0,7.3,97,2,1,2235,788,15.5
+lfa-v10,-15.4,-4.0,1.4,15,84,0,3467,929,9.6
+v8-flatplane,-17.3,-0.2,2.9,82,14,4,3753,1003,6.2
+v8-crossplane,-15.9,-2.1,1.8,82,17,1,3608,720,8.6

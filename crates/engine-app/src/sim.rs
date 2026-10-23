@@ -288,6 +288,107 @@ pub(crate) mod tests {
         }
     }
 
+    /// Share of the energy in engine-cycle orders below 500 Hz, 0.5–2 kHz and 2–12 kHz, of all the
+    /// energy in orders.
+    fn order_bands(x: &[f32], rpm: f64) -> [f64; 3] {
+        let f0 = rpm / 120.0;
+        let mut bands = [0.0f64; 3];
+        let mut k = 1;
+        while k as f64 * f0 < 12_000.0 {
+            let f = k as f64 * f0;
+            let w = 2.0 * std::f64::consts::PI * f / FS;
+            let (mut re, mut im) = (0.0, 0.0);
+            for (n, s) in x.iter().enumerate() {
+                re += *s as f64 * (w * n as f64).cos();
+                im += *s as f64 * (w * n as f64).sin();
+            }
+            bands[usize::from(f >= 500.0) + usize::from(f >= 2000.0)] += re * re + im * im;
+            k += 1;
+        }
+        let t: f64 = bands.iter().sum();
+        bands.map(|b| b / t)
+    }
+
+    /// The sound scorecard (run by hand; `scripts/scorecard.sh` compares it with the committed
+    /// baseline): objective numbers per preset, as the app plays it, so every change to the sound
+    /// is measured, not guessed. Steady points are held at 0.7 × redline (+ 13 rpm, so the
+    /// output rate is not a multiple of the firing frequency).
+    /// - `wot_dbfs`, `coast_db`: level at full throttle; coast (fuel cut) relative to it. A real
+    ///   tailpipe drops by 10–20 dB on overrun.
+    /// - `off_order_pct`: share of the full-throttle sound off the engine orders ("air").
+    /// - `low/mid/high_pct`: order energy below 500 Hz, 0.5–2 kHz, above 2 kHz.
+    /// - `blip_rpm`, `settle_rpm`: a 0.25 s blip from idle (peak), and the speed 3 s later.
+    /// - `idle_jitter_rpm`: standard deviation of the idle speed over 2 s.
+    ///
+    /// `cargo test -p engine-app --release scorecard -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn scorecard() {
+        let mut lines = vec![
+            "preset,wot_dbfs,coast_db,off_order_pct,low_pct,mid_pct,high_pct,blip_rpm,settle_rpm,idle_jitter_rpm".to_string(),
+        ];
+        for (name, def) in [
+            ("single", EngineDef::single()),
+            ("inline4", EngineDef::inline4()),
+            ("lfa-v10", EngineDef::lfa_v10()),
+            ("v8-flatplane", EngineDef::flatplane_v8()),
+            ("v8-crossplane", EngineDef::crossplane_v8()),
+        ] {
+            let rpm = (0.7 * def.redline_rpm).round() + 13.0;
+            let steady = |throttle: f64| {
+                let mut sim = Simulation::new(def.clone(), FS, 1);
+                sim.controls = Controls {
+                    throttle,
+                    hold_rpm: Some(rpm),
+                    ..Controls::default()
+                };
+                render_secs(&mut sim, 1.0);
+                render_secs(&mut sim, 1.0)
+            };
+            let db = |x: &[f32]| 20.0 * rms(x).max(1e-9).log10();
+            let wot = steady(1.0);
+            let coast = steady(0.0);
+            let off = 100.0 * (1.0 - harmonic_share(&wot, rpm));
+            let b = order_bands(&wot, rpm);
+            // free running: idle, a blip, the fall back
+            let mut sim = Simulation::new(def.clone(), FS, 1);
+            render_secs(&mut sim, 4.0);
+            let mut idle = Vec::new();
+            for _ in 0..200 {
+                render_secs(&mut sim, 0.01);
+                idle.push(sim.engine().rpm());
+            }
+            let mean = idle.iter().sum::<f64>() / idle.len() as f64;
+            let jitter =
+                (idle.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / idle.len() as f64).sqrt();
+            sim.controls.throttle = 1.0;
+            let mut peak: f64 = 0.0;
+            for _ in 0..25 {
+                render_secs(&mut sim, 0.01);
+                peak = peak.max(sim.engine().rpm());
+            }
+            sim.controls.throttle = 0.0;
+            for _ in 0..300 {
+                render_secs(&mut sim, 0.01);
+                peak = peak.max(sim.engine().rpm());
+            }
+            lines.push(format!(
+                "{name},{:.1},{:.1},{off:.1},{:.0},{:.0},{:.0},{peak:.0},{:.0},{jitter:.1}",
+                db(&wot),
+                db(&coast) - db(&wot),
+                100.0 * b[0],
+                100.0 * b[1],
+                100.0 * b[2],
+                sim.engine().rpm(),
+            ));
+        }
+        let text = lines.join("\n") + "\n";
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/sound");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("scorecard.csv"), &text).unwrap();
+        print!("{text}");
+    }
+
     /// Diagnostic (run by hand, prints): what the listener hears, per sound layer, as level
     /// and the share in engine-cycle orders; the rest is aperiodic ("air").
     /// `cargo test -p engine-app --release air_probe -- --ignored --nocapture`
