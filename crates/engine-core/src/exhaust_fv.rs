@@ -60,8 +60,16 @@ pub(crate) fn rising_root(f: impl Fn(f64) -> f64, mut lo: f64, mut hi: f64) -> f
         return hi;
     }
     let mut side = 0;
-    for _ in 0..40 {
-        let x = (lo * f_hi - hi * f_lo) / (f_hi - f_lo);
+    // Safeguard: Illinois may crawl when one end's value is many orders of magnitude smaller
+    // (a root beside an infinite slope), its secant even landing on that end; then bisect,
+    // both when the secant is not strictly inside the bracket and whenever three iterations
+    // failed to halve it, so the bracket shrinks at least as fast as one bisection in three
+    // (cf. Brent 1973, ch. 4).
+    let mut width = hi - lo;
+    for it in 0..200 {
+        let secant = (lo * f_hi - hi * f_lo) / (f_hi - f_lo);
+        let bisect = !(lo < secant && secant < hi) || (it % 3 == 2 && hi - lo > 0.5 * width);
+        let x = if bisect { 0.5 * (lo + hi) } else { secant };
         let fx = f(x);
         if fx == 0.0 || (hi - lo) <= 1e-13 * hi.abs().max(1.0) {
             return x;
@@ -69,20 +77,23 @@ pub(crate) fn rising_root(f: impl Fn(f64) -> f64, mut lo: f64, mut hi: f64) -> f
         if fx < 0.0 {
             lo = x;
             f_lo = fx;
-            if side == -1 {
+            if side == -1 && !bisect {
                 f_hi *= 0.5;
             }
             side = -1;
         } else {
             hi = x;
             f_hi = fx;
-            if side == 1 {
+            if side == 1 && !bisect {
                 f_lo *= 0.5;
             }
             side = 1;
         }
+        if it % 3 == 2 {
+            width = hi - lo;
+        }
     }
-    0.5 * (lo + hi)
+    if -f_lo < f_hi { lo } else { hi }
 }
 
 /// Boundary state of a pipe end at a junction of pressure `p_j` (Benson's constant-pressure
@@ -390,8 +401,7 @@ impl ExhaustFv {
         for p in &mut self.primaries {
             p.step(h);
         }
-        let mut radiated = 0.0;
-        for (bi, b) in self.branches.iter_mut().enumerate() {
+        for b in self.branches.iter_mut() {
             b.out.step(h);
             // the junction takes what the faces carried (total enthalpy flux → internal energy)
             for &m in &b.members {
@@ -399,11 +409,15 @@ impl ExhaustFv {
                 b.junction.mass_kg += f.rho * self.a_primary * h;
                 b.junction.energy_j += f.e * self.a_primary * h;
             }
-            let (a_in, a_out) = b.out.end_areas();
+            let (a_in, _) = b.out.end_areas();
             let fc = b.out.end_flux.0;
             b.junction.mass_kg -= fc.rho * a_in * h;
             b.junction.energy_j -= fc.e * a_in * h;
             guard(&mut b.junction);
+        }
+        let mut radiated = 0.0;
+        for (bi, b) in self.branches.iter_mut().enumerate() {
+            let (_, a_out) = b.out.end_areas();
             let o = b.out.end_flux.1;
             self.vented += o.rho * a_out * h;
             // The outlet radiates its volume velocity (a monopole: p = ρ₀/4πr · dQ/dt; Kinsler et
@@ -446,6 +460,7 @@ mod tests {
     use crate::exhaust::ExhaustModel;
     use crate::fv::Cons;
     use crate::gas::orifice_mass_flow;
+    use approx::assert_relative_eq;
 
     const DT: f64 = 1.0 / 192_000.0;
 
@@ -474,6 +489,79 @@ mod tests {
         assert!(worst < 1.0, "spurious radiation {worst}");
         let (p, _) = net.port_state(0);
         assert!((p - ATM_PA).abs() < 50.0, "port pressure drifted to {p}");
+    }
+
+    #[test]
+    fn a_junction_at_rest_gives_its_own_pressure() {
+        // Captured from a run: the junction 3e-11 Pa below the cell, the gas at rest to
+        // round-off. Rounding sent it down the inflow branch, whose root sits within 1e-16 of
+        // x = 1, where the junction-side speed has an infinite slope: the root finder ran out of
+        // iterations and handed back the middle of its bracket, 74 kPa instead of 101 kPa.
+        let cell = Prim {
+            rho: 0.588_414_634_146_372_5,
+            u: 1.221_604_656_179_534_5e-26,
+            p: 101_325.000_000_000_2,
+        };
+        let g = junction_ghost(cell, 101_325.000_000_000_17, 0.588_414_634_146_346_9, -1.0);
+        assert!((g.p - 101_325.0).abs() < 1e-3, "{g:?}");
+        assert!(g.u.abs() < 1e-6, "{g:?}");
+    }
+
+    #[test]
+    fn rising_root_converges_beside_an_infinite_slope() {
+        // the junction inflow of the case above: the pipe's characteristic line minus the
+        // junction's square-root speed, f(x) = 1.2e-26 + 2431.6·(x − 1) − 1087·√(1 − x²) on
+        // [0.9129, 1]: f(lo) ≈ −655 against f(hi) = 1.2e-26, and the root within 1e-16 of 1
+        let f = |x: f64| 1.2e-26 + 2431.6 * (x - 1.0) - 1087.0 * (1.0 - x * x).max(0.0).sqrt();
+        let calls = std::cell::Cell::new(0);
+        let x = rising_root(
+            |x| {
+                calls.set(calls.get() + 1);
+                f(x)
+            },
+            0.9129,
+            1.0,
+        );
+        assert!((x - 1.0).abs() < 1e-12, "{x}");
+        // the secant lands on hi itself (f(hi) is 1e-28 of f(lo)), so only bisection moves the
+        // bracket: 0.087 down to 1e-13 is 40 halvings, within 50 evaluations, not the 200 cap
+        assert!(calls.get() <= 50, "{} evaluations", calls.get());
+        // mirrored, the secant lands on lo instead: −f(2 − x) on [1, 1.0871]
+        calls.set(0);
+        let x = rising_root(
+            |x| {
+                calls.set(calls.get() + 1);
+                -f(2.0 - x)
+            },
+            1.0,
+            1.0871,
+        );
+        assert!((x - 1.0).abs() < 1e-12, "{x}");
+        assert!(calls.get() <= 50, "{} evaluations", calls.get());
+        // and an ordinary root to full precision: x² − 2 on [1, 2]
+        assert_relative_eq!(
+            rising_root(|x| x * x - 2.0, 1.0, 2.0),
+            std::f64::consts::SQRT_2,
+            max_relative = 1e-12
+        );
+    }
+
+    #[test]
+    fn still_gas_stays_still_under_round_off() {
+        // Round-off (1e-14 of the energy, like the last bit of a real run) in still gas must not
+        // grow. With the 0D junction a step behind the pipes it did: a 1.25 kHz junction mode
+        // went from 1e-9 Pa to 100 Pa in 0.06 s, the junction's lag acting as negative damping.
+        let mut net = ExhaustFv::new(&def(), 4, DT);
+        for b in net.branches.iter_mut() {
+            for (i, c) in b.out.cells.iter_mut().enumerate() {
+                c.e *= 1.0 + 1e-14 * ((i * 7919 % 13) as f64 - 6.0);
+            }
+        }
+        let mut worst: f64 = 0.0;
+        for _ in 0..40_000 {
+            worst = worst.max(net.step().abs());
+        }
+        assert!(worst < 1e-3, "round-off grew to {worst}");
     }
 
     #[test]
@@ -742,8 +830,9 @@ mod tests {
         assert!(points.iter().all(|x| (0.0..=2.0).contains(x)), "{points:?}");
         // Illinois converges superlinearly: 13 evaluations (bisection: 2 + 44)
         assert_eq!(points.len(), 13, "{points:?}");
-        // A step never gets within 1e-13 in 40 tries (Illinois creeps along it): the bracket's
-        // midpoint is the answer, after exactly 2 + 40 evaluations.
+        // A step, where Illinois alone creeps (it ran out of tries 0.06 from the root): the
+        // bisection safeguard closes the bracket to 1e-13 anyway, in 2 + 51 evaluations (plain
+        // bisection: 2 + 44).
         let calls = std::cell::Cell::new(0);
         let r = rising_root(
             |x| {
@@ -753,8 +842,35 @@ mod tests {
             0.0,
             1.0,
         );
-        assert_eq!(calls.get(), 42);
-        assert!((r - 0.3).abs() < 1e-9, "{r}");
+        assert_eq!(calls.get(), 53);
+        assert!((r - 0.3).abs() < 1e-12, "{r}");
+        // a lopsided step (−1 against 1e-9): Illinois creeps by halving f(lo) for thirty steps
+        // at a time, and only the one-bisection-in-three guarantee closes the bracket, 0.3 to
+        // 1e-13 being 42 halvings, so within 2 + 3·42 evaluations
+        calls.set(0);
+        let r = rising_root(
+            |x| {
+                calls.set(calls.get() + 1);
+                if x < 0.3 { -1.0 } else { 1e-9 }
+            },
+            0.0,
+            1.0,
+        );
+        assert!((r - 0.3).abs() < 1e-12, "{r}");
+        assert!(calls.get() <= 128, "{} evaluations", calls.get());
+        // the same step at 0.9 on [0.5, 1]: the first check measures against the initial
+        // bracket's 0.5 (from it, Illinois' first three steps fail to halve it): 112 evaluations
+        calls.set(0);
+        let r = rising_root(
+            |x| {
+                calls.set(calls.get() + 1);
+                if x < 0.9 { -1.0 } else { 1e-9 }
+            },
+            0.5,
+            1.0,
+        );
+        assert!((r - 0.9).abs() < 1e-12, "{r}");
+        assert_eq!(calls.get(), 112);
         // a steep, one-sided function (√ near its end, like w_j at x = 1) still converges
         let r = rising_root(|x| x - (1.0 - x * x).max(0.0).sqrt(), 0.0, 1.0);
         assert!((r - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-12, "{r}");

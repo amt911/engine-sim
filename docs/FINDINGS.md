@@ -406,3 +406,23 @@ Tests: `released_from_high_revs_every_engine_settles_at_its_idle`,
 
 **Next.** Compare against a measured source or tail spectrum, and redo this under the
 non-linear 1D model (temperature-dependent c, steepening of the blowdown).
+
+## FV junction: still gas blew up to 100 Pa because a root finder gave up (2026-10-23)
+
+**Symptom.** A still FV exhaust stayed exactly still, but only because its state was exact. Add
+round-off noise (1e-14 of the energy) and within 0.05 s the junction jumped from 1e-9 Pa to
+100–1500 Pa. The jump was a single step, not exponential growth. MUSCL (v0.10.1) did the same,
+so WENO was not the cause. The test `quiet_system_stays_quiet` could not see it.
+
+**Cause.** Rounding sent a junction at rest down the *inflow* branch of `junction_ghost`. That
+branch's root lies within 1e-16 of x = 1, where the junction-side speed √(1 − x²) has an
+infinite slope. The bracket ends had values −655 and 1.2e-26, so Illinois regula falsi
+crawled. After its 40 tries `rising_root` returned the middle of the bracket: a boundary
+pressure of 74 kPa instead of 101 kPa, which dealt the junction a 27 kPa blow.
+
+**Fix.** `rising_root` takes a bisection step whenever three iterations have not halved the
+bracket. It runs until the bracket is tight and returns the end with the smaller |f|.
+
+**What misled.** Four times shorter sub-steps "fixed" it, and running the junction through
+the RK3 stages halved it. Both hinted at a time-lag instability; it was not one. Print the
+first boundary state that disagrees with a plain characteristic ghost before theorising.
