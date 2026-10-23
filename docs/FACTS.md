@@ -68,3 +68,11 @@ measured TL falls (beaming) where any 1D model keeps rising. Check: `papers/dl-s
 (local). Plan: the silencer's two-port from a 2D axisymmetric mode-matching model (Selamet, Xu, Lee, JASA 117,
 2005), realised in the time domain by a rational fit of its scattering matrix (vector fitting, Gustavsen &
 Semlyen 1999) — a few biquads per silencer.
+- 2D mode-matching prototype (`papers/dl-silencer/modal2d.py`, local; Selamet–Xu–Lee 2005 re-derived in e^{jωt},
+  Nice's fibre fit, Sullivan–Crocker/Kirby perforate, fundamental seeded from the bulk-reacting effective medium
+  kx² = (k0²A1/ρ0 + k̃²A2/ρ̃)/(A1/ρ0 + A2/ρ̃)) reproduces JSV 262 Figs. 6–7: empty zeros at 680/1350 Hz, 25.6 dB at
+  1.75 kHz, 1–3 dB above 2.2 kHz; filled 20.0/29.8/35.4/22.7/16.7/15.7 dB at 0.5/1/1.5/2/2.5/3 kHz (measured
+  21/29/36/30/22/18). For the inline-4's two road silencers (hot gas, 600 K) it still gives ~100 dB at 2.5 kHz with
+  either 16 or 4.9 kPa·s/m² packing: the right silencer physics alone does not bring the idle's 0.5–4 kHz up to real
+  recordings — that band must come mostly from sources we lack (valvetrain/mechanical radiation, flow noise
+  regenerated after the silencers).
