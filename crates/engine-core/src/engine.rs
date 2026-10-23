@@ -576,9 +576,18 @@ struct CylinderState {
     cycle_deg: f64,
 }
 
+/// How finely an engine is simulated (not part of its definition: the same engine at
+/// another fidelity). The default is the reference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Fidelity {
+    /// Scheme of every 1D pipe (intake runners, FV exhaust).
+    pub pipe_scheme: crate::fv::Scheme,
+}
+
 #[derive(Debug, Clone)]
 pub struct Engine {
     def: EngineDef,
+    fidelity: Fidelity,
     cyl: Vec<CylinderState>,
     plenum: GasVolume,
     atm: Reservoir,
@@ -749,6 +758,15 @@ impl Engine {
             texture: Texture::new(seed ^ 0x7E57),
             reversion_kg: 0.0,
             inducted_kg: 0.0,
+            fidelity: Fidelity::default(),
+        }
+    }
+
+    /// [`Engine::new`] at another [`Fidelity`].
+    pub fn with_fidelity(def: EngineDef, initial_rpm: f64, seed: u64, fidelity: Fidelity) -> Self {
+        Self {
+            fidelity,
+            ..Self::new(def, initial_rpm, seed)
         }
     }
 
@@ -918,12 +936,15 @@ impl Engine {
             IntakeModel::ZeroD => self.intake_net = None,
             IntakeModel::Fv => {
                 if self.intake_net.as_ref().is_none_or(|n| n.dt != dt) {
-                    self.intake_net = Some(IntakeFv::new(
-                        &self.def.intake,
-                        self.def.plenum_volume_m3,
-                        self.cyl.len(),
-                        dt,
-                    ));
+                    self.intake_net = Some(
+                        IntakeFv::new(
+                            &self.def.intake,
+                            self.def.plenum_volume_m3,
+                            self.cyl.len(),
+                            dt,
+                        )
+                        .with_scheme(self.fidelity.pipe_scheme),
+                    );
                 }
             }
         }
@@ -937,7 +958,10 @@ impl Engine {
             ExhaustModel::Fv => {
                 self.net = None;
                 if self.fv.as_ref().is_none_or(|n| n.dt != dt) {
-                    self.fv = Some(ExhaustFv::new(&self.def.exhaust, self.cyl.len(), dt));
+                    self.fv = Some(
+                        ExhaustFv::new(&self.def.exhaust, self.cyl.len(), dt)
+                            .with_scheme(self.fidelity.pipe_scheme),
+                    );
                 }
             }
         }
@@ -1884,6 +1908,31 @@ mod tests {
     /// let go. The ECU's idle control must hold `idle_rpm`, and overrun fuel cut, the dashpot
     /// and the idle control must bring it back from the blip. The single used to stall at idle,
     /// the big engines on the way down.
+    #[test]
+    fn the_cheap_pipe_scheme_runs_the_same_engine() {
+        // the LFA's 1D intake stepped with MUSCL-RK2: the same engine, finite and close in
+        // level, but not the same numbers (the fidelity reaches the pipes)
+        let run = |f: Fidelity| {
+            let mut e = Engine::with_fidelity(EngineDef::lfa_v10(), 6000.0, 1, f);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(6000.0),
+                ..Controls::default()
+            };
+            (0..(0.2 / DT) as usize)
+                .map(|_| e.step(DT, &c))
+                .collect::<Vec<f64>>()
+        };
+        let weno = run(Fidelity::default());
+        let muscl = run(Fidelity {
+            pipe_scheme: crate::fv::Scheme::MusclRk2,
+        });
+        assert!(muscl.iter().all(|x| x.is_finite()));
+        let rms = |x: &[f64]| (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
+        assert!((rms(&muscl) / rms(&weno) - 1.0).abs() < 0.2);
+        assert!(weno.iter().zip(&muscl).any(|(a, b)| a != b));
+    }
+
     fn starts_idles_and_survives_a_blip(d: EngineDef) {
         let target = d.idle_rpm;
         let mut e = Engine::new(d.clone(), 0.0, 1);

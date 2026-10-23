@@ -110,10 +110,23 @@ pub enum Boundary {
     Flux(Cons),
 }
 
+/// How a pipe reconstructs its cells and steps in time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Scheme {
+    /// WENO5-Z + SSP-RK3: fifth order in space, a sound pulse keeps 89 % of its peak where
+    /// MUSCL keeps 57 % (v0.11.0). The reference.
+    #[default]
+    Weno5Rk3,
+    /// MUSCL with the van Leer limiter + SSP-RK2 (Toro, *Riemann Solvers*, §13–14): second
+    /// order, two stages of a cheap reconstruction, about a third of the cost.
+    MusclRk2,
+}
+
 /// A uniform pipe of `n` cells.
 #[derive(Debug, Clone)]
 pub struct Pipe1d {
     pub cells: Vec<Cons>,
+    pub scheme: Scheme,
     pub dx: f64,
     pub left: Boundary,
     pub right: Boundary,
@@ -148,6 +161,7 @@ impl Pipe1d {
         let n = n.max(1);
         Self {
             cells: vec![init.to_cons(); n],
+            scheme: Scheme::default(),
             dx: length / n as f64,
             left: Boundary::Wall,
             right: Boundary::Wall,
@@ -212,12 +226,14 @@ impl Pipe1d {
         let n = self.cells.len();
         self.u0.copy_from_slice(&self.cells);
         let mut ends = (Cons::default(), Cons::default());
-        for (stage, (keep, weight)) in [(0.0, 1.0), (0.75, 1.0), (1.0 / 3.0, 4.0)]
-            .into_iter()
-            .enumerate()
-        {
+        // (share of Uⁿ kept, weight of the stage's end flux)
+        let stages: &[(f64, f64)] = match self.scheme {
+            Scheme::Weno5Rk3 => &[(0.0, 1.0 / 6.0), (0.75, 1.0 / 6.0), (1.0 / 3.0, 4.0 / 6.0)],
+            // U¹ = Uⁿ + Δt·L(Uⁿ), Uⁿ⁺¹ = ½Uⁿ + ½(U¹ + Δt·L(U¹)) (Shu & Osher)
+            Scheme::MusclRk2 => &[(0.0, 0.5), (0.5, 0.5)],
+        };
+        for (stage, &(keep, w)) in stages.iter().enumerate() {
             self.eval_rhs();
-            let w = weight / 6.0;
             ends.0 = add(ends.0, self.fluxes[0], w);
             ends.1 = add(ends.1, self.fluxes[n], w);
             for ((c, d), c0) in self.cells.iter_mut().zip(&self.rhs).zip(&self.u0) {
@@ -303,6 +319,18 @@ fn physical_or(edge: Prim, cell: Prim) -> Prim {
     } else {
         cell
     }
+}
+
+/// MUSCL edge values of cell `s` between `a` and `c`: (left edge, right edge), the slope
+/// limited by van Leer's harmonic mean (smooth and TVD; Toro, *Riemann Solvers*, §13.8).
+fn muscl(a: f64, s: f64, c: f64) -> (f64, f64) {
+    let (l, r) = (s - a, c - s);
+    let slope = if l * r <= 0.0 {
+        0.0
+    } else {
+        2.0 * l * r / (l + r)
+    };
+    (s - 0.5 * slope, s + 0.5 * slope)
 }
 
 /// WENO5-Z edge values of the middle cell of `v` = [v₋₂, v₋₁, v₀, v₁, v₂]: (left edge, right
@@ -394,7 +422,11 @@ impl Pipe1d {
         // physical (ρ or p ≤ 0 at a strong shock) falls back to the cell's own state
         for i in 2..n + 4 {
             let s = w[i];
-            let (rl, rr) = weno5z([
+            let recon = |v: [f64; 5]| match self.scheme {
+                Scheme::Weno5Rk3 => weno5z(v),
+                Scheme::MusclRk2 => muscl(v[1], v[2], v[3]),
+            };
+            let (rl, rr) = recon([
                 w[i - 2].rho,
                 w[i - 1].rho,
                 s.rho,
@@ -406,9 +438,9 @@ impl Pipe1d {
             let q = &self.qv;
             // cell i (ghosts included) has faces i − 3 (left) and i − 2 (right)
             let face = |k: usize| self.face_area[k.clamp(3, n + 3) - 3];
-            let (ql, qr) = weno5z([q[i - 2], q[i - 1], q[i], q[i + 1], q[i + 2]]);
+            let (ql, qr) = recon([q[i - 2], q[i - 1], q[i], q[i + 1], q[i + 2]]);
             let (ul, ur) = (ql / face(i), qr / face(i + 1));
-            let (pl, pr) = weno5z([w[i - 2].p, w[i - 1].p, s.p, w[i + 1].p, w[i + 2].p]);
+            let (pl, pr) = recon([w[i - 2].p, w[i - 1].p, s.p, w[i + 1].p, w[i + 2].p]);
             let ok = |r: Prim| physical_or(r, s);
             self.edge_l[i] = ok(Prim {
                 rho: rl,
@@ -1027,50 +1059,68 @@ mod tests {
         }
     }
 
+    /// L1 error of ρ for an entropy wave (a Gaussian density bump drifting 50 mm at 50 m/s)
+    /// on `n` cells with `scheme`, against the exact drifted bump.
+    fn bump_l1(scheme: Scheme, n: usize) -> f64 {
+        let mut p = Pipe1d::new(
+            0.5,
+            n,
+            Prim {
+                rho: 1.2,
+                u: 50.0,
+                p: 101_325.0,
+            },
+        );
+        p.scheme = scheme;
+        let bump = |x: f64| 1.2 + 0.3 * (-0.5 * (x / 0.01).powi(2)).exp();
+        for i in 0..n {
+            let x = (i as f64 + 0.5) * p.dx - 0.1;
+            p.cells[i] = Prim {
+                rho: bump(x),
+                u: 50.0,
+                p: 101_325.0,
+            }
+            .to_cons();
+        }
+        let open = Boundary::Open {
+            p: 101_325.0,
+            rho: 1.2,
+        };
+        (p.left, p.right) = (open, open);
+        let mut t = 0.0;
+        while t < 1e-3 {
+            let dt = p.max_dt(0.8).min(1e-3 - t);
+            p.step(dt);
+            t += dt;
+        }
+        (0..n)
+            .map(|i| (p.prim(i).rho - bump((i as f64 + 0.5) * p.dx - 0.15)).abs() * p.dx)
+            .sum::<f64>()
+    }
+
     #[test]
     fn an_advected_density_bump_converges_at_high_order() {
-        // the entropy wave below on 125, 250 and 500 cells, L1 error of ρ against the exact
-        // Gaussian drifted 50 mm. WENO5 in space with SSP-RK3 at a fixed CFL: the spatial error
-        // dominates at these resolutions, so halving the cell must cut it by close to 2⁵
+        // on 125, 250 and 500 cells. WENO5 in space with SSP-RK3 at a fixed CFL: the spatial
+        // error dominates at these resolutions, so halving the cell must cut it by close to 2⁵
         // (measured 4.9 and 5.0)
-        let l1 = |n: usize| {
-            let mut p = Pipe1d::new(
-                0.5,
-                n,
-                Prim {
-                    rho: 1.2,
-                    u: 50.0,
-                    p: 101_325.0,
-                },
-            );
-            let bump = |x: f64| 1.2 + 0.3 * (-0.5 * (x / 0.01).powi(2)).exp();
-            for i in 0..n {
-                let x = (i as f64 + 0.5) * p.dx - 0.1;
-                p.cells[i] = Prim {
-                    rho: bump(x),
-                    u: 50.0,
-                    p: 101_325.0,
-                }
-                .to_cons();
-            }
-            let open = Boundary::Open {
-                p: 101_325.0,
-                rho: 1.2,
-            };
-            (p.left, p.right) = (open, open);
-            let mut t = 0.0;
-            while t < 1e-3 {
-                let dt = p.max_dt(0.8).min(1e-3 - t);
-                p.step(dt);
-                t += dt;
-            }
-            (0..n)
-                .map(|i| (p.prim(i).rho - bump((i as f64 + 0.5) * p.dx - 0.15)).abs() * p.dx)
-                .sum::<f64>()
-        };
+        let l1 = |n| bump_l1(Scheme::Weno5Rk3, n);
         let (e1, e2, e3) = (l1(125), l1(250), l1(500));
         assert!((e1 / e2).log2() > 4.5, "{e1:e} {e2:e} {e3:e}");
         assert!((e2 / e3).log2() > 4.5, "{e1:e} {e2:e} {e3:e}");
+    }
+
+    #[test]
+    fn the_cheap_scheme_converges_at_second_order() {
+        // MUSCL (van Leer) with SSP-RK2 is second order away from extrema; its limiter clips
+        // the bump's crest, so the observed order sits a little under 2 (Toro, *Riemann
+        // Solvers*, §13.8): measured 1.68 and 1.75, and well behind WENO5 on every grid
+        let l1 = |n| bump_l1(Scheme::MusclRk2, n);
+        let (e1, e2, e3) = (l1(125), l1(250), l1(500));
+        for (a, b) in [(e1, e2), (e2, e3)] {
+            let order = (a / b).log2();
+            assert!((1.6..2.2).contains(&order), "{e1:e} {e2:e} {e3:e}");
+        }
+        assert!(e3 > 10.0 * bump_l1(Scheme::Weno5Rk3, 500));
     }
 
     #[test]
