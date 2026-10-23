@@ -531,10 +531,9 @@ struct Burn {
 /// Woschni's heat-transfer coefficient (SAE 670931; Heywood, *ICE Fundamentals*, eq. 12.19),
 /// W/(m²·K): h = 3.26·B^−0.2·p^0.8·T^−0.55·w^0.8 with p in kPa, B in m, w in m/s.
 fn woschni_htc(bore_m: f64, p_pa: f64, t_k: f64, w_m_s: f64) -> f64 {
-    3.26 * bore_m.powf(-0.2)
-        * (p_pa.max(0.0) / 1000.0).powf(0.8)
-        * t_k.max(1.0).powf(-0.55)
-        * w_m_s.max(0.0).powf(0.8)
+    // in logarithms: three ln and one exp, not four pow (it runs per cylinder per step)
+    let pw = p_pa.max(0.0) / 1000.0 * w_m_s.max(0.0);
+    3.26 * (0.8 * pw.ln() - 0.55 * t_k.max(1.0).ln() - 0.2 * bore_m.ln()).exp()
 }
 
 /// Mean piston speed S̄p = 2·S·N, m/s (Heywood, *ICE Fundamentals*, eq. 2.2), whichever way the
@@ -566,6 +565,8 @@ struct CylinderState {
     /// Gas temperature in this cylinder's exhaust primary, and the primary's wall temperature,
     /// K: what reversion pushes back, and how much volume it is.
     port_t: f64,
+    /// The exhaust port's last mass flow, kg/s: where the next step's port solve starts.
+    port_flow: f64,
     wall_t: f64,
     /// State at intake closing (p_r, V_r, T_r): Woschni's reference for the motored pressure.
     ref_p: f64,
@@ -712,6 +713,7 @@ impl Engine {
                     trapped_kg: 0.0,
                     armed: false,
                     port_t: PIPE_COLD_K,
+                    port_flow: 0.0,
                     wall_t: PIPE_COLD_K,
                     ref_p: ATM_PA,
                     ref_v: 1.0,
@@ -1003,11 +1005,31 @@ impl Engine {
                 // back (the waveguide's implicit port, so the flow does not step at the FV rate).
                 Some(fv) => {
                     let (arriving_fv, z_fv, t_fv) = fv.port_wave(i);
-                    exhaust_valve_flow(&cs.gas, area, arriving_fv, z_fv, t_fv, dt, VALVE_RELAX)
+                    exhaust_valve_flow(
+                        &cs.gas,
+                        area,
+                        crate::gas::Port {
+                            arriving: arriving_fv,
+                            z: z_fv,
+                            t_back: t_fv,
+                        },
+                        dt,
+                        VALVE_RELAX,
+                        cs.port_flow,
+                    )
                 }
-                None => {
-                    exhaust_valve_flow(&cs.gas, area, arriving, z_port, cs.port_t, dt, VALVE_RELAX)
-                }
+                None => exhaust_valve_flow(
+                    &cs.gas,
+                    area,
+                    crate::gas::Port {
+                        arriving,
+                        z: z_port,
+                        t_back: cs.port_t,
+                    },
+                    dt,
+                    VALVE_RELAX,
+                    cs.port_flow,
+                ),
             };
             // Reverse flow (pipe → cylinder) passes the valve against the port's curve with a lower
             // discharge coefficient than forward flow (Blair measures separate in/out maps).
@@ -1034,6 +1056,7 @@ impl Engine {
                     None => f.apply(&mut self.plenum, &mut cs.gas),
                 }
             }
+            cs.port_flow = f_ex.map_or(0.0, |f| f.dm / dt);
             self.flows[i] = f_ex.map_or(0.0, |f| {
                 f.apply_to(&mut cs.gas);
                 exhaust_source_flow(f.dm / dt, f.h)
