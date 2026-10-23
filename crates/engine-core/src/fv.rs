@@ -296,6 +296,15 @@ fn positive(c: Cons, rho_floor: f64, p_floor: f64) -> Cons {
     }
 }
 
+/// A reconstructed edge state if it is physical (ρ > 0 and p > 0), else the cell's own state.
+fn physical_or(edge: Prim, cell: Prim) -> Prim {
+    if edge.rho > 0.0 && edge.p > 0.0 {
+        edge
+    } else {
+        cell
+    }
+}
+
 /// WENO5-Z edge values of the middle cell of `v` = [v₋₂, v₋₁, v₀, v₁, v₂]: (left edge, right
 /// edge). Three third-order candidates weighted by their smoothness (Jiang & Shu, J. Comput.
 /// Phys. 126 (1996)) with the Z weights of Borges et al. (2008), which keep fifth order at
@@ -400,7 +409,7 @@ impl Pipe1d {
             let (ql, qr) = weno5z([q[i - 2], q[i - 1], q[i], q[i + 1], q[i + 2]]);
             let (ul, ur) = (ql / face(i), qr / face(i + 1));
             let (pl, pr) = weno5z([w[i - 2].p, w[i - 1].p, s.p, w[i + 1].p, w[i + 2].p]);
-            let ok = |r: Prim| if r.rho > 0.0 && r.p > 0.0 { r } else { s };
+            let ok = |r: Prim| physical_or(r, s);
             self.edge_l[i] = ok(Prim {
                 rho: rl,
                 u: ul,
@@ -843,6 +852,225 @@ mod tests {
             (0.95 * 250.0..1.02 * 250.0).contains(&peak),
             "peak {peak} Pa"
         );
+    }
+
+    #[test]
+    fn weno5z_mirrors_its_stencil_and_is_exact_for_quadratics() {
+        // cell averages of x on unit cells centred at −2..2: edges ∓0.5, whatever the weights;
+        // of x², k² + 1/12: both edges 0.25 (every candidate stencil is exact for a quadratic)
+        let (l, r) = weno5z([-2.0, -1.0, 0.0, 1.0, 2.0]);
+        assert_relative_eq!(l, -0.5, epsilon = 1e-12);
+        assert_relative_eq!(r, 0.5, epsilon = 1e-12);
+        let q = |k: f64| k * k + 1.0 / 12.0;
+        let (l, r) = weno5z([q(-2.0), q(-1.0), q(0.0), q(1.0), q(2.0)]);
+        assert_relative_eq!(l, 0.25, epsilon = 1e-12);
+        assert_relative_eq!(r, 0.25, epsilon = 1e-12);
+        // the left edge is the right edge of the mirrored stencil, for any data
+        for v in [
+            [0.3, -1.2, 2.5, 0.7, 4.1],
+            [1.0, 1.0, 1.0, 0.0, 0.0],
+            [5.0, 2.0, -3.0, 8.0, 1.5],
+        ] {
+            let (l, r) = weno5z(v);
+            let (ml, mr) = weno5z([v[4], v[3], v[2], v[1], v[0]]);
+            assert_relative_eq!(l, mr, max_relative = 1e-14);
+            assert_relative_eq!(r, ml, max_relative = 1e-14);
+        }
+    }
+
+    #[test]
+    fn weno5z_keeps_fifth_order_through_the_crest_of_a_wave() {
+        // edges of the exact cell averages of sin(2πx) on [0, 1], n cells, against sin at the
+        // faces. WENO5-Z keeps its design order at the extrema (Borges et al. 2008, Table 2:
+        // L∞ order ≈ 5); the classic weights drop to ≈ 3 there.
+        let err = |n: usize| {
+            let h = 1.0 / n as f64;
+            let w = 2.0 * std::f64::consts::PI;
+            let avg = |k: i64| {
+                let (a, b) = (k as f64 * h, (k + 1) as f64 * h);
+                ((w * a).cos() - (w * b).cos()) / (w * h)
+            };
+            (0..n as i64)
+                .map(|k| {
+                    let (l, r) = weno5z([avg(k - 2), avg(k - 1), avg(k), avg(k + 1), avg(k + 2)]);
+                    let el = (l - (w * k as f64 * h).sin()).abs();
+                    let er = (r - (w * (k + 1) as f64 * h).sin()).abs();
+                    el.max(er)
+                })
+                .fold(0.0, f64::max)
+        };
+        let order = (err(20) / err(40)).log2();
+        assert!(order > 4.5, "L∞ order {order}");
+    }
+
+    #[test]
+    fn weno5z_leans_on_the_smooth_side_of_a_jump() {
+        // a ramp 0, 1, 2 then a jump to 10, 11. By hand: β₀ = 1, β₁ = 73.333, β₂ = 185.333,
+        // τ = |β₀ − β₂| = 184.333, z = 1 + (τ/β)² = 33979.8, 7.3184, 1.9892; the right edge
+        // weighs the candidates 2.5, 4.8333, 7.1667 by 0.1·z₀ : 0.6·z₁ : 0.3·z₂ → 2.50383, the
+        // left edge the mirrored 1.5, … by 0.1·z₂ : 0.6·z₁ : 0.3·z₀ → 1.49938: both close to the
+        // ramp's own extrapolation (2.5 and 1.5), nowhere near the jump.
+        let (l, r) = weno5z([0.0, 1.0, 2.0, 10.0, 11.0]);
+        assert_relative_eq!(l, 1.499_383_906, max_relative = 1e-8);
+        assert_relative_eq!(r, 2.503_829_204, max_relative = 1e-8);
+    }
+
+    #[test]
+    fn an_acoustic_pulse_converges_at_high_order() {
+        // a right-running 100 Pa Gaussian (σ = 10 mm; u = p′/ρc, ρ′ = p′/c²) on 125, 250 and
+        // 500 cells, 1 ms: velocity and pressure ride the reconstruction here, where the entropy
+        // wave keeps them uniform. Self-convergence: each solution against the next finer one,
+        // averaged onto its cells. At CFL 0.2 the time error of SSP-RK3 is 4³ smaller than at
+        // 0.8 (where it sets the rate, 2.8), so the spatial order shows: measured 3.55, and 2.8
+        // with one wrong cell in the pressure stencil.
+        let (rho0, p0): (f64, f64) = (1.2, 101_325.0);
+        let c = (1.4 * p0 / rho0).sqrt();
+        let run = |n: usize| {
+            let mut p = Pipe1d::new(
+                0.5,
+                n,
+                Prim {
+                    rho: rho0,
+                    u: 0.0,
+                    p: p0,
+                },
+            );
+            for i in 0..n {
+                let x = (i as f64 + 0.5) * p.dx - 0.1;
+                let dp = 100.0 * (-0.5 * (x / 0.01).powi(2)).exp();
+                p.cells[i] = Prim {
+                    rho: rho0 + dp / (c * c),
+                    u: dp / (rho0 * c),
+                    p: p0 + dp,
+                }
+                .to_cons();
+            }
+            let open = Boundary::Open { p: p0, rho: rho0 };
+            (p.left, p.right) = (open, open);
+            let mut t = 0.0;
+            while t < 1e-3 {
+                let dt = p.max_dt(0.2).min(1e-3 - t);
+                p.step(dt);
+                t += dt;
+            }
+            (0..n)
+                .map(|i| (p.prim(i).u, p.prim(i).p))
+                .collect::<Vec<_>>()
+        };
+        let diff = |coarse: &[(f64, f64)], fine: &[(f64, f64)]| {
+            coarse
+                .iter()
+                .enumerate()
+                .fold((0.0, 0.0), |(du, dp), (i, &(u, p))| {
+                    let (u2, p2) = (
+                        0.5 * (fine[2 * i].0 + fine[2 * i + 1].0),
+                        0.5 * (fine[2 * i].1 + fine[2 * i + 1].1),
+                    );
+                    (du + (u - u2).abs(), dp + (p - p2).abs())
+                })
+        };
+        let (s1, s2, s3) = (run(125), run(250), run(500));
+        let (d12, d23) = (diff(&s1, &s2), diff(&s2, &s3));
+        // each sum is over twice the cells of the coarser grid: per-length, that factor of 2
+        let (ou, op) = ((2.0 * d12.0 / d23.0).log2(), (2.0 * d12.1 / d23.1).log2());
+        assert!(ou > 3.2 && op > 3.2, "orders u {ou} p {op}");
+    }
+
+    #[test]
+    fn an_unphysical_edge_falls_back_to_its_cell() {
+        let cell = Prim {
+            rho: 1.0,
+            u: 3.0,
+            p: 1e5,
+        };
+        let edge = |rho: f64, p: f64| Prim { rho, u: 9.0, p };
+        assert_eq!(physical_or(edge(1.1, 2e5), cell).u, 9.0);
+        // a positive density does not excuse a negative pressure, nor the other way round
+        assert_eq!(physical_or(edge(1.1, -5.0), cell).u, 3.0);
+        assert_eq!(physical_or(edge(-0.1, 2e5), cell).u, 3.0);
+        // vacuum is not a state the Riemann solver can take either
+        assert_eq!(physical_or(edge(0.0, 2e5), cell).u, 3.0);
+        assert_eq!(physical_or(edge(1.1, 0.0), cell).u, 3.0);
+    }
+
+    #[test]
+    fn a_near_vacuum_beside_a_strong_jump_stays_physical() {
+        // 1 bar against 10 Pa at the same temperature: the reconstructed edge pressure of the
+        // low side overshoots below zero; such an edge falls back to the cell's own state
+        let mut p = Pipe1d::new(
+            0.2,
+            40,
+            Prim {
+                rho: 1.2,
+                u: 0.0,
+                p: 1e5,
+            },
+        );
+        for i in 20..40 {
+            p.cells[i] = Prim {
+                rho: 1.2e-4,
+                u: 0.0,
+                p: 10.0,
+            }
+            .to_cons();
+        }
+        for _ in 0..20 {
+            let dt = p.max_dt(0.5);
+            p.step(dt);
+        }
+        for i in 0..40 {
+            let s = p.prim(i);
+            assert!(
+                s.rho > 0.0 && s.p > 0.0 && s.u.is_finite(),
+                "cell {i}: {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_advected_density_bump_converges_at_high_order() {
+        // the entropy wave below on 125, 250 and 500 cells, L1 error of ρ against the exact
+        // Gaussian drifted 50 mm. WENO5 in space with SSP-RK3 at a fixed CFL: the spatial error
+        // dominates at these resolutions, so halving the cell must cut it by close to 2⁵
+        // (measured 4.9 and 5.0)
+        let l1 = |n: usize| {
+            let mut p = Pipe1d::new(
+                0.5,
+                n,
+                Prim {
+                    rho: 1.2,
+                    u: 50.0,
+                    p: 101_325.0,
+                },
+            );
+            let bump = |x: f64| 1.2 + 0.3 * (-0.5 * (x / 0.01).powi(2)).exp();
+            for i in 0..n {
+                let x = (i as f64 + 0.5) * p.dx - 0.1;
+                p.cells[i] = Prim {
+                    rho: bump(x),
+                    u: 50.0,
+                    p: 101_325.0,
+                }
+                .to_cons();
+            }
+            let open = Boundary::Open {
+                p: 101_325.0,
+                rho: 1.2,
+            };
+            (p.left, p.right) = (open, open);
+            let mut t = 0.0;
+            while t < 1e-3 {
+                let dt = p.max_dt(0.8).min(1e-3 - t);
+                p.step(dt);
+                t += dt;
+            }
+            (0..n)
+                .map(|i| (p.prim(i).rho - bump((i as f64 + 0.5) * p.dx - 0.15)).abs() * p.dx)
+                .sum::<f64>()
+        };
+        let (e1, e2, e3) = (l1(125), l1(250), l1(500));
+        assert!((e1 / e2).log2() > 4.5, "{e1:e} {e2:e} {e3:e}");
+        assert!((e2 / e3).log2() > 4.5, "{e1:e} {e2:e} {e3:e}");
     }
 
     #[test]

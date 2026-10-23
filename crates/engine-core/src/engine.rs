@@ -1281,6 +1281,17 @@ mod tests {
     }
 
     #[test]
+    fn each_preset_names_itself_and_sizes_its_plenum_to_its_displacement() {
+        // the multi-cylinder presets size their plenum at 1–3 times the displacement (our
+        // estimate: big enough to damp the intake pulses, small enough for a quick throttle)
+        for d in [EngineDef::inline4(), EngineDef::lfa_v10()] {
+            let ratio = d.plenum_volume_m3 / d.displacement_m3();
+            assert!((1.0..=3.0).contains(&ratio), "{}: {ratio}", d.name);
+        }
+        assert_eq!(EngineDef::inline4().name, "Inline-4 2.0");
+    }
+
+    #[test]
     fn a_moving_spark_fires_each_charge_exactly_once() {
         // The ECU moves the spark between cycles (rpm map, idle trim). A 30° jump earlier must
         // not skip the cylinder whose crank sits between the two angles, nor one later fire a
