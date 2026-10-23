@@ -477,8 +477,11 @@ pub struct CylinderView {
 
 /// Ignition delay between spark and the start of the Wiebe burn, degrees.
 const IGNITION_DELAY_DEG: f64 = 5.0;
-/// Combustion efficiency (incomplete burn, dissociation) — a lumped tuning constant.
-const COMBUSTION_EFFICIENCY: f64 = 0.85;
+/// Combustion efficiency of a spark-ignition engine at stoichiometric: 95–98 % of the fuel's
+/// heating value is released (Heywood, *ICE Fundamentals*, §3.5.5, Fig. 3-9). It was a lumped
+/// 0.85 while the residual gas counted as fresh charge; burning only the fresh charge, the
+/// LFA makes 494 N·m against the published 480.
+const COMBUSTION_EFFICIENCY: f64 = 0.96;
 /// Cycle-to-cycle variation of released energy (±), drives the "lumpy" idle.
 const CYCLE_VARIATION: f64 = 0.04;
 const WALL_TEMP_K: f64 = 400.0;
@@ -616,6 +619,9 @@ struct CylinderState {
     offset_deg: f64,
     gas: GasVolume,
     trapped_kg: f64,
+    /// Gas left in the cylinder when the exhaust valve closed: burnt, no fuel or oxygen to
+    /// give (the residual; Heywood, *ICE Fundamentals*, §6.4).
+    residual_kg: f64,
     /// The charge trapped at intake closing still awaits its spark: one spark per charge,
     /// whatever the ECU does with the timing meanwhile.
     armed: bool,
@@ -795,6 +801,7 @@ impl Engine {
                     offset_deg,
                     gas: GasVolume::at(ATM_PA, AMBIENT_K, g.volume(deg_to_rad(cycle_deg))),
                     trapped_kg: 0.0,
+                    residual_kg: 0.0,
                     armed: false,
                     port_t: PIPE_COLD_K,
                     port_flow: 0.0,
@@ -1018,6 +1025,8 @@ impl Engine {
         let spark_deg = 720.0 - (self.def.spark_advance_at(self.rpm()) + self.idle_spark_deg);
         let ivc =
             (self.def.intake_valve.open_deg + self.def.intake_valve.duration_deg).rem_euclid(720.0);
+        let evc = (self.def.exhaust_valve.open_deg + self.def.exhaust_valve.duration_deg)
+            .rem_euclid(720.0);
         let fire_ok = c.ignition && !self.overrun_cut && !self.limiter_cut;
         let wall_area = 2.0 * g.piston_area();
         let mean_piston_speed = mean_piston_speed(g.stroke_m, self.omega);
@@ -1179,6 +1188,9 @@ impl Engine {
             exchange_with_reservoir(&mut cs.gas, &self.atm, blowby_area, dt);
 
             // Combustion events.
+            if crossed(prev, cur, evc) {
+                cs.residual_kg = cs.gas.mass_kg;
+            }
             if crossed(prev, cur, ivc) {
                 cs.trapped_kg = cs.gas.mass_kg;
                 cs.armed = true;
@@ -1233,7 +1245,8 @@ impl Engine {
             cs.cycle_deg = cur;
 
             if new_burn {
-                let trapped = cs.trapped_kg;
+                // only the fresh charge carries fuel: what was trapped less the residual
+                let trapped = (cs.trapped_kg - cs.residual_kg).max(0.0);
                 let var = 1.0 + CYCLE_VARIATION * self.noise();
                 let j = self.def.sound.combustion_jitter;
                 let start_jitter = j * BURN_START_JITTER_DEG * self.noise();
@@ -3606,6 +3619,45 @@ mod tests {
             (70.0..100.0).contains(&mean50),
             "50 mm mean exit {mean50} m/s"
         );
+    }
+
+    #[test]
+    fn only_the_fresh_charge_burns() {
+        // At part throttle the residual (the mass left when the exhaust valve closed) is a fair
+        // share of what is trapped (measured 7.3 % here): each burn's energy is the fresh
+        // charge's, (m_IVC − m_EVC)/(1 + AFR)·LHV·η, within the ±4 % cycle variation — the
+        // whole trapped mass's would be 7.9 % more.
+        let mut e = Engine::new(EngineDef::inline4(), 3000.0, 1);
+        let c = Controls {
+            throttle: 0.15,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.5, &c);
+        let mut checked = 0;
+        let mut was_burning = e.cyl[0].burn.is_some();
+        for _ in 0..(0.5 / DT) as usize {
+            e.step(DT, &c);
+            let cs = &e.cyl[0];
+            if !was_burning && let Some(b) = &cs.burn {
+                let fresh = cs.trapped_kg - cs.residual_kg;
+                assert!(
+                    cs.residual_kg > 0.05 * cs.trapped_kg,
+                    "residual {} of {}",
+                    cs.residual_kg,
+                    cs.trapped_kg
+                );
+                let want = charge_energy(fresh, AFR_STOICH, COMBUSTION_EFFICIENCY);
+                assert!(
+                    (b.energy_j / want - 1.0).abs() <= 0.041,
+                    "{} vs {want}",
+                    b.energy_j
+                );
+                checked += 1;
+            }
+            was_burning = cs.burn.is_some();
+        }
+        assert!(checked >= 5, "{checked} burns");
     }
 
     #[test]
