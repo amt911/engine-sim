@@ -1,7 +1,9 @@
 //! Headless rendering: run the simulation offline and write/check a WAV.
 //! Used by `--headless`, the smoke script and PR verification.
 
+use crate::quality::Quality;
 use crate::sim::Simulation;
+use engine_core::drivetrain::VehicleDef;
 use engine_core::engine::{Controls, EngineDef};
 use std::path::Path;
 
@@ -38,8 +40,9 @@ pub fn render(
     seconds: f64,
     throttle: f64,
     sample_rate: f64,
+    quality: Quality,
 ) -> (Vec<f32>, RenderReport) {
-    let mut sim = Simulation::new(def, sample_rate, 1);
+    let mut sim = Simulation::with_quality(def, VehicleDef::default(), sample_rate, 1, quality);
     sim.controls = Controls {
         throttle,
         ..Controls::default()
@@ -99,7 +102,7 @@ mod tests {
 
     #[test]
     fn render_single_passes_check() {
-        let (samples, r) = render(EngineDef::single(), 1.0, 0.2, 48_000.0);
+        let (samples, r) = render(EngineDef::single(), 1.0, 0.2, 48_000.0, Quality::Ultra);
         assert_eq!(samples.len(), 48_000);
         assert_eq!(r.samples, 48_000);
         r.check().unwrap();

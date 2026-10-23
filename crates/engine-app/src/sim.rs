@@ -1,14 +1,12 @@
-//! The simulation as the app runs it: engine physics at `SUBSTEPS` × the audio rate,
+//! The simulation as the app runs it: engine physics at a [`Quality`]'s multiple of the audio rate,
 //! the DSP voice, and the data the UI draws (snapshot, pressure trace, scope).
 
+use crate::quality::Quality;
 use engine_audio::dsp::{AntiAlias, Voice};
 use engine_core::drivetrain::{Vehicle, VehicleDef};
 use engine_core::engine::{Controls, CylinderView, Engine, EngineDef};
 use engine_core::units::rpm_to_rad_s;
 
-/// Physics steps per audio sample (engine-sim uses 8 fluid substeps at 10 kHz; we run
-/// at the audio rate × 4, e.g. 192 kHz at 48 kHz output).
-pub const SUBSTEPS: usize = 4;
 pub const SCOPE_LEN: usize = 2048;
 pub const IDLE_START_RPM: f64 = 900.0;
 
@@ -31,6 +29,8 @@ pub struct Snapshot {
     pub gear: usize,
     /// Clutch engagement, 0 (pedal down) .. 1.
     pub clutch: f64,
+    /// The level the physics runs at.
+    pub quality: Quality,
 }
 
 /// The driver's pedals and lever, set from the UI.
@@ -44,6 +44,11 @@ pub struct DriveInput {
     pub brake: f64,
 }
 
+/// Just under the output's Nyquist (20.2 kHz at 48 kHz), at the level's physics rate.
+fn anti_alias(sample_rate: f64, quality: Quality) -> AntiAlias {
+    AntiAlias::new(0.42 * sample_rate, sample_rate * quality.substeps() as f64)
+}
+
 fn voice_for(def: &EngineDef, sample_rate: f64) -> Voice {
     let mut v = Voice::new(sample_rate);
     v.reverb_mix = def.sound.reverb;
@@ -53,6 +58,9 @@ fn voice_for(def: &EngineDef, sample_rate: f64) -> Voice {
 
 pub struct Simulation {
     engine: Engine,
+    /// The engine as the user defined it; the physics runs `quality.apply(def)`.
+    def: EngineDef,
+    quality: Quality,
     voice: Voice,
     anti_alias: AntiAlias,
     sample_rate: f64,
@@ -66,17 +74,37 @@ pub struct Simulation {
 }
 
 impl Simulation {
+    /// The reference level and the default car (tests and diagnostics).
+    #[cfg(test)]
     pub fn new(def: EngineDef, sample_rate: f64, seed: u64) -> Self {
-        Self::with_vehicle(def, VehicleDef::default(), sample_rate, seed)
+        Self::with_quality(
+            def,
+            VehicleDef::default(),
+            sample_rate,
+            seed,
+            Quality::Ultra,
+        )
     }
-    pub fn with_vehicle(def: EngineDef, vehicle: VehicleDef, sample_rate: f64, seed: u64) -> Self {
+    pub fn with_quality(
+        def: EngineDef,
+        vehicle: VehicleDef,
+        sample_rate: f64,
+        seed: u64,
+        quality: Quality,
+    ) -> Self {
         Self {
             vehicle: Vehicle::new(vehicle),
             drive: DriveInput::default(),
             voice: voice_for(&def, sample_rate),
-            // just under the output's Nyquist (20.2 kHz at 48 kHz), at the physics rate
-            anti_alias: AntiAlias::new(0.42 * sample_rate, sample_rate * SUBSTEPS as f64),
-            engine: Engine::new(def, IDLE_START_RPM, seed),
+            anti_alias: anti_alias(sample_rate, quality),
+            engine: Engine::with_fidelity(
+                quality.apply(&def),
+                IDLE_START_RPM,
+                seed,
+                quality.fidelity(),
+            ),
+            def,
+            quality,
             sample_rate,
             controls: Controls::default(),
             trace: vec![0.0; 720],
@@ -104,11 +132,39 @@ impl Simulation {
     pub fn replace_engine(&mut self, def: EngineDef) {
         self.voice.reverb_mix = def.sound.reverb;
         self.voice.leveler.amount = def.sound.leveling;
-        let Some(def) = self.try_retune(def) else {
+        self.def = def.clone();
+        let Some(def) = self.try_retune(self.quality.apply(&def)) else {
             return;
         };
         let rpm = self.engine.rpm();
-        self.engine = Engine::new(def, rpm, self.engine.combustions() ^ 0x5EED);
+        self.engine = Engine::with_fidelity(
+            def,
+            rpm,
+            self.engine.combustions() ^ 0x5EED,
+            self.quality.fidelity(),
+        );
+    }
+    /// The engine as the user defined it (the physics may run a cheaper version of it).
+    pub fn def(&self) -> &EngineDef {
+        &self.def
+    }
+    pub fn quality(&self) -> Quality {
+        self.quality
+    }
+    /// Simulate at another level from now on, keeping the engine's speed.
+    pub fn set_quality(&mut self, quality: Quality) {
+        if quality == self.quality {
+            return;
+        }
+        self.quality = quality;
+        self.anti_alias = anti_alias(self.sample_rate, quality);
+        let rpm = self.engine.rpm();
+        self.engine = Engine::with_fidelity(
+            quality.apply(&self.def),
+            rpm,
+            self.engine.combustions() ^ 0x5EED,
+            quality.fidelity(),
+        );
     }
     fn try_retune(&mut self, def: EngineDef) -> Option<EngineDef> {
         if self.engine.retune(def.clone()) {
@@ -120,14 +176,15 @@ impl Simulation {
 
     /// Fill `out` with mono samples.
     pub fn render(&mut self, out: &mut [f32]) {
-        let dt = 1.0 / (self.sample_rate * SUBSTEPS as f64);
+        let substeps = self.quality.substeps();
+        let dt = 1.0 / (self.sample_rate * substeps as f64);
         self.vehicle.set_gear(self.drive.gear);
         self.vehicle
             .set_clutch(if self.drive.clutch_pedal { 0.0 } else { 1.0 });
         let mut c = self.controls;
         for s in out.iter_mut() {
             let mut p = 0.0;
-            for _ in 0..SUBSTEPS {
+            for _ in 0..substeps {
                 // The vehicle sees the crank speed and answers with the load for the next step.
                 let omega = rpm_to_rad_s(self.engine.rpm());
                 let load = self.vehicle.step(dt, omega, self.drive.brake);
@@ -155,7 +212,8 @@ impl Simulation {
         scope.extend_from_slice(&self.scope[self.scope_pos..]);
         scope.extend_from_slice(&self.scope[..self.scope_pos]);
         Snapshot {
-            def: e.def().clone(),
+            def: self.def.clone(),
+            quality: self.quality,
             rpm: e.rpm(),
             torque_nm: e.torque_nm(),
             power_w: e.power_w(),
@@ -707,7 +765,7 @@ pub(crate) mod tests {
     }
 
     fn driven(def: EngineDef, vehicle: VehicleDef, gear: usize, throttle: f64) -> Simulation {
-        let mut sim = Simulation::with_vehicle(def, vehicle, FS, 1);
+        let mut sim = Simulation::with_quality(def, vehicle, FS, 1, Quality::Ultra);
         sim.controls.throttle = throttle;
         // Pedal down in neutral, rev up, select the gear, then let the clutch out.
         sim.drive = DriveInput {
@@ -904,5 +962,60 @@ mod sound_report {
                 println!("{line}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod quality_tests {
+    use super::tests::{FS, render_secs, rms};
+    use super::*;
+    use crate::quality::Quality;
+    use engine_core::intake_fv::IntakeModel;
+
+    #[test]
+    fn low_quality_runs_cheap_pipes_but_shows_the_users_engine() {
+        let mut sim = Simulation::with_quality(
+            EngineDef::lfa_v10(),
+            VehicleDef::default(),
+            FS,
+            1,
+            Quality::Low,
+        );
+        assert_eq!(sim.quality(), Quality::Low);
+        assert_eq!(sim.engine().def().intake.model, IntakeModel::ZeroD);
+        assert_eq!(sim.snapshot().def, EngineDef::lfa_v10());
+        // and a new engine is taken at the same level, shown as given
+        let mut v8 = EngineDef::crossplane_v8();
+        v8.intake.model = IntakeModel::Fv;
+        sim.replace_engine(v8.clone());
+        assert_eq!(sim.engine().def().intake.model, IntakeModel::ZeroD);
+        assert_eq!(sim.snapshot().def, v8);
+        let out = render_secs(&mut sim, 0.2);
+        assert!(out.iter().all(|s| s.is_finite()) && rms(&out) > 1e-4);
+    }
+
+    #[test]
+    fn a_new_quality_keeps_the_engine_turning() {
+        let mut sim = Simulation::new(EngineDef::lfa_v10(), FS, 1);
+        assert_eq!(sim.quality(), Quality::Ultra);
+        sim.controls.throttle = 0.3;
+        render_secs(&mut sim, 0.5);
+        let rpm = sim.engine().rpm();
+        sim.set_quality(Quality::Medium);
+        assert_eq!(sim.quality(), Quality::Medium);
+        assert_eq!(sim.engine().def().intake.model, IntakeModel::Fv);
+        assert!(
+            (sim.engine().rpm() - rpm).abs() < 1.0,
+            "{rpm} → {}",
+            sim.engine().rpm()
+        );
+        let out = render_secs(&mut sim, 0.2);
+        assert!(out.iter().all(|s| s.is_finite()) && rms(&out) > 1e-4);
+        // the same level again changes nothing
+        let rpm = sim.engine().rpm();
+        let combustions = sim.engine().combustions();
+        sim.set_quality(Quality::Medium);
+        assert_eq!(sim.engine().combustions(), combustions);
+        assert_eq!(sim.engine().rpm(), rpm);
     }
 }

@@ -51,6 +51,7 @@ impl EngineApp {
         let sim = SimHandle::spawn(
             state.def.clone(),
             state.vehicle.clone(),
+            state.quality,
             Some(cc.egui_ctx.clone()),
         );
         Self {
@@ -236,6 +237,7 @@ impl eframe::App for EngineApp {
         self.poll_files(ui);
         self.poll_dyno(ui.ctx());
         let snap = self.sim.snapshot();
+        self.state.quality_running = Some(snap.quality);
         match layout(
             ui,
             &mut self.state,
@@ -251,6 +253,10 @@ impl eframe::App for EngineApp {
             self.state.engine_dirty = false;
             self.sim
                 .send(Command::Engine(Box::new(self.state.def.clone())));
+        }
+        if self.state.quality_dirty {
+            self.state.quality_dirty = false;
+            self.sim.send(Command::Quality(self.state.quality));
         }
         if self.state.vehicle_dirty {
             self.state.vehicle_dirty = false;
@@ -304,7 +310,13 @@ mod tests {
             (Preset::FlatplaneV8, 1.0),
             (Preset::CrossplaneV8, 0.3),
         ] {
-            let mut sim = Simulation::with_vehicle(preset.def(), preset.vehicle(), 48_000.0, 1);
+            let mut sim = Simulation::with_quality(
+                preset.def(),
+                preset.vehicle(),
+                48_000.0,
+                1,
+                crate::quality::Quality::Ultra,
+            );
             sim.controls = Controls {
                 throttle,
                 ..Controls::default()

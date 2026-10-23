@@ -71,6 +71,14 @@ pub struct IntakeFv {
 }
 
 impl IntakeFv {
+    /// Step every runner with `scheme`.
+    pub fn with_scheme(mut self, scheme: crate::fv::Scheme) -> Self {
+        for p in &mut self.runners {
+            p.scheme = scheme;
+        }
+        self
+    }
+
     pub fn new(def: &IntakeDef, plenum_volume_m3: f64, cylinders: usize, dt: f64) -> Self {
         let init = Prim {
             rho: ATM_PA / (R_AIR * AMBIENT_T_K),

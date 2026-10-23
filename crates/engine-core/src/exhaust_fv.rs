@@ -233,6 +233,18 @@ fn pipe(length: f64, diameter: f64, init: Prim) -> Pipe1d {
 }
 
 impl ExhaustFv {
+    /// Step every pipe of the network with `scheme`.
+    pub fn with_scheme(mut self, scheme: crate::fv::Scheme) -> Self {
+        for p in self
+            .primaries
+            .iter_mut()
+            .chain(self.branches.iter_mut().map(|b| &mut b.out))
+        {
+            p.scheme = scheme;
+        }
+        self
+    }
+
     pub fn new(def: &ExhaustDef, cylinders: usize, dt: f64) -> Self {
         let init = Prim {
             rho: ATM_PA / (R_AIR * INIT_T_K),
