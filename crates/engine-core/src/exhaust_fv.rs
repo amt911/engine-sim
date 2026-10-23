@@ -865,6 +865,19 @@ mod tests {
         );
         assert!((r - 0.3).abs() < 1e-12, "{r}");
         assert!(calls.get() <= 128, "{} evaluations", calls.get());
+        // the same step at 0.9 on [0.5, 1]: the first check measures against the initial
+        // bracket's 0.5 (from it, Illinois' first three steps fail to halve it): 112 evaluations
+        calls.set(0);
+        let r = rising_root(
+            |x| {
+                calls.set(calls.get() + 1);
+                if x < 0.9 { -1.0 } else { 1e-9 }
+            },
+            0.5,
+            1.0,
+        );
+        assert!((r - 0.9).abs() < 1e-12, "{r}");
+        assert_eq!(calls.get(), 112);
         // a steep, one-sided function (√ near its end, like w_j at x = 1) still converges
         let r = rising_root(|x| x - (1.0 - x * x).max(0.0).sqrt(), 0.0, 1.0);
         assert!((r - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-12, "{r}");
