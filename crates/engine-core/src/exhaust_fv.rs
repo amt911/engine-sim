@@ -96,13 +96,6 @@ pub(crate) fn rising_root(f: impl Fn(f64) -> f64, mut lo: f64, mut hi: f64) -> f
     if -f_lo < f_hi { lo } else { hi }
 }
 
-/// Density of gas at atmospheric pressure whose speed of sound is `C_TAIL`, kg/m³
-/// (T = c²/γR = 622 K): the reference the tail's acoustic source is scaled about.
-fn tail_reference_density() -> f64 {
-    let t = C_TAIL * C_TAIL / (crate::gas::GAMMA * R_AIR);
-    ATM_PA / (R_AIR * t)
-}
-
 /// Boundary state of a pipe end at a junction of pressure `p_j` (Benson's constant-pressure
 /// junction; Winterbone & Pearson): the characteristic leaving the pipe is kept, so the end
 /// sees the junction pressure without being forced to rest (a u = 0 plenum ghost low-passes
@@ -431,7 +424,7 @@ impl ExhaustFv {
             // al., Fundamentals of Acoustics, §7.4), not its mass flux: u = (ρu)/ρ at the exit,
             // scaled as ρ_ref·c·u about gas at C_TAIL, the waveguide's tail reference.
             let rho_exit = b.out.prim(b.out.cells.len() - 1).rho.max(1e-3);
-            let source = C_TAIL * tail_reference_density() * o.rho / rho_exit;
+            let source = C_TAIL * crate::exhaust::tail_reference_density() * o.rho / rho_exit;
             radiated += source;
             self.tails[bi] += weight * source;
         }
@@ -1245,7 +1238,11 @@ mod tests {
     fn the_tail_source_is_referenced_to_gas_at_its_sound_speed() {
         // c = 500 m/s ⇒ T = c²/(γR) = 250 000/(1.4·287) = 622.2 K; at 101 325 Pa,
         // ρ = p/(R·T) = 101 325/(287·622.2) = 0.56742 kg/m³
-        approx::assert_relative_eq!(tail_reference_density(), 0.56742, max_relative = 1e-4);
+        approx::assert_relative_eq!(
+            crate::exhaust::tail_reference_density(),
+            0.56742,
+            max_relative = 1e-4
+        );
     }
 
     #[test]

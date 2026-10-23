@@ -26,7 +26,7 @@ for r in rows[1:]:
     b = base.get(r[0])
     cells = []
     for i, h in enumerate(head[1:], 1):
-        cells.append(f"{h}={r[i]}" + (f" ({float(r[i]) - float(b[i]):+.1f})" if b else ""))
+        cells.append(f"{h}={r[i]}" + (f" ({float(r[i]) - float(b[i]):+.1f})" if b and i < len(b) else ""))
     print(r[0].ljust(14), "  ".join(cells))
 PY
 else
