@@ -48,6 +48,7 @@ engine:
       flow_resistivity: 16000.0
       porosity: 0.95
     tail_spacing_m: 0.9
+    after_collector: []
   intake:
     model: zero_d
     runner_length_m: 0.3
@@ -69,6 +70,9 @@ engine:
     leveling: 0.0
     listener_distance_m: 3.0
     listener_angle_deg: 30.0
+    ground: true
+    tail_height_m: 0.3
+    listener_height_m: 1.6
   exhaust_reverse_cd_ratio: 0.75
   overrun_fuel_cut_rpm: 1500.0
   vehicle:

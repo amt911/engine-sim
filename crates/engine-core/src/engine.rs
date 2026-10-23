@@ -1218,6 +1218,7 @@ impl Engine {
                 snd.listener_angle_deg,
                 PI * 0.25 * ex.tail_diameter_m.powi(2),
                 dt,
+                snd.ground_heights(),
             );
             self.listener = Some((dt, l));
         }
@@ -2764,6 +2765,7 @@ mod tests {
             90.0,
             PI * 0.25 * d.exhaust.tail_diameter_m.powi(2),
             DT,
+            d.sound.ground_heights(),
         );
         let mut tails = Vec::new();
         let (mut got, mut want) = (Vec::new(), Vec::new());

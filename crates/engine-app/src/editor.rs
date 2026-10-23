@@ -373,11 +373,6 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
                     .text("Intake roar"),
             );
             ui.add(
-                slider(&mut snd.mechanical, 0.0..=4.0)
-                    .step_by(0.05)
-                    .text("Valvetrain"),
-            );
-            ui.add(
                 slider(&mut snd.combustion_jitter, 0.0..=4.0)
                     .step_by(0.05)
                     .text("Combustion variability"),
@@ -407,6 +402,22 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
             )
             .on_hover_text(
                 "0 = straight behind; off the axis, each tail pipe arrives at its own time",
+            );
+            ui.checkbox(&mut snd.ground, "Street (ground reflection)")
+                .on_hover_text(
+                    "The asphalt returns each tail's sound from below: off = free field",
+                );
+            ui.add_enabled(
+                snd.ground,
+                slider(&mut snd.tail_height_m, 0.1..=1.0)
+                    .step_by(0.05)
+                    .text("Tail pipe height (m)"),
+            );
+            ui.add_enabled(
+                snd.ground,
+                slider(&mut snd.listener_height_m, 0.3..=2.0)
+                    .step_by(0.05)
+                    .text("Ear height (m)"),
             );
         });
 
@@ -613,6 +624,20 @@ mod tests {
         h.key_press(egui::Key::ArrowRight);
         h.run();
         assert!(h.state().def.sound.leveling > 0.0);
+        assert!(h.state().engine_dirty);
+    }
+
+    #[test]
+    fn the_street_switch_and_heights_edit_the_sound() {
+        let mut h = harness(EngineDef::inline4());
+        assert!(h.state().def.sound.ground);
+        nudge(&mut h, "Ear height (m)");
+        assert!(h.state().def.sound.listener_height_m > 1.6);
+        h.get_by_label("Street (ground reflection)").focus();
+        h.run();
+        h.key_press(egui::Key::Space);
+        h.run();
+        assert!(!h.state().def.sound.ground);
         assert!(h.state().engine_dirty);
     }
 

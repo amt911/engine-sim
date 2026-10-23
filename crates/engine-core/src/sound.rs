@@ -32,6 +32,21 @@ pub struct SoundDef {
     /// arrive with different delays.
     pub listener_distance_m: f64,
     pub listener_angle_deg: f64,
+    /// The street: a rigid ground (asphalt) under the car and the listener returns each tail's
+    /// sound from its image below the ground (ISO 9613-2) — the low end adds, the highs comb.
+    /// Off = free field.
+    pub ground: bool,
+    /// Heights above the ground of the tail pipes and of the listener's ear, m.
+    pub tail_height_m: f64,
+    pub listener_height_m: f64,
+}
+
+impl SoundDef {
+    /// (tail height, ear height) when the ground reflects, for [`crate::listener::Listener`].
+    pub fn ground_heights(&self) -> Option<(f64, f64)> {
+        self.ground
+            .then_some((self.tail_height_m, self.listener_height_m))
+    }
 }
 
 impl Default for SoundDef {
@@ -45,6 +60,10 @@ impl Default for SoundDef {
             leveling: 0.0,
             listener_distance_m: 3.0,
             listener_angle_deg: 30.0,
+            ground: true,
+            // a road car's tail pipe and a standing adult's ear
+            tail_height_m: 0.3,
+            listener_height_m: 1.6,
         }
     }
 }
@@ -89,5 +108,22 @@ mod tests {
             serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&s).unwrap()).unwrap();
         assert_eq!(json, s);
         assert_eq!(yaml, s);
+    }
+
+    #[test]
+    fn the_street_round_trips_and_old_files_stand_on_it() {
+        let old: SoundDef = serde_yaml_ng::from_str("reverb: 0.2\n").unwrap();
+        assert_eq!(old.ground_heights(), Some((0.3, 1.6)));
+        let s = SoundDef {
+            ground: false,
+            tail_height_m: 0.45,
+            listener_height_m: 1.2,
+            ..SoundDef::default()
+        };
+        assert_eq!(s.ground_heights(), None);
+        let json: SoundDef = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        let yaml: SoundDef =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&s).unwrap()).unwrap();
+        assert_eq!((json, yaml), (s.clone(), s));
     }
 }
