@@ -180,18 +180,45 @@ impl Reverb {
     }
 }
 
-/// Above this frequency the radiated sound follows the derivative of the source.
-pub const RADIATION_CORNER_HZ: f64 = 150.0;
+/// Fourth-order Butterworth low-pass (two biquads, Q = 0.5412 and 1.3066): the anti-alias
+/// filter before keeping one physics step in `SUBSTEPS` as an audio sample. Taking every 4th
+/// sample of a 192 kHz signal unfiltered folds everything between 24 and 96 kHz back into the
+/// audible band.
+#[derive(Debug, Clone)]
+pub struct AntiAlias {
+    stages: [LowPass; 2],
+}
 
-/// The engine voice: raw exhaust pressure (Pa) → speaker sample in [-1, 1].
+impl AntiAlias {
+    pub fn new(cutoff_hz: f64, sample_rate: f64) -> Self {
+        Self {
+            stages: [
+                LowPass::new(cutoff_hz, 0.541_196, sample_rate),
+                LowPass::new(cutoff_hz, 1.306_563, sample_rate),
+            ],
+        }
+    }
+    pub fn process(&mut self, x: f64) -> f64 {
+        let y = self.stages[0].process(x);
+        self.stages[1].process(y)
+    }
+}
+
+/// Sound pressure that plays at full scale: 0 dBFS = 120 dB SPL (20 µPa reference), so an
+/// engine heard at 100 dB plays at −20 dBFS and the levels between engines and operating points
+/// stay the physical ones.
+pub const FULL_SCALE_PA: f64 = 20.0;
+
+/// The engine voice: sound pressure at the listener (Pa, from the physics, already radiated)
+/// → speaker sample in [-1, 1]. It only reproduces: DC block (a speaker cannot hold a static
+/// pressure), optional room reverb and leveler, a fixed calibration, and a soft limit against
+/// overload. No tone shaping.
 #[derive(Debug, Clone)]
 pub struct Voice {
     dc: DcBlocker,
     reverb: Reverb,
     /// Wet level of the body/room reverb (0 = dry).
     pub reverb_mix: f64,
-    prev: f64,
-    lp: LowPass,
     sample_rate: f64,
     /// Pressure that maps to full scale before soft clipping, Pa.
     pub full_scale_pa: f64,
@@ -208,14 +235,8 @@ impl Voice {
             dc: DcBlocker::new(3.0, sample_rate),
             reverb: Reverb::new(sample_rate, 0.35),
             reverb_mix: 0.0,
-            prev: 0.0,
-            lp: LowPass::new(
-                5000.0_f64.min(0.45 * sample_rate),
-                std::f64::consts::FRAC_1_SQRT_2,
-                sample_rate,
-            ),
             sample_rate,
-            full_scale_pa: 150_000.0,
+            full_scale_pa: FULL_SCALE_PA,
             leveler: Leveler::new(LEVELER_REFERENCE, sample_rate),
         }
     }
@@ -223,13 +244,7 @@ impl Voice {
         if !pressure_pa.is_finite() {
             return 0.0;
         }
-        // Radiation: a pipe outlet radiates like a monopole, p ∝ d(flow)/dt (J. O. Smith,
-        // PASP, "Spherical Waves from a Point Source"). Mix the source with its derivative so
-        // components above RADIATION_CORNER_HZ are lifted ∝ frequency.
-        let x = self.dc.process(pressure_pa);
-        let dx = (x - self.prev) * self.sample_rate / (2.0 * PI * RADIATION_CORNER_HZ);
-        self.prev = x;
-        let dry = self.lp.process(x + dx);
+        let dry = self.dc.process(pressure_pa);
         let y = self
             .leveler
             .process((dry + self.reverb_mix * self.reverb.process(dry)) / self.full_scale_pa);
@@ -363,6 +378,30 @@ mod tests {
     }
 
     #[test]
+    fn anti_alias_passes_the_audio_band_and_stops_what_would_fold() {
+        // 4th-order Butterworth at 20 kHz, run at 192 kHz: flat in the band, −3 dB at the cut,
+        // and at 40 kHz (an octave up) at least the analog |H| = 1/√(1 + 2⁸) = 0.0624 (−24 dB):
+        // the bilinear transform only steepens it towards Nyquist
+        let fs = 192_000.0;
+        let gain = |f: f64| {
+            let mut a = AntiAlias::new(20_000.0, fs);
+            let n = fs as usize / 10;
+            let ys: Vec<f64> = (0..n)
+                .map(|i| a.process((2.0 * PI * f * i as f64 / fs).sin()))
+                .skip(n / 2)
+                .collect();
+            (2.0 * ys.iter().map(|y| y * y).sum::<f64>() / ys.len() as f64).sqrt()
+        };
+        assert_relative_eq!(gain(1_000.0), 1.0, max_relative = 0.005);
+        assert_relative_eq!(
+            gain(20_000.0),
+            std::f64::consts::FRAC_1_SQRT_2,
+            max_relative = 0.03
+        );
+        assert!(gain(40_000.0) < 0.0624, "40 kHz: {}", gain(40_000.0));
+    }
+
+    #[test]
     fn reverb_tail_decays_at_rt60() {
         let mut r = Reverb::new(FS, 0.3);
         let energy = |from: usize, to: usize, r: &mut Reverb, first: bool| {
@@ -395,9 +434,17 @@ mod tests {
     fn voice_reverb_leaves_a_tail_only_when_mixed_in() {
         let tail = |mix: f64| {
             let mut v = Voice::new(FS);
+            v.leveler.amount = 0.0;
             v.reverb_mix = mix;
+            // a 4 Pa (≈ 106 dB) burst: one period of 1 kHz, zero mean like any radiated sound
+            // (a one-sided pulse would leave the DC blocker's own slow recovery as a "tail")
             for n in 0..2_000 {
-                v.process(if n < 50 { 30_000.0 } else { 0.0 });
+                let x = if n < 48 {
+                    4.0 * (2.0 * PI * n as f64 / 48.0).sin()
+                } else {
+                    0.0
+                };
+                v.process(x);
             }
             (0..4_000)
                 .map(|_| (v.process(0.0) as f64).abs())
@@ -427,10 +474,28 @@ mod tests {
             }
             (acc / FS).sqrt()
         };
-        let quiet = out_rms(1_000.0, 1.0) / out_rms(1_000.0, 0.0);
+        // ~0.2 Pa (≈ 80 dB) idle against ~9 Pa (≈ 113 dB, 0.45 of full scale) full load
+        let quiet = out_rms(0.2, 1.0) / out_rms(0.2, 0.0);
         assert!((quiet - LEVELER_MAX_GAIN).abs() < 0.05, "idle lift {quiet}");
-        let loud = out_rms(40_000.0, 1.0) / out_rms(40_000.0, 0.0);
+        let loud = out_rms(9.0, 1.0) / out_rms(9.0, 0.0);
         assert!((loud - 1.0).abs() < 0.01, "full load {loud}");
+    }
+
+    #[test]
+    fn voice_plays_pascals_at_a_fixed_calibration_without_tone_shaping() {
+        // 0 dBFS = 120 dB SPL = 20 Pa: a 2 Pa tone (100 dB) plays at 0.1 of full scale
+        // (tanh(0.1) = 0.0997), at 200 Hz and at 8 kHz alike
+        for f in [200.0, 8_000.0] {
+            let mut v = Voice::new(FS);
+            v.leveler.amount = 0.0;
+            // amplitude from the rms over whole periods (a sampled 8 kHz sine never hits its peak)
+            let ys: Vec<f64> = (0..FS as usize)
+                .map(|i| v.process(2.0 * (2.0 * PI * f * i as f64 / FS).sin()) as f64)
+                .skip(FS as usize / 2)
+                .collect();
+            let amp = (2.0 * ys.iter().map(|y| y * y).sum::<f64>() / ys.len() as f64).sqrt();
+            assert_relative_eq!(amp, 0.0997, max_relative = 0.01);
+        }
     }
 
     #[test]

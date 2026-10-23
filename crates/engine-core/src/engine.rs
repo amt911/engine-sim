@@ -12,6 +12,7 @@ use crate::gas::{
 };
 use crate::geometry::CylinderGeometry;
 use crate::intake_fv::{IntakeDef, IntakeFv, IntakeModel};
+use crate::jet_noise::JetNoise;
 use crate::layout::Layout;
 use crate::listener::Listener;
 use crate::sound::{BURN_DURATION_JITTER, BURN_START_JITTER_DEG, SoundDef, Texture};
@@ -617,6 +618,10 @@ pub struct Engine {
     tail_pipes: usize,
     /// Where the listener hears the tails from, built for the step size it was made with.
     listener: Option<(f64, Listener)>,
+    /// The texture layers' signal this step, in the tails' units, before it is radiated.
+    texture_signal: f64,
+    /// The turbulent jet at each tail pipe.
+    jets: Vec<JetNoise>,
     flows: Vec<f64>,
     texture: Texture,
     /// Total mass that flowed back from the exhaust into the cylinders, kg (diagnostics).
@@ -736,6 +741,8 @@ impl Engine {
             intake_net: None,
             tail_pipes,
             listener: None,
+            texture_signal: 0.0,
+            jets: Vec::new(),
             flows: Vec::new(),
             texture: Texture::new(seed ^ 0x7E57),
             reversion_kg: 0.0,
@@ -1097,11 +1104,16 @@ impl Engine {
             }
         }
         // Acoustic source: what the tail pipes radiate.
-        let radiated = match (&mut self.net, &mut self.fv) {
-            (_, Some(fv)) => fv.step(),
-            (Some(net), None) => net.step(&self.flows),
-            (None, None) => 0.0,
-        };
+        // advance the exhaust; what each tail radiates is read below (`last_tails`)
+        match (&mut self.net, &mut self.fv) {
+            (_, Some(fv)) => {
+                fv.step();
+            }
+            (Some(net), None) => {
+                net.step(&self.flows);
+            }
+            (None, None) => {}
+        }
         if self.listener.as_ref().is_none_or(|l| l.0 != dt) {
             let (ex, snd) = (&self.def.exhaust, &self.def.sound);
             let l = Listener::new(
@@ -1109,6 +1121,7 @@ impl Engine {
                 ex.tail_spacing_m,
                 snd.listener_distance_m,
                 snd.listener_angle_deg,
+                PI * 0.25 * ex.tail_diameter_m.powi(2),
                 dt,
             );
             self.listener = Some((dt, l));
@@ -1119,8 +1132,8 @@ impl Engine {
             (None, None) => &[],
         };
         let heard = match &mut self.listener {
-            Some((_, l)) if !tails.is_empty() => l.process(tails),
-            _ => radiated,
+            Some((_, l)) => l.process(tails),
+            None => 0.0,
         };
         let throttle_area = self.throttle_area(self.plate);
         let bore_area = self.throttle_area(1.0);
@@ -1150,19 +1163,38 @@ impl Engine {
         for _ in 0..valve_closings {
             self.texture.valve_closed(rpm, snd.mechanical);
         }
-        let audio = heard
-            + self
-                .texture
-                .flow_noise(radiated, self.tail_pipes, snd.flow_noise, dt)
-            + self.texture.intake(
-                throttle_flow.abs(),
-                throttle_area,
-                bore_area,
-                snd.intake,
-                dt,
-            )
+        // The texture layers are signals in the tails' units (ρc·u); until each is replaced by
+        // its physical source, they radiate from the tails like the exhaust does.
+        let texture = self.texture.intake(throttle_flow, bore_area, snd.intake)
             + snd.intake * INTAKE_SOUND_GAIN * induction
             + self.texture.clicks(dt);
+        self.texture_signal = texture;
+        // each tail's jet: its exit velocity u = (ρc·u)/ρc, its own distance to the listener
+        let mut jets = 0.0;
+        if snd.flow_noise > 0.0
+            && let Some((_, l)) = &self.listener
+        {
+            let z = crate::exhaust::tail_impedance();
+            let rho = crate::exhaust::tail_reference_density();
+            let d = self.def.exhaust.tail_diameter_m;
+            if self.jets.len() != tails.len() {
+                // seeded from the engine's own generator: deterministic for a seed
+                let base = self.rng;
+                self.jets = (0..tails.len())
+                    .map(|k| JetNoise::new(base.wrapping_add(k as u64 + 1)))
+                    .collect();
+            }
+            for ((jet, signal), r) in self.jets.iter_mut().zip(tails).zip(l.distances()) {
+                jets += jet.step(signal / z, d, rho, *r, dt);
+            }
+            jets *= snd.flow_noise;
+        }
+        let audio = heard
+            + jets
+            + match &mut self.listener {
+                Some((_, l)) => l.radiate_shared(texture),
+                None => 0.0,
+            };
 
         // Crank dynamics.
         let starter = if c.starter && rad_s_to_rpm(self.omega) < 600.0 {
@@ -2455,10 +2487,14 @@ mod tests {
     #[test]
     fn the_engine_is_heard_through_the_listener() {
         // One tail: where you stand changes nothing (only the common path, which is dropped).
-        assert_eq!(
+        // (to rounding: √(sin² + cos²)·r is r in the last bit)
+        let (a, b) = (
             heard_at(EngineDef::inline4(), 0.0),
-            heard_at(EngineDef::inline4(), 60.0)
+            heard_at(EngineDef::inline4(), 60.0),
         );
+        for (x, y) in a.iter().zip(&b) {
+            assert_relative_eq!(x, y, max_relative = 1e-12, epsilon = 1e-15);
+        }
         // Two tails heard from the side: the far one arrives later, so the sum changes.
         let a = heard_at(EngineDef::crossplane_v8(), 0.0);
         let b = heard_at(EngineDef::crossplane_v8(), 60.0);
@@ -2496,7 +2532,7 @@ mod tests {
 
     #[test]
     fn the_trumpets_are_heard_at_their_mean_flow() {
-        // With only the intake texture on, output(1) − output(0) is the trumpets' radiation
+        // With only the intake texture on, its signal(1) − signal(0) is the trumpets' radiation
         // 0.3·c·Σρu plus the throttle tone 0.15·c·ṁ/A_bore. Over the runners Σρu averages
         // ṁ/A_runner, so its mean is c·ṁ·(0.3/A_runner + 0.15/A_bore), c = 343 m/s.
         let out = |level: f64| {
@@ -2516,7 +2552,12 @@ mod tests {
             };
             run(&mut e, 0.5, &c);
             let m0 = e.inducted_kg();
-            let y = run(&mut e, 0.3, &c);
+            let y: Vec<f64> = (0..(0.3 / DT) as usize)
+                .map(|_| {
+                    e.step(DT, &c);
+                    e.texture_signal
+                })
+                .collect();
             (y, (e.inducted_kg() - m0) / 0.3)
         };
         let ((quiet, _), (heard, mdot)) = (out(0.0), out(1.0));
@@ -2594,6 +2635,7 @@ mod tests {
             d.exhaust.tail_spacing_m,
             d.sound.listener_distance_m,
             90.0,
+            PI * 0.25 * d.exhaust.tail_diameter_m.powi(2),
             DT,
         );
         let mut tails = Vec::new();
@@ -3192,7 +3234,85 @@ mod tests {
             ..Controls::default()
         };
         run(&mut e, 0.3, &c);
-        run(&mut e, 0.2, &c)
+        // the layers' own signal, before radiation turns it into pressure at the listener
+        (0..(0.2 / DT) as usize)
+            .map(|_| {
+                e.step(DT, &c);
+                e.texture_signal
+            })
+            .collect()
+    }
+
+    /// The LFA held at 6000 rpm, full throttle, with `snd`: (audio, texture signal) per step.
+    fn heard_with(snd: crate::sound::SoundDef) -> (Vec<f64>, Vec<f64>) {
+        let mut d = EngineDef::lfa_v10();
+        d.sound = snd;
+        let mut e = Engine::new(d, 6000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(6000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.2, &c);
+        (0..(0.1 / DT) as usize)
+            .map(|_| (e.step(DT, &c), e.texture_signal))
+            .unzip()
+    }
+
+    #[test]
+    fn the_jets_add_to_the_sound_in_proportion_to_their_level() {
+        // flow_noise only scales the jets' pressure at the listener (the gas does not hear it):
+        // with the same seed, the sound at level 2 minus the sound at 0 is exactly twice the
+        // sound at level 1 minus it, and not nothing
+        let at = |k: f64| {
+            heard_with(crate::sound::SoundDef {
+                flow_noise: k,
+                ..crate::sound::SoundDef::default()
+            })
+            .0
+        };
+        let (a0, a1, a2) = (at(0.0), at(1.0), at(2.0));
+        let (_, one) = mean_rms_of_difference(&a1, &a0);
+        let (_, two) = mean_rms_of_difference(&a2, &a0);
+        assert!(one > 1e-6, "no jets: {one}");
+        assert_relative_eq!(two, 2.0 * one, max_relative = 1e-9);
+    }
+
+    #[test]
+    fn the_texture_radiates_like_a_monopole_from_the_tails() {
+        // The intake layer's share of the sound (level 1 minus level 0) is the shared
+        // radiation of its share of the texture signal: a monopole, p ∝ dQ/dt with a positive
+        // constant, so it follows the signal's rate of change with the same polarity.
+        let quiet = crate::sound::SoundDef {
+            flow_noise: 0.0,
+            intake: 0.0,
+            ..crate::sound::SoundDef::default()
+        };
+        let (a0, t0) = heard_with(quiet.clone());
+        let (a1, t1) = heard_with(crate::sound::SoundDef {
+            intake: 1.0,
+            ..quiet
+        });
+        let heard: Vec<f64> = a1.iter().zip(&a0).map(|(x, y)| x - y).collect();
+        let rate: Vec<f64> = t1
+            .iter()
+            .zip(&t0)
+            .map(|(x, y)| x - y)
+            .collect::<Vec<_>>()
+            .windows(2)
+            .map(|w| w[1] - w[0])
+            .collect();
+        // the listener's delay shifts it; take the best lag within 30 ms
+        let corr = |lag: usize| {
+            let (x, y) = (&heard[lag + 1..], &rate[..rate.len() - lag]);
+            let n = x.len().min(y.len());
+            let dot: f64 = (0..n).map(|i| x[i] * y[i]).sum();
+            let nx: f64 = x[..n].iter().map(|v| v * v).sum::<f64>().sqrt();
+            let ny: f64 = y[..n].iter().map(|v| v * v).sum::<f64>().sqrt();
+            dot / (nx * ny)
+        };
+        let best = (0..(0.03 / DT) as usize).map(corr).fold(f64::MIN, f64::max);
+        assert!(best > 0.9, "best correlation {best}");
     }
 
     fn mean_rms_of_difference(a: &[f64], b: &[f64]) -> (f64, f64) {
@@ -3207,11 +3327,28 @@ mod tests {
     #[test]
     fn each_texture_source_adds_to_the_output() {
         let dry = textured(0.0, 0.0, 0.0, 5000.0, 1.0);
-        // flow noise: zero-mean broadband added on top
-        let (m, r) = mean_rms_of_difference(&textured(1.0, 0.0, 0.0, 5000.0, 1.0), &dry);
+        // the tail jets: zero-mean broadband pressure at the listener. By hand, a 2.0 L at
+        // 5000 rpm WOT blows ~0.09 kg/s through a 50 mm tail (u ≈ 81 m/s mean): ≈ 61 dB at 3 m
+        // (0.02 Pa), more with the pulse peaks weighing as u^7.5; measured ≈ 0.04 Pa
+        let heard = |flow: f64| {
+            let mut d = EngineDef::inline4();
+            d.sound.flow_noise = flow;
+            d.sound.intake = 0.0;
+            d.sound.mechanical = 0.0;
+            d.sound.combustion_jitter = 0.0;
+            let mut e = Engine::new(d, 5000.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(5000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &c);
+            run(&mut e, 0.2, &c)
+        };
+        let (m, r) = mean_rms_of_difference(&heard(1.0), &heard(0.0));
         assert!(
-            r > 10.0 && m.abs() < 0.2 * r,
-            "flow noise: mean {m} rms {r}"
+            (0.01..0.2).contains(&r) && m.abs() < 0.05 * r,
+            "jets: mean {m} rms {r} Pa"
         );
         // intake: the tone c·ṁ/A_bore is a positive offset under load
         let (m, _) = mean_rms_of_difference(&textured(0.0, 1.0, 0.0, 5000.0, 1.0), &dry);
