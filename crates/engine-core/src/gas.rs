@@ -197,9 +197,17 @@ pub fn port_flow_from(
     if cd_area <= 0.0 || pa == p_base {
         return 0.0;
     }
-    let h = |m: f64| m - f(m);
-    let (mut lo, mut hi) = (start, start - h(start));
-    let (mut hlo, mut hhi) = (h(lo), h(hi));
+    unit_slope_root(|m: f64| m - f(m), start, || (0.0, f(0.0)))
+}
+
+/// Root of `h`, whose slope is at least 1 everywhere (h = ṁ − f(ṁ) with f non-increasing),
+/// searched from `start`: the step start − h(start) lands across the root, so the two points
+/// bracket it with no search. Should round-off break the slope bound, `cold` gives a bracket
+/// that always holds. Illinois regula falsi inside, to 1e-9 of the root.
+fn unit_slope_root(h: impl Fn(f64) -> f64, start: f64, cold: impl FnOnce() -> (f64, f64)) -> f64 {
+    let h0 = h(start);
+    let (mut lo, mut hi) = (start, start - h0);
+    let (mut hlo, mut hhi) = (h0, h(hi));
     if hlo == 0.0 {
         return lo;
     }
@@ -207,9 +215,8 @@ pub fn port_flow_from(
         return hi;
     }
     if (hlo > 0.0) == (hhi > 0.0) {
-        // round-off broke the slope bound: the bracket from no flow, always valid
-        let m0 = f(0.0);
-        (lo, hi, hlo, hhi) = (0.0, m0, -m0, h(m0));
+        (lo, hi) = cold();
+        (hlo, hhi) = (h(lo), h(hi));
         if hhi == 0.0 {
             return hi;
         }
@@ -449,6 +456,60 @@ mod tests {
             let half = plan_with_reservoir(&a0, &atm, 1.0, 1.0, 0.25).dm;
             assert_relative_eq!(half, 0.25 * full, max_relative = 1e-12);
         }
+    }
+
+    #[test]
+    fn a_unit_slope_root_is_bracketed_by_one_step() {
+        let calls = &std::cell::Cell::new(0);
+        let count = |h: fn(f64) -> f64| {
+            move |x: f64| {
+                calls.set(calls.get() + 1);
+                h(x)
+            }
+        };
+        let cold_used = std::cell::Cell::new(false);
+        let cold = || {
+            cold_used.set(true);
+            (0.0, 10.0)
+        };
+        // slope exactly 1: the step lands on the root (h at start and at the step: 2 calls)
+        let r = unit_slope_root(count(|x| x - 3.0), 2.5, cold);
+        assert_eq!((r, calls.get()), (3.0, 2));
+        // slope 2: the step overshoots to 3.1, the bracket [2.9, 3.1] closes in a few calls
+        calls.set(0);
+        let r = unit_slope_root(count(|x| 2.0 * (x - 3.0) + (x - 3.0).powi(3)), 2.9, cold);
+        assert!((r - 3.0).abs() < 1e-9, "{r}");
+        assert!(calls.get() <= 6, "{} calls", calls.get());
+        assert!(!cold_used.get());
+        // a slope under 1 breaks the bound: the step does not cross, the cold bracket does
+        let r = unit_slope_root(
+            |x| 0.5 * (x - 3.0),
+            0.0,
+            || {
+                cold_used.set(true);
+                (0.0, 10.0)
+            },
+        );
+        assert!((r - 3.0).abs() < 1e-9, "{r}");
+        assert!(cold_used.get());
+    }
+
+    #[test]
+    fn a_rarefaction_is_floored_at_a_twentieth_of_an_atmosphere() {
+        // any wave deeper than p_base = 0.05 atm acts as that floor
+        let hot = GasVolume::at(5e5, 1200.0, 4e-4);
+        let port = |arriving: f64| Port {
+            arriving,
+            z: Z,
+            t_back: 800.0,
+        };
+        let at_floor = 0.5 * (0.05 - 1.0) * crate::units::ATM_PA;
+        // a long step, so the flow is the relaxed equalisation towards p_base + z·ṁ: the
+        // floor shows in it (the choked flow itself does not see the port pressure)
+        let flow = |arriving| exhaust_valve_flow(&hot, 5e-4, port(arriving), 1.0, 0.25, 0.0).dm;
+        assert_relative_eq!(flow(-2.0e5), flow(at_floor), max_relative = 1e-12);
+        // and a shallower one moves less
+        assert!(flow(0.5 * at_floor) < flow(at_floor));
     }
 
     #[test]
