@@ -521,6 +521,15 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
                     .text("Intake roar"),
             );
             ui.add(
+                slider(&mut snd.block, 0.0..=4.0)
+                    .step_by(0.05)
+                    .text("Engine block"),
+            )
+            .on_hover_text(
+                "Combustion noise radiated by the block: the cylinder pressure through the \
+                 structure response measured on engines. 1 = physical, 0 = off.",
+            );
+            ui.add(
                 slider(&mut snd.combustion_jitter, 0.0..=4.0)
                     .step_by(0.05)
                     .text("Combustion variability"),
@@ -725,6 +734,8 @@ mod tests {
         nudge(&mut h, "Flow noise");
         assert!(h.state().def.sound.flow_noise > 0.0);
         assert!(h.state().engine_dirty);
+        nudge(&mut h, "Engine block");
+        assert_eq!(h.state().def.sound.block, 1.05);
     }
 
     #[test]

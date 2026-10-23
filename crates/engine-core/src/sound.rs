@@ -16,6 +16,9 @@ pub struct SoundDef {
     pub flow_noise: f64,
     /// The intake mouth: a monopole of the air the engine draws (1 = physical, 0 = off).
     pub intake: f64,
+    /// The block's radiated combustion noise ([`crate::structure`]): the cylinder pressure
+    /// through the measured structure response of engine blocks, 1 = physical, 0 = off.
+    pub block: f64,
     /// Valvetrain noise. No physical model yet (valve seating radiated by the block): kept so
     /// older files load; it has no effect.
     pub mechanical: f64,
@@ -54,6 +57,7 @@ impl Default for SoundDef {
         Self {
             flow_noise: 1.0,
             intake: 1.0,
+            block: 1.0,
             mechanical: 1.0,
             combustion_jitter: 1.0,
             reverb: 0.15,
@@ -87,6 +91,20 @@ mod tests {
         let s = SoundDef {
             listener_distance_m: 7.5,
             listener_angle_deg: -45.0,
+            ..SoundDef::default()
+        };
+        let json: SoundDef = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        let yaml: SoundDef =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&s).unwrap()).unwrap();
+        assert_eq!((json, yaml), (s.clone(), s));
+    }
+
+    #[test]
+    fn the_block_round_trips_and_old_files_hear_it() {
+        let old: SoundDef = serde_yaml_ng::from_str("reverb: 0.2\n").unwrap();
+        assert_eq!(old.block, 1.0);
+        let s = SoundDef {
+            block: 0.25,
             ..SoundDef::default()
         };
         let json: SoundDef = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
