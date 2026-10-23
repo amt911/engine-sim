@@ -52,6 +52,8 @@ pub struct ExhaustDef {
     pub model: ExhaustModel,
     /// Muffler expansion-chamber volume, m³ (finite-volume model).
     pub muffler_volume_m3: f64,
+    /// Absorptive packing lining the muffler can (finite-volume model).
+    pub muffler_packing: crate::lining::Packing,
     /// Distance between the outermost tail pipes across the car, m (several tails are spread
     /// evenly between them); where the listener hears each one from.
     pub tail_spacing_m: f64,
@@ -78,6 +80,7 @@ impl Default for ExhaustDef {
             muffler_transmission: 0.5,
             model: ExhaustModel::Waveguide,
             muffler_volume_m3: 0.006,
+            muffler_packing: crate::lining::Packing::default(),
             tail_spacing_m: 0.9,
         }
     }

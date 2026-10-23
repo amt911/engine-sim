@@ -130,6 +130,7 @@ impl EngineDef {
                 muffler_transmission: 0.6,
                 model: ExhaustModel::Waveguide,
                 muffler_volume_m3: 0.003,
+                muffler_packing: crate::lining::Packing::default(),
                 // one tail: no spread
                 tail_spacing_m: 0.9,
             },
@@ -224,6 +225,7 @@ impl EngineDef {
                 muffler_transmission: 0.7,
                 model: ExhaustModel::Waveguide,
                 muffler_volume_m3: 0.010,
+                muffler_packing: crate::lining::Packing::default(),
                 // the tips sit together in the centre of the rear diffuser
                 tail_spacing_m: 0.25,
             },
@@ -300,6 +302,7 @@ impl EngineDef {
                 muffler_transmission: 0.7,
                 model: ExhaustModel::Waveguide,
                 muffler_volume_m3: 0.010,
+                muffler_packing: crate::lining::Packing::default(),
                 // the tips sit together in the centre (458 Italia)
                 tail_spacing_m: 0.25,
             },
@@ -368,6 +371,7 @@ impl EngineDef {
                 muffler_transmission: 0.6,
                 model: ExhaustModel::Waveguide,
                 muffler_volume_m3: 0.012,
+                muffler_packing: crate::lining::Packing::default(),
                 // two tips each side (C6 Corvette)
                 tail_spacing_m: 1.1,
             },

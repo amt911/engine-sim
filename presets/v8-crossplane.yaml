@@ -63,6 +63,10 @@ engine:
     muffler_transmission: 0.6
     model: waveguide
     muffler_volume_m3: 0.012
+    muffler_packing:
+      thickness_m: 0.025
+      flow_resistivity: 16000.0
+      porosity: 0.95
     tail_spacing_m: 1.1
   intake:
     model: zero_d

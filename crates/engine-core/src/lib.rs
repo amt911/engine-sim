@@ -14,6 +14,7 @@ pub mod geometry;
 pub mod intake_fv;
 pub mod jet_noise;
 pub mod layout;
+pub mod lining;
 pub mod listener;
 pub mod sound;
 pub mod units;

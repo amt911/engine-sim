@@ -3,9 +3,10 @@
 //! two small 0D junctions: reactive muffler with frequency-dependent loss, Munjal) → tail pipe →
 //! atmosphere. Pulses steepen with amplitude, which the linear waveguides cannot do.
 
-use crate::exhaust::{C_TAIL, ExhaustDef};
+use crate::exhaust::{C_TAIL, CHAMBER_LENGTH_M, ExhaustDef};
 use crate::fv::{Boundary, Pipe1d, Prim, flux_boundary};
 use crate::gas::{GasVolume, ISENTROPIC_P_POW, ISENTROPIC_RHO_POW, R_AIR};
+use crate::lining::{Lining, Packing};
 use crate::units::ATM_PA;
 
 /// Target cell size, m (≈ 7.5 cells per wavelength at 2 kHz in hot gas; cost ∝ 1/dx²).
@@ -21,9 +22,28 @@ struct Branch {
     junction: GasVolume,
     /// Collector, muffler can and tail pipe as one variable-area quasi-1D pipe.
     out: Pipe1d,
+    /// The can's packing, along its cells of `out`.
+    lining: Option<Lining>,
 }
 
-use crate::exhaust::CHAMBER_LENGTH_M;
+/// The gas passage of a muffler can of `volume` (length [`CHAMBER_LENGTH_M`]) lined with
+/// `packing`: (area, perimeter, packing as fitted). The packing fills an annulus inside the
+/// can wall, leaving at least the tail pipe's own bore open (a straight-through perforate).
+fn chamber_passage(volume: f64, packing: Packing, tail_area: f64) -> (f64, f64, Packing) {
+    let can_area = volume.max(1e-5) / CHAMBER_LENGTH_M;
+    let can_r = (can_area / std::f64::consts::PI).sqrt();
+    let min_r = (tail_area / std::f64::consts::PI).sqrt();
+    let r = (can_r - packing.thickness_m.max(0.0)).max(min_r.min(can_r));
+    let fitted = Packing {
+        thickness_m: can_r - r,
+        ..packing
+    };
+    (
+        std::f64::consts::PI * r * r,
+        2.0 * std::f64::consts::PI * r,
+        fitted,
+    )
+}
 
 #[derive(Debug, Clone)]
 pub struct ExhaustFv {
@@ -244,18 +264,25 @@ impl ExhaustFv {
             .groups(cylinders)
             .into_iter()
             .map(|members| {
+                let a_tail = area(def.tail_diameter_m);
+                let (a_can, perimeter, packing) =
+                    chamber_passage(def.muffler_volume_m3, def.muffler_packing, a_tail);
                 let mut out = Pipe1d::segmented(
                     &[
                         (def.collector_length_m, a_collector),
-                        (
-                            CHAMBER_LENGTH_M,
-                            def.muffler_volume_m3.max(1e-5) / CHAMBER_LENGTH_M,
-                        ),
-                        (def.tail_length_m, area(def.tail_diameter_m)),
+                        (CHAMBER_LENGTH_M, a_can),
+                        (def.tail_length_m, a_tail),
                     ],
                     CELL_M,
                     init,
                 );
+                // the can's cells, as `segmented` counts them
+                let first = ((def.collector_length_m / CELL_M).round() as usize).max(1);
+                let can = first..first + ((CHAMBER_LENGTH_M / CELL_M).round() as usize).max(1);
+                let lining = (packing.thickness_m > 0.0).then(|| {
+                    let packed = def.muffler_volume_m3.max(1e-5) / CHAMBER_LENGTH_M - a_can;
+                    Lining::new(&out, can, perimeter, packed, packing, (ATM_PA, INIT_T_K))
+                });
                 out.floors = (1e-3, 500.0);
                 out.friction = PIPE_FRICTION;
                 out.right = Boundary::Open {
@@ -267,6 +294,7 @@ impl ExhaustFv {
                     // junction: the merge region, about three collector diameters long
                     junction: vol(a_collector * 3.0 * def.collector_diameter_m.max(CELL_M)),
                     out,
+                    lining,
                 }
             })
             .collect();
@@ -404,6 +432,9 @@ impl ExhaustFv {
         }
         for b in self.branches.iter_mut() {
             b.out.step(h);
+            if let Some(l) = b.lining.as_mut() {
+                l.step(&mut b.out, h);
+            }
             // the junction takes what the faces carried (total enthalpy flux → internal energy)
             for &m in &b.members {
                 let f = self.primaries[m].end_flux.1;
@@ -450,6 +481,7 @@ impl ExhaustFv {
         let mut m: f64 = self.primaries.iter().map(pipe_mass).sum();
         for b in &self.branches {
             m += b.junction.mass_kg + pipe_mass(&b.out);
+            m += b.lining.as_ref().map_or(0.0, Lining::mass_kg);
         }
         m
     }
@@ -626,6 +658,66 @@ mod tests {
             }
         }
         2.0 * (re * re + im * im).sqrt() / count
+    }
+
+    #[test]
+    fn the_packing_passes_the_firing_orders_and_soaks_up_the_highs() {
+        // The LFA's 10 L can with 25 mm of σ = 16 kPa·s/m² packing against the same passage
+        // lined with an impervious packing (σ → ∞: the same geometry, no absorption), as band
+        // rms over tones. By hand (lossy transmission line, `lining` docs; passage 0.01295 m²,
+        // perimeter 0.403 m, pores 0.95 × 0.01205 m², gas at 600–1000 K) one pass through the
+        // 0.4 m can keeps
+        // e^(−αL) = 0.91–0.93 at 600 Hz and 0.55–0.63 at 1.5 kHz; the system's standing waves
+        // cross it many times, and the packing also detunes and damps them, so per tone the
+        // ratio scatters (0.14–1.5). Per band: the highs must lose at least one pass's worth,
+        // the firing orders keep most of their level (less than 6 dB lost), well above the highs.
+        let packed = ExhaustDef {
+            muffler_volume_m3: 0.010,
+            ..def()
+        };
+        let rigid = ExhaustDef {
+            muffler_packing: Packing {
+                flow_resistivity: 1e15,
+                ..packed.muffler_packing
+            },
+            ..packed.clone()
+        };
+        let band = |fs: &[f64]| {
+            let e = |d: &ExhaustDef| fs.iter().map(|&f| tone_through(d, f).powi(2)).sum::<f64>();
+            (e(&packed) / e(&rigid)).sqrt()
+        };
+        let low = band(&[300.0, 400.0, 500.0, 600.0, 700.0]);
+        let high = band(&[1000.0, 1200.0, 1400.0, 1600.0, 2000.0]);
+        assert!(high < 0.63, "1–2 kHz keeps {high}");
+        assert!(
+            low > 0.5 && low > 1.5 * high,
+            "300–700 Hz keeps {low}, 1–2 kHz {high}"
+        );
+    }
+
+    #[test]
+    fn the_packing_leaves_at_least_the_tail_bore_open() {
+        // 10 L over 0.4 m: can area 0.025 m², radius 89.2 mm; 25 mm of packing leaves a
+        // 64.2 mm passage (0.012951 m², perimeter 0.40345 m)
+        let tail = area(0.05);
+        let (a, p, k) = chamber_passage(0.010, Packing::default(), tail);
+        assert_relative_eq!(a, 0.012_951, max_relative = 1e-3);
+        assert_relative_eq!(p, 0.403_45, max_relative = 1e-3);
+        assert_relative_eq!(k.thickness_m, 0.025, max_relative = 1e-9);
+        // a 1 L can is only 28.2 mm in radius: the packing shrinks to keep the 25 mm tail bore
+        let (a, _, k) = chamber_passage(0.001, Packing::default(), tail);
+        assert_relative_eq!(a, tail, max_relative = 1e-9);
+        assert_relative_eq!(k.thickness_m, 0.028_209 - 0.025, max_relative = 1e-3);
+        // no packing: the whole can
+        let bare = Packing {
+            thickness_m: 0.0,
+            ..Packing::default()
+        };
+        assert_relative_eq!(
+            chamber_passage(0.010, bare, tail).0,
+            0.025,
+            max_relative = 1e-9
+        );
     }
 
     #[test]
@@ -1043,6 +1135,7 @@ mod tests {
     fn a_fresh_network_holds_its_geometric_volume_of_gas() {
         // 2 × π/4·0.04²·0.7 primaries + junction + collector + 6 L muffler + 1.5 m tail, at
         // 1 atm / 600 K (ρ = 0.5884 kg/m³), defaults of `ExhaustDef`, all diameters by hand.
+        // The muffler's packing (3.55 L of its 6 L) is 5 % fibre: 0.18 L less gas, 2 %.
         let d = def();
         let disc = |dia: f64| std::f64::consts::PI / 4.0 * dia * dia;
         let v = 2.0 * disc(d.primary_diameter_m) * d.primary_length_m
