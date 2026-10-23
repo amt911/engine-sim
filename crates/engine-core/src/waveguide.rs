@@ -114,8 +114,8 @@ impl Pipe {
 #[derive(Debug, Clone)]
 pub struct Duct {
     pipes: Vec<Pipe>,
-    /// What the wall draws at each inner node (none where it is hard).
-    shunts: Vec<Option<Shunt>>,
+    /// What happens at each inner node, between pipe k and k + 1.
+    nodes: Vec<Node>,
 }
 
 /// A wall that breathes at a node of a duct: the packing behind a perforate, a pocket of pore
@@ -125,12 +125,24 @@ pub struct Duct {
 /// with the pipes' waves at once, so it is stable for any element.
 #[derive(Debug, Clone)]
 pub struct Shunt {
-    /// q[n] = b0·p[n] + b1·p[n−1] − a1·q[n−1], in units of area × pressure (×ρc).
-    b0: f64,
-    b1: f64,
-    a1: f64,
-    p_last: f64,
-    q_last: f64,
+    /// q[n] = b0·p[n] + b1·p[n−1] + b2·p[n−2] − a1·q[n−1] − a2·q[n−2], in units of area ×
+    /// pressure (×ρc), so the node adds it to the pipes' areas.
+    b: [f64; 3],
+    a: [f64; 2],
+    p: [f64; 2],
+    q: [f64; 2],
+}
+
+/// What happens where two pipes of a [`Duct`] meet.
+#[derive(Debug, Clone)]
+pub enum Node {
+    /// A plain area change (or none).
+    Plain,
+    /// A wall that breathes: lining, side resonator.
+    Shunt(Shunt),
+    /// A resistance in the flow's way: `R` (Pa·s/m³, pressure drop over volume flow) in gas
+    /// of impedance `rho_c` — a catalyst's monolith.
+    Series(f64, f64),
 }
 
 impl Shunt {
@@ -150,23 +162,56 @@ impl Shunt {
         // Y(s) = K·s/(1 + sτ), per node; ×ρc to speak in the junction's area units
         let (k, tau, a) = (rho_c * c * length_m, r * c, 2.0 / dt);
         let den = 1.0 + a * tau;
+        Self::from_coefficients(
+            [k * a / den, -k * a / den, 0.0],
+            [(1.0 - a * tau) / den, 0.0],
+        )
+    }
+
+    /// A Helmholtz resonator off the duct: a neck of `neck_d` and effective length `neck_l`
+    /// (end corrections included) into a cavity of `volume`, the neck's resistance `r_neck`
+    /// (Pa·s/m³). Its branch draws Y(s) = sC/(1 + sRC + s²MC), M = ρl/Aₙ, C = V/(ρc²)
+    /// (Kinsler et al., ch. 10): it short-circuits the duct at ω₀ = c·√(Aₙ/(lV)).
+    pub fn helmholtz(
+        neck_d: f64,
+        neck_l: f64,
+        volume: f64,
+        r_neck: f64,
+        rho_c: f64,
+        c: f64,
+        dt: f64,
+    ) -> Self {
+        let rho = rho_c / c;
+        let a_n = std::f64::consts::PI * 0.25 * neck_d * neck_d;
+        let (m, cap) = (rho * neck_l / a_n, volume / (rho * c * c));
+        let (k, a) = (rho_c * cap, 2.0 / dt);
+        // bilinear: s = a(1 − z⁻¹)/(1 + z⁻¹)
+        let d0 = 1.0 + r_neck * cap * a + m * cap * a * a;
+        let d1 = 2.0 - 2.0 * m * cap * a * a;
+        let d2 = 1.0 - r_neck * cap * a + m * cap * a * a;
+        Self::from_coefficients([k * a / d0, 0.0, -k * a / d0], [d1 / d0, d2 / d0])
+    }
+
+    fn from_coefficients(b: [f64; 3], a: [f64; 2]) -> Self {
         Self {
-            b0: k * a / den,
-            b1: -k * a / den,
-            a1: (1.0 - a * tau) / den,
-            p_last: 0.0,
-            q_last: 0.0,
+            b,
+            a,
+            p: [0.0; 2],
+            q: [0.0; 2],
         }
     }
 
     /// Node pressure where pipes of `areas` meet with waves `incoming`, this shunt drawing its
     /// flow: Σ Aᵢ(2pᵢ − p) = q(p). Writes the outgoing waves; advances the shunt.
     fn node(&mut self, areas: &[f64; 2], incoming: &[f64; 2], outgoing: &mut [f64; 2]) {
-        let hist = self.b1 * self.p_last - self.a1 * self.q_last;
+        let hist = self.b[1] * self.p[0] + self.b[2] * self.p[1]
+            - self.a[0] * self.q[0]
+            - self.a[1] * self.q[1];
         let pj = (2.0 * (areas[0] * incoming[0] + areas[1] * incoming[1]) - hist)
-            / (areas[0] + areas[1] + self.b0);
-        self.q_last = self.b0 * pj + hist;
-        self.p_last = pj;
+            / (areas[0] + areas[1] + self.b[0]);
+        let q = self.b[0] * pj + hist;
+        self.p = [pj, self.p[0]];
+        self.q = [q, self.q[0]];
         outgoing[0] = pj - incoming[0];
         outgoing[1] = pj - incoming[1];
     }
@@ -178,7 +223,15 @@ impl Duct {
         assert!(!pipes.is_empty(), "a duct needs a pipe");
         Self {
             pipes,
-            shunts: Vec::new(),
+            nodes: Vec::new(),
+        }
+    }
+    /// Pipes with what happens at each inner node (`nodes[k]` between pipe k and k + 1;
+    /// missing ones are plain).
+    pub fn with_nodes(pipes: Vec<Pipe>, nodes: Vec<Node>) -> Self {
+        Self {
+            nodes,
+            ..Self::new(pipes)
         }
     }
     /// A duct whose every inner node breathes through a copy of `shunt` (a lined passage
@@ -186,18 +239,22 @@ impl Duct {
     pub fn with_shunts(pipes: Vec<Pipe>, shunt: Shunt) -> Self {
         let n = pipes.len().saturating_sub(1);
         Self {
-            shunts: vec![Some(shunt); n],
+            nodes: vec![Node::Shunt(shunt); n],
             ..Self::new(pipes)
         }
     }
     /// This duct, then `next` after it (a hard node between them).
-    pub fn then(mut self, next: Duct) -> Self {
+    pub fn then(self, next: Duct) -> Self {
+        self.then_through(Node::Plain, next)
+    }
+    /// This duct, then `next`, joined by `node`.
+    pub fn then_through(mut self, node: Node, next: Duct) -> Self {
         let n = self.pipes.len();
-        self.shunts.resize(n - 1, None);
-        self.shunts.push(None);
-        let mut rest = next.shunts;
-        rest.resize(next.pipes.len() - 1, None);
-        self.shunts.extend(rest);
+        self.nodes.resize(n - 1, Node::Plain);
+        self.nodes.push(node);
+        let mut rest = next.nodes;
+        rest.resize(next.pipes.len() - 1, Node::Plain);
+        self.nodes.extend(rest);
         self.pipes.extend(next.pipes);
         self
     }
@@ -232,8 +289,14 @@ impl Duct {
                 let areas = [self.pipes[k].area_m2, self.pipes[k + 1].area_m2];
                 let incoming = [self.pipes[k].at_far(), self.pipes[k + 1].at_near()];
                 let mut out = [0.0; 2];
-                match self.shunts.get_mut(k) {
-                    Some(Some(s)) => s.node(&areas, &incoming, &mut out),
+                match self.nodes.get_mut(k) {
+                    Some(Node::Shunt(s)) => s.node(&areas, &incoming, &mut out),
+                    Some(Node::Series(r, rho_c)) => {
+                        // Q = 2(p₁ − p₂)/(z₁ + z₂ + R), z = ρc/A: each side loses z·Q
+                        let (z1, z2) = (*rho_c / areas[0], *rho_c / areas[1]);
+                        let q = 2.0 * (incoming[0] - incoming[1]) / (z1 + z2 + *r);
+                        out = [incoming[0] - z1 * q, incoming[1] + z2 * q];
+                    }
                     _ => {
                         junction(&areas, &incoming, &mut out);
                     }
@@ -409,6 +472,53 @@ mod tests {
         assert!((settle(0.17) + 0.695_2).abs() < 1e-4, "{}", settle(0.17));
         // inflow (a reversing pulse) gets no such sink here
         assert!((settle(-0.2) + 0.98).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_series_resistance_has_its_transmission_loss() {
+        // A resistance R in a uniform duct (area S, gas impedance ρc): TL = 20·log(1 + R·S/2ρc)
+        // (Kinsler et al., ch. 10). R = ρc/S: 20·log 1.5 = 3.522 dB at any frequency.
+        let dt = 1.0 / 192_000.0;
+        let rho_c = 283.71;
+        let s_area = std::f64::consts::PI * 0.25 * 0.05 * 0.05;
+        let duct = || {
+            Duct::with_nodes(
+                vec![
+                    Pipe::new(1.0, 0.05, 500.0, dt, 0.0),
+                    Pipe::new(1.0, 0.05, 500.0, dt, 0.0),
+                ],
+                vec![Node::Series(rho_c / s_area, rho_c)],
+            )
+        };
+        for f in [200.0, 1500.0] {
+            let tl = -20.0 * transmission(duct(), f, dt).log10();
+            assert!((tl - 3.522).abs() < 0.05, "{f} Hz: {tl:.3} dB");
+        }
+    }
+
+    #[test]
+    fn a_side_resonator_has_its_transmission_loss() {
+        // A Helmholtz resonator on a 50 mm duct: neck 30 mm, effective length 50 mm, 3 L; gas
+        // at c = 500 m/s, ρ = 0.56742. Z = j(ωM − 1/ωC), M = ρl/Aₙ, C = V/(ρc²): resonance
+        // f₀ = c/2π·√(Aₙ/(lV)) = 172.75 Hz; TL = 20·log|1 + (ρc/S)/(2Z)| (Kinsler ch. 10):
+        // 3.468 dB at f₀/2 and at 2f₀, 13.315 dB at 1.2 f₀ — the notch is narrow and deep.
+        let dt = 1.0 / 192_000.0;
+        let duct = || {
+            Duct::with_nodes(
+                vec![
+                    Pipe::new(1.0, 0.05, 500.0, dt, 0.0),
+                    Pipe::new(1.0, 0.05, 500.0, dt, 0.0),
+                ],
+                vec![Node::Shunt(Shunt::helmholtz(
+                    0.03, 0.05, 0.003, 0.0, 283.71, 500.0, dt,
+                ))],
+            )
+        };
+        for (f, want) in [(86.37, 3.468), (345.49, 3.468), (207.30, 13.315)] {
+            let tl = -20.0 * transmission(duct(), f, dt).log10();
+            assert!((tl - want).abs() < 0.25, "{f} Hz: {tl:.3} dB, want {want}");
+        }
+        assert!(-20.0 * transmission(duct(), 172.75, dt).log10() > 30.0);
     }
 
     #[test]

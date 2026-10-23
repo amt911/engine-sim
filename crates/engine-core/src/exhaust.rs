@@ -2,7 +2,7 @@
 //! collectors (N-port junctions), each collector into its own tail pipe, which radiates.
 //! Spec: `docs/superpowers/specs/2026-10-21-exhaust-waveguides.md`.
 
-use crate::waveguide::{Duct, OpenEnd, Pipe, Shunt, junction};
+use crate::waveguide::{Duct, Node, OpenEnd, Pipe, Shunt, junction};
 use serde::{Deserialize, Serialize};
 
 /// Speeds of sound along the system: gas cools from the port to the tail (≈ 900 → 600 K).
@@ -63,6 +63,15 @@ pub struct ExhaustDef {
     pub after_collector: Vec<Segment>,
 }
 
+/// The mean flow's losses after the collector: turbulent friction Σ f·L/(D·A²) over the pipes
+/// (Δp = that × ṁ²/2ρ), a catalyst's laminar resistance (Δp = R·ṁ/ρ), and the open end's area.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExitLosses {
+    pub outlet_area: f64,
+    pub friction: f64,
+    pub laminar: f64,
+}
+
 /// One piece of the exhaust after the collector.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -91,6 +100,77 @@ pub enum Segment {
         cells_per_in2: f64,
         wall_m: f64,
     },
+    /// A Helmholtz resonator off the line between the segments before and after it: a neck of
+    /// `neck_diameter_m` × `neck_length_m` into a cavity of `volume_m3`.
+    Resonator {
+        neck_diameter_m: f64,
+        neck_length_m: f64,
+        volume_m3: f64,
+    },
+}
+
+/// A road car's exhaust after one collector, from sizing rules rather than one car's drawings:
+/// a close-coupled catalyst of about the swept volume (standard 400 cpsi / 0.165 mm substrate)
+/// and silencers totalling ten times it (a long-standing rule of thumb for muffler volume, e.g.
+/// US patent 3,318,412), a fifth in a centre resonator and the rest in the rear box, both
+/// straight-through and packed, joined by `pipe_d` pipes. `swept_m3` is this branch's share.
+pub fn road_exhaust(swept_m3: f64, pipe_d: f64) -> Vec<Segment> {
+    // to a tenth of a millimetre: what a drawing would give (and a file keeps exactly)
+    let shell = |volume: f64, length: f64| {
+        ((4.0 * volume / (std::f64::consts::PI * length)).sqrt() * 1e4).round() / 1e4
+    };
+    let pipe = |length_m: f64| Segment::Pipe {
+        length_m,
+        diameter_m: pipe_d,
+    };
+    let silencer = |volume: f64, length_m: f64| Segment::Muffler {
+        length_m,
+        diameter_m: shell(volume, length_m).max(1.5 * pipe_d),
+        tube_diameter_m: pipe_d,
+        packing_resistivity: default_resistivity(),
+        packing_porosity: default_porosity(),
+    };
+    vec![
+        pipe(0.4),
+        Segment::Catalyst {
+            length_m: 0.13,
+            diameter_m: shell(swept_m3, 0.13).max(1.5 * pipe_d),
+            cells_per_in2: 400.0,
+            wall_m: 0.000_165,
+        },
+        pipe(1.0),
+        silencer(2.0 * swept_m3, 0.35),
+        pipe(0.8),
+        silencer(8.0 * swept_m3, 0.45),
+        pipe(0.3),
+    ]
+}
+
+/// Viscosity of exhaust gas at `t` K: Sutherland's law for air (μ₀ = 1.716e-5 Pa·s at 273 K,
+/// S = 110.4 K; White, *Viscous Fluid Flow*, Table 1-2), Pa·s.
+pub(crate) fn gas_viscosity(t: f64) -> f64 {
+    1.458e-6 * t.powf(1.5) / (t + 110.4)
+}
+
+/// A catalyst monolith's resistance to flow, Pa·s/m³ (pressure drop over volume flow): laminar
+/// flow in square channels, f·Re = 56.91 (Shah & London 1978), Δp = 28.45·μ·L·u_ch/d_h², with
+/// the channel velocity u_ch = Q/(OFA·A). Cell pitch 25.4 mm/√cpsi, hydraulic diameter pitch −
+/// wall, open frontal area (d_h/pitch)².
+pub(crate) fn catalyst_resistance(
+    length_m: f64,
+    diameter_m: f64,
+    cells_per_in2: f64,
+    wall_m: f64,
+    t: f64,
+) -> (f64, f64) {
+    let pitch = 0.0254 / cells_per_in2.max(1.0).sqrt();
+    let dh = (pitch - wall_m).max(1e-5);
+    let ofa = (dh / pitch).powi(2);
+    let area = std::f64::consts::PI * 0.25 * diameter_m * diameter_m;
+    (
+        28.45 * gas_viscosity(t) * length_m / (dh * dh) / (ofa * area),
+        ofa,
+    )
 }
 
 fn default_resistivity() -> f64 {
@@ -163,13 +243,69 @@ impl ExhaustDef {
         ]
     }
 
+    /// What the mean flow loses on its way out after the collector ([`ExitLosses`]).
+    pub fn exit_losses(&self) -> ExitLosses {
+        let f = crate::exhaust_fv::PIPE_FRICTION;
+        let area = |d: f64| std::f64::consts::PI * 0.25 * d * d;
+        let mut friction = 0.0;
+        let mut laminar = 0.0;
+        for seg in self.path() {
+            match seg {
+                Segment::Pipe {
+                    length_m,
+                    diameter_m,
+                } => friction += f * length_m / (diameter_m * area(diameter_m).powi(2)),
+                Segment::Muffler {
+                    length_m,
+                    diameter_m,
+                    tube_diameter_m,
+                    ..
+                } => {
+                    let d = if tube_diameter_m > 0.0 {
+                        tube_diameter_m
+                    } else {
+                        diameter_m
+                    };
+                    friction += f * length_m / (d * area(d).powi(2));
+                }
+                Segment::Catalyst {
+                    length_m,
+                    diameter_m,
+                    cells_per_in2,
+                    wall_m,
+                } => {
+                    laminar +=
+                        catalyst_resistance(length_m, diameter_m, cells_per_in2, wall_m, TAIL_T).0
+                }
+                Segment::Resonator { .. } => {}
+            }
+        }
+        ExitLosses {
+            outlet_area: area(self.outlet_diameter()),
+            friction,
+            laminar,
+        }
+    }
+
+    /// The tail pipe to edit: (length, diameter) of the designed path's last pipe, or the older
+    /// fields when there is no path (or it ends in something else).
+    pub fn tail_mut(&mut self) -> (&mut f64, &mut f64) {
+        match self.after_collector.last_mut() {
+            Some(Segment::Pipe {
+                length_m,
+                diameter_m,
+            }) => (length_m, diameter_m),
+            _ => (&mut self.tail_length_m, &mut self.tail_diameter_m),
+        }
+    }
+
     /// Bore of the open end, m (the last segment's).
     pub fn outlet_diameter(&self) -> f64 {
         match self.path().last() {
             Some(Segment::Pipe { diameter_m, .. })
             | Some(Segment::Muffler { diameter_m, .. })
             | Some(Segment::Catalyst { diameter_m, .. }) => *diameter_m,
-            None => self.tail_diameter_m,
+            Some(Segment::Resonator { .. }) | None => self.tail_diameter_m,
         }
     }
 
@@ -234,44 +370,104 @@ pub(crate) fn chamber_passage(
 /// waveguide test: 5 % at 4 kHz).
 const LINING_SEGMENT_M: f64 = 0.01;
 
-/// The muffler can and the tail pipe after it. The can's gas passage (what its packing leaves
-/// open, at least the tail's bore) steps the area at both ends, reflecting sound like an
-/// expansion chamber (Munjal ch. 3), and its packing absorbs through the passage wall, cut into
-/// 1 cm segments that each breathe into the fibres (a lumped lossy line, Munjal ch. 6):
-/// little below 500 Hz, most of it above 2 kHz, as real silencers do. `muffler_transmission`
-/// stays an extra lumped loss on the tail (1 = none).
-fn muffled_tail(def: &ExhaustDef, dt: f64) -> Duct {
-    let tail = Pipe::new(
-        def.tail_length_m,
-        def.tail_diameter_m,
-        C_TAIL,
-        dt,
-        LOSS_PER_M,
-    )
-    .with_extra_gain(def.muffler_transmission);
-    let can_area = def.muffler_volume_m3 / CHAMBER_LENGTH_M;
-    if can_area <= tail.area_m2 {
-        return Duct::new(vec![tail]);
-    }
-    let (passage, perimeter, packing) =
-        chamber_passage(def.muffler_volume_m3, def.muffler_packing, tail.area_m2);
-    let n = (CHAMBER_LENGTH_M / LINING_SEGMENT_M).round() as usize;
-    let d = (4.0 * passage / std::f64::consts::PI).sqrt();
-    let pipes = (0..n)
-        .map(|_| Pipe::new(CHAMBER_LENGTH_M / n as f64, d, C_TAIL, dt, LOSS_PER_M))
-        .collect();
-    // the hot gas's impedance: ρc = γp/c
+/// Gas temperature after the collector, K (the waveguide's tail sound speed, T = c²/(γR)).
+const TAIL_T: f64 = C_TAIL * C_TAIL / (crate::gas::GAMMA * crate::gas::R_AIR);
+
+/// What follows a collector, built from [`ExhaustDef::path`]: pipes; silencers whose packing
+/// breathes through their perforated tube, cut into 1 cm segments (a lumped lossy line,
+/// Munjal ch. 6) or empty shells that reflect at their ends like expansion chambers
+/// (ch. 3); catalysts as their open channels plus their laminar resistance; resonators as
+/// side branches between their neighbours. `muffler_transmission` stays an extra lumped loss on
+/// the last pipe (1 = none).
+fn after_collector(def: &ExhaustDef, dt: f64) -> Duct {
     let rho_c = crate::gas::GAMMA * crate::units::ATM_PA / C_TAIL;
-    let can = if packing.thickness_m > 0.0 {
-        let per_node = CHAMBER_LENGTH_M / (n - 1) as f64;
-        Duct::with_shunts(
-            pipes,
-            Shunt::lining(packing, perimeter, per_node, rho_c, dt),
-        )
-    } else {
-        Duct::new(pipes)
-    };
-    can.then(Duct::new(vec![tail]))
+    let pipe = |len: f64, d: f64| Pipe::new(len, d, C_TAIL, dt, LOSS_PER_M);
+    let mut duct: Option<Duct> = None;
+    let mut pending = Node::Plain;
+    let path = def.path();
+    let last_pipe = path
+        .iter()
+        .rposition(|s| !matches!(s, Segment::Resonator { .. }));
+    for (i, seg) in path.iter().enumerate() {
+        let piece = match *seg {
+            Segment::Pipe {
+                length_m,
+                diameter_m,
+            } => {
+                let mut p = pipe(length_m, diameter_m);
+                if Some(i) == last_pipe {
+                    p = p.with_extra_gain(def.muffler_transmission);
+                }
+                Duct::new(vec![p])
+            }
+            Segment::Muffler {
+                length_m,
+                diameter_m,
+                tube_diameter_m,
+                packing_resistivity,
+                packing_porosity,
+            } => {
+                if tube_diameter_m > 0.0 && tube_diameter_m < diameter_m {
+                    let n = (length_m / LINING_SEGMENT_M).round().max(2.0) as usize;
+                    let pipes = (0..n)
+                        .map(|_| pipe(length_m / n as f64, tube_diameter_m))
+                        .collect();
+                    let packing = crate::lining::Packing {
+                        thickness_m: 0.5 * (diameter_m - tube_diameter_m),
+                        flow_resistivity: packing_resistivity,
+                        porosity: packing_porosity,
+                    };
+                    let per_node = length_m / (n - 1) as f64;
+                    let perimeter = std::f64::consts::PI * tube_diameter_m;
+                    Duct::with_shunts(
+                        pipes,
+                        Shunt::lining(packing, perimeter, per_node, rho_c, dt),
+                    )
+                } else {
+                    Duct::new(vec![pipe(length_m, diameter_m)])
+                }
+            }
+            Segment::Catalyst {
+                length_m,
+                diameter_m,
+                cells_per_in2,
+                wall_m,
+            } => {
+                let (r, ofa) =
+                    catalyst_resistance(length_m, diameter_m, cells_per_in2, wall_m, TAIL_T);
+                // the channels carry the waves; the walls' friction is the resistance at its end
+                let brick = Duct::new(vec![pipe(length_m, diameter_m * ofa.sqrt())]);
+                pending = Node::Series(r, rho_c);
+                duct = Some(match duct.take() {
+                    Some(d) => d.then(brick),
+                    None => brick,
+                });
+                continue;
+            }
+            Segment::Resonator {
+                neck_diameter_m,
+                neck_length_m,
+                volume_m3,
+            } => {
+                pending = Node::Shunt(Shunt::helmholtz(
+                    neck_diameter_m,
+                    neck_length_m,
+                    volume_m3,
+                    0.0,
+                    rho_c,
+                    C_TAIL,
+                    dt,
+                ));
+                continue;
+            }
+        };
+        let node = std::mem::replace(&mut pending, Node::Plain);
+        duct = Some(match duct.take() {
+            Some(d) => d.then_through(node, piece),
+            None => piece,
+        });
+    }
+    duct.unwrap_or_else(|| Duct::new(vec![pipe(def.tail_length_m, def.tail_diameter_m)]))
 }
 
 /// Runtime network for one engine at one time step.
@@ -311,7 +507,7 @@ impl ExhaustNet {
                     dt,
                     LOSS_PER_M,
                 ),
-                tail: muffled_tail(def, dt),
+                tail: after_collector(def, dt),
                 end: OpenEnd::new(def.tail_diameter_m, dt),
             })
             .collect();
@@ -455,6 +651,30 @@ mod tests {
             ..ExhaustDef::default()
         };
         assert_eq!(bare.path().len(), 1);
+    }
+
+    #[test]
+    fn a_road_exhaust_follows_its_sizing_rules() {
+        // 2.0 L in one branch, 50 mm pipes: catalyst of 2.0 L over 0.13 m → Ø 0.1400 m;
+        // silencers of 10 × 2.0 L, a fifth (4 L over 0.35 m → Ø 0.1206 m) then the rest (16 L
+        // over 0.45 m → Ø 0.2128 m)
+        let path = road_exhaust(2.0e-3, 0.05);
+        let diameters: Vec<f64> = path
+            .iter()
+            .filter_map(|s| match s {
+                Segment::Catalyst { diameter_m, .. } | Segment::Muffler { diameter_m, .. } => {
+                    Some(*diameter_m)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(diameters.len(), 3);
+        for (got, want) in diameters.iter().zip([0.1400, 0.1206, 0.2128]) {
+            assert!((got - want).abs() < 5e-4, "{got} vs {want}");
+        }
+        assert!(
+            matches!(path.last(), Some(Segment::Pipe { diameter_m, .. }) if *diameter_m == 0.05)
+        );
     }
 
     #[test]

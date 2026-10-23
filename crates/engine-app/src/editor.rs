@@ -327,9 +327,10 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
                 1.0,
                 "Collector Ø (mm)",
             );
+            let (tail_length, tail_diameter) = x.tail_mut();
             scaled(
                 ui,
-                &mut x.tail_length_m,
+                tail_length,
                 1000.0,
                 100.0..=4000.0,
                 10.0,
@@ -337,7 +338,7 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
             );
             scaled(
                 ui,
-                &mut x.tail_diameter_m,
+                tail_diameter,
                 1000.0,
                 20.0..=120.0,
                 1.0,

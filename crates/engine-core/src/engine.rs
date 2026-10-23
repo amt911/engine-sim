@@ -166,6 +166,7 @@ impl EngineDef {
             vehicle: crate::drivetrain::VehicleDef::inline4(),
             ..Self::single()
         }
+        .with_road_exhaust()
     }
 
     /// Lexus LFA, Toyota 1LR-GUE: 4.8 L 72° V10, 88 × 79 mm, CR 12.0, even firing,
@@ -248,6 +249,7 @@ impl EngineDef {
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::lfa_v10(),
         }
+        .with_road_exhaust()
     }
 
     /// Flat-plane V8 after the Ferrari F136 F (458 Italia): 4,497 cc from 94 × 81 mm,
@@ -318,6 +320,7 @@ impl EngineDef {
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::flatplane_v8(),
         }
+        .with_road_exhaust()
     }
 
     /// Cross-plane V8 after the GM LS3 (C6 Corvette): 6,162 cc from 103.25 × 92 mm, 10.7:1,
@@ -388,6 +391,7 @@ impl EngineDef {
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::crossplane_v8(),
         }
+        .with_road_exhaust()
     }
 
     /// Spark advance (° BTDC) at `rpm`: `spark_advance_deg` is the full-speed value, retarded at
@@ -395,6 +399,17 @@ impl EngineDef {
     /// fixed time, so its MBT advance grows with speed (Heywood, *ICE Fundamentals*, §9.3).
     pub fn spark_advance_at(&self, rpm: f64) -> f64 {
         self.spark_advance_deg * (0.35 + 0.65 * rpm.max(0.0) / 4000.0).min(1.0)
+    }
+
+    /// This engine with a road car's exhaust after each collector
+    /// ([`crate::exhaust::road_exhaust`]), its pipes the tail's bore.
+    fn with_road_exhaust(mut self) -> Self {
+        let branches = self.exhaust.groups(self.cylinders).len().max(1);
+        self.exhaust.after_collector = crate::exhaust::road_exhaust(
+            self.displacement_m3() / branches as f64,
+            self.exhaust.tail_diameter_m,
+        );
+        self
     }
 
     pub fn displacement_m3(&self) -> f64 {
@@ -544,18 +559,19 @@ const TAIL_T_K: f64 =
 /// Speed of a sonic (choked) exit from gas at [`TAIL_T_K`]: c* = c·√(2/(γ+1)), m/s.
 const TAIL_SONIC: f64 = crate::exhaust::C_TAIL * 0.912_870_929_175_276_9;
 
-/// The tail pipe's exit, quasi-steady at the mean exhaust flow `m` (kg/s): (backpressure, Pa;
-/// exit velocity, m/s). The open end is an orifice of the tail's bore into the atmosphere (the
-/// compressible orifice of [`crate::gas::orifice_mass_flow`], solved backwards for the
-/// pressure that passes `m` — past the critical ratio it chokes, and the pressure behind
-/// it climbs), plus the tail's wall friction f·L/D·½ρu² (Darcy). The jet leaves at the
-/// isentropic speed of that expansion, at most sonic.
-fn tail_exit(m: f64, ex: &crate::exhaust::ExhaustDef) -> (f64, f64) {
+/// The way out after the collector, quasi-steady at the mean exhaust flow `m` (kg/s):
+/// (backpressure, Pa; exit velocity, m/s). The open end is an orifice of the outlet's bore into
+/// the atmosphere (the compressible orifice of [`crate::gas::orifice_mass_flow`], solved
+/// backwards for the pressure that passes `m` — past the critical ratio it chokes, and the
+/// pressure behind it climbs), plus the pipes' wall friction (Darcy) and the catalysts'
+/// laminar resistance ([`crate::exhaust::ExitLosses`]). The jet leaves at the isentropic speed
+/// of that expansion, at most sonic.
+fn tail_exit(m: f64, losses: &crate::exhaust::ExitLosses) -> (f64, f64) {
     if m <= 0.0 {
         return (0.0, 0.0);
     }
     let atm = crate::units::ATM_PA;
-    let a = PI * 0.25 * ex.tail_diameter_m * ex.tail_diameter_m;
+    let a = losses.outlet_area;
     let flow = |p: f64| crate::gas::orifice_mass_flow(a, p, TAIL_T_K, atm) - m;
     let p0 = crate::exhaust_fv::rising_root(flow, atm, 100.0 * atm);
     let g = crate::gas::GAMMA;
@@ -564,11 +580,9 @@ fn tail_exit(m: f64, ex: &crate::exhaust::ExhaustDef) -> (f64, f64) {
         .sqrt()
         .min(TAIL_SONIC);
     let rho = p0 / (crate::gas::R_AIR * TAIL_T_K);
-    let friction = crate::exhaust_fv::PIPE_FRICTION * ex.tail_length_m / ex.tail_diameter_m
-        * 0.5
-        * rho
-        * (m / (rho * a)).powi(2);
-    (p0 - atm + friction, u)
+    let friction = losses.friction * m * m / (2.0 * rho);
+    let laminar = losses.laminar * m / rho;
+    (p0 - atm + friction + laminar, u)
 }
 
 /// Woschni's heat-transfer coefficient (SAE 670931; Heywood, *ICE Fundamentals*, eq. 12.19),
@@ -674,6 +688,8 @@ pub struct Engine {
     tail_u: Vec<f64>,
     /// Mean backpressure each tail puts on its cylinders' exhaust ports, Pa.
     tail_backpressure: Vec<f64>,
+    /// The exhaust's mean-flow losses after the collector (from its segments).
+    exit_losses: Option<crate::exhaust::ExitLosses>,
     /// Mean exit Mach number of each tail (its open end absorbs sound with it).
     tail_mach: Vec<f64>,
     /// Each cylinder's exhaust flow averaged over a cycle, kg/s.
@@ -806,6 +822,7 @@ impl Engine {
             tail_dc: Vec::new(),
             tail_u: Vec::new(),
             tail_backpressure: Vec::new(),
+            exit_losses: None,
             tail_mach: Vec::new(),
             cyl_mean_flow: Vec::new(),
             friction_age: 0,
@@ -1216,7 +1233,7 @@ impl Engine {
                 ex.tail_spacing_m,
                 snd.listener_distance_m,
                 snd.listener_angle_deg,
-                PI * 0.25 * ex.tail_diameter_m.powi(2),
+                PI * 0.25 * ex.outlet_diameter().powi(2),
                 dt,
                 snd.ground_heights(),
             );
@@ -1242,7 +1259,7 @@ impl Engine {
                     throttle_area
                 };
                 let induction = net.step(area);
-                (-net.last_inducted(), induction, net.inducted_rate())
+                (-net.last_inducted(), induction, net.drawn_rate())
             }
             None => {
                 let dm = exchange_with_reservoir(&mut self.plenum, &self.atm, throttle_area, dt);
@@ -1272,6 +1289,7 @@ impl Engine {
             self.tail_dc = vec![0.0; tails.len()];
             self.tail_u = vec![0.0; tails.len()];
             self.tail_backpressure = vec![0.0; tails.len()];
+            self.exit_losses = Some(self.def.exhaust.exit_losses());
             self.tail_mach = vec![0.0; tails.len()];
         }
         {
@@ -1291,7 +1309,10 @@ impl Engine {
                     .sum();
                 self.tail_mean_flow[t] += (m - self.tail_mean_flow[t]) * k;
                 self.tail_dc[t] += (signal - self.tail_dc[t]) * k;
-                let (back, u_mean) = tail_exit(self.tail_mean_flow[t], &self.def.exhaust);
+                let losses = self
+                    .exit_losses
+                    .get_or_insert_with(|| self.def.exhaust.exit_losses());
+                let (back, u_mean) = tail_exit(self.tail_mean_flow[t], losses);
                 self.tail_backpressure[t] = back;
                 self.tail_mach[t] = u_mean / crate::exhaust::C_TAIL;
                 // the swing rides on the mean; no exit blows past sound (it chokes first)
@@ -1303,7 +1324,7 @@ impl Engine {
             && let Some((_, l)) = &self.listener
         {
             let rho = crate::exhaust::tail_reference_density();
-            let d = self.def.exhaust.tail_diameter_m;
+            let d = self.def.exhaust.outlet_diameter();
             if self.jets.len() != tails.len() {
                 // seeded from the engine's own generator: deterministic for a seed
                 let base = self.rng;
@@ -3483,7 +3504,7 @@ mod tests {
     /// of `d` metres.
     fn with_tail(d: f64) -> (f64, Vec<f64>) {
         let mut def = EngineDef::inline4();
-        def.exhaust.tail_diameter_m = d;
+        *def.exhaust.tail_mut().1 = d;
         let mut e = Engine::new(def, 5000.0, 1);
         let c = Controls {
             throttle: 1.0,

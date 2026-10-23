@@ -66,6 +66,8 @@ pub struct IntakeFv {
     radiated: f64,
     inducted: f64,
     inducted_rate: f64,
+    /// The FV step's rate before the last one (the interpolation's start).
+    previous_rate: f64,
 }
 
 impl IntakeFv {
@@ -107,6 +109,7 @@ impl IntakeFv {
             radiated: 0.0,
             inducted: 0.0,
             inducted_rate: 0.0,
+            previous_rate: 0.0,
         }
     }
 
@@ -173,6 +176,7 @@ impl IntakeFv {
             radiated += self.substep(h, throttle_area) / k as f64;
         }
         self.radiated = radiated;
+        self.previous_rate = self.inducted_rate;
         self.inducted_rate = self.inducted / dt;
         radiated
     }
@@ -248,6 +252,14 @@ impl IntakeFv {
         self.inducted_rate
     }
 
+    /// The rate the trumpets draw, kg/s, at this physics step: the FV steps' rates joined by
+    /// straight lines (one FV step late) instead of held — a held staircase, differentiated by
+    /// a radiator, would spike at every FV step.
+    pub fn drawn_rate(&self) -> f64 {
+        let f = self.count as f64 / self.substeps as f64;
+        self.previous_rate + (self.inducted_rate - self.previous_rate) * f
+    }
+
     pub fn total_mass(&self) -> f64 {
         let pipes: f64 = self
             .runners
@@ -273,6 +285,18 @@ impl IntakeFv {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_drawn_rate_runs_straight_between_fv_steps() {
+        // between two FV steps the rate climbs linearly from the earlier step's to the later's
+        let mut net = IntakeFv::new(&crate::intake_fv::IntakeDef::default(), 1e-3, 1, 1e-6);
+        assert!(net.substeps > 2);
+        (net.previous_rate, net.inducted_rate, net.count) = (0.0, 0.08, 0);
+        assert_eq!(net.drawn_rate(), 0.0);
+        net.count = net.substeps / 2;
+        let half = net.count as f64 / net.substeps as f64;
+        assert!((net.drawn_rate() - 0.08 * half).abs() < 1e-15);
+    }
     use crate::gas::CP;
 
     const DT: f64 = 1.0 / 192_000.0;
