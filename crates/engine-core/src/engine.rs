@@ -2179,35 +2179,51 @@ mod tests {
         assert!((0.5..0.7).contains(&t), "idle to 9000 in {t:.3} s");
     }
 
+    /// Overrun fuel cut until injection reactivates near idle, then the idle control takes
+    /// over (Bosch, Gasoline Engine Management): back at idle within a few seconds and staying
+    /// there, not hung at the cut-off speed. One test per engine, so they run side by side.
+    fn settles_at_its_idle_when_released(d: EngineDef) {
+        let target = d.idle_rpm;
+        let (_, trace) = rev_and_release(d.clone(), 0.8 * d.redline_rpm, 8.0);
+        let tail = &trace[(6.0 / DT) as usize..];
+        let mean = tail.iter().sum::<f64>() / tail.len() as f64;
+        let low = tail.iter().copied().fold(f64::INFINITY, f64::min);
+        assert!(
+            (mean / target - 1.0).abs() < 0.1,
+            "{}: settled at {mean:.0} vs {target}; trace {:?}",
+            d.name,
+            trace
+                .iter()
+                .step_by((0.25 / DT) as usize)
+                .map(|r| *r as i64)
+                .collect::<Vec<_>>()
+        );
+        assert!(low > 0.6 * target, "{}: dipped to {low:.0}", d.name);
+    }
+
     #[test]
-    fn released_from_high_revs_every_engine_settles_at_its_idle() {
-        // Overrun fuel cut until injection reactivates near idle, then the idle control takes
-        // over (Bosch, Gasoline Engine Management): back at idle within a few seconds and
-        // staying there, not hung at the cut-off speed.
-        for d in [
-            EngineDef::single(),
-            EngineDef::inline4(),
-            EngineDef::lfa_v10(),
-            EngineDef::flatplane_v8(),
-            EngineDef::crossplane_v8(),
-        ] {
-            let target = d.idle_rpm;
-            let (_, trace) = rev_and_release(d.clone(), 0.8 * d.redline_rpm, 8.0);
-            let tail = &trace[(6.0 / DT) as usize..];
-            let mean = tail.iter().sum::<f64>() / tail.len() as f64;
-            let low = tail.iter().copied().fold(f64::INFINITY, f64::min);
-            assert!(
-                (mean / target - 1.0).abs() < 0.1,
-                "{}: settled at {mean:.0} vs {target}; trace {:?}",
-                d.name,
-                trace
-                    .iter()
-                    .step_by((0.25 / DT) as usize)
-                    .map(|r| *r as i64)
-                    .collect::<Vec<_>>()
-            );
-            assert!(low > 0.6 * target, "{}: dipped to {low:.0}", d.name);
-        }
+    fn released_from_high_revs_the_single_settles_at_its_idle() {
+        settles_at_its_idle_when_released(EngineDef::single());
+    }
+
+    #[test]
+    fn released_from_high_revs_the_inline4_settles_at_its_idle() {
+        settles_at_its_idle_when_released(EngineDef::inline4());
+    }
+
+    #[test]
+    fn released_from_high_revs_the_lfa_settles_at_its_idle() {
+        settles_at_its_idle_when_released(EngineDef::lfa_v10());
+    }
+
+    #[test]
+    fn released_from_high_revs_the_flatplane_settles_at_its_idle() {
+        settles_at_its_idle_when_released(EngineDef::flatplane_v8());
+    }
+
+    #[test]
+    fn released_from_high_revs_the_crossplane_settles_at_its_idle() {
+        settles_at_its_idle_when_released(EngineDef::crossplane_v8());
     }
 
     #[test]
@@ -2993,33 +3009,45 @@ mod tests {
         assert!(max_p(&e) < 1.5e5, "still {} Pa", max_p(&e));
     }
 
+    /// Cranked from where it stalled (`seed` picks the position), the engine starts.
+    fn restarts_from_stall_position(def: EngineDef, k: u64) {
+        let mut e = stalled(def.clone(), k, 0.5 + 0.013 * k as f64);
+        run(
+            &mut e,
+            1.5,
+            &Controls {
+                starter: true,
+                ..Controls::default()
+            },
+        );
+        run(&mut e, 1.5, &Controls::default());
+        assert!(
+            e.rpm() > 400.0,
+            "{} seed {k}: {} rpm after start",
+            def.name,
+            e.rpm()
+        );
+    }
+
+    // Seeds 0, 7, 9 stalled the I4 against compression (found by sweeping 60 positions).
     #[test]
-    fn restarts_from_any_stall_position() {
-        // Seeds 0, 7, 9 stalled the I4 against compression (found by sweeping 60 positions).
-        for (def, seeds) in [
-            (EngineDef::inline4(), vec![0u64, 7]),
-            (EngineDef::single(), vec![38]),
-            (EngineDef::lfa_v10(), vec![0]),
-        ] {
-            for k in seeds {
-                let mut e = stalled(def.clone(), k, 0.5 + 0.013 * k as f64);
-                run(
-                    &mut e,
-                    1.5,
-                    &Controls {
-                        starter: true,
-                        ..Controls::default()
-                    },
-                );
-                run(&mut e, 1.5, &Controls::default());
-                assert!(
-                    e.rpm() > 400.0,
-                    "{} seed {k}: {} rpm after start",
-                    def.name,
-                    e.rpm()
-                );
-            }
-        }
+    fn the_inline4_restarts_from_stall_position_0() {
+        restarts_from_stall_position(EngineDef::inline4(), 0);
+    }
+
+    #[test]
+    fn the_inline4_restarts_from_stall_position_7() {
+        restarts_from_stall_position(EngineDef::inline4(), 7);
+    }
+
+    #[test]
+    fn the_single_restarts_from_stall_position_38() {
+        restarts_from_stall_position(EngineDef::single(), 38);
+    }
+
+    #[test]
+    fn the_lfa_restarts_from_stall_position_0() {
+        restarts_from_stall_position(EngineDef::lfa_v10(), 0);
     }
 
     #[test]
