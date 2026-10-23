@@ -97,7 +97,12 @@ impl Simulation {
             drive: DriveInput::default(),
             voice: voice_for(&def, sample_rate),
             anti_alias: anti_alias(sample_rate, quality),
-            engine: Engine::new(quality.apply(&def), IDLE_START_RPM, seed),
+            engine: Engine::with_fidelity(
+                quality.apply(&def),
+                IDLE_START_RPM,
+                seed,
+                quality.fidelity(),
+            ),
             def,
             quality,
             sample_rate,
@@ -132,7 +137,12 @@ impl Simulation {
             return;
         };
         let rpm = self.engine.rpm();
-        self.engine = Engine::new(def, rpm, self.engine.combustions() ^ 0x5EED);
+        self.engine = Engine::with_fidelity(
+            def,
+            rpm,
+            self.engine.combustions() ^ 0x5EED,
+            self.quality.fidelity(),
+        );
     }
     /// The engine as the user defined it (the physics may run a cheaper version of it).
     pub fn def(&self) -> &EngineDef {
@@ -149,10 +159,11 @@ impl Simulation {
         self.quality = quality;
         self.anti_alias = anti_alias(self.sample_rate, quality);
         let rpm = self.engine.rpm();
-        self.engine = Engine::new(
+        self.engine = Engine::with_fidelity(
             quality.apply(&self.def),
             rpm,
             self.engine.combustions() ^ 0x5EED,
+            quality.fidelity(),
         );
     }
     fn try_retune(&mut self, def: EngineDef) -> Option<EngineDef> {

@@ -3,8 +3,9 @@
 //! Measured on the scorecard (`sim.rs`, 2026-10-23): 3× oversampling sounds as 4×, 2× within
 //! a few percent; the 1D pipes are the dear part on a ten-cylinder engine.
 
-use engine_core::engine::EngineDef;
+use engine_core::engine::{EngineDef, Fidelity};
 use engine_core::exhaust::ExhaustModel;
+use engine_core::fv::Scheme;
 use engine_core::intake_fv::IntakeModel;
 
 /// How finely the engine is simulated.
@@ -12,7 +13,7 @@ use engine_core::intake_fv::IntakeModel;
 pub enum Quality {
     /// Physics at 2× the audio rate, 0D intake and waveguide exhaust whatever the engine asks.
     Low,
-    /// 2× the audio rate, the engine's own pipe models.
+    /// 2× the audio rate, the engine's own pipe models stepped with the second-order scheme.
     Medium,
     /// 3× the audio rate.
     High,
@@ -30,6 +31,16 @@ impl Quality {
             Quality::Low | Quality::Medium => 2,
             Quality::High => 3,
             Quality::Ultra => 4,
+        }
+    }
+
+    /// How finely the engine's pipes are stepped.
+    pub fn fidelity(self) -> Fidelity {
+        match self {
+            Quality::Medium => Fidelity {
+                pipe_scheme: Scheme::MusclRk2,
+            },
+            _ => Fidelity::default(),
         }
     }
 
@@ -150,6 +161,10 @@ mod tests {
         assert_eq!(Quality::High.substeps(), 3);
         assert_eq!(Quality::Medium.substeps(), 2);
         assert_eq!(Quality::Low.substeps(), 2);
+        // Medium steps the 1D pipes with the cheap scheme; High and Ultra with the reference
+        assert_eq!(Quality::Medium.fidelity().pipe_scheme, Scheme::MusclRk2);
+        assert_eq!(Quality::High.fidelity(), Fidelity::default());
+        assert_eq!(Quality::Ultra.fidelity(), Fidelity::default());
     }
 
     #[test]
