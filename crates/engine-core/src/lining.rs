@@ -17,8 +17,8 @@
 //!   closer to isothermal at low frequencies, ×1.4 compliance; a later refinement).
 //!
 //! The exchange is split from the flux step and integrated exactly for its linear part: the
-//! pressure difference between cell and pocket relaxes as e^(−t/τ), τ = r·c_cell·c_pocket/(c_cell
-//! + c_pocket), so it stays stable for any step. Gas that leaves the duct takes its total
+//! pressure difference between cell and pocket relaxes as e^(−t/τ),
+//! τ = r·c_cell·c_pocket/(c_cell + c_pocket), so it stays stable for any step. Gas that leaves the duct takes its total
 //! enthalpy into the pocket (its axial momentum is lost to the fibres, as heat); gas that comes
 //! back brings the pocket's enthalpy and no axial momentum. Mass and energy are conserved.
 

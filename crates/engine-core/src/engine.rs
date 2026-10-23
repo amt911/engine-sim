@@ -627,6 +627,12 @@ pub struct Engine {
     texture_signal: f64,
     /// The turbulent jet at each tail pipe.
     jets: Vec<JetNoise>,
+    /// Per tail: the cylinders blowing into it, their exhaust mass flow averaged over a cycle
+    /// (kg/s), the waveguide signal's own average, and the exit velocity (m/s) the jets see.
+    tail_groups: Vec<Vec<usize>>,
+    tail_mean_flow: Vec<f64>,
+    tail_dc: Vec<f64>,
+    tail_u: Vec<f64>,
     flows: Vec<f64>,
     texture: Texture,
     /// Total mass that flowed back from the exhaust into the cylinders, kg (diagnostics).
@@ -749,6 +755,10 @@ impl Engine {
             listener: None,
             texture_signal: 0.0,
             jets: Vec::new(),
+            tail_groups: Vec::new(),
+            tail_mean_flow: Vec::new(),
+            tail_dc: Vec::new(),
+            tail_u: Vec::new(),
             flows: Vec::new(),
             texture: Texture::new(seed ^ 0x7E57),
             reversion_kg: 0.0,
@@ -1197,11 +1207,39 @@ impl Engine {
             + self.texture.clicks(dt);
         self.texture_signal = texture;
         // each tail's jet: its exit velocity u = (ρc·u)/ρc, its own distance to the listener
+        // Exit velocity at each tail: the mean is mass continuity, ṁ/(ρA), with ṁ the exhaust
+        // valves' flow averaged over a cycle; the swing is the waveguide's, without its own
+        // average (a linear line's DC is no flow: losses and reflections do not conserve it).
+        if self.tail_groups.len() != tails.len() {
+            let mut groups = self.def.exhaust.groups(self.cyl.len());
+            groups.resize(tails.len(), Vec::new());
+            self.tail_groups = groups;
+            self.tail_mean_flow = vec![0.0; tails.len()];
+            self.tail_dc = vec![0.0; tails.len()];
+            self.tail_u = vec![0.0; tails.len()];
+        }
+        {
+            let z = crate::exhaust::tail_impedance();
+            let rho_a = crate::exhaust::tail_reference_density()
+                * PI
+                * 0.25
+                * self.def.exhaust.tail_diameter_m.powi(2);
+            // one engine cycle (two turns), bounded for a stopped or racing crank
+            let k = (dt * self.omega.abs() / (4.0 * PI)).clamp(dt, 1.0);
+            for (t, &signal) in tails.iter().enumerate() {
+                let m: f64 = self.tail_groups[t]
+                    .iter()
+                    .map(|&i| self.cyl[i].port_flow)
+                    .sum();
+                self.tail_mean_flow[t] += (m - self.tail_mean_flow[t]) * k;
+                self.tail_dc[t] += (signal - self.tail_dc[t]) * k;
+                self.tail_u[t] = self.tail_mean_flow[t] / rho_a + (signal - self.tail_dc[t]) / z;
+            }
+        }
         let mut jets = 0.0;
         if snd.flow_noise > 0.0
             && let Some((_, l)) = &self.listener
         {
-            let z = crate::exhaust::tail_impedance();
             let rho = crate::exhaust::tail_reference_density();
             let d = self.def.exhaust.tail_diameter_m;
             if self.jets.len() != tails.len() {
@@ -1211,8 +1249,8 @@ impl Engine {
                     .map(|k| JetNoise::new(base.wrapping_add(k as u64 + 1)))
                     .collect();
             }
-            for ((jet, signal), r) in self.jets.iter_mut().zip(tails).zip(l.distances()) {
-                jets += jet.step(signal / z, d, rho, *r, dt);
+            for ((jet, u), r) in self.jets.iter_mut().zip(&self.tail_u).zip(l.distances()) {
+                jets += jet.step(*u, d, rho, *r, dt);
             }
             jets *= snd.flow_noise;
         }
@@ -1242,6 +1280,11 @@ impl Engine {
         }
         self.theta = (self.theta + self.omega * dt).rem_euclid(4.0 * PI);
         audio
+    }
+
+    /// Exit velocity at each tail pipe this step, m/s (mean from mass continuity).
+    pub fn tail_exit_velocity(&self) -> &[f64] {
+        &self.tail_u
     }
 
     pub fn rpm(&self) -> f64 {
@@ -3353,6 +3396,28 @@ mod tests {
             m,
             (d.iter().map(|v| (v - m).powi(2)).sum::<f64>() / d.len() as f64).sqrt(),
         )
+    }
+
+    #[test]
+    fn the_jets_blow_at_the_mean_flow_the_engine_pushes_out() {
+        // The tail's mean exit velocity is mass continuity, ṁ/(ρA): a 2.0 L at 5000 rpm WOT
+        // with η_v ≈ 0.9 breathes 2.0e-3·0.9·1.18·5000/120 = 0.0885 kg/s of air, + fuel/14.7
+        // = 0.094 kg/s, out through 50 mm (A = 1.963e-3 m²) at 622 K (ρ = 0.567): 84 m/s. The
+        // waveguide's own DC is not a flow (a lossy or reflecting line does not conserve it).
+        let mut e = Engine::new(EngineDef::inline4(), 5000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(5000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.5, &c);
+        let n = (0.2 / DT) as usize;
+        let mut u = 0.0;
+        for _ in 0..n {
+            e.step(DT, &c);
+            u += e.tail_exit_velocity()[0] / n as f64;
+        }
+        assert!((70.0..100.0).contains(&u), "mean exit velocity {u} m/s");
     }
 
     #[test]

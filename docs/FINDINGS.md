@@ -426,3 +426,17 @@ bracket. It runs until the bracket is tight and returns the end with the smaller
 **What misled.** Four times shorter sub-steps "fixed" it, and running the junction through
 the RK3 stages halved it. Both hinted at a time-lag instability; it was not one. Print the
 first boundary state that disagrees with a plain characteristic ghost before theorising.
+
+## Measuring renders against recordings: hound writes WAVE_FORMAT_EXTENSIBLE
+
+**Symptom.** Every render looked like flat broadband noise next to real recordings (low
+line-to-floor contrast, a treble that rose to 8 kHz) — a whole afternoon chased a "noise floor"
+in the physics that did not exist.
+**Cause.** `hound` writes 32-bit float WAVs with format tag 0xFFFE (extensible), not 3; a loader
+that keys float on tag 3 reads the floats as int16 pairs: noise. The reference recordings
+(ffmpeg, tag 3) read fine, so only our side was wrong.
+**Fix.** `scripts/realism.py` treats 0xFFFE at 32 bits as float and has `--self-test` (a harmonic
+series written as extensible float must read back as itself and as lines). Run it before
+trusting any comparison. Free reference recordings (Freesound, CC-BY/CC0) live outside the repo
+in `target/refs` — compare like with like: an under-bonnet or open-header recording is not a
+road car's tailpipe.
