@@ -9,31 +9,40 @@
 pub struct DelayLine {
     buf: Vec<f64>,
     pos: usize,
-    delay: f64,
+    /// Whole steps of the delay and the fraction past them (the delay is fixed: worked out once;
+    /// the ring wraps by comparison — a modulo per read was most of a lined muffler's cost).
+    whole: usize,
+    frac: f64,
 }
 
 impl DelayLine {
     /// `delay` in steps, ≥ 1.
     pub fn new(delay: f64) -> Self {
         let delay = delay.max(1.0);
+        let whole = delay.floor();
         Self {
             buf: vec![0.0; delay.ceil() as usize + 2],
             pos: 0,
-            delay,
+            whole: whole as usize,
+            frac: delay - whole,
         }
     }
     /// The value pushed `delay` steps ago (interpolated). Call before `push` each step.
     pub fn read(&self) -> f64 {
         let n = self.buf.len();
-        let i = self.delay.floor();
-        let f = self.delay - i;
-        let at = |k: usize| self.buf[(self.pos + n * 2 - k) % n];
-        let i = i as usize;
-        at(i) * (1.0 - f) + at(i + 1) * f
+        // index of the value pushed k steps ago (k ≤ whole + 1 < n)
+        let back = |k: usize| {
+            let j = self.pos + n - k;
+            self.buf[if j >= n { j - n } else { j }]
+        };
+        back(self.whole) * (1.0 - self.frac) + back(self.whole + 1) * self.frac
     }
     pub fn push(&mut self, x: f64) {
         self.buf[self.pos] = x;
-        self.pos = (self.pos + 1) % self.buf.len();
+        self.pos += 1;
+        if self.pos == self.buf.len() {
+            self.pos = 0;
+        }
     }
 }
 
