@@ -142,6 +142,75 @@ mod tests {
     use approx::assert_relative_eq;
 
     #[test]
+    fn one_exchange_step_by_hand() {
+        // cell 1.2 kg/m³ at 102 325 Pa moving at 10 m/s (V = 1e-4 m³); pocket 1e-5 m³ at
+        // 101 325 Pa, 300 K (1.176829e-5 kg); r = 1e6 Pa·s/m³, dt = 10 µs. Compliances
+        // V/(γp): 6.9807e-10 and 7.0496e-11 m³/Pa, τ = r·CcCp/(Cc + Cp) = 64.028 µs; the volume
+        // through the face 1000·τ·(1 − e^(−dt/τ))/r = 9.2582e-9 m³ — at the cell's density
+        // 1.11099e-8 kg into the pocket, carrying the cell's h + u²/2 = 3.5·p/ρ + 50 = 298 498 J/kg
+        // and its momentum
+        let v = 1e-4;
+        let mut cell = Prim {
+            rho: 1.2,
+            u: 10.0,
+            p: 102_325.0,
+        }
+        .to_cons();
+        let mut pocket = GasVolume::at(101_325.0, 300.0, 1e-5);
+        let (e0, mom0) = (cell.e, cell.mom);
+        let dm = exchange(&mut cell, v, &mut pocket, 1e6, 1e-5);
+        assert_relative_eq!(dm, 1.110_985e-8, max_relative = 1e-5);
+        assert_relative_eq!(
+            pocket.mass_kg,
+            1.176_829e-5 + 1.110_985e-8,
+            max_relative = 1e-6
+        );
+        assert_relative_eq!((e0 - cell.e) * v / dm, 298_498.0, max_relative = 1e-5);
+        assert_relative_eq!((mom0 - cell.mom) * v / dm, 10.0, max_relative = 1e-9);
+        // the other way: the cell at 100 325 Pa (τ = 64.143 µs) draws 9.2595e-9 m³ back at the
+        // pocket's density, 1.089682e-8 kg, with the pocket's c_p·T = 301 350 J/kg; the cell's
+        // momentum is left alone (the gas arrives at rest)
+        let mut cell = Prim {
+            rho: 1.2,
+            u: 10.0,
+            p: 100_325.0,
+        }
+        .to_cons();
+        let mut pocket = GasVolume::at(101_325.0, 300.0, 1e-5);
+        let (e0, mom0) = (cell.e, cell.mom);
+        let dm = exchange(&mut cell, v, &mut pocket, 1e6, 1e-5);
+        assert_relative_eq!(dm, -1.089_682e-8, max_relative = 1e-5);
+        assert_relative_eq!((e0 - cell.e) * v / dm, 301_350.0, max_relative = 1e-6);
+        assert_eq!(cell.mom, mom0);
+    }
+
+    #[test]
+    fn the_pockets_start_at_the_gas_they_were_filled_with() {
+        let pipe = crate::fv::Pipe1d::new(
+            1.0,
+            10,
+            Prim {
+                rho: 1.2,
+                u: 0.0,
+                p: 101_325.0,
+            },
+        );
+        let l = Lining::new(
+            &pipe,
+            2..6,
+            0.1,
+            0.002,
+            Packing::default(),
+            (101_325.0, 300.0),
+        );
+        let p: Vec<f64> = l.pressures().collect();
+        assert_eq!(p.len(), 4);
+        for x in p {
+            assert_relative_eq!(x, 101_325.0, max_relative = 1e-12);
+        }
+    }
+
+    #[test]
     fn the_exchange_conserves_mass_and_energy() {
         let v_cell = 1e-4;
         let mut cell = Prim {

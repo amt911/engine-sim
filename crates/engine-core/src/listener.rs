@@ -163,6 +163,16 @@ impl Listener {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_flow_source_radiates_as_a_monopole() {
+        // p = ρ₀/(4πr)·dQ/dt: Q stepping 0 → 1e-3 m³/s in 10 µs, 3 m away (one tail, straight
+        // behind, free field): 1.204/(4π·3)·1e-3/1e-5 = 3.19366 Pa, then nothing while it holds
+        let mut l = Listener::new(1, 0.0, 3.0, 0.0, 1e-3, 1e-5, None);
+        assert_eq!(l.radiate_flow(0.0), 0.0);
+        assert!((l.radiate_flow(1e-3) - 3.193_66).abs() < 1e-4);
+        assert_eq!(l.radiate_flow(1e-3), 0.0);
+    }
     use approx::assert_relative_eq;
 
     const DT: f64 = 1.0 / 192_000.0;
