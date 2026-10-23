@@ -61,19 +61,15 @@ pub(crate) fn rising_root(f: impl Fn(f64) -> f64, mut lo: f64, mut hi: f64) -> f
     }
     let mut side = 0;
     // Safeguard: Illinois may crawl when one end's value is many orders of magnitude smaller
-    // (a root beside an infinite slope); then a bisection step every third iteration keeps
-    // the bracket shrinking at least as fast as bisection (cf. Brent 1973, ch. 4).
+    // (a root beside an infinite slope), its secant even landing on that end; then bisect,
+    // both when the secant is not strictly inside the bracket and whenever three iterations
+    // failed to halve it, so the bracket shrinks at least as fast as one bisection in three
+    // (cf. Brent 1973, ch. 4).
     let mut width = hi - lo;
     for it in 0..200 {
-        let bisect = it % 3 == 2 && hi - lo > 0.5 * width;
-        if it % 3 == 2 {
-            width = hi - lo;
-        }
-        let x = if bisect {
-            0.5 * (lo + hi)
-        } else {
-            (lo * f_hi - hi * f_lo) / (f_hi - f_lo)
-        };
+        let secant = (lo * f_hi - hi * f_lo) / (f_hi - f_lo);
+        let bisect = !(lo < secant && secant < hi) || (it % 3 == 2 && hi - lo > 0.5 * width);
+        let x = if bisect { 0.5 * (lo + hi) } else { secant };
         let fx = f(x);
         if fx == 0.0 || (hi - lo) <= 1e-13 * hi.abs().max(1.0) {
             return x;
@@ -92,6 +88,9 @@ pub(crate) fn rising_root(f: impl Fn(f64) -> f64, mut lo: f64, mut hi: f64) -> f
                 f_lo *= 0.5;
             }
             side = 1;
+        }
+        if it % 3 == 2 {
+            width = hi - lo;
         }
     }
     if -f_lo < f_hi { lo } else { hi }
@@ -521,8 +520,31 @@ mod tests {
         // junction's square-root speed, f(x) = 1.2e-26 + 2431.6·(x − 1) − 1087·√(1 − x²) on
         // [0.9129, 1]: f(lo) ≈ −655 against f(hi) = 1.2e-26, and the root within 1e-16 of 1
         let f = |x: f64| 1.2e-26 + 2431.6 * (x - 1.0) - 1087.0 * (1.0 - x * x).max(0.0).sqrt();
-        let x = rising_root(f, 0.9129, 1.0);
+        let calls = std::cell::Cell::new(0);
+        let x = rising_root(
+            |x| {
+                calls.set(calls.get() + 1);
+                f(x)
+            },
+            0.9129,
+            1.0,
+        );
         assert!((x - 1.0).abs() < 1e-12, "{x}");
+        // the secant lands on hi itself (f(hi) is 1e-28 of f(lo)), so only bisection moves the
+        // bracket: 0.087 down to 1e-13 is 40 halvings, within 50 evaluations, not the 200 cap
+        assert!(calls.get() <= 50, "{} evaluations", calls.get());
+        // mirrored, the secant lands on lo instead: −f(2 − x) on [1, 1.0871]
+        calls.set(0);
+        let x = rising_root(
+            |x| {
+                calls.set(calls.get() + 1);
+                -f(2.0 - x)
+            },
+            1.0,
+            1.0871,
+        );
+        assert!((x - 1.0).abs() < 1e-12, "{x}");
+        assert!(calls.get() <= 50, "{} evaluations", calls.get());
         // and an ordinary root to full precision: x² − 2 on [1, 2]
         assert_relative_eq!(
             rising_root(|x| x * x - 2.0, 1.0, 2.0),
@@ -829,6 +851,20 @@ mod tests {
         );
         assert_eq!(calls.get(), 53);
         assert!((r - 0.3).abs() < 1e-12, "{r}");
+        // a lopsided step (−1 against 1e-9): Illinois creeps by halving f(lo) for thirty steps
+        // at a time, and only the one-bisection-in-three guarantee closes the bracket, 0.3 to
+        // 1e-13 being 42 halvings, so within 2 + 3·42 evaluations
+        calls.set(0);
+        let r = rising_root(
+            |x| {
+                calls.set(calls.get() + 1);
+                if x < 0.3 { -1.0 } else { 1e-9 }
+            },
+            0.0,
+            1.0,
+        );
+        assert!((r - 0.3).abs() < 1e-12, "{r}");
+        assert!(calls.get() <= 128, "{} evaluations", calls.get());
         // a steep, one-sided function (√ near its end, like w_j at x = 1) still converges
         let r = rising_root(|x| x - (1.0 - x * x).max(0.0).sqrt(), 0.0, 1.0);
         assert!((r - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-12, "{r}");
