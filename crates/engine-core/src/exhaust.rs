@@ -835,6 +835,105 @@ mod tests {
         panic!("nothing radiated");
     }
 
+    /// Peak radiated pressure once settled, a cylinder blowing a tone of `f` Hz into `def`.
+    fn tone_through(def: &ExhaustDef, f: f64) -> f64 {
+        let mut net = ExhaustNet::with_lining(def, 1, DT, LINING_SEGMENT_M);
+        let n = (0.3 / DT) as usize;
+        let mut peak: f64 = 0.0;
+        for k in 0..n {
+            let x = 0.01 * (2.0 * std::f64::consts::PI * f * k as f64 * DT).sin();
+            let y = net.step(&[x]);
+            if k > n / 2 {
+                peak = peak.max(y.abs());
+            }
+        }
+        peak
+    }
+
+    fn with_path(path: Vec<Segment>) -> ExhaustDef {
+        ExhaustDef {
+            after_collector: path,
+            ..ExhaustDef::default()
+        }
+    }
+
+    fn packed_can(length_m: f64, tube_diameter_m: f64) -> Segment {
+        // the old default can: 138.2 mm shell, 25 mm of 16 kPa·s/m² packing round an 88.2 mm tube
+        Segment::Muffler {
+            length_m,
+            diameter_m: 0.138_198,
+            tube_diameter_m,
+            packing_resistivity: 16_000.0,
+            packing_porosity: 0.95,
+        }
+    }
+
+    #[test]
+    fn a_designed_silencer_attenuates_as_its_packed_line() {
+        // the packing lines the tube over the can's length: 0.4 m more of it takes the
+        // transmission line's e^(−0.4·Re γ) off a 2 kHz tone, Re γ = 2.4839 Np/m (hand value of
+        // the waveguide test for this very passage): 8.63 dB
+        let tail = Segment::Pipe {
+            length_m: 0.5,
+            diameter_m: 0.05,
+        };
+        let short = tone_through(
+            &with_path(vec![packed_can(0.4, 0.088_198), tail.clone()]),
+            2000.0,
+        );
+        let long = tone_through(
+            &with_path(vec![packed_can(0.8, 0.088_198), tail.clone()]),
+            2000.0,
+        );
+        let db = 20.0 * (short / long).log10();
+        assert!((db - 8.63).abs() < 0.1 * 8.63, "{db} dB");
+        // a tube as wide as the shell is no packing: an empty shell, as one with no tube
+        let wide = tone_through(
+            &with_path(vec![packed_can(0.4, 0.138_198), tail.clone()]),
+            2000.0,
+        );
+        let empty = tone_through(&with_path(vec![packed_can(0.4, 0.0), tail]), 2000.0);
+        assert_eq!(wide, empty);
+    }
+
+    #[test]
+    fn the_net_hands_the_mean_flows_and_the_outflow_to_its_pipes_and_end() {
+        // an impulse's ring-down in the tail: with the jet carrying sound off at M = 0.5 each
+        // reflection at the open end keeps (1 − M)/(1 + M) = 1/3 of it; with friction from a
+        // mean flow every pass wears the waves down. Both leave less ringing after the first
+        // arrival than the still, stagnant system.
+        let def = ExhaustDef::default();
+        let ring = |mach: f64, flow: f64| {
+            let mut net = ExhaustNet::new(&def, 1, DT);
+            net.set_outflow_mach(&[mach]);
+            net.set_mean_flow(&[flow], &[flow]);
+            let (mut first, mut late) = (None, 0.0);
+            for k in 0..40_000 {
+                let y = net.step(&[if k < 20 { 0.2 } else { 0.0 }]);
+                if first.is_none() && y.abs() > 1.0 {
+                    first = Some(k);
+                }
+                if let Some(f) = first
+                    && k > f + 2_000
+                {
+                    late += y * y;
+                }
+            }
+            late
+        };
+        let still = ring(0.0, 0.0);
+        assert!(
+            ring(0.5, 0.0) < 0.5 * still,
+            "outflow: {} vs {still}",
+            ring(0.5, 0.0)
+        );
+        assert!(
+            ring(0.0, 0.08) < 0.9 * still,
+            "friction: {} vs {still}",
+            ring(0.0, 0.08)
+        );
+    }
+
     #[test]
     fn each_tail_reports_its_own_signal_and_they_sum_to_the_radiated() {
         let def = ExhaustDef {
