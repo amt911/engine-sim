@@ -6,6 +6,7 @@ mod exhaust_thread;
 mod files;
 mod headless;
 mod offline;
+mod piping;
 mod quality;
 mod runner;
 mod sim;

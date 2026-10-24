@@ -214,7 +214,13 @@ pub fn layout(
         .default_size(220.0)
         .show(ui, |ui| view::gauges(ui, snap, audio));
     egui::Panel::bottom("plots").show(ui, |ui| view::plots(ui, snap, &state.dyno_curve));
-    egui::CentralPanel::default().show(ui, |ui| view::engine(ui, snap));
+    egui::CentralPanel::default().show(ui, |ui| {
+        crate::controls::central_tabs(ui, state);
+        match state.central {
+            crate::controls::CentralView::Engine => view::engine(ui, snap),
+            crate::controls::CentralView::Piping => view::piping(ui, &state.def),
+        }
+    });
     action
 }
 
@@ -307,6 +313,7 @@ mod tests {
             (Preset::Single, 0.0),
             (Preset::Inline4, 0.4),
             (Preset::LfaV10, 1.0),
+            (Preset::HondaK20a, 1.0),
             (Preset::FlatplaneV8, 1.0),
             (Preset::CrossplaneV8, 0.3),
         ] {
@@ -324,24 +331,31 @@ mod tests {
             let mut buf = vec![0.0f32; 48_000];
             sim.render(&mut buf);
             let snap = sim.snapshot();
-            let mut state = UiState {
-                preset: Some(preset),
-                throttle,
-                vehicle: preset.vehicle(),
-                gear: 2,
-                dyno_curve: crate::dyno::sweep(&preset.def()),
-                ..UiState::with_engine(preset.def())
-            };
-            let mut h = egui_kittest::Harness::builder()
-                .with_size(egui::vec2(1400.0, 860.0))
-                .wgpu()
-                .build_ui(|ui| {
-                    layout(ui, &mut state, &snap, &Ok(48_000), false);
-                });
-            h.run();
-            let img = h.render().expect("render");
-            img.save(out.join(format!("{}.png", preset.slug())))
-                .unwrap();
+            let curve = crate::dyno::sweep(&preset.def());
+            for (central, suffix) in [
+                (crate::controls::CentralView::Engine, ""),
+                (crate::controls::CentralView::Piping, "-pipes"),
+            ] {
+                let mut state = UiState {
+                    preset: Some(preset),
+                    throttle,
+                    vehicle: preset.vehicle(),
+                    gear: 2,
+                    dyno_curve: curve.clone(),
+                    central,
+                    ..UiState::with_engine(preset.def())
+                };
+                let mut h = egui_kittest::Harness::builder()
+                    .with_size(egui::vec2(1400.0, 860.0))
+                    .wgpu()
+                    .build_ui(|ui| {
+                        layout(ui, &mut state, &snap, &Ok(48_000), false);
+                    });
+                h.run();
+                let img = h.render().expect("render");
+                img.save(out.join(format!("{}{suffix}.png", preset.slug())))
+                    .unwrap();
+            }
         }
     }
 }

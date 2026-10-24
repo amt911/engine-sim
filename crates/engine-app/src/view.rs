@@ -339,3 +339,84 @@ fn dyno_plot(ui: &mut egui::Ui, points: &[DynoPoint]) {
         48.0,
     );
 }
+
+/// The engine's pipes as a schematic ([`crate::piping`]): every part at its real length and bore,
+/// fitted to the panel, coloured by what flows through it.
+pub fn piping(ui: &mut egui::Ui, def: &engine_core::engine::EngineDef) {
+    use crate::piping::{Part, schematic};
+    let (rect, _) = ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
+    let p = ui.painter_at(rect);
+    p.rect_filled(rect, 0.0, Color32::from_rgb(24, 26, 30));
+    let items = schematic(def);
+    if items.is_empty() {
+        return;
+    }
+    let (mut x0, mut x1, mut y0, mut y1) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+    for i in &items {
+        x0 = x0.min(i.x0);
+        x1 = x1.max(i.x1);
+        y0 = y0.min(i.y0);
+        y1 = y1.max(i.y1);
+    }
+    let inner = rect.shrink(30.0);
+    let scale = (inner.width() as f64 / (x1 - x0)).min(inner.height() as f64 / (y1 - y0)) as f32;
+    let at = |x: f64, y: f64| {
+        inner.left_top() + vec2(((x - x0) as f32) * scale, ((y - y0) as f32) * scale)
+    };
+    let font = FontId::proportional(11.0);
+    for i in &items {
+        let colour = match i.part {
+            Part::Air | Part::Inlet | Part::Tank | Part::Plenum | Part::Runner => INTAKE,
+            Part::Throttle => STEEL,
+            Part::Cylinder => DARK,
+            Part::Catalyst => Color32::from_rgb(200, 170, 90),
+            Part::Muffler | Part::Resonator => Color32::from_rgb(170, 120, 110),
+            _ => EXHAUST,
+        };
+        let r = egui::Rect::from_min_max(at(i.x0, i.y0), at(i.x1, i.y1));
+        match i.part {
+            Part::Air | Part::Outlet => {
+                p.arrow(
+                    pos2(r.left(), r.center().y),
+                    vec2(r.width().max(12.0), 0.0),
+                    Stroke::new(2.0, colour),
+                );
+            }
+            Part::Cylinder => {
+                p.rect(
+                    r,
+                    2.0,
+                    colour,
+                    Stroke::new(1.0, STEEL),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            Part::Merge => {
+                p.line_segment([at(i.x0, i.y0), at(i.x1, i.y1)], Stroke::new(2.0, colour));
+            }
+            _ => {
+                p.rect_filled(r, 1.0, colour.gamma_multiply(0.85));
+            }
+        }
+        if !i.label.is_empty() && (r.width() > 60.0 || matches!(i.part, Part::Cylinder)) {
+            let pos = if matches!(i.part, Part::Cylinder) {
+                r.center()
+            } else {
+                pos2(r.center().x, r.top() - 2.0)
+            };
+            let align = if matches!(i.part, Part::Cylinder) {
+                Align2::CENTER_CENTER
+            } else {
+                Align2::CENTER_BOTTOM
+            };
+            p.text(pos, align, &i.label, font.clone(), Color32::from_gray(210));
+        }
+    }
+    p.text(
+        rect.left_bottom() + vec2(8.0, -8.0),
+        Align2::LEFT_BOTTOM,
+        "to scale · air -> intake -> cylinders -> exhaust -> outlets",
+        FontId::proportional(11.0),
+        Color32::from_gray(150),
+    );
+}

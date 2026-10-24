@@ -67,8 +67,18 @@ impl Preset {
     }
 }
 
+/// What the central panel shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CentralView {
+    #[default]
+    Engine,
+    Piping,
+}
+
 #[derive(Debug, Clone)]
 pub struct UiState {
+    /// The central panel: the running engine or its pipes.
+    pub central: CentralView,
     /// The built-in this engine came from; `None` after loading or creating a custom one.
     pub preset: Option<Preset>,
     /// The engine being edited; sent to the sim when `engine_dirty`.
@@ -146,6 +156,7 @@ impl UiState {
 impl Default for UiState {
     fn default() -> Self {
         Self {
+            central: CentralView::Engine,
             preset: Some(Preset::Single),
             def: Preset::Single.def(),
             engine_dirty: false,
@@ -274,6 +285,14 @@ fn quality_row(ui: &mut egui::Ui, state: &mut UiState) {
 }
 
 /// Draw the panel; mutates `state`.
+/// The central panel's tabs: the running engine, or its pipes ([`crate::piping`]).
+pub fn central_tabs(ui: &mut egui::Ui, state: &mut UiState) {
+    ui.horizontal(|ui| {
+        ui.selectable_value(&mut state.central, CentralView::Engine, "Engine");
+        ui.selectable_value(&mut state.central, CentralView::Piping, "Pipes");
+    });
+}
+
 pub fn controls_panel(ui: &mut egui::Ui, state: &mut UiState) {
     ui.heading("Engine");
     for p in Preset::ALL {
@@ -523,6 +542,21 @@ mod tests {
         assert_eq!(h.state().gear, 0);
         press(&mut h, egui::Key::Num6);
         assert_eq!(h.state().gear, 6);
+    }
+
+    #[test]
+    fn the_central_tabs_switch_between_the_engine_and_its_pipes() {
+        let mut h = Harness::new_ui_state(
+            |ui, s: &mut UiState| central_tabs(ui, s),
+            UiState::default(),
+        );
+        assert_eq!(h.state().central, CentralView::Engine);
+        h.get_by_label("Pipes").click();
+        h.run();
+        assert_eq!(h.state().central, CentralView::Piping);
+        h.get_by_label("Engine").click();
+        h.run();
+        assert_eq!(h.state().central, CentralView::Engine);
     }
 
     #[test]
