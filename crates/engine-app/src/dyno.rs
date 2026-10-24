@@ -206,6 +206,27 @@ mod tests {
     }
 
     #[test]
+    fn the_k20a_breathes_near_what_honda_published() {
+        // Honda K20A (Integra Type R): 206 N·m at 7000 rpm, 220 PS (217 hp) at 8000. Torque
+        // lands within 10 % of it; power runs ~16 % short at the top — the real engine switches
+        // to a second, wilder VTEC cam above ~5800 rpm, the model has one profile.
+        let pts = sweep(&EngineDef::honda_k20a());
+        assert_eq!(pts.len(), sweep_speeds(8400.0).len());
+        let (t, p) = peaks(&pts).unwrap();
+        assert!(
+            (5000.0..=7500.0).contains(&t.rpm),
+            "torque peak at {}",
+            t.rpm
+        );
+        assert!(
+            (t.torque_nm / 206.0 - 1.0).abs() < 0.1,
+            "{} N·m",
+            t.torque_nm
+        );
+        assert!(p.power_hp() > 0.8 * 217.0, "{} hp", p.power_hp());
+    }
+
+    #[test]
     fn inline4_sweep_has_a_plausible_curve() {
         let pts = sweep(&EngineDef::inline4());
         assert_eq!(pts.len(), sweep_speeds(7000.0).len());

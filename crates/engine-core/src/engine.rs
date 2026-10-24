@@ -170,6 +170,66 @@ impl EngineDef {
         .with_tail_pipe()
     }
 
+    /// Honda K20A (Integra Type R, DC5): the published engine, its unpublished geometry sized
+    /// by physics like the LFA's.
+    pub fn honda_k20a() -> Self {
+        Self {
+            // Honda K20A (Integra Type R, DC5): 1998 cc, 86 × 86 mm, CR 11.5, 220 PS at 8000 rpm,
+            // 206 N·m at 7000 rpm, 8400 rpm redline, firing 1-3-4-2 (Honda K engine,
+            // Wikipedia; JDM spec sheets). Rod 139 mm and valves 35/30 mm (two each) as
+            // commonly quoted (not a factory document); the Mach-index sizing at 8000 rpm gives
+            // 34.3 mm — the method agrees with the engine.
+            name: "Honda K20A 2.0 (inline-4)".into(),
+            geometry: CylinderGeometry {
+                bore_m: 0.086,
+                stroke_m: 0.086,
+                rod_m: 0.139,
+                compression_ratio: 11.5,
+            },
+            cylinders: 4,
+            firing_order: vec![1, 3, 4, 2],
+            layout: Layout::default(),
+            // two 35 mm intake and two 30 mm exhaust valves as one equivalent each (√2·D);
+            // lift a quarter of each valve's diameter, kept as the pair's curtain area
+            intake_valve: ValveTiming {
+                open_deg: 340.0,
+                duration_deg: 265.0,
+                max_lift_m: 0.0124,
+                diameter_m: 0.0495,
+            },
+            exhaust_valve: ValveTiming {
+                open_deg: 130.0,
+                duration_deg: 260.0,
+                max_lift_m: 0.0106,
+                diameter_m: 0.0424,
+            },
+            flywheel_inertia_kgm2: 0.15,
+            plenum_volume_m3: 4.0e-3,
+            throttle_diameter_m: 0.062,
+            idle_throttle: 0.0055,
+            // a typical car idle (estimate)
+            idle_rpm: 800.0,
+            // primaries timed to the blowdown's second return at the 8000 rpm power peak
+            // (Blair, ch. 6; c ≈ 600 m/s): 0.734 m; one 4-into-1 collector, its own tail pipe
+            exhaust: ExhaustDef {
+                primary_length_m: 0.734,
+                ..ExhaustDef::default()
+            },
+            // runners Helmholtz-tuned to the 7000 rpm torque peak (Engelman; 42 mm): 0.255 m,
+            // stepped as 1D pipes from a plenum behind the single throttle (as on the K20A)
+            intake: IntakeDef {
+                model: IntakeModel::Fv,
+                runner_length_m: 0.255,
+                ..IntakeDef::default()
+            },
+            redline_rpm: 8400.0,
+            starter_torque_nm: 60.0,
+            vehicle: crate::drivetrain::VehicleDef::inline4(),
+            ..Self::single()
+        }
+        .with_tail_pipe()
+    }
+
     /// Lexus LFA, Toyota 1LR-GUE: 4.8 L 72° V10, 88 × 79 mm, CR 12.0, even firing,
     /// 9,000 rpm redline (Toyota LR engine, Wikipedia; PistonHeads LFA spec sheet).
     /// Not public, estimated: rod length, cam timing, valve sizes (4 valves/cyl lumped into
@@ -186,10 +246,12 @@ impl EngineDef {
             },
             cylinders: 10,
             firing_order: vec![1, 6, 5, 10, 2, 7, 3, 8, 4, 9],
-            // 72° V10 (Toyota LR); banks as the collectors
+            // 72° V10 (Toyota LR); cylinders 1–5 on one bank and 6–10 on the other, the
+            // numbering the firing order 1-6-5-10-2-7-3-8-4-9 belongs to (it alternates the banks:
+            // each one fires every 144°); banks as the collectors
             layout: Layout {
                 bank_angle_deg: 72.0,
-                banks: vec![vec![1, 3, 5, 7, 9], vec![2, 4, 6, 8, 10]],
+                banks: vec![vec![1, 2, 3, 4, 5], vec![6, 7, 8, 9, 10]],
             },
             // Valve sizes are not published: sized as the engine's designers would, from its
             // published rated speed. Intake: Heywood's Mach index Z = (B/D)²·S̄p/(Cᵢ·a) at its
@@ -232,7 +294,7 @@ impl EngineDef {
             exhaust: ExhaustDef {
                 primary_length_m: 0.675,
                 primary_diameter_m: 0.042,
-                collectors: vec![vec![1, 3, 5, 7, 9], vec![2, 4, 6, 8, 10]],
+                collectors: vec![vec![1, 2, 3, 4, 5], vec![6, 7, 8, 9, 10]],
                 collector_length_m: 0.3,
                 collector_diameter_m: 0.065,
                 tail_length_m: 1.2,
@@ -427,6 +489,28 @@ impl EngineDef {
             diameter_m: self.exhaust.tail_diameter_m,
         }];
         self
+    }
+
+    /// `n` cylinders, the rest rebuilt so it stays one engine: an even firing order; a V keeps
+    /// two banks, the first half on one and the second on the other (the numbering the
+    /// default orders alternate between), at the even-firing angle 720°/n (two pistons on each
+    /// crankpin), each bank on its own collector if they had one each; an inline engine keeps
+    /// its single collector.
+    pub fn set_cylinders(&mut self, n: usize) {
+        self.cylinders = n;
+        self.firing_order = crate::config::default_firing_order(n);
+        if self.layout.banks.len() == 2 && n >= 2 {
+            let half = n / 2;
+            self.layout.banks = vec![(1..=half).collect(), (half + 1..=n).collect()];
+            if n % 2 == 0 {
+                self.layout.bank_angle_deg = 720.0 / n as f64;
+            }
+            if self.exhaust.collectors.len() == 2 {
+                self.exhaust.collectors = self.layout.banks.clone();
+            }
+        } else {
+            self.exhaust.collectors.clear();
+        }
     }
 
     pub fn displacement_m3(&self) -> f64 {
@@ -2695,6 +2779,39 @@ mod tests {
                 iv
             })
             .collect()
+    }
+
+    #[test]
+    fn the_lfa_fires_each_bank_evenly() {
+        // A 72° V10 firing evenly (Toyota): 1-6-5-10-2-7-3-8-4-9 alternates the banks when
+        // cylinders 1–5 sit on one and 6–10 on the other (the numbering this order belongs to,
+        // as on Audi/Lamborghini V10s), so each bank's 5-into-1 collector gets a pulse every
+        // 720/5 = 144°.
+        let d = EngineDef::lfa_v10();
+        assert_eq!(bank_intervals(&d), vec![vec![144.0; 5]; 2]);
+    }
+
+    #[test]
+    fn a_v10_grown_to_twelve_stays_one_even_firing_v() {
+        // two pistons a crankpin: a V fires evenly at 720/n between its banks — 60° for twelve.
+        // Cylinders 1–6 and 7–12 on the banks, 1-7-5-11-3-9-6-12-2-8-4-10 alternating them,
+        // each bank's collector getting a pulse every 120°, all twelve in a collector
+        let mut d = EngineDef::lfa_v10();
+        d.set_cylinders(12);
+        assert_eq!(d.cylinders, 12);
+        assert_eq!(d.layout.bank_angle_deg, 60.0);
+        assert_eq!(
+            d.layout.banks,
+            [vec![1, 2, 3, 4, 5, 6], vec![7, 8, 9, 10, 11, 12]]
+        );
+        assert_eq!(d.exhaust.collectors, d.layout.banks);
+        assert_eq!(bank_intervals(&d), vec![vec![120.0; 6]; 2]);
+        // an inline engine stays inline, one collector for all
+        let mut i = EngineDef::inline4();
+        i.set_cylinders(6);
+        assert!(i.layout.banks.is_empty());
+        assert_eq!(i.firing_order, [1, 5, 3, 6, 2, 4]);
+        assert!(i.exhaust.collectors.is_empty());
     }
 
     #[test]
