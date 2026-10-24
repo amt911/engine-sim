@@ -568,6 +568,30 @@ mod tests {
     }
 
     #[test]
+    fn joined_ducts_keep_one_node_per_junction_in_place() {
+        // three lined pipes (two shunt nodes), then through a series resistance into two plain
+        // pipes: five pipes, four junctions — shunt, shunt, the series one, plain
+        let dt = 1.0 / 192_000.0;
+        let lined = Duct::with_shunts(
+            (0..3)
+                .map(|_| Pipe::new(0.1, 0.05, 500.0, dt, 0.0))
+                .collect(),
+            Shunt::lining(crate::lining::Packing::default(), 0.157, 0.1, 283.71, dt),
+        );
+        let plain = Duct::new(
+            (0..2)
+                .map(|_| Pipe::new(0.1, 0.05, 500.0, dt, 0.0))
+                .collect(),
+        );
+        let d = lined.then_through(Node::Series(1000.0, 283.71), plain);
+        assert_eq!(d.pipes.len(), 5);
+        assert_eq!(d.nodes.len(), 4);
+        assert!(matches!(d.nodes[0], Node::Shunt(_)) && matches!(d.nodes[1], Node::Shunt(_)));
+        assert!(matches!(d.nodes[2], Node::Series(r, _) if r == 1000.0));
+        assert!(matches!(d.nodes[3], Node::Plain));
+    }
+
+    #[test]
     fn an_expansion_chamber_has_munjals_transmission_loss() {
         // m = 8 (A₂/A₁), L = 0.4 m, c = 500 m/s, lossless: TL = 10·log[1 + ¼(m − 1/m)²·sin²(kL)]
         // (Munjal, *Acoustics of Ducts and Mufflers*, 1987, ch. 3, the simple expansion chamber):
