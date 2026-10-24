@@ -167,7 +167,67 @@ impl EngineDef {
             vehicle: crate::drivetrain::VehicleDef::inline4(),
             ..Self::single()
         }
-        .with_road_exhaust()
+        .with_tail_pipe()
+    }
+
+    /// Honda K20A (Integra Type R, DC5): the published engine, its unpublished geometry sized
+    /// by physics like the LFA's.
+    pub fn honda_k20a() -> Self {
+        Self {
+            // Honda K20A (Integra Type R, DC5): 1998 cc, 86 × 86 mm, CR 11.5, 220 PS at 8000 rpm,
+            // 206 N·m at 7000 rpm, 8400 rpm redline, firing 1-3-4-2 (Honda K engine,
+            // Wikipedia; JDM spec sheets). Rod 139 mm and valves 35/30 mm (two each) as
+            // commonly quoted (not a factory document); the Mach-index sizing at 8000 rpm gives
+            // 34.3 mm — the method agrees with the engine.
+            name: "Honda K20A 2.0 (inline-4)".into(),
+            geometry: CylinderGeometry {
+                bore_m: 0.086,
+                stroke_m: 0.086,
+                rod_m: 0.139,
+                compression_ratio: 11.5,
+            },
+            cylinders: 4,
+            firing_order: vec![1, 3, 4, 2],
+            layout: Layout::default(),
+            // two 35 mm intake and two 30 mm exhaust valves as one equivalent each (√2·D);
+            // lift a quarter of each valve's diameter, kept as the pair's curtain area
+            intake_valve: ValveTiming {
+                open_deg: 340.0,
+                duration_deg: 265.0,
+                max_lift_m: 0.0124,
+                diameter_m: 0.0495,
+            },
+            exhaust_valve: ValveTiming {
+                open_deg: 130.0,
+                duration_deg: 260.0,
+                max_lift_m: 0.0106,
+                diameter_m: 0.0424,
+            },
+            flywheel_inertia_kgm2: 0.15,
+            plenum_volume_m3: 4.0e-3,
+            throttle_diameter_m: 0.062,
+            idle_throttle: 0.0055,
+            // a typical car idle (estimate)
+            idle_rpm: 800.0,
+            // primaries timed to the blowdown's second return at the 8000 rpm power peak
+            // (Blair, ch. 6; c ≈ 600 m/s): 0.734 m; one 4-into-1 collector, its own tail pipe
+            exhaust: ExhaustDef {
+                primary_length_m: 0.734,
+                ..ExhaustDef::default()
+            },
+            // runners Helmholtz-tuned to the 7000 rpm torque peak (Engelman; 42 mm): 0.255 m,
+            // stepped as 1D pipes from a plenum behind the single throttle (as on the K20A)
+            intake: IntakeDef {
+                model: IntakeModel::Fv,
+                runner_length_m: 0.255,
+                ..IntakeDef::default()
+            },
+            redline_rpm: 8400.0,
+            starter_torque_nm: 60.0,
+            vehicle: crate::drivetrain::VehicleDef::inline4(),
+            ..Self::single()
+        }
+        .with_tail_pipe()
     }
 
     /// Lexus LFA, Toyota 1LR-GUE: 4.8 L 72° V10, 88 × 79 mm, CR 12.0, even firing,
@@ -186,22 +246,33 @@ impl EngineDef {
             },
             cylinders: 10,
             firing_order: vec![1, 6, 5, 10, 2, 7, 3, 8, 4, 9],
-            // 72° V10 (Toyota LR); banks as the collectors
+            // 72° V10 (Toyota LR); cylinders 1–5 on one bank and 6–10 on the other, the
+            // numbering the firing order 1-6-5-10-2-7-3-8-4-9 belongs to (it alternates the banks:
+            // each one fires every 144°); banks as the collectors
             layout: Layout {
                 bank_angle_deg: 72.0,
-                banks: vec![vec![1, 3, 5, 7, 9], vec![2, 4, 6, 8, 10]],
+                banks: vec![vec![1, 2, 3, 4, 5], vec![6, 7, 8, 9, 10]],
             },
+            // Valve sizes are not published: sized as the engine's designers would, from its
+            // published rated speed. Intake: Heywood's Mach index Z = (B/D)²·S̄p/(Cᵢ·a) at its
+            // knee, Z ≈ 0.6 (ICE Fundamentals §6.3.2; mean flow coefficient Cᵢ ≈ 0.35) at
+            // 8700 rpm (S̄p = 22.91 m/s): one equivalent valve of 49.6 mm, two of 35.1 mm.
+            // Exhaust ≈ 0.83 of the intake (Heywood §6.3: exhaust valves ~70 % of the intake
+            // area): 41.2 mm. Lift: a quarter of each valve's diameter, where the curtain area
+            // reaches the port's (8.8 mm per intake valve; the equivalent valve's lift keeps the
+            // two valves' curtain area). Timing: Heywood's typical high-output values
+            // (IVO 20° BTDC, IVC 70° ABDC, EVO 55° BBDC, EVC 30° ATDC).
             intake_valve: ValveTiming {
                 open_deg: 340.0,
                 duration_deg: 270.0,
-                max_lift_m: 0.011,
-                diameter_m: 0.046,
+                max_lift_m: 0.0124,
+                diameter_m: 0.0496,
             },
             exhaust_valve: ValveTiming {
                 open_deg: 125.0,
                 duration_deg: 265.0,
-                max_lift_m: 0.010,
-                diameter_m: 0.040,
+                max_lift_m: 0.0103,
+                diameter_m: 0.0412,
             },
             spark_advance_deg: 28.0,
             burn_duration_deg: 45.0,
@@ -214,12 +285,16 @@ impl EngineDef {
             idle_throttle: 0.003 * 0.120 * 0.120 / (0.045 * 0.045 * 10.0),
             // no published figure; a typical high-revving V10 idle (estimate)
             idle_rpm: 900.0,
-            // Equal-length primaries, one 5-into-1 collector per bank (odd/even numbering
-            // per bank is an assumption), dual tail pipes. Lengths and diameters estimated.
+            // Equal-length primaries, one 5-into-1 collector per bank and an equal-length dual
+            // system (Toyota, LFA press release, 2009-10-21; ja.wikipedia "トヨタ・LRエンジン").
+            // Primary length not published: the second return of the blowdown's reflection
+            // reaches the port at the overlap at the 8700 rpm power peak — 2·(2L)/c = (360° −
+            // EVO)/(6N) with c ≈ 600 m/s in ~900 K gas (Blair, Design and Simulation of
+            // Four-Stroke Engines, ch. 6): L = 0.675 m. Bores estimated.
             exhaust: ExhaustDef {
-                primary_length_m: 0.6,
+                primary_length_m: 0.675,
                 primary_diameter_m: 0.042,
-                collectors: vec![vec![1, 3, 5, 7, 9], vec![2, 4, 6, 8, 10]],
+                collectors: vec![vec![1, 2, 3, 4, 5], vec![6, 7, 8, 9, 10]],
                 collector_length_m: 0.3,
                 collector_diameter_m: 0.065,
                 tail_length_m: 1.2,
@@ -233,10 +308,12 @@ impl EngineDef {
                 tail_spacing_m: 0.25,
                 after_collector: Vec::new(),
             },
-            // Runners and trumpets estimated from the LFA's intake: 250 mm to the valve, 45 mm.
+            // Ten ITBs (Toyota). Runner length not published: Helmholtz-tuned to the torque peak
+            // (Engelman: f = (a/2π)·√(A/(L·V)), V = V_d/2·(r + 1)/(r − 1), tuned at twice the
+            // revolution frequency at 6800 rpm, 226.7 Hz; 45 mm bore): L = 0.325 m.
             intake: IntakeDef {
                 model: IntakeModel::Fv,
-                runner_length_m: 0.25,
+                runner_length_m: 0.325,
                 runner_diameter_m: 0.045,
                 individual_throttles: true,
                 ..IntakeDef::default()
@@ -250,7 +327,7 @@ impl EngineDef {
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::lfa_v10(),
         }
-        .with_road_exhaust()
+        .with_tail_pipe()
     }
 
     /// Flat-plane V8 after the Ferrari F136 F (458 Italia): 4,497 cc from 94 × 81 mm,
@@ -321,7 +398,7 @@ impl EngineDef {
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::flatplane_v8(),
         }
-        .with_road_exhaust()
+        .with_tail_pipe()
     }
 
     /// Cross-plane V8 after the GM LS3 (C6 Corvette): 6,162 cc from 103.25 × 92 mm, 10.7:1,
@@ -392,7 +469,7 @@ impl EngineDef {
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::crossplane_v8(),
         }
-        .with_road_exhaust()
+        .with_tail_pipe()
     }
 
     /// Spark advance (° BTDC) at `rpm`: `spark_advance_deg` is the full-speed value, retarded at
@@ -402,15 +479,38 @@ impl EngineDef {
         self.spark_advance_deg * (0.35 + 0.65 * rpm.max(0.0) / 4000.0).min(1.0)
     }
 
-    /// This engine with a road car's exhaust after each collector
-    /// ([`crate::exhaust::road_exhaust`]), its pipes the tail's bore.
-    fn with_road_exhaust(mut self) -> Self {
-        let branches = self.exhaust.groups(self.cylinders).len().max(1);
-        self.exhaust.after_collector = crate::exhaust::road_exhaust(
-            self.displacement_m3() / branches as f64,
-            self.exhaust.tail_diameter_m,
-        );
+    /// This engine with the exhaust its preset has data for after each collector: one pipe, the
+    /// tail's own length and bore. The road car's silencers of [`crate::exhaust::road_exhaust`]
+    /// are sized by a rule of thumb, not from a drawing: no preset carries them until one does
+    /// (they reshaped the whole spectrum — the V10's 500–1000 Hz band 23 dB over 250–500 Hz).
+    fn with_tail_pipe(mut self) -> Self {
+        self.exhaust.after_collector = vec![crate::exhaust::Segment::Pipe {
+            length_m: self.exhaust.tail_length_m,
+            diameter_m: self.exhaust.tail_diameter_m,
+        }];
         self
+    }
+
+    /// `n` cylinders, the rest rebuilt so it stays one engine: an even firing order; a V keeps
+    /// two banks, the first half on one and the second on the other (the numbering the
+    /// default orders alternate between), at the even-firing angle 720°/n (two pistons on each
+    /// crankpin), each bank on its own collector if they had one each; an inline engine keeps
+    /// its single collector.
+    pub fn set_cylinders(&mut self, n: usize) {
+        self.cylinders = n;
+        self.firing_order = crate::config::default_firing_order(n);
+        if self.layout.banks.len() == 2 && n >= 2 {
+            let half = n / 2;
+            self.layout.banks = vec![(1..=half).collect(), (half + 1..=n).collect()];
+            if n.is_multiple_of(2) {
+                self.layout.bank_angle_deg = 720.0 / n as f64;
+            }
+            if self.exhaust.collectors.len() == 2 {
+                self.exhaust.collectors = self.layout.banks.clone();
+            }
+        } else {
+            self.exhaust.collectors.clear();
+        }
     }
 
     pub fn displacement_m3(&self) -> f64 {
@@ -2862,7 +2962,8 @@ mod tests {
         let d = EngineDef::lfa_v10();
         assert_eq!(d.intake.model, IntakeModel::Fv);
         assert!(d.intake.individual_throttles);
-        assert_eq!(d.intake.runner_length_m, 0.25);
+        // Helmholtz-tuned to the 6800 rpm torque peak (Engelman; see the preset): 0.325 m
+        assert_eq!(d.intake.runner_length_m, 0.325);
         assert_eq!(d.intake.runner_diameter_m, 0.045);
         // throttle_diameter_m is the total bore the ten share: wide open, each throttle body
         // is at least as wide as its runner (√10 · 45 mm = 142.3 mm), so the runner sets the flow
@@ -2884,6 +2985,55 @@ mod tests {
                 iv
             })
             .collect()
+    }
+
+    #[test]
+    fn the_k20a_is_hondas() {
+        // Honda K20A: 4 · π/4 · 0.086² · 0.086 = 1.9983e-3 m³ (1998 cc), CR 11.5, 8400 rpm,
+        // firing 1-3-4-2, valves 2 × 35 mm intake / 2 × 30 mm exhaust as one equivalent each
+        let d = EngineDef::honda_k20a();
+        assert!(d.name.contains("K20A"));
+        assert_relative_eq!(d.displacement_m3(), 1.9983e-3, max_relative = 1e-4);
+        assert_eq!(d.geometry.compression_ratio, 11.5);
+        assert_eq!(d.geometry.rod_m, 0.139);
+        assert_eq!(d.redline_rpm, 8400.0);
+        assert_eq!(d.firing_order, [1, 3, 4, 2]);
+        assert!((d.intake_valve.diameter_m - 0.035 * 2f64.sqrt()).abs() < 2e-4);
+        assert!((d.exhaust_valve.diameter_m - 0.030 * 2f64.sqrt()).abs() < 2e-4);
+        assert_eq!(d.intake.model, IntakeModel::Fv);
+    }
+
+    #[test]
+    fn the_lfa_fires_each_bank_evenly() {
+        // A 72° V10 firing evenly (Toyota): 1-6-5-10-2-7-3-8-4-9 alternates the banks when
+        // cylinders 1–5 sit on one and 6–10 on the other (the numbering this order belongs to,
+        // as on Audi/Lamborghini V10s), so each bank's 5-into-1 collector gets a pulse every
+        // 720/5 = 144°.
+        let d = EngineDef::lfa_v10();
+        assert_eq!(bank_intervals(&d), vec![vec![144.0; 5]; 2]);
+    }
+
+    #[test]
+    fn a_v10_grown_to_twelve_stays_one_even_firing_v() {
+        // two pistons a crankpin: a V fires evenly at 720/n between its banks — 60° for twelve.
+        // Cylinders 1–6 and 7–12 on the banks, 1-7-5-11-3-9-6-12-2-8-4-10 alternating them,
+        // each bank's collector getting a pulse every 120°, all twelve in a collector
+        let mut d = EngineDef::lfa_v10();
+        d.set_cylinders(12);
+        assert_eq!(d.cylinders, 12);
+        assert_eq!(d.layout.bank_angle_deg, 60.0);
+        assert_eq!(
+            d.layout.banks,
+            [vec![1, 2, 3, 4, 5, 6], vec![7, 8, 9, 10, 11, 12]]
+        );
+        assert_eq!(d.exhaust.collectors, d.layout.banks);
+        assert_eq!(bank_intervals(&d), vec![vec![120.0; 6]; 2]);
+        // an inline engine stays inline, one collector for all
+        let mut i = EngineDef::inline4();
+        i.set_cylinders(6);
+        assert!(i.layout.banks.is_empty());
+        assert_eq!(i.firing_order, [1, 5, 3, 6, 2, 4]);
+        assert!(i.exhaust.collectors.is_empty());
     }
 
     #[test]
@@ -4186,15 +4336,27 @@ mod tests {
     }
 
     #[test]
-    fn a_two_branch_engine_sizes_each_road_exhaust_for_its_half() {
-        // the LFA's two banks each feed one road exhaust: half of 4.8048e-3 m³ swept, so its
-        // catalyst brick (0.13 m long) is √(4·2.4024e-3/(π·0.13)) = 0.1534 m across
-        let d = EngineDef::lfa_v10();
-        let brick = d.exhaust.after_collector.iter().find_map(|s| match s {
-            crate::exhaust::Segment::Catalyst { diameter_m, .. } => Some(*diameter_m),
-            _ => None,
-        });
-        assert_eq!(brick, Some(0.1534));
+    fn each_preset_carries_only_the_exhaust_it_has_data_for() {
+        // after each collector, the tail pipe of the preset's own length and bore — no silencer
+        // sized by rule
+        for d in [
+            EngineDef::inline4(),
+            EngineDef::lfa_v10(),
+            EngineDef::flatplane_v8(),
+            EngineDef::crossplane_v8(),
+        ] {
+            assert_eq!(
+                d.exhaust.after_collector,
+                [crate::exhaust::Segment::Pipe {
+                    length_m: d.exhaust.tail_length_m,
+                    diameter_m: d.exhaust.tail_diameter_m,
+                }],
+                "{}",
+                d.name
+            );
+        }
+        assert_eq!(EngineDef::inline4().exhaust.tail_length_m, 1.5);
+        assert_eq!(EngineDef::lfa_v10().exhaust.tail_length_m, 1.2);
     }
 
     #[test]

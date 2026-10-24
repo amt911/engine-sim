@@ -104,6 +104,39 @@ mod tests {
     use approx::assert_relative_eq;
 
     #[test]
+    fn the_lfa_breathes_as_lexus_published() {
+        // Toyota/Lexus (2009): 412 kW (552 hp) at 8700 rpm, 480 N·m at 6800 rpm, 90 % of it
+        // from 3700 to 9000 rpm. The preset's unpublished geometry is sized by physics (valves
+        // by the Mach index at 8700 rpm, runners tuned at 6800, primaries at 8700): its peaks
+        // land where the real engine's are. The level runs high (no catalysts, muffler or
+        // airbox in the model: no backpressure or filter loss).
+        let points = sweep(&EngineDef::lfa_v10());
+        let (torque, power) = peaks(&points).unwrap();
+        assert!(
+            (6000.0..=7500.0).contains(&torque.rpm),
+            "torque peak at {}",
+            torque.rpm
+        );
+        assert!(
+            (7500.0..=9000.0).contains(&power.rpm),
+            "power peak at {}",
+            power.rpm
+        );
+        assert!(
+            (480.0..=600.0).contains(&power.power_hp()),
+            "{} hp",
+            power.power_hp()
+        );
+        // the broad band: 90 % of the peak torque by 4500 rpm (published: 3700)
+        let at = |rpm: f64| points.iter().find(|p| p.rpm == rpm).unwrap().torque_nm;
+        assert!(
+            at(4500.0) >= 0.88 * torque.torque_nm,
+            "{} at 4500",
+            at(4500.0)
+        );
+    }
+
+    #[test]
     fn power_is_torque_times_angular_speed() {
         // 100 N·m at 3,000 rpm: ω = 3000·2π/60 = 314.159 rad/s → 31,415.9 W = 42.13 hp.
         let p = DynoPoint::new(3000.0, 100.0);
@@ -170,6 +203,27 @@ mod tests {
                 "{w:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_k20a_breathes_near_what_honda_published() {
+        // Honda K20A (Integra Type R): 206 N·m at 7000 rpm, 220 PS (217 hp) at 8000. Torque
+        // lands within 10 % of it; power runs ~16 % short at the top — the real engine switches
+        // to a second, wilder VTEC cam above ~5800 rpm, the model has one profile.
+        let pts = sweep(&EngineDef::honda_k20a());
+        assert_eq!(pts.len(), sweep_speeds(8400.0).len());
+        let (t, p) = peaks(&pts).unwrap();
+        assert!(
+            (5000.0..=7500.0).contains(&t.rpm),
+            "torque peak at {}",
+            t.rpm
+        );
+        assert!(
+            (t.torque_nm / 206.0 - 1.0).abs() < 0.1,
+            "{} N·m",
+            t.torque_nm
+        );
+        assert!(p.power_hp() > 0.8 * 217.0, "{} hp", p.power_hp());
     }
 
     #[test]

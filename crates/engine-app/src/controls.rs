@@ -12,15 +12,17 @@ use engine_core::engine::{Controls, EngineDef};
 pub enum Preset {
     Single,
     Inline4,
+    HondaK20a,
     LfaV10,
     FlatplaneV8,
     CrossplaneV8,
 }
 
 impl Preset {
-    pub const ALL: [Preset; 5] = [
+    pub const ALL: [Preset; 6] = [
         Preset::Single,
         Preset::Inline4,
+        Preset::HondaK20a,
         Preset::LfaV10,
         Preset::FlatplaneV8,
         Preset::CrossplaneV8,
@@ -29,6 +31,7 @@ impl Preset {
         match self {
             Preset::Single => EngineDef::single(),
             Preset::Inline4 => EngineDef::inline4(),
+            Preset::HondaK20a => EngineDef::honda_k20a(),
             Preset::LfaV10 => EngineDef::lfa_v10(),
             Preset::FlatplaneV8 => EngineDef::flatplane_v8(),
             Preset::CrossplaneV8 => EngineDef::crossplane_v8(),
@@ -43,6 +46,7 @@ impl Preset {
         match self {
             Preset::Single => "single",
             Preset::Inline4 => "inline4",
+            Preset::HondaK20a => "honda-k20a",
             Preset::LfaV10 => "lfa-v10",
             Preset::FlatplaneV8 => "v8-flatplane",
             Preset::CrossplaneV8 => "v8-crossplane",
@@ -55,6 +59,7 @@ impl Preset {
         match self {
             Preset::Single => "Single 500",
             Preset::Inline4 => "Inline-4 2.0",
+            Preset::HondaK20a => "Honda K20A 2.0 (Type R)",
             Preset::LfaV10 => "Lexus LFA V10",
             Preset::FlatplaneV8 => "V8 4.5 flat-plane (European)",
             Preset::CrossplaneV8 => "V8 6.2 cross-plane (American)",

@@ -239,9 +239,9 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
                 .add(slider(&mut n, 1..=MAX_CYLINDERS).text("Cylinders"))
                 .changed()
             {
-                d.cylinders = n;
-                d.firing_order.clear();
-                state.firing_text.clear();
+                // banks, bank angle, collectors and firing order follow (one coherent engine)
+                d.set_cylinders(n);
+                state.firing_text = format_firing_order(&d.firing_order);
             }
             let g = &mut d.geometry;
             scaled(ui, &mut g.bore_m, 1000.0, 40.0..=140.0, 1.0, "Bore (mm)");
@@ -656,7 +656,8 @@ mod tests {
         nudge(&mut h, "Cylinders");
         let s = h.state();
         assert_eq!(s.def.cylinders, 5);
-        assert!(s.def.firing_order.is_empty(), "reset to automatic");
+        // the even order for five, written out
+        assert_eq!(s.def.firing_order, [1, 2, 4, 5, 3]);
         assert!(s.engine_dirty);
     }
 
