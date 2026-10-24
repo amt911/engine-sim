@@ -479,9 +479,20 @@ pub struct ExhaustNet {
     branches: Vec<Branch>,
     /// Radiated pressure at each tail pipe in the last step (one per collector branch).
     tails: Vec<f64>,
+    /// Per-step scratch (reused: no allocation on the sim thread): the waves each primary
+    /// receives from its collector, and one junction's areas, incoming and outgoing waves.
+    scratch: Scratch,
     /// The mean flows last handed to the pipes' friction (per cylinder, per branch), kg/s.
     mean_flows: (Vec<f64>, Vec<f64>),
     pub dt: f64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct Scratch {
+    from_far: Vec<f64>,
+    areas: Vec<f64>,
+    incoming: Vec<f64>,
+    outgoing: Vec<f64>,
 }
 
 impl ExhaustNet {
@@ -523,6 +534,7 @@ impl ExhaustNet {
             sent: vec![0.0; cylinders],
             tails: vec![0.0; def.groups(cylinders).len()],
             mean_flows: (Vec::new(), Vec::new()),
+            scratch: Scratch::default(),
             branches,
             dt,
         }
@@ -586,11 +598,15 @@ impl ExhaustNet {
     /// summed over the tail pipes.
     pub fn step(&mut self, flows: &[f64]) -> f64 {
         let n = self.primaries.len();
-        let mut from_far = vec![0.0; n];
+        let Scratch {
+            from_far,
+            areas,
+            incoming,
+            outgoing,
+        } = &mut self.scratch;
+        from_far.clear();
+        from_far.resize(n, 0.0);
         let mut radiated = 0.0;
-        let mut areas = Vec::new();
-        let mut incoming = Vec::new();
-        let mut outgoing = Vec::new();
         for (b, tail_out) in self.branches.iter_mut().zip(self.tails.iter_mut()) {
             areas.clear();
             incoming.clear();
@@ -601,7 +617,7 @@ impl ExhaustNet {
             areas.push(b.collector.area_m2);
             incoming.push(b.collector.at_near());
             outgoing.resize(incoming.len(), 0.0);
-            junction(&areas, &incoming, &mut outgoing);
+            junction(areas, incoming, outgoing);
             for (k, &m) in b.members.iter().enumerate() {
                 from_far[m] = clamp_wave(outgoing[k]);
             }
