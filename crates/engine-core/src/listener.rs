@@ -286,6 +286,20 @@ mod tests {
         let ys: Vec<f64> = (0..400).map(|_| l.process(&[1.0])).collect();
         let spikes: Vec<f64> = ys.iter().copied().filter(|y| *y != 0.0).collect();
         assert_eq!(spikes.len(), 2, "{spikes:?}");
+        // the image 150 steps (0.2675 m) after the tail
+        let at: Vec<usize> = (0..ys.len()).filter(|&i| ys[i] != 0.0).collect();
+        assert_eq!(at[1] - at[0], 150, "{at:?}");
+        // two tails 0.9 m apart, heard 3 m out at 30°, ears 1.6 m up: the nearer tail (x = +0.45)
+        // is 3.0891 m away, its image 3.3856 m: 166 steps later; the farther one's paths are
+        // 3.4989 and 3.7633 m (229 and 377 steps after the nearest arrival)
+        let mut l = Listener::new(2, 0.9, 3.0, 30.0, A, DT, Some((0.3, 1.6)));
+        let ys: Vec<f64> = (0..600).map(|_| l.process(&[0.0, 1.0])).collect();
+        let at: Vec<usize> = (0..ys.len()).filter(|&i| ys[i] != 0.0).collect();
+        assert_eq!(at, [0, 166], "{at:?}");
+        let mut l = Listener::new(2, 0.9, 3.0, 30.0, A, DT, Some((0.3, 1.6)));
+        let ys: Vec<f64> = (0..600).map(|_| l.process(&[1.0, 0.0])).collect();
+        let at: Vec<usize> = (0..ys.len()).filter(|&i| ys[i] != 0.0).collect();
+        assert_eq!(at, [229, 377], "{at:?}");
         assert_relative_eq!(spikes[1] / spikes[0], 0.923_54, max_relative = 1e-4);
     }
 

@@ -442,7 +442,10 @@ mod tests {
             p.gain / 0.9409
         );
         // an extra per-trip factor (a muffler's) multiplies a fresh pipe's: 0.97·0.5
-        let q = Pipe::new(1.0, 0.05, 500.0, dt, 0.03).with_extra_gain(0.5);
+        let mut q = Pipe::new(1.0, 0.05, 500.0, dt, 0.03).with_extra_gain(0.5);
+        assert!((q.gain - 0.485).abs() < 1e-12, "{}", q.gain);
+        // and it stays when the flow sets the gain afresh from the still pipe's
+        q.set_mean_flow(0.0);
         assert!((q.gain - 0.485).abs() < 1e-12, "{}", q.gain);
     }
 
