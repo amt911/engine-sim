@@ -4,7 +4,7 @@
 //! atmosphere. Mechanics: analytic crank-slider with a lumped flywheel inertia.
 //! Model ladder and references: `docs/research/simulador-motor-rust.md`.
 
-use crate::combustion::{AFR_STOICH, charge_energy, wiebe};
+use crate::combustion::{AFR_STOICH, charge_energy, flame_angle_scale, laminar_flame_speed, wiebe};
 use crate::exhaust::{ExhaustDef, ExhaustLink, ExhaustModel, ExhaustNet};
 use crate::exhaust_fv::ExhaustFv;
 use crate::gas::{
@@ -472,11 +472,15 @@ impl EngineDef {
         .with_tail_pipe()
     }
 
-    /// Spark advance (° BTDC) at `rpm`: `spark_advance_deg` is the full-speed value, retarded at
-    /// low speed as an ECU's map does, × (0.35 + 0.65·rpm/4000) up to 1: the burn takes about a
-    /// fixed time, so its MBT advance grows with speed (Heywood, *ICE Fundamentals*, §9.3).
-    pub fn spark_advance_at(&self, rpm: f64) -> f64 {
-        self.spark_advance_deg * (0.35 + 0.65 * rpm.max(0.0) / 4000.0).min(1.0)
+    /// The ECU's spark advance (° BTDC) for a flame `flame_ratio` times as long in crank angle as
+    /// at the reference state ([`flame_ratio`]): MBT timing puts the half-burned point a fixed
+    /// [`CA50_ATDC_DEG`] after top centre (Heywood, *ICE Fundamentals*, §9.2.2), and spark to
+    /// half-burned (delay + Wiebe 50 %) scales with the flame, so the advance is
+    /// (`spark_advance_deg` + CA50)·ratio − CA50, `spark_advance_deg` being the reference's;
+    /// within ±[`MAX_SPARK_ADVANCE_DEG`], as far as an ignition map reaches.
+    pub fn spark_advance_for(&self, flame_ratio: f64) -> f64 {
+        ((self.spark_advance_deg + CA50_ATDC_DEG) * flame_ratio - CA50_ATDC_DEG)
+            .clamp(-MAX_SPARK_ADVANCE_DEG, MAX_SPARK_ADVANCE_DEG)
     }
 
     /// This engine with the exhaust its preset has data for after each collector: one pipe, the
@@ -578,6 +582,11 @@ pub struct CylinderView {
 
 /// Ignition delay between spark and the start of the Wiebe burn, degrees.
 const IGNITION_DELAY_DEG: f64 = 5.0;
+/// Half-burned point of an MBT-timed burn, ° after top centre (Heywood §9.2.2: 8–10°).
+const CA50_ATDC_DEG: f64 = 8.0;
+/// Furthest an ignition map advances or retards the spark, ° (production maps stay within
+/// about 50° BTDC; Bosch, *Gasoline Engine Management*, "ignition map").
+const MAX_SPARK_ADVANCE_DEG: f64 = 50.0;
 /// Combustion efficiency of a spark-ignition engine at stoichiometric: 95–98 % of the fuel's
 /// heating value is released (Heywood, *ICE Fundamentals*, §3.5.5, Fig. 3-9). It was a lumped
 /// 0.85 while the residual gas counted as fresh charge; burning only the fresh charge, the
@@ -699,6 +708,53 @@ fn woschni_htc(bore_m: f64, p_pa: f64, t_k: f64, w_m_s: f64) -> f64 {
 
 /// Mean piston speed S̄p = 2·S·N, m/s (Heywood, *ICE Fundamentals*, eq. 2.2), whichever way the
 /// crank turns.
+/// The flame's crank angles relative to the reference state at which a preset's
+/// `burn_duration_deg` and [`IGNITION_DELAY_DEG`] hold: Hires et al. (SAE 780232) eqs. 13/32,
+/// (S_p·ν)^⅓·(h/S_L)^⅔ ([`flame_angle_scale`]), for the charge at the spark — pressure and
+/// temperature `(p, t)`, density `rho`, volume `v` and residual mass fraction `dilution`,
+/// compressed isentropically to top centre — over the same at the reference: S_p = 10 m/s, unburned gas
+/// at 700 K and 20 atm, 8 % residual (a typical full-load figure, Heywood Fig. 6-21) and the
+/// engine's own TDC chamber height. Stoichiometric (φ = 1), as the model runs.
+fn flame_ratio(
+    g: &crate::geometry::CylinderGeometry,
+    piston_speed: f64,
+    (p, t): (f64, f64),
+    rho: f64,
+    v: f64,
+    dilution: f64,
+) -> f64 {
+    const T_REF: f64 = 700.0;
+    const P_REF: f64 = 20.0 * ATM_PA;
+    let nu = |t: f64, rho: f64| crate::exhaust::gas_viscosity(t) / rho;
+    let rho_ref = P_REF / (crate::gas::R_AIR * T_REF);
+    let reference = flame_angle_scale(
+        10.0,
+        nu(T_REF, rho_ref),
+        g.clearance_volume() / g.piston_area(),
+        laminar_flame_speed(1.0, T_REF, P_REF, 0.08),
+    );
+    // the charge as the flame meets it: taken from the spark to top centre isentropically
+    // (Hires evaluates near TDC), where the reference state is
+    let r = (v / g.clearance_volume()).max(1.0);
+    let gamma = crate::gas::GAMMA;
+    let (p, t, rho) = (p * r.powf(gamma), t * r.powf(gamma - 1.0), rho * r);
+    let here = flame_angle_scale(
+        piston_speed.max(0.1),
+        nu(t, rho),
+        g.clearance_volume() / g.piston_area(),
+        laminar_flame_speed(1.0, t, p, dilution),
+    );
+    here / reference
+}
+
+/// The share of the MBT advance an ECU's map gives at `rpm`: × (0.35 + 0.65·rpm/4000) up to 1.
+/// Below full speed the spark runs retarded from MBT so the idle control has a torque reserve
+/// to take from the spark at once (Bosch, *Gasoline Engine Management*, "idle-speed control");
+/// it is the low-speed shape the spark map had before the flame set MBT.
+fn idle_reserve(rpm: f64) -> f64 {
+    (0.35 + 0.65 * rpm.max(0.0) / 4000.0).min(1.0)
+}
+
 fn mean_piston_speed(stroke_m: f64, omega: f64) -> f64 {
     2.0 * stroke_m * omega.abs() / (2.0 * PI)
 }
@@ -723,6 +779,9 @@ struct CylinderState {
     /// Gas left in the cylinder when the exhaust valve closed: burnt, no fuel or oxygen to
     /// give (the residual; Heywood, *ICE Fundamentals*, §6.4).
     residual_kg: f64,
+    /// The trapped charge's flame, crank-angle ratio to the reference ([`flame_ratio`]): sets
+    /// its spark (the ECU's MBT timing) and its burn.
+    flame: f64,
     /// The charge trapped at intake closing still awaits its spark: one spark per charge,
     /// whatever the ECU does with the timing meanwhile.
     armed: bool,
@@ -945,6 +1004,7 @@ impl Engine {
                     gas: GasVolume::at(ATM_PA, AMBIENT_K, g.volume(deg_to_rad(cycle_deg))),
                     trapped_kg: 0.0,
                     residual_kg: 0.0,
+                    flame: 1.0,
                     armed: false,
                     port_t: PIPE_COLD_K,
                     port_flow: 0.0,
@@ -1104,6 +1164,13 @@ impl Engine {
         self.limiter_cut = rpm >= red || (self.limiter_cut && rpm > red - LIMITER_HYSTERESIS_RPM);
     }
 
+    /// The ECU's spark advance for cylinder `i`'s charge, ° BTDC: MBT for its flame, less the
+    /// idle torque reserve ([`idle_reserve`]).
+    #[cfg(test)]
+    fn spark_advance(&self, i: usize) -> f64 {
+        self.def.spark_advance_for(self.cyl[i].flame) * idle_reserve(self.rpm())
+    }
+
     /// Move the spark trim towards `want` no faster than half the crank's own travel this
     /// step: a spark angle that jumped ahead of the crank between two steps would never be
     /// crossed, and that cylinder would misfire.
@@ -1169,7 +1236,6 @@ impl Engine {
         self.idle_control(dt, c);
         self.plate_step(c.throttle, dt);
         self.dashpot_step(self.plate, dt);
-        let spark_deg = 720.0 - (self.def.spark_advance_at(self.rpm()) + self.idle_spark_deg);
         let ivc =
             (self.def.intake_valve.open_deg + self.def.intake_valve.duration_deg).rem_euclid(720.0);
         let evc = (self.def.exhaust_valve.open_deg + self.def.exhaust_valve.duration_deg)
@@ -1226,6 +1292,7 @@ impl Engine {
             (None, Some(r)) => r.z_port,
             (None, None) => 1.0,
         };
+        let reserve = idle_reserve(self.rpm());
         for i in 0..self.cyl.len() {
             let arriving = match (&self.net, &self.remote.0) {
                 (Some(n), _) => n.arriving(i),
@@ -1352,7 +1419,26 @@ impl Engine {
                 cs.ref_p = cs.gas.pressure();
                 cs.ref_v = cs.gas.volume_m3;
                 cs.ref_t = cs.gas.temperature();
+                // the ECU reads the charge (speed, manifold, temperature) and times its spark
+                let dilution = if cs.trapped_kg > 0.0 {
+                    cs.residual_kg / cs.trapped_kg
+                } else {
+                    0.0
+                };
+                let ratio = flame_ratio(
+                    &g,
+                    mean_piston_speed,
+                    (cs.ref_p, cs.ref_t),
+                    cs.gas.mass_kg / cs.ref_v,
+                    cs.ref_v,
+                    dilution,
+                );
+                if ratio.is_finite() {
+                    cs.flame = ratio;
+                }
             }
+            let spark_deg =
+                720.0 - (self.def.spark_advance_for(cs.flame) * reserve + self.idle_spark_deg);
             let mut new_burn = false;
             // The spark fires on the first step at or past its angle (within the half cycle
             // after it), so a timing that moved earlier past the crank still fires this charge,
@@ -1402,14 +1488,19 @@ impl Engine {
             if new_burn {
                 // only the fresh charge carries fuel: what was trapped less the residual
                 let trapped = (cs.trapped_kg - cs.residual_kg).max(0.0);
+                // the flame this charge lights: its delay, burn and their dispersion scale
+                // from the preset's values at the reference state (see `flame_ratio`)
+                let ratio = cs.flame;
                 let var = 1.0 + CYCLE_VARIATION * self.noise();
                 let j = self.def.sound.combustion_jitter;
-                let start_jitter = j * BURN_START_JITTER_DEG * self.noise();
-                let duration =
-                    self.def.burn_duration_deg * (1.0 + j * BURN_DURATION_JITTER * self.noise());
+                let start_jitter = j * BURN_START_JITTER_DEG * ratio * self.noise();
+                let duration = self.def.burn_duration_deg
+                    * ratio
+                    * (1.0 + j * BURN_DURATION_JITTER * self.noise());
                 let cs = &mut self.cyl[i];
                 cs.burn = Some(Burn {
-                    start_deg: (spark_deg + IGNITION_DELAY_DEG + start_jitter).rem_euclid(720.0),
+                    start_deg: (spark_deg + IGNITION_DELAY_DEG * ratio + start_jitter)
+                        .rem_euclid(720.0),
                     duration_deg: duration,
                     energy_j: charge_energy(trapped, AFR_STOICH, COMBUSTION_EFFICIENCY * var),
                     released: 0.0,
@@ -1833,6 +1924,57 @@ mod tests {
         (0..n).map(|_| e.step(DT, c)).collect()
     }
 
+    /// Each new burn of cylinder 1 over `seconds` at `throttle`, held at `rpm`: (ignition delay
+    /// after the spark, duration), degrees.
+    fn burns(throttle: f64, rpm: f64, seconds: f64) -> Vec<(f64, f64)> {
+        let mut e = Engine::new(EngineDef::inline4(), rpm, 1);
+        let c = Controls {
+            throttle,
+            hold_rpm: Some(rpm),
+            ..Controls::default()
+        };
+        run(&mut e, 0.5, &c);
+        let mut out = Vec::new();
+        let mut last = None;
+        for _ in 0..(seconds / DT) as usize {
+            e.step(DT, &c);
+            if let Some(b) = &e.cyl[0].burn {
+                let key = (b.start_deg, b.duration_deg);
+                if last != Some(key) {
+                    last = Some(key);
+                    let spark = 720.0 - e.spark_advance(0) - e.idle_spark_deg;
+                    out.push(((b.start_deg - spark).rem_euclid(720.0), b.duration_deg));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_light_load_burns_slower_and_less_repeatably_than_full_throttle() {
+        // Hires et al. (SAE 780232) eqs. 13/32 with Metghalchi & Keck's flame speed: at the same
+        // speed a part-throttle charge is thinner (lower p) and more diluted by residual gas, so
+        // its laminar flame is slower and both the delay and the burn span more crank angle
+        // (Heywood §9.3: the flame-development angle grows with dilution); the early flame's
+        // dispersion grows with its time scale
+        let stats = |v: &[(f64, f64)], k: usize| {
+            let xs: Vec<f64> = v.iter().map(|b| if k == 0 { b.0 } else { b.1 }).collect();
+            let m = xs.iter().sum::<f64>() / xs.len() as f64;
+            let sd = (xs.iter().map(|x| (x - m).powi(2)).sum::<f64>() / xs.len() as f64).sqrt();
+            (m, sd)
+        };
+        let (light, full) = (burns(0.08, 2000.0, 1.5), burns(1.0, 2000.0, 1.5));
+        assert!(light.len() > 10 && full.len() > 10);
+        let ((d_l, sd_l), (d_f, sd_f)) = (stats(&light, 0), stats(&full, 0));
+        let ((b_l, _), (b_f, _)) = (stats(&light, 1), stats(&full, 1));
+        assert!(b_l > 1.15 * b_f, "burn {b_l:.1}° light vs {b_f:.1}° full");
+        assert!(d_l > 1.15 * d_f, "delay {d_l:.2}° light vs {d_f:.2}° full");
+        assert!(
+            sd_l > 1.15 * sd_f,
+            "delay spread {sd_l:.2}° light vs {sd_f:.2}° full"
+        );
+    }
+
     #[test]
     fn displacement_and_even_firing_offsets() {
         let d = EngineDef::inline4();
@@ -2168,7 +2310,7 @@ mod tests {
 
     #[test]
     fn each_cylinder_fires_at_its_spark_angle_before_top_centre() {
-        // A charge fires on the first step past `spark_advance_at(rpm) + idle trim` degrees
+        // A charge fires on the first step past its `spark_advance(i) + idle trim` degrees
         // before its firing top centre (crank angle 720°), not half a turn late, and a retarded
         // trim (negative) fires it later. At idle the ECU holds a retard, so the trim is real.
         let mut e = Engine::new(EngineDef::inline4(), 800.0, 1);
@@ -2181,8 +2323,8 @@ mod tests {
             e.step(DT, &c);
             // the crank's travel this step, degrees
             let travel = e.omega.abs().to_degrees() * DT;
-            let want = e.def.spark_advance_at(e.rpm()) + e.idle_spark_deg;
-            for (cs, was) in e.cyl.iter().zip(armed) {
+            for (i, (cs, was)) in e.cyl.iter().zip(armed).enumerate() {
+                let want = e.spark_advance(i) + e.idle_spark_deg;
                 if was && !cs.armed {
                     // signed: an idle retard can put the spark just after top centre
                     let btdc = (720.0 - cs.cycle_deg + 360.0).rem_euclid(720.0) - 360.0;
@@ -3286,13 +3428,13 @@ mod tests {
     }
 
     #[test]
-    fn spark_advance_follows_an_rpm_curve() {
-        // The burn takes about a fixed time, so its MBT advance grows with speed (Heywood §9.3).
-        // Configured 28°: × (0.35 + 0.65·900/4000) = 13.895° at 900 rpm; full from 4000 rpm.
+    fn the_ecu_times_the_spark_for_the_flame_it_has() {
+        // MBT: half-burned 8° after top centre. Configured 28° at the reference flame; a flame
+        // 1.5× as long needs (28 + 8)·1.5 − 8 = 46°, half as long (28 + 8)·0.5 − 8 = 10°
         let d = EngineDef::flatplane_v8();
-        assert_relative_eq!(d.spark_advance_at(900.0), 13.895, max_relative = 1e-9);
-        assert_relative_eq!(d.spark_advance_at(4000.0), 28.0);
-        assert_relative_eq!(d.spark_advance_at(9000.0), 28.0);
+        assert_relative_eq!(d.spark_advance_for(1.0), 28.0);
+        assert_relative_eq!(d.spark_advance_for(1.5), 46.0);
+        assert_relative_eq!(d.spark_advance_for(0.5), 10.0);
     }
 
     #[test]
