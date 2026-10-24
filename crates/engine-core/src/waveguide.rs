@@ -37,6 +37,20 @@ impl DelayLine {
         };
         back(self.whole) * (1.0 - self.frac) + back(self.whole + 1) * self.frac
     }
+    /// What [`DelayLine::read`] will return after the next `push`, before that push: the
+    /// values it interpolates were pushed at least a step earlier when the delay is ≥ 2 steps
+    /// (`None` below that, where the next read depends on the value about to be pushed).
+    pub fn read_next(&self) -> Option<f64> {
+        if self.whole < 2 {
+            return None;
+        }
+        let n = self.buf.len();
+        let back = |k: usize| {
+            let j = self.pos + n - k;
+            self.buf[if j >= n { j - n } else { j }]
+        };
+        Some(back(self.whole - 1) * (1.0 - self.frac) + back(self.whole) * self.frac)
+    }
     pub fn push(&mut self, x: f64) {
         self.buf[self.pos] = x;
         self.pos += 1;
@@ -100,6 +114,11 @@ impl Pipe {
     /// Wave arriving back at the near end this step.
     pub fn at_near(&self) -> f64 {
         self.bwd.read() * self.gain
+    }
+    /// [`Pipe::at_near`] as it will read after the next `send` (at the current gain), if the
+    /// pipe is at least two steps long.
+    pub fn at_near_next(&self) -> Option<f64> {
+        self.bwd.read_next().map(|x| x * self.gain)
     }
     /// Send this step's outgoing waves: `from_near` into `fwd`, `from_far` into `bwd`.
     pub fn send(&mut self, from_near: f64, from_far: f64) {
@@ -447,6 +466,19 @@ mod tests {
         // and it stays when the flow sets the gain afresh from the still pipe's
         q.set_mean_flow(0.0);
         assert!((q.gain - 0.485).abs() < 1e-12, "{}", q.gain);
+    }
+
+    #[test]
+    fn the_next_read_is_known_a_step_early() {
+        // a 2.4-step delay: after each push, read() returns what read_next() said before it
+        let mut d = DelayLine::new(2.4);
+        for k in 0..50 {
+            let next = d.read_next().unwrap();
+            d.push((k as f64 * 0.37).sin());
+            assert_eq!(d.read(), next, "step {k}");
+        }
+        // shorter than two steps it cannot be: the next read needs the value about to come
+        assert_eq!(DelayLine::new(1.5).read_next(), None);
     }
 
     #[test]

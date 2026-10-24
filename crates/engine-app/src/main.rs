@@ -2,6 +2,7 @@ mod app;
 mod controls;
 mod dyno;
 mod editor;
+mod exhaust_thread;
 mod files;
 mod headless;
 mod offline;
