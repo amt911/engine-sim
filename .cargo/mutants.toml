@@ -1,0 +1,4 @@
+# cargo-mutants defaults for this repo (docs/agents/quality-beyond-coverage.md).
+# nextest stops a mutant's run at its first failing test: a caught mutant costs the time of the
+# test that catches it, not the whole suite (measured 2026-10-23: 108 s vs 200 s per mutant).
+test_tool = "nextest"
