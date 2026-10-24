@@ -280,6 +280,13 @@ mod tests {
             .map(|i| f.process(&[if i == 0 { 1.0 } else { 0.0 }]))
             .collect();
         assert!(out[2..].iter().all(|v| *v == 0.0));
+        // a step at the tail: one spike from the tail, one from its image, then silence — each
+        // path radiates the step's change once
+        let mut l = Listener::new(1, 0.9, 3.0, 0.0, A, DT, Some((0.3, 1.5)));
+        let ys: Vec<f64> = (0..400).map(|_| l.process(&[1.0])).collect();
+        let spikes: Vec<f64> = ys.iter().copied().filter(|y| *y != 0.0).collect();
+        assert_eq!(spikes.len(), 2, "{spikes:?}");
+        assert_relative_eq!(spikes[1] / spikes[0], 0.923_54, max_relative = 1e-4);
     }
 
     #[test]
