@@ -130,9 +130,101 @@ fn band_alpha(fc: f64, dt: f64) -> f64 {
     (2.0 * PI * fc * dt).sin() / (2.0 * BAND_Q)
 }
 
+/// The fine-scale turbulence similarity spectrum of jet mixing noise, G(f/f_F) of Tam,
+/// Golebiowski & Seiner (AIAA 96-1716, 1996, eq. 6; one shape for all their subsonic and
+/// supersonic jet data, f_F its peak), as a filter whose peak follows a moving f_F: a first-order
+/// high-pass at 0.1411·f_F and a second-order low-pass at 6.7866·f_F (Q 0.4094), fitted to
+/// eq. (6) within 0.47 dB rms (1.5 dB at worst) from 0.02 to 50·f_F. (Eq. 6 as printed takes
+/// log(f/f_F) between 10 and 30·f_F; it only joins its neighbours with log(f/10f_F), read so.)
+#[derive(Debug, Clone, Default)]
+pub struct FineScale {
+    hp: (f64, f64),
+    lp: [f64; 2],
+    coef: [f64; 6],
+    f_peak: f64,
+}
+
+impl FineScale {
+    const HP: f64 = 0.1411;
+    const LP: f64 = 6.7866;
+    const Q: f64 = 0.4094;
+    /// 10·log of the fitted shape at its peak (the fit's +0.105 dB offset taken out).
+    const GAIN: f64 = 0.987_970_6;
+
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// One step of `dt` of `x` through the spectrum peaking at `f_peak` Hz.
+    pub fn process(&mut self, x: f64, f_peak: f64, dt: f64) -> f64 {
+        if (f_peak - self.f_peak).abs() > 0.005 * self.f_peak.max(1.0) {
+            self.retune(f_peak, dt);
+        }
+        let [g, a1h, b0, b1, a1, a2] = self.coef;
+        // first-order high-pass (bilinear): y = g·(x − x₁) − a1h·y₁
+        let h = g * (x - self.hp.0) - a1h * self.hp.1;
+        self.hp = (x, h);
+        // second-order low-pass, transposed direct form II
+        let y = b0 * h + self.lp[0];
+        self.lp[0] = b1 * h - a1 * y + self.lp[1];
+        self.lp[1] = b0 * h - a2 * y;
+        Self::GAIN * y
+    }
+
+    fn retune(&mut self, f_peak: f64, dt: f64) {
+        let nyq = 0.45 / dt;
+        let w = |f: f64| (std::f64::consts::PI * f.min(nyq) * dt).tan();
+        // high-pass s/(s + ω): bilinear with pre-warping
+        let kh = w(Self::HP * f_peak);
+        let g = 1.0 / (1.0 + kh);
+        let a1h = (kh - 1.0) / (1.0 + kh);
+        // low-pass 1/(1 + s/(Qω) + (s/ω)²)
+        let k = w(Self::LP * f_peak);
+        let norm = 1.0 / (1.0 + k / Self::Q + k * k);
+        let b0 = k * k * norm;
+        let b1 = 2.0 * b0;
+        let a1 = 2.0 * (k * k - 1.0) * norm;
+        let a2 = (1.0 - k / Self::Q + k * k) * norm;
+        self.coef = [g, a1h, b0, b1, a1, a2];
+        self.f_peak = f_peak;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_fine_scale_spectrum_is_tams() {
+        // a tone through the filter against eq. (6) of Tam, Golebiowski & Seiner (1996):
+        // 10·log G = 0 at the peak; −5.57 dB at 0.1·f_F; −2.25 at 3·f_F; −11.8 at 10·f_F;
+        // −26.6 at 30·f_F (at 0.1·f_F, the segment below 0.15: −3.5 + [11.874876 + 2.1202444·m +
+        // 7.5211814·m²]·m with m = log(20·0.1/3) = −0.1761, = −3.5 − 2.067 = −5.57)
+        let fs = 192_000.0;
+        let f_peak = 1000.0;
+        let level = |f: f64| {
+            let mut g = FineScale::new();
+            let n = (0.5 * fs) as usize;
+            let mut peak = 0.0f64;
+            for i in 0..n {
+                let y = g.process((2.0 * PI * f * i as f64 / fs).sin(), f_peak, 1.0 / fs);
+                if i > n / 2 {
+                    peak = peak.max(y.abs());
+                }
+            }
+            20.0 * peak.log10()
+        };
+        for (x, db) in [
+            (0.1, -5.57),
+            (1.0, 0.0),
+            (3.0, -2.25),
+            (10.0, -11.8),
+            (30.0, -26.6),
+        ] {
+            let got = level(x * f_peak);
+            assert!((got - db).abs() < 1.6, "{x}·f_F: {got:.2} dB, eq. 6 {db}");
+        }
+    }
     use approx::assert_relative_eq;
 
     #[test]
