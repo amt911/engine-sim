@@ -82,8 +82,7 @@ pub fn render_loop(
 
 /// The drive scene at `quality`.
 pub fn render_drive(def: &EngineDef, sample_rate: f64, quality: Quality) -> Vec<f32> {
-    let mut sim =
-        Simulation::with_quality(def.clone(), VehicleDef::default(), sample_rate, 1, quality);
+    let mut sim = running(def, sample_rate, quality);
     let block = 240;
     let n = (DRIVE_S * sample_rate) as usize / block;
     let mut out = Vec::with_capacity(n * block);
@@ -99,8 +98,7 @@ pub fn render_drive(def: &EngineDef, sample_rate: f64, quality: Quality) -> Vec<
 /// Full throttle from idle to redline in `seconds`, the speed ramped steadily (a dyno pull you
 /// can hear).
 pub fn render_sweep(def: &EngineDef, sample_rate: f64, quality: Quality, seconds: f64) -> Vec<f32> {
-    let mut sim =
-        Simulation::with_quality(def.clone(), VehicleDef::default(), sample_rate, 1, quality);
+    let mut sim = running(def, sample_rate, quality);
     let block = 240;
     let n = (seconds * sample_rate) as usize / block;
     let (lo, hi) = (def.idle_rpm.max(800.0), def.redline_rpm);
@@ -117,6 +115,20 @@ pub fn render_sweep(def: &EngineDef, sample_rate: f64, quality: Quality, seconds
         out.extend_from_slice(&buf);
     }
     out
+}
+
+/// Seconds an engine idles before a scene is recorded: past its start-up transient (pipes and
+/// cylinders filling from rest) and the start flare its idle control brings back down (measured:
+/// 3 s still left the V10 15 dB over its idle; at 8 s every preset's idle is flat from the start).
+const PREROLL_S: f64 = 8.0;
+
+/// A simulation of `def` already running: started and idled for [`PREROLL_S`], unrecorded.
+fn running(def: &EngineDef, sample_rate: f64, quality: Quality) -> Simulation {
+    let mut sim =
+        Simulation::with_quality(def.clone(), VehicleDef::default(), sample_rate, 1, quality);
+    let mut idle = vec![0.0f32; (PREROLL_S * sample_rate) as usize];
+    sim.render(&mut idle);
+    sim
 }
 
 /// Output sample rate of the renders, Hz.
@@ -178,6 +190,19 @@ pub fn render_scene(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_drive_starts_on_an_engine_already_idling() {
+        // the recording begins on a running engine: its first moments sound like the idle
+        // after them — no start-up transient, no start flare (V10 before: 2.4× the idle's rms)
+        let x = render_drive(&EngineDef::lfa_v10(), RATE, Quality::Medium);
+        let rms = |a: f64, b: f64| {
+            let s = &x[(a * RATE) as usize..(b * RATE) as usize];
+            (s.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / s.len() as f64).sqrt()
+        };
+        let (start, idle) = (rms(0.0, 0.3), rms(1.0, 1.9));
+        assert!(start < 1.3 * idle, "start {start} vs idle {idle}");
+    }
 
     #[test]
     fn scenes_parse_from_the_command_line() {
