@@ -2782,6 +2782,22 @@ mod tests {
     }
 
     #[test]
+    fn the_k20a_is_hondas() {
+        // Honda K20A: 4 · π/4 · 0.086² · 0.086 = 1.9983e-3 m³ (1998 cc), CR 11.5, 8400 rpm,
+        // firing 1-3-4-2, valves 2 × 35 mm intake / 2 × 30 mm exhaust as one equivalent each
+        let d = EngineDef::honda_k20a();
+        assert!(d.name.contains("K20A"));
+        assert_relative_eq!(d.displacement_m3(), 1.9983e-3, max_relative = 1e-4);
+        assert_eq!(d.geometry.compression_ratio, 11.5);
+        assert_eq!(d.geometry.rod_m, 0.139);
+        assert_eq!(d.redline_rpm, 8400.0);
+        assert_eq!(d.firing_order, [1, 3, 4, 2]);
+        assert!((d.intake_valve.diameter_m - 0.035 * 2f64.sqrt()).abs() < 2e-4);
+        assert!((d.exhaust_valve.diameter_m - 0.030 * 2f64.sqrt()).abs() < 2e-4);
+        assert_eq!(d.intake.model, IntakeModel::Fv);
+    }
+
+    #[test]
     fn the_lfa_fires_each_bank_evenly() {
         // A 72° V10 firing evenly (Toyota): 1-6-5-10-2-7-3-8-4-9 alternates the banks when
         // cylinders 1–5 sit on one and 6–10 on the other (the numbering this order belongs to,
