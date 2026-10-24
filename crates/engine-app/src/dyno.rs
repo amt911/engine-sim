@@ -104,6 +104,39 @@ mod tests {
     use approx::assert_relative_eq;
 
     #[test]
+    fn the_lfa_breathes_as_lexus_published() {
+        // Toyota/Lexus (2009): 412 kW (552 hp) at 8700 rpm, 480 N·m at 6800 rpm, 90 % of it
+        // from 3700 to 9000 rpm. The preset's unpublished geometry is sized by physics (valves
+        // by the Mach index at 8700 rpm, runners tuned at 6800, primaries at 8700): its peaks
+        // land where the real engine's are. The level runs high (no catalysts, muffler or
+        // airbox in the model: no backpressure or filter loss).
+        let points = sweep(&EngineDef::lfa_v10());
+        let (torque, power) = peaks(&points).unwrap();
+        assert!(
+            (6000.0..=7500.0).contains(&torque.rpm),
+            "torque peak at {}",
+            torque.rpm
+        );
+        assert!(
+            (7500.0..=9000.0).contains(&power.rpm),
+            "power peak at {}",
+            power.rpm
+        );
+        assert!(
+            (480.0..=600.0).contains(&power.power_hp()),
+            "{} hp",
+            power.power_hp()
+        );
+        // the broad band: 90 % of the peak torque by 4500 rpm (published: 3700)
+        let at = |rpm: f64| points.iter().find(|p| p.rpm == rpm).unwrap().torque_nm;
+        assert!(
+            at(4500.0) >= 0.88 * torque.torque_nm,
+            "{} at 4500",
+            at(4500.0)
+        );
+    }
+
+    #[test]
     fn power_is_torque_times_angular_speed() {
         // 100 N·m at 3,000 rpm: ω = 3000·2π/60 = 314.159 rad/s → 31,415.9 W = 42.13 hp.
         let p = DynoPoint::new(3000.0, 100.0);

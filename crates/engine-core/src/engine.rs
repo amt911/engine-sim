@@ -191,17 +191,26 @@ impl EngineDef {
                 bank_angle_deg: 72.0,
                 banks: vec![vec![1, 3, 5, 7, 9], vec![2, 4, 6, 8, 10]],
             },
+            // Valve sizes are not published: sized as the engine's designers would, from its
+            // published rated speed. Intake: Heywood's Mach index Z = (B/D)²·S̄p/(Cᵢ·a) at its
+            // knee, Z ≈ 0.6 (ICE Fundamentals §6.3.2; mean flow coefficient Cᵢ ≈ 0.35) at
+            // 8700 rpm (S̄p = 22.91 m/s): one equivalent valve of 49.6 mm, two of 35.1 mm.
+            // Exhaust ≈ 0.83 of the intake (Heywood §6.3: exhaust valves ~70 % of the intake
+            // area): 41.2 mm. Lift: a quarter of each valve's diameter, where the curtain area
+            // reaches the port's (8.8 mm per intake valve; the equivalent valve's lift keeps the
+            // two valves' curtain area). Timing: Heywood's typical high-output values
+            // (IVO 20° BTDC, IVC 70° ABDC, EVO 55° BBDC, EVC 30° ATDC).
             intake_valve: ValveTiming {
                 open_deg: 340.0,
                 duration_deg: 270.0,
-                max_lift_m: 0.011,
-                diameter_m: 0.046,
+                max_lift_m: 0.0124,
+                diameter_m: 0.0496,
             },
             exhaust_valve: ValveTiming {
                 open_deg: 125.0,
                 duration_deg: 265.0,
-                max_lift_m: 0.010,
-                diameter_m: 0.040,
+                max_lift_m: 0.0103,
+                diameter_m: 0.0412,
             },
             spark_advance_deg: 28.0,
             burn_duration_deg: 45.0,
@@ -214,10 +223,14 @@ impl EngineDef {
             idle_throttle: 0.003 * 0.120 * 0.120 / (0.045 * 0.045 * 10.0),
             // no published figure; a typical high-revving V10 idle (estimate)
             idle_rpm: 900.0,
-            // Equal-length primaries, one 5-into-1 collector per bank (odd/even numbering
-            // per bank is an assumption), dual tail pipes. Lengths and diameters estimated.
+            // Equal-length primaries, one 5-into-1 collector per bank and an equal-length dual
+            // system (Toyota, LFA press release, 2009-10-21; ja.wikipedia "トヨタ・LRエンジン").
+            // Primary length not published: the second return of the blowdown's reflection
+            // reaches the port at the overlap at the 8700 rpm power peak — 2·(2L)/c = (360° −
+            // EVO)/(6N) with c ≈ 600 m/s in ~900 K gas (Blair, Design and Simulation of
+            // Four-Stroke Engines, ch. 6): L = 0.675 m. Bores estimated.
             exhaust: ExhaustDef {
-                primary_length_m: 0.6,
+                primary_length_m: 0.675,
                 primary_diameter_m: 0.042,
                 collectors: vec![vec![1, 3, 5, 7, 9], vec![2, 4, 6, 8, 10]],
                 collector_length_m: 0.3,
@@ -233,10 +246,12 @@ impl EngineDef {
                 tail_spacing_m: 0.25,
                 after_collector: Vec::new(),
             },
-            // Runners and trumpets estimated from the LFA's intake: 250 mm to the valve, 45 mm.
+            // Ten ITBs (Toyota). Runner length not published: Helmholtz-tuned to the torque peak
+            // (Engelman: f = (a/2π)·√(A/(L·V)), V = V_d/2·(r + 1)/(r − 1), tuned at twice the
+            // revolution frequency at 6800 rpm, 226.7 Hz; 45 mm bore): L = 0.325 m.
             intake: IntakeDef {
                 model: IntakeModel::Fv,
-                runner_length_m: 0.25,
+                runner_length_m: 0.325,
                 runner_diameter_m: 0.045,
                 individual_throttles: true,
                 ..IntakeDef::default()
@@ -2657,7 +2672,8 @@ mod tests {
         let d = EngineDef::lfa_v10();
         assert_eq!(d.intake.model, IntakeModel::Fv);
         assert!(d.intake.individual_throttles);
-        assert_eq!(d.intake.runner_length_m, 0.25);
+        // Helmholtz-tuned to the 6800 rpm torque peak (Engelman; see the preset): 0.325 m
+        assert_eq!(d.intake.runner_length_m, 0.325);
         assert_eq!(d.intake.runner_diameter_m, 0.045);
         // throttle_diameter_m is the total bore the ten share: wide open, each throttle body
         // is at least as wide as its runner (√10 · 45 mm = 142.3 mm), so the runner sets the flow

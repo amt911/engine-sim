@@ -34,13 +34,13 @@ engine:
   intake_valve:
     open_deg: 340.0
     duration_deg: 270.0
-    max_lift_m: 0.011
-    diameter_m: 0.046
+    max_lift_m: 0.0124
+    diameter_m: 0.0496
   exhaust_valve:
     open_deg: 125.0
     duration_deg: 265.0
-    max_lift_m: 0.01
-    diameter_m: 0.04
+    max_lift_m: 0.0103
+    diameter_m: 0.0412
   spark_advance_deg: 28.0
   burn_duration_deg: 45.0
   flywheel_inertia_kgm2: 0.28
@@ -49,7 +49,7 @@ engine:
   idle_throttle: 0.0021333333333333334
   idle_rpm: 900.0
   exhaust:
-    primary_length_m: 0.6
+    primary_length_m: 0.675
     primary_diameter_m: 0.042
     collectors:
     - - 1
@@ -80,7 +80,7 @@ engine:
       diameter_m: 0.06
   intake:
     model: fv
-    runner_length_m: 0.25
+    runner_length_m: 0.325
     runner_diameter_m: 0.045
     individual_throttles: true
     trumpet_loss: 0.1
