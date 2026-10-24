@@ -569,6 +569,97 @@ mod tests {
     use super::*;
 
     #[test]
+    fn runners_split_with_substeps_add_up_the_same() {
+        // a physics step longer than the FV's stable one (0.1 ms against ~26 µs): every FV step
+        // takes several substeps (k > 1), and half the ITB runners stepped behind a link give
+        // the same pipes, the same sound source and the same air drawn
+        let def = IntakeDef {
+            model: IntakeModel::Fv,
+            individual_throttles: true,
+            ..IntakeDef::default()
+        };
+        let mut here = IntakeFv::new(&def, 1e-3, 4, 1e-4);
+        let mut split = IntakeFv::new(&def, 1e-3, 4, 1e-4);
+        assert!(split.detach_runners(2, |set| Box::new(LocalRunners::new(set))));
+        // detached and taken straight back: the same intake as never detached
+        let mut round = IntakeFv::new(&def, 1e-3, 4, 1e-4);
+        let mut kept = None;
+        assert!(round.detach_runners(2, |set| {
+            kept = Some(set.clone());
+            Box::new(LocalRunners::new(set))
+        }));
+        assert!(round.end_detached().is_some());
+        round.attach_runners(kept.unwrap());
+        for k in 0..400 {
+            for i in 0..4 {
+                let dm = if (k + 25 * i) % 100 < 30 { 2e-6 } else { 0.0 };
+                here.add_valve_flow(i, dm, 3.0e5);
+                split.add_valve_flow(i, dm, 3.0e5);
+                round.add_valve_flow(i, dm, 3.0e5);
+            }
+            let area = 5e-4;
+            let r = round.step(area);
+            assert_eq!(here.step(area), split.step(area), "step {k}");
+            assert_eq!(r, split.radiated, "round trip, step {k}");
+            assert_eq!(here.last_inducted(), split.last_inducted(), "step {k}");
+            for i in 0..4 {
+                assert_eq!(here.port_volume(i).mass_kg, split.port_volume(i).mass_kg);
+            }
+            assert_eq!(here.manifold_pressure(), split.manifold_pressure());
+        }
+        assert!(
+            here.flux.len() > 4,
+            "k > 1: {} fluxes for 4 runners",
+            here.flux.len()
+        );
+        // a plenum couples its runners every substep: they stay together
+        let mut plenum = IntakeFv::new(
+            &IntakeDef {
+                individual_throttles: false,
+                ..def
+            },
+            1e-3,
+            4,
+            1e-4,
+        );
+        assert!(!plenum.detach_runners(2, |set| Box::new(LocalRunners::new(set))));
+        assert!(format!("{:?}", plenum).contains("remote: -"));
+        // and back in place, the runners carry on as if never away
+        let link = split.end_detached();
+        assert!(link.is_some());
+        assert!(format!("{:?}", split.remote).contains('-'));
+    }
+
+    #[test]
+    fn the_air_drawn_is_what_the_runners_and_valves_took() {
+        // mass conservation over FV steps of several substeps (k > 1): what came in at the
+        // trumpets (last_inducted) is what the runners gained plus what the valves took out
+        let def = IntakeDef {
+            model: IntakeModel::Fv,
+            individual_throttles: true,
+            ..IntakeDef::default()
+        };
+        let mut net = IntakeFv::new(&def, 1e-3, 4, 1e-4);
+        for k in 0..300 {
+            let before = net.total_mass();
+            let mut taken = 0.0;
+            for i in 0..4 {
+                let dm = if (k + 25 * i) % 100 < 30 { 2e-6 } else { 0.0 };
+                net.add_valve_flow(i, dm, 3.0e5);
+                taken += dm;
+            }
+            net.step(5e-4);
+            let gained = net.total_mass() - before;
+            assert!(
+                (gained - (net.last_inducted() - taken)).abs() < 1e-9 * before,
+                "step {k}: gained {gained}, drawn {} − taken {taken}",
+                net.last_inducted()
+            );
+        }
+        assert!(net.flux.len() > 4);
+    }
+
+    #[test]
     fn the_drawn_rate_runs_straight_between_fv_steps() {
         // between two FV steps the rate climbs linearly from the earlier step's to the later's
         let mut net = IntakeFv::new(&crate::intake_fv::IntakeDef::default(), 1e-3, 1, 1e-6);

@@ -4068,6 +4068,68 @@ mod tests {
     }
 
     #[test]
+    fn an_engine_detached_and_taken_back_runs_as_one_never_detached() {
+        // the net and half the runners handed out and straight back (a render block's start and
+        // end with nothing in between): the same samples as an engine that kept them
+        let def = EngineDef::lfa_v10();
+        let mut a = Engine::new(def.clone(), 3000.0, 1);
+        let mut b = Engine::new(def, 3000.0, 1);
+        let c = Controls {
+            throttle: 0.3,
+            ..Controls::default()
+        };
+        for _ in 0..10 {
+            a.step(DT, &c);
+            b.step(DT, &c);
+        }
+        assert_eq!(b.cylinders(), 10);
+        let (mut net, mut set) = (None, None);
+        assert!(b.detach_exhaust(|n| {
+            assert_eq!(n.valves(), 10);
+            net = Some(n.clone());
+            Box::new(crate::exhaust::LocalLink::new(n))
+        }));
+        assert!(format!("{b:?}").contains("remote exhaust"));
+        assert!(b.detach_runners(5, |s| {
+            set = Some(s.clone());
+            Box::new(crate::intake_fv::LocalRunners::new(s))
+        }));
+        assert_eq!(b.flush_exhaust(DT), None);
+        assert!(b.end_detached().is_some());
+        assert!(b.end_detached_runners().is_some());
+        b.attach_exhaust(net.unwrap());
+        b.attach_runners(set.unwrap());
+        for k in 0..2000 {
+            assert_eq!(a.step(DT, &c), b.step(DT, &c), "step {k}");
+        }
+        // an engine with a plenum or a 0D intake keeps its runners
+        assert!(
+            !Engine::new(EngineDef::inline4(), 3000.0, 1)
+                .detach_runners(2, |s| Box::new(crate::intake_fv::LocalRunners::new(s)))
+        );
+    }
+
+    #[test]
+    fn an_fv_exhaust_is_heard() {
+        // the finite-volume exhaust's tails reach the listener as the waveguide's do
+        let mut d = EngineDef::inline4();
+        d.exhaust.model = ExhaustModel::Fv;
+        d.sound.flow_noise = 0.0;
+        d.sound.intake = 0.0;
+        d.sound.block = 0.0;
+        let mut e = Engine::new(d, 3000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.2, &c);
+        let x = run(&mut e, 0.1, &c);
+        let rms = (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
+        assert!(rms > 0.05, "{rms} Pa");
+    }
+
+    #[test]
     fn the_exhaust_pulses_alone_reach_the_listener() {
         // every other source off: the pulses travel the pipes to the tails and out — a waveguide
         // kept from step to step carries them (rebuilt each step it would hold nothing)
