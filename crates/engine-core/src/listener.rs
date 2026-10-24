@@ -24,9 +24,15 @@ pub struct Listener {
     gain: Vec<f64>,
     lines: Vec<Vec<f64>>,
     last: Vec<f64>,
+    /// Per tail, its ground image: (delay, gain); empty in free field.
+    image: Vec<(usize, f64)>,
+    image_last: Vec<f64>,
     pos: usize,
     /// For a signal radiated from all the tails alike (at their mean gain, no delay).
     shared_last: f64,
+    flow_last: f64,
+    mean_distance: f64,
+    dt: f64,
 }
 
 impl Listener {
@@ -39,41 +45,69 @@ impl Listener {
         angle_deg: f64,
         tail_area_m2: f64,
         dt: f64,
+        ground: Option<(f64, f64)>,
     ) -> Self {
         let n = tails.max(1);
         let (lx, ly) = {
             let a = angle_deg.to_radians();
             (distance_m * a.sin(), -distance_m * a.cos())
         };
-        let r: Vec<f64> = (0..n)
+        // heights above the ground (tail, ear): the direct path climbs (h_l − h_s), the
+        // ground's image path (h_l + h_s); free field has neither
+        let (rise, image_rise) = match ground {
+            Some((hs, hl)) => (hl - hs, Some(hl + hs)),
+            None => (0.0, None),
+        };
+        let xs: Vec<f64> = (0..n)
             .map(|k| {
-                let x = if n == 1 {
+                if n == 1 {
                     0.0
                 } else {
                     -0.5 * spacing_m + spacing_m * k as f64 / (n - 1) as f64
-                };
-                ((lx - x).powi(2) + ly * ly).sqrt().max(0.1)
+                }
             })
             .collect();
+        let path = |x: f64, h: f64| ((lx - x).powi(2) + ly * ly + h * h).sqrt().max(0.1);
+        let r: Vec<f64> = xs.iter().map(|&x| path(x, rise)).collect();
         let r_min = r.iter().copied().fold(f64::INFINITY, f64::min);
-        let delay: Vec<usize> = r
-            .iter()
-            .map(|ri| ((ri - r_min) / C_AMBIENT / dt).round() as usize)
-            .collect();
+        let steps = |ri: f64| ((ri - r_min) / C_AMBIENT / dt).round() as usize;
+        let delay: Vec<usize> = r.iter().map(|&ri| steps(ri)).collect();
         let to_q = tail_area_m2 / crate::exhaust::tail_impedance();
-        let gain = r
+        let monopole = |ri: f64| RHO_AMBIENT / (4.0 * std::f64::consts::PI * ri) * to_q / dt;
+        let gain = r.iter().map(|&ri| monopole(ri)).collect();
+        // the rigid ground (asphalt: reflection Q ≈ 1 at these frequencies, ISO 9613-2) returns
+        // each tail from its image below it, later and weaker
+        let image: Vec<(usize, f64)> = match image_rise {
+            Some(h) => xs
+                .iter()
+                .map(|&x| {
+                    let ri = path(x, h);
+                    (steps(ri), monopole(ri))
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        let delay_max = delay
             .iter()
-            .map(|ri| RHO_AMBIENT / (4.0 * std::f64::consts::PI * ri) * to_q / dt)
-            .collect();
-        let len = delay.iter().copied().max().unwrap_or(0) + 1;
+            .copied()
+            .chain(image.iter().map(|i| i.0))
+            .max()
+            .unwrap_or(0);
+        let len = delay_max + 1;
+        let mean_distance = r.iter().sum::<f64>() / r.len() as f64;
         Self {
             distance: r,
             delay,
             gain,
             lines: vec![vec![0.0; len]; n],
             last: vec![0.0; n],
+            image_last: vec![0.0; image.len()],
+            image,
             pos: 0,
             shared_last: 0.0,
+            flow_last: 0.0,
+            mean_distance,
+            dt,
         }
     }
 
@@ -95,6 +129,16 @@ impl Listener {
         p
     }
 
+    /// A volume flow `q` (m³/s, out of the source) from a point at the tails' mean distance:
+    /// the monopole's p = ρ₀/(4πr)·dQ/dt (Kinsler §7.2), Pa.
+    pub fn radiate_flow(&mut self, q: f64) -> f64 {
+        let p = RHO_AMBIENT / (4.0 * std::f64::consts::PI * self.mean_distance)
+            * (q - self.flow_last)
+            / self.dt;
+        self.flow_last = q;
+        p
+    }
+
     /// One step: the tails' outlet signals in, the sound pressure at the listener (Pa) out.
     /// Missing tails read as silent ones.
     pub fn process(&mut self, tails: &[f64]) -> f64 {
@@ -105,6 +149,11 @@ impl Listener {
             let heard = line[(self.pos + len - self.delay[k]) % len];
             y += self.gain[k] * (heard - self.last[k]);
             self.last[k] = heard;
+            if let Some(&(d, g)) = self.image.get(k) {
+                let reflected = line[(self.pos + len - d) % len];
+                y += g * (reflected - self.image_last[k]);
+                self.image_last[k] = reflected;
+            }
         }
         self.pos = (self.pos + 1) % len;
         y
@@ -114,6 +163,16 @@ impl Listener {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_flow_source_radiates_as_a_monopole() {
+        // p = ρ₀/(4πr)·dQ/dt: Q stepping 0 → 1e-3 m³/s in 10 µs, 3 m away (one tail, straight
+        // behind, free field): 1.204/(4π·3)·1e-3/1e-5 = 3.19366 Pa, then nothing while it holds
+        let mut l = Listener::new(1, 0.0, 3.0, 0.0, 1e-3, 1e-5, None);
+        assert_eq!(l.radiate_flow(0.0), 0.0);
+        assert!((l.radiate_flow(1e-3) - 3.193_66).abs() < 1e-4);
+        assert_eq!(l.radiate_flow(1e-3), 0.0);
+    }
     use approx::assert_relative_eq;
 
     const DT: f64 = 1.0 / 192_000.0;
@@ -132,7 +191,7 @@ mod tests {
     fn one_tail_radiates_as_a_monopole() {
         // p = ρ₀/(4πr)·dQ/dt (Kinsler, Fundamentals of Acoustics, §7.2): ρ₀ = 1.204 kg/m³
         // (20 °C), r = 3 m, dQ/dt = 1 m³/s² → 1.204/(4π·3) = 0.031937 Pa
-        let mut l = Listener::new(1, 0.9, 3.0, 0.0, A, DT);
+        let mut l = Listener::new(1, 0.9, 3.0, 0.0, A, DT, None);
         let mut p = 0.0;
         for n in 0..100 {
             p = l.process(&[unit_ramp(n)]);
@@ -144,7 +203,7 @@ mod tests {
     fn a_listener_on_the_axis_hears_both_tails_together() {
         // tails 0.9 m apart, listener 3 m behind their centre: r = √(3² + 0.45²) = 3.0336 m for
         // both, no delay between them; each gives 1.204/(4π·3.0336) = 0.031584 Pa
-        let mut l = Listener::new(2, 0.9, 3.0, 0.0, A, DT);
+        let mut l = Listener::new(2, 0.9, 3.0, 0.0, A, DT, None);
         let mut p = 0.0;
         for n in 0..100 {
             p = l.process(&[unit_ramp(n), 2.0 * unit_ramp(n)]);
@@ -180,9 +239,9 @@ mod tests {
         // Tails at x = ∓0.5 m, listener level with them at 3 m from the centre (θ = 90°):
         // r = 3.5 and 2.5 m. Δr = 1 m → 1/343 s = 559.8 samples at 192 kHz; amplitude ∝ 1/r,
         // so the near tail is 3.5/2.5 = 1.4 times louder.
-        let mut l = Listener::new(2, 1.0, 3.0, 90.0, A, DT);
+        let mut l = Listener::new(2, 1.0, 3.0, 90.0, A, DT, None);
         let (far, g_far) = arrival(&mut l, 0);
-        let mut l = Listener::new(2, 1.0, 3.0, 90.0, A, DT);
+        let mut l = Listener::new(2, 1.0, 3.0, 90.0, A, DT, None);
         let (near, g_near) = arrival(&mut l, 1);
         assert_eq!(far - near, 560);
         assert_relative_eq!(g_near / g_far, 1.4, max_relative = 1e-9);
@@ -192,7 +251,7 @@ mod tests {
     fn a_shared_signal_radiates_at_the_tails_mean_gain() {
         // the beside-the-car tails (r = 3.5 and 2.5 m), one ramp from both: the mean of the
         // two monopoles, 1.204/(4π)·(1/3.5 + 1/2.5)/2 = 0.032850 Pa, steady along the ramp
-        let mut l = Listener::new(2, 1.0, 3.0, 90.0, A, DT);
+        let mut l = Listener::new(2, 1.0, 3.0, 90.0, A, DT, None);
         let p: Vec<f64> = (0..100).map(|n| l.radiate_shared(unit_ramp(n))).collect();
         for p in &p[1..] {
             assert_relative_eq!(*p, 0.032_850, max_relative = 1e-4);
@@ -200,9 +259,54 @@ mod tests {
     }
 
     #[test]
+    fn the_ground_sends_a_second_arrival_from_the_image_source() {
+        // Tail 0.3 m up, listener's ear 1.5 m up, 3 m straight behind, rigid ground (asphalt,
+        // Q ≈ 1; ISO 9613-2): direct path √(3² + 1.2²) = 3.2311 m, reflected (image 0.3 m
+        // below the ground) √(3² + 1.8²) = 3.4986 m: 0.2675 m later = 149.7 → 150 steps at
+        // 192 kHz, at 3.2311/3.4986 = 0.92354 of the direct amplitude, same sign.
+        let mut l = Listener::new(1, 0.9, 3.0, 0.0, A, DT, Some((0.3, 1.5)));
+        let out: Vec<f64> = (0..400)
+            .map(|i| l.process(&[if i == 0 { 1.0 } else { 0.0 }]))
+            .collect();
+        let direct = out[0];
+        assert!(direct > 0.0);
+        assert_relative_eq!(out[150] / direct, 0.923_54, max_relative = 1e-4);
+        assert_relative_eq!(l.distances()[0], 3.231_1, max_relative = 1e-4);
+        // nothing else arrives in between (the impulse's own step back aside)
+        assert!(out[2..149].iter().all(|v| *v == 0.0));
+        // free field: one arrival
+        let mut f = Listener::new(1, 0.9, 3.0, 0.0, A, DT, None);
+        let out: Vec<f64> = (0..400)
+            .map(|i| f.process(&[if i == 0 { 1.0 } else { 0.0 }]))
+            .collect();
+        assert!(out[2..].iter().all(|v| *v == 0.0));
+        // a step at the tail: one spike from the tail, one from its image, then silence — each
+        // path radiates the step's change once
+        let mut l = Listener::new(1, 0.9, 3.0, 0.0, A, DT, Some((0.3, 1.5)));
+        let ys: Vec<f64> = (0..400).map(|_| l.process(&[1.0])).collect();
+        let spikes: Vec<f64> = ys.iter().copied().filter(|y| *y != 0.0).collect();
+        assert_eq!(spikes.len(), 2, "{spikes:?}");
+        // the image 150 steps (0.2675 m) after the tail
+        let at: Vec<usize> = (0..ys.len()).filter(|&i| ys[i] != 0.0).collect();
+        assert_eq!(at[1] - at[0], 150, "{at:?}");
+        // two tails 0.9 m apart, heard 3 m out at 30°, ears 1.6 m up: the nearer tail (x = +0.45)
+        // is 3.0891 m away, its image 3.3856 m: 166 steps later; the farther one's paths are
+        // 3.4989 and 3.7633 m (229 and 377 steps after the nearest arrival)
+        let mut l = Listener::new(2, 0.9, 3.0, 30.0, A, DT, Some((0.3, 1.6)));
+        let ys: Vec<f64> = (0..600).map(|_| l.process(&[0.0, 1.0])).collect();
+        let at: Vec<usize> = (0..ys.len()).filter(|&i| ys[i] != 0.0).collect();
+        assert_eq!(at, [0, 166], "{at:?}");
+        let mut l = Listener::new(2, 0.9, 3.0, 30.0, A, DT, Some((0.3, 1.6)));
+        let ys: Vec<f64> = (0..600).map(|_| l.process(&[1.0, 0.0])).collect();
+        let at: Vec<usize> = (0..ys.len()).filter(|&i| ys[i] != 0.0).collect();
+        assert_eq!(at, [229, 377], "{at:?}");
+        assert_relative_eq!(spikes[1] / spikes[0], 0.923_54, max_relative = 1e-4);
+    }
+
+    #[test]
     fn a_steady_flow_is_silent() {
         // only the change of the volume flow radiates
-        let mut l = Listener::new(1, 0.9, 3.0, 0.0, A, DT);
+        let mut l = Listener::new(1, 0.9, 3.0, 0.0, A, DT, None);
         l.process(&[5.0]);
         assert_eq!(l.process(&[5.0]), 0.0);
     }

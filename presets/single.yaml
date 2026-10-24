@@ -37,10 +37,15 @@ engine:
     collector_diameter_m: 0.04
     tail_length_m: 1.0
     tail_diameter_m: 0.045
-    muffler_transmission: 0.6
+    muffler_transmission: 1.0
     model: waveguide
     muffler_volume_m3: 0.003
+    muffler_packing:
+      thickness_m: 0.025
+      flow_resistivity: 16000.0
+      porosity: 0.95
     tail_spacing_m: 0.9
+    after_collector: []
   intake:
     model: zero_d
     runner_length_m: 0.3
@@ -62,6 +67,9 @@ engine:
     leveling: 0.0
     listener_distance_m: 3.0
     listener_angle_deg: 30.0
+    ground: true
+    tail_height_m: 0.3
+    listener_height_m: 1.6
   exhaust_reverse_cd_ratio: 0.75
   overrun_fuel_cut_rpm: 1500.0
   vehicle:

@@ -37,6 +37,152 @@ fn scaled(
     changed
 }
 
+/// The exhaust after each collector, segment by segment: fields, reorder, remove, add.
+fn segments_editor(ui: &mut egui::Ui, x: &mut engine_core::exhaust::ExhaustDef) {
+    use engine_core::exhaust::Segment;
+    egui::CollapsingHeader::new("After the collector")
+        .default_open(true)
+        .show(ui, |ui| {
+            if x.after_collector.is_empty() {
+                ui.label("A can and the tail pipe above.");
+                if ui.button("Design the path").clicked() {
+                    x.after_collector = x.path();
+                }
+                return;
+            }
+            let mut action: Option<(usize, i8)> = None; // (index, −1 up / +1 down / 0 remove)
+            let n = x.after_collector.len();
+            for (k, seg) in x.after_collector.iter_mut().enumerate() {
+                let tag = format!("#{}", k + 1);
+                ui.push_id(k, |ui| {
+                    ui.horizontal(|ui| {
+                        let name = match seg {
+                            Segment::Pipe { .. } => "Pipe",
+                            Segment::Muffler { .. } => "Silencer",
+                            Segment::Catalyst { .. } => "Catalyst",
+                            Segment::Resonator { .. } => "Resonator",
+                        };
+                        ui.strong(format!("{tag} {name}"));
+                        if ui
+                            .add_enabled(k > 0, egui::Button::new(format!("Up {tag}")))
+                            .clicked()
+                        {
+                            action = Some((k, -1));
+                        }
+                        if ui
+                            .add_enabled(k + 1 < n, egui::Button::new(format!("Down {tag}")))
+                            .clicked()
+                        {
+                            action = Some((k, 1));
+                        }
+                        if ui.button(format!("Remove {tag}")).clicked() {
+                            action = Some((k, 0));
+                        }
+                    });
+                    let mm =
+                        |ui: &mut egui::Ui, v: &mut f64, r: RangeInclusive<f64>, what: &str| {
+                            scaled(ui, v, 1000.0, r, 1.0, &format!("{tag} {what} (mm)"));
+                        };
+                    match seg {
+                        Segment::Pipe {
+                            length_m,
+                            diameter_m,
+                        } => {
+                            mm(ui, length_m, 10.0..=5000.0, "length");
+                            mm(ui, diameter_m, 15.0..=150.0, "Ø");
+                        }
+                        Segment::Muffler {
+                            length_m,
+                            diameter_m,
+                            tube_diameter_m,
+                            ..
+                        } => {
+                            mm(ui, length_m, 50.0..=1200.0, "length");
+                            mm(ui, diameter_m, 40.0..=400.0, "shell Ø");
+                            mm(
+                                ui,
+                                tube_diameter_m,
+                                0.0..=150.0,
+                                "packed tube Ø (0 = empty)",
+                            );
+                        }
+                        Segment::Catalyst {
+                            length_m,
+                            diameter_m,
+                            cells_per_in2,
+                            ..
+                        } => {
+                            mm(ui, length_m, 30.0..=400.0, "length");
+                            mm(ui, diameter_m, 40.0..=250.0, "Ø");
+                            ui.add(
+                                slider(cells_per_in2, 100.0..=1200.0)
+                                    .step_by(50.0)
+                                    .text(format!("{tag} cells per in²")),
+                            );
+                        }
+                        Segment::Resonator {
+                            neck_diameter_m,
+                            neck_length_m,
+                            volume_m3,
+                        } => {
+                            mm(ui, neck_diameter_m, 5.0..=100.0, "neck Ø");
+                            mm(ui, neck_length_m, 5.0..=300.0, "neck length");
+                            scaled(
+                                ui,
+                                volume_m3,
+                                1000.0,
+                                0.1..=30.0,
+                                0.1,
+                                &format!("{tag} cavity (L)"),
+                            );
+                        }
+                    }
+                });
+            }
+            match action {
+                Some((k, 0)) => {
+                    x.after_collector.remove(k);
+                }
+                Some((k, -1)) => x.after_collector.swap(k, k - 1),
+                Some((k, _)) => x.after_collector.swap(k, k + 1),
+                None => {}
+            }
+            let bore = x.outlet_diameter();
+            ui.horizontal(|ui| {
+                if ui.button("Add pipe").clicked() {
+                    x.after_collector.push(Segment::Pipe {
+                        length_m: 0.5,
+                        diameter_m: bore,
+                    });
+                }
+                if ui.button("Add silencer").clicked() {
+                    x.after_collector.push(Segment::Muffler {
+                        length_m: 0.4,
+                        diameter_m: 3.0 * bore,
+                        tube_diameter_m: bore,
+                        packing_resistivity: 16_000.0,
+                        packing_porosity: 0.95,
+                    });
+                }
+                if ui.button("Add catalyst").clicked() {
+                    x.after_collector.push(Segment::Catalyst {
+                        length_m: 0.13,
+                        diameter_m: 2.2 * bore,
+                        cells_per_in2: 400.0,
+                        wall_m: 0.000_165,
+                    });
+                }
+                if ui.button("Add resonator").clicked() {
+                    x.after_collector.push(Segment::Resonator {
+                        neck_diameter_m: 0.6 * bore,
+                        neck_length_m: 0.05,
+                        volume_m3: 0.003,
+                    });
+                }
+            });
+        });
+}
+
 /// Parse "1-3-4-2", "1,3,4,2" or "1 3 4 2"; empty or "auto" means automatic (empty vec).
 pub fn parse_firing_order(text: &str) -> Result<Vec<usize>, String> {
     let t = text.trim();
@@ -327,9 +473,10 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
                 1.0,
                 "Collector Ø (mm)",
             );
+            let (tail_length, tail_diameter) = x.tail_mut();
             scaled(
                 ui,
-                &mut x.tail_length_m,
+                tail_length,
                 1000.0,
                 100.0..=4000.0,
                 10.0,
@@ -337,7 +484,7 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
             );
             scaled(
                 ui,
-                &mut x.tail_diameter_m,
+                tail_diameter,
                 1000.0,
                 20.0..=120.0,
                 1.0,
@@ -352,6 +499,7 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
             })
             .response
             .on_disabled_hover_text("One tail pipe: nothing to spread");
+            segments_editor(ui, x);
         });
 
     egui::CollapsingHeader::new("Sound")
@@ -371,11 +519,6 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
                 slider(&mut snd.intake, 0.0..=4.0)
                     .step_by(0.05)
                     .text("Intake roar"),
-            );
-            ui.add(
-                slider(&mut snd.mechanical, 0.0..=4.0)
-                    .step_by(0.05)
-                    .text("Valvetrain"),
             );
             ui.add(
                 slider(&mut snd.combustion_jitter, 0.0..=4.0)
@@ -407,6 +550,22 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
             )
             .on_hover_text(
                 "0 = straight behind; off the axis, each tail pipe arrives at its own time",
+            );
+            ui.checkbox(&mut snd.ground, "Street (ground reflection)")
+                .on_hover_text(
+                    "The asphalt returns each tail's sound from below: off = free field",
+                );
+            ui.add_enabled(
+                snd.ground,
+                slider(&mut snd.tail_height_m, 0.1..=1.0)
+                    .step_by(0.05)
+                    .text("Tail pipe height (m)"),
+            );
+            ui.add_enabled(
+                snd.ground,
+                slider(&mut snd.listener_height_m, 0.3..=2.0)
+                    .step_by(0.05)
+                    .text("Ear height (m)"),
             );
         });
 
@@ -613,6 +772,62 @@ mod tests {
         h.key_press(egui::Key::ArrowRight);
         h.run();
         assert!(h.state().def.sound.leveling > 0.0);
+        assert!(h.state().engine_dirty);
+    }
+
+    fn press(h: &mut Harness<'static, UiState>, label: &str) {
+        h.get_by_label(label).focus();
+        h.run();
+        h.key_press(egui::Key::Space);
+        h.run();
+    }
+
+    #[test]
+    fn the_exhaust_path_is_designed_segment_by_segment() {
+        use engine_core::exhaust::Segment;
+        let mut h = harness(EngineDef::inline4());
+        let n = h.state().def.exhaust.after_collector.len();
+        assert!(n > 0, "the preset has a road exhaust");
+        press(&mut h, "Add resonator");
+        let path = &h.state().def.exhaust.after_collector;
+        assert_eq!(path.len(), n + 1);
+        assert!(matches!(path.last(), Some(Segment::Resonator { .. })));
+        let volume =
+            |h: &Harness<'static, UiState>| match h.state().def.exhaust.after_collector.last() {
+                Some(Segment::Resonator { volume_m3, .. }) => *volume_m3,
+                _ => panic!(),
+            };
+        let v0 = volume(&h);
+        nudge(&mut h, &format!("#{} cavity (L)", n + 1));
+        assert!(volume(&h) > v0);
+        press(&mut h, &format!("Up #{}", n + 1));
+        assert!(matches!(
+            h.state().def.exhaust.after_collector[n - 1],
+            Segment::Resonator { .. }
+        ));
+        press(&mut h, &format!("Remove #{}", n));
+        assert_eq!(h.state().def.exhaust.after_collector.len(), n);
+        assert!(h.state().engine_dirty);
+        // an engine without a path starts one from its can and tail
+        let mut h = harness(EngineDef::single());
+        assert!(h.state().def.exhaust.after_collector.is_empty());
+        press(&mut h, "Design the path");
+        let x = &h.state().def.exhaust;
+        assert!(!x.after_collector.is_empty());
+        assert_eq!(x.after_collector, x.path());
+    }
+
+    #[test]
+    fn the_street_switch_and_heights_edit_the_sound() {
+        let mut h = harness(EngineDef::inline4());
+        assert!(h.state().def.sound.ground);
+        nudge(&mut h, "Ear height (m)");
+        assert!(h.state().def.sound.listener_height_m > 1.6);
+        h.get_by_label("Street (ground reflection)").focus();
+        h.run();
+        h.key_press(egui::Key::Space);
+        h.run();
+        assert!(!h.state().def.sound.ground);
         assert!(h.state().engine_dirty);
     }
 

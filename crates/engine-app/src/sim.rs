@@ -367,6 +367,12 @@ pub(crate) mod tests {
         bands.map(|b| b / t)
     }
 
+    /// `def` with the finite-volume exhaust.
+    fn fv_exhaust(mut def: EngineDef) -> EngineDef {
+        def.exhaust.model = engine_core::exhaust::ExhaustModel::Fv;
+        def
+    }
+
     /// The sound scorecard (run by hand; `scripts/scorecard.sh` compares it with the committed
     /// baseline): objective numbers per preset, as the app plays it, so every change to the sound
     /// is measured, not guessed. Steady points are held at 0.7 × redline (+ 13 rpm, so the
@@ -391,6 +397,9 @@ pub(crate) mod tests {
             ("lfa-v10", EngineDef::lfa_v10()),
             ("v8-flatplane", EngineDef::flatplane_v8()),
             ("v8-crossplane", EngineDef::crossplane_v8()),
+            // the non-linear 1D exhaust, the model that is to become the default
+            ("inline4-fv", fv_exhaust(EngineDef::inline4())),
+            ("lfa-v10-fv", fv_exhaust(EngineDef::lfa_v10())),
         ] {
             let rpm = (0.7 * def.redline_rpm).round() + 13.0;
             let steady = |throttle: f64| {
@@ -577,17 +586,17 @@ pub(crate) mod tests {
         assert!(share >= 0.85, "harmonic share {share}");
     }
 
-    /// Share of the energy in cycle orders 1–3 (below the firing order of a V8) at 3000 rpm WOT.
-    fn low_order_share(def: EngineDef) -> f64 {
+    /// Share of the energy in cycle orders 1–3 (below the firing order of a V8) at `rpm` WOT.
+    fn low_order_share(def: EngineDef, rpm: f64) -> f64 {
         let mut sim = Simulation::new(def, FS, 1);
         sim.controls = Controls {
             throttle: 1.0,
-            hold_rpm: Some(3000.0),
+            hold_rpm: Some(rpm),
             ..Controls::default()
         };
         render_secs(&mut sim, 1.0);
         let x = render_secs(&mut sim, 1.0);
-        let o = orders(&x, 3000.0);
+        let o = orders(&x, rpm);
         let total: f64 = o.iter().map(|a| a * a).sum();
         o[..3].iter().map(|a| a * a).sum::<f64>() / total
     }
@@ -595,13 +604,22 @@ pub(crate) mod tests {
     #[test]
     fn a_crossplane_v8_burbles_and_a_flatplane_does_not() {
         // Uneven pulses within each bank (cross plane) put energy below the firing order; a
-        // flat plane's banks are even inline-4s, so orders 1–3 stay near zero. Radiated as a
-        // monopole (p ∝ dQ/dt) orders 1–3 (25–75 Hz here) weigh (k/4)² of the firing order's
-        // power for the same flow; the old voice was flat below 150 Hz and measured 0.05+.
-        let cross = low_order_share(EngineDef::crossplane_v8());
-        let flat = low_order_share(EngineDef::flatplane_v8());
-        assert!(cross > 0.025, "cross-plane low orders {cross}");
-        assert!(cross > 5.0 * flat, "cross {cross} vs flat {flat}");
+        // flat plane's banks are even inline-4s, so orders 1–3 stay near zero. Averaged over
+        // 2500–4000 rpm: the exhaust's own resonances (can, tail) shape any single speed —
+        // at 3000 rpm the firing order of these preset geometries sits in a notch. Measured
+        // with the packed muffler: cross 0.013, flat 0.0001.
+        let speeds = [2500.0, 3000.0, 3500.0, 4000.0];
+        let mean = |def: fn() -> EngineDef| {
+            speeds
+                .iter()
+                .map(|&r| low_order_share(def(), r))
+                .sum::<f64>()
+                / speeds.len() as f64
+        };
+        let cross = mean(EngineDef::crossplane_v8);
+        let flat = mean(EngineDef::flatplane_v8);
+        assert!(cross > 0.005, "cross-plane low orders {cross}");
+        assert!(cross > 10.0 * flat, "cross {cross} vs flat {flat}");
     }
 
     #[test]

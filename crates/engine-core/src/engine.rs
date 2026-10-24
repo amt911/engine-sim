@@ -15,7 +15,7 @@ use crate::intake_fv::{IntakeDef, IntakeFv, IntakeModel};
 use crate::jet_noise::JetNoise;
 use crate::layout::Layout;
 use crate::listener::Listener;
-use crate::sound::{BURN_DURATION_JITTER, BURN_START_JITTER_DEG, SoundDef, Texture};
+use crate::sound::{BURN_DURATION_JITTER, BURN_START_JITTER_DEG, SoundDef};
 use crate::units::{ATM_PA, deg_to_rad, rad_s_to_rpm, rpm_to_rad_s};
 use crate::valve::ValveTiming;
 use serde::{Deserialize, Serialize};
@@ -127,11 +127,13 @@ impl EngineDef {
                 collector_diameter_m: 0.040,
                 tail_length_m: 1.0,
                 tail_diameter_m: 0.045,
-                muffler_transmission: 0.6,
+                muffler_transmission: 1.0,
                 model: ExhaustModel::Waveguide,
                 muffler_volume_m3: 0.003,
+                muffler_packing: crate::lining::Packing::default(),
                 // one tail: no spread
                 tail_spacing_m: 0.9,
+                after_collector: Vec::new(),
             },
             intake: IntakeDef::default(),
             redline_rpm: 7500.0,
@@ -164,6 +166,7 @@ impl EngineDef {
             vehicle: crate::drivetrain::VehicleDef::inline4(),
             ..Self::single()
         }
+        .with_road_exhaust()
     }
 
     /// Lexus LFA, Toyota 1LR-GUE: 4.8 L 72° V10, 88 × 79 mm, CR 12.0, even firing,
@@ -221,11 +224,13 @@ impl EngineDef {
                 tail_length_m: 1.2,
                 tail_diameter_m: 0.060,
                 // Sport muffler with bypass valves: less damping than a road car.
-                muffler_transmission: 0.7,
+                muffler_transmission: 1.0,
                 model: ExhaustModel::Waveguide,
                 muffler_volume_m3: 0.010,
+                muffler_packing: crate::lining::Packing::default(),
                 // the tips sit together in the centre of the rear diffuser
                 tail_spacing_m: 0.25,
+                after_collector: Vec::new(),
             },
             // Runners and trumpets estimated from the LFA's intake: 250 mm to the valve, 45 mm.
             intake: IntakeDef {
@@ -244,6 +249,7 @@ impl EngineDef {
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::lfa_v10(),
         }
+        .with_road_exhaust()
     }
 
     /// Flat-plane V8 after the Ferrari F136 F (458 Italia): 4,497 cc from 94 × 81 mm,
@@ -297,11 +303,13 @@ impl EngineDef {
                 collector_diameter_m: 0.065,
                 tail_length_m: 1.3,
                 tail_diameter_m: 0.065,
-                muffler_transmission: 0.7,
+                muffler_transmission: 1.0,
                 model: ExhaustModel::Waveguide,
                 muffler_volume_m3: 0.010,
+                muffler_packing: crate::lining::Packing::default(),
                 // the tips sit together in the centre (458 Italia)
                 tail_spacing_m: 0.25,
+                after_collector: Vec::new(),
             },
             intake: IntakeDef::default(),
             redline_rpm: 9000.0,
@@ -312,6 +320,7 @@ impl EngineDef {
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::flatplane_v8(),
         }
+        .with_road_exhaust()
     }
 
     /// Cross-plane V8 after the GM LS3 (C6 Corvette): 6,162 cc from 103.25 × 92 mm, 10.7:1,
@@ -365,11 +374,13 @@ impl EngineDef {
                 collector_diameter_m: 0.075,
                 tail_length_m: 2.0,
                 tail_diameter_m: 0.065,
-                muffler_transmission: 0.6,
+                muffler_transmission: 1.0,
                 model: ExhaustModel::Waveguide,
                 muffler_volume_m3: 0.012,
+                muffler_packing: crate::lining::Packing::default(),
                 // two tips each side (C6 Corvette)
                 tail_spacing_m: 1.1,
+                after_collector: Vec::new(),
             },
             intake: IntakeDef::default(),
             redline_rpm: 6600.0,
@@ -380,6 +391,7 @@ impl EngineDef {
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::crossplane_v8(),
         }
+        .with_road_exhaust()
     }
 
     /// Spark advance (° BTDC) at `rpm`: `spark_advance_deg` is the full-speed value, retarded at
@@ -387,6 +399,17 @@ impl EngineDef {
     /// fixed time, so its MBT advance grows with speed (Heywood, *ICE Fundamentals*, §9.3).
     pub fn spark_advance_at(&self, rpm: f64) -> f64 {
         self.spark_advance_deg * (0.35 + 0.65 * rpm.max(0.0) / 4000.0).min(1.0)
+    }
+
+    /// This engine with a road car's exhaust after each collector
+    /// ([`crate::exhaust::road_exhaust`]), its pipes the tail's bore.
+    fn with_road_exhaust(mut self) -> Self {
+        let branches = self.exhaust.groups(self.cylinders).len().max(1);
+        self.exhaust.after_collector = crate::exhaust::road_exhaust(
+            self.displacement_m3() / branches as f64,
+            self.exhaust.tail_diameter_m,
+        );
+        self
     }
 
     pub fn displacement_m3(&self) -> f64 {
@@ -454,8 +477,11 @@ pub struct CylinderView {
 
 /// Ignition delay between spark and the start of the Wiebe burn, degrees.
 const IGNITION_DELAY_DEG: f64 = 5.0;
-/// Combustion efficiency (incomplete burn, dissociation) — a lumped tuning constant.
-const COMBUSTION_EFFICIENCY: f64 = 0.85;
+/// Combustion efficiency of a spark-ignition engine at stoichiometric: 95–98 % of the fuel's
+/// heating value is released (Heywood, *ICE Fundamentals*, §3.5.5, Fig. 3-9). It was a lumped
+/// 0.85 while the residual gas counted as fresh charge; burning only the fresh charge, the
+/// LFA makes 494 N·m against the published 480.
+const COMBUSTION_EFFICIENCY: f64 = 0.96;
 /// Cycle-to-cycle variation of released energy (±), drives the "lumpy" idle.
 const CYCLE_VARIATION: f64 = 0.04;
 const WALL_TEMP_K: f64 = 400.0;
@@ -468,7 +494,8 @@ const TORQUE_AVG_TAU_S: f64 = 0.15;
 const BLOWBY_AREA_FRACTION: f64 = 1e-4;
 /// Level of the 1D intake's induction source relative to the exhaust (lumped: trumpets sit in the
 /// engine bay, further from the listener than the tail pipes). Estimate.
-const INTAKE_SOUND_GAIN: f64 = 0.3;
+/// Density of the air the intake draws, kg/m³ (1 atm, 300 K).
+const AIR_DENSITY: f64 = crate::units::ATM_PA / (crate::gas::R_AIR * 300.0);
 /// Throttle plate actuator speed, full travel per second (0.1 s closed to wide open).
 const PLATE_TRAVEL_PER_S: f64 = 10.0;
 /// Throttle dashpot: when released, the plate is caught at a few percent of its *travel* and
@@ -528,6 +555,39 @@ struct Burn {
     released: f64,
 }
 
+/// Stagnation temperature of the gas leaving the tail, K: the waveguide's tail sound speed,
+/// T = c²/(γR).
+const TAIL_T_K: f64 =
+    crate::exhaust::C_TAIL * crate::exhaust::C_TAIL / (crate::gas::GAMMA * crate::gas::R_AIR);
+/// Speed of a sonic (choked) exit from gas at [`TAIL_T_K`]: c* = c·√(2/(γ+1)), m/s.
+const TAIL_SONIC: f64 = crate::exhaust::C_TAIL * 0.912_870_929_175_276_9;
+
+/// The way out after the collector, quasi-steady at the mean exhaust flow `m` (kg/s):
+/// (backpressure, Pa; exit velocity, m/s). The open end is an orifice of the outlet's bore into
+/// the atmosphere (the compressible orifice of [`crate::gas::orifice_mass_flow`], solved
+/// backwards for the pressure that passes `m` — past the critical ratio it chokes, and the
+/// pressure behind it climbs), plus the pipes' wall friction (Darcy) and the catalysts'
+/// laminar resistance ([`crate::exhaust::ExitLosses`]). The jet leaves at the isentropic speed
+/// of that expansion, at most sonic.
+fn tail_exit(m: f64, losses: &crate::exhaust::ExitLosses) -> (f64, f64) {
+    if m <= 0.0 {
+        return (0.0, 0.0);
+    }
+    let atm = crate::units::ATM_PA;
+    let a = losses.outlet_area;
+    let flow = |p: f64| crate::gas::orifice_mass_flow(a, p, TAIL_T_K, atm) - m;
+    let p0 = crate::exhaust_fv::rising_root(flow, atm, 100.0 * atm);
+    let g = crate::gas::GAMMA;
+    let ratio = (atm / p0).max(crate::gas::CRITICAL_PRESSURE_RATIO);
+    let u = (2.0 * crate::gas::CP * TAIL_T_K * (1.0 - ratio.powf((g - 1.0) / g)))
+        .sqrt()
+        .min(TAIL_SONIC);
+    let rho = p0 / (crate::gas::R_AIR * TAIL_T_K);
+    let friction = losses.friction * m * m / (2.0 * rho);
+    let laminar = losses.laminar * m / rho;
+    (p0 - atm + friction + laminar, u)
+}
+
 /// Woschni's heat-transfer coefficient (SAE 670931; Heywood, *ICE Fundamentals*, eq. 12.19),
 /// W/(m²·K): h = 3.26·B^−0.2·p^0.8·T^−0.55·w^0.8 with p in kPa, B in m, w in m/s.
 fn woschni_htc(bore_m: f64, p_pa: f64, t_k: f64, w_m_s: f64) -> f64 {
@@ -559,6 +619,9 @@ struct CylinderState {
     offset_deg: f64,
     gas: GasVolume,
     trapped_kg: f64,
+    /// Gas left in the cylinder when the exhaust valve closed: burnt, no fuel or oxygen to
+    /// give (the residual; Heywood, *ICE Fundamentals*, §6.4).
+    residual_kg: f64,
     /// The charge trapped at intake closing still awaits its spark: one spark per charge,
     /// whatever the ECU does with the timing meanwhile.
     armed: bool,
@@ -578,10 +641,22 @@ struct CylinderState {
 
 /// How finely an engine is simulated (not part of its definition: the same engine at
 /// another fidelity). The default is the reference.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Fidelity {
     /// Scheme of every 1D pipe (intake runners, FV exhaust).
     pub pipe_scheme: crate::fv::Scheme,
+    /// Length of the waveguide silencers' lined segments, m (finer is closer to the
+    /// transmission line at high frequencies, and dearer).
+    pub lining_segment_m: f64,
+}
+
+impl Default for Fidelity {
+    fn default() -> Self {
+        Self {
+            pipe_scheme: crate::fv::Scheme::default(),
+            lining_segment_m: crate::exhaust::LINING_SEGMENT_M,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -632,8 +707,23 @@ pub struct Engine {
     texture_signal: f64,
     /// The turbulent jet at each tail pipe.
     jets: Vec<JetNoise>,
+    /// Per tail: the cylinders blowing into it, their exhaust mass flow averaged over a cycle
+    /// (kg/s), the waveguide signal's own average, and the exit velocity (m/s) the jets see.
+    tail_groups: Vec<Vec<usize>>,
+    tail_mean_flow: Vec<f64>,
+    tail_dc: Vec<f64>,
+    tail_u: Vec<f64>,
+    /// Mean backpressure each tail puts on its cylinders' exhaust ports, Pa.
+    tail_backpressure: Vec<f64>,
+    /// The exhaust's mean-flow losses after the collector (from its segments).
+    exit_losses: Option<crate::exhaust::ExitLosses>,
+    /// Mean exit Mach number of each tail (its open end absorbs sound with it).
+    tail_mach: Vec<f64>,
+    /// Each cylinder's exhaust flow averaged over a cycle, kg/s.
+    cyl_mean_flow: Vec<f64>,
+    /// Steps since the pipes' friction last followed the mean flows.
+    friction_age: usize,
     flows: Vec<f64>,
-    texture: Texture,
     /// Total mass that flowed back from the exhaust into the cylinders, kg (diagnostics).
     reversion_kg: f64,
     /// Total air inducted from the atmosphere through the throttle(s), kg (diagnostics).
@@ -711,6 +801,7 @@ impl Engine {
                     offset_deg,
                     gas: GasVolume::at(ATM_PA, AMBIENT_K, g.volume(deg_to_rad(cycle_deg))),
                     trapped_kg: 0.0,
+                    residual_kg: 0.0,
                     armed: false,
                     port_t: PIPE_COLD_K,
                     port_flow: 0.0,
@@ -754,8 +845,16 @@ impl Engine {
             listener: None,
             texture_signal: 0.0,
             jets: Vec::new(),
+            tail_groups: Vec::new(),
+            tail_mean_flow: Vec::new(),
+            tail_dc: Vec::new(),
+            tail_u: Vec::new(),
+            tail_backpressure: Vec::new(),
+            exit_losses: None,
+            tail_mach: Vec::new(),
+            cyl_mean_flow: Vec::new(),
+            friction_age: 0,
             flows: Vec::new(),
-            texture: Texture::new(seed ^ 0x7E57),
             reversion_kg: 0.0,
             inducted_kg: 0.0,
             fidelity: Fidelity::default(),
@@ -928,7 +1027,6 @@ impl Engine {
             (self.def.intake_valve.open_deg + self.def.intake_valve.duration_deg).rem_euclid(720.0);
         let evc = (self.def.exhaust_valve.open_deg + self.def.exhaust_valve.duration_deg)
             .rem_euclid(720.0);
-        let mut valve_closings = 0;
         let fire_ok = c.ignition && !self.overrun_cut && !self.limiter_cut;
         let wall_area = 2.0 * g.piston_area();
         let mean_piston_speed = mean_piston_speed(g.stroke_m, self.omega);
@@ -952,7 +1050,12 @@ impl Engine {
             ExhaustModel::Waveguide => {
                 self.fv = None;
                 if self.net.as_ref().is_none_or(|n| n.dt != dt) {
-                    self.net = Some(ExhaustNet::new(&self.def.exhaust, self.cyl.len(), dt));
+                    self.net = Some(ExhaustNet::with_lining(
+                        &self.def.exhaust,
+                        self.cyl.len(),
+                        dt,
+                        self.fidelity.lining_segment_m,
+                    ));
                 }
             }
             ExhaustModel::Fv => {
@@ -974,6 +1077,13 @@ impl Engine {
         let z_port = self.net.as_ref().map_or(1.0, |n| n.port_impedance());
         for i in 0..self.cyl.len() {
             let arriving = self.net.as_ref().map_or(0.0, |n| n.arriving(i));
+            let back_at_port = self
+                .tail_groups
+                .iter()
+                .position(|g| g.contains(&i))
+                .and_then(|t| self.tail_backpressure.get(t))
+                .copied()
+                .unwrap_or(0.0);
             let prev = self.cyl[i].cycle_deg;
             let cur = (crank_deg - self.cyl[i].offset_deg).rem_euclid(720.0);
             let theta_c = deg_to_rad(cur);
@@ -1022,7 +1132,8 @@ impl Engine {
                     &cs.gas,
                     area,
                     crate::gas::Port {
-                        arriving,
+                        // the tail's mean backpressure adds to the port's base p_atm + 2p⁻
+                        arriving: arriving + 0.5 * back_at_port,
                         z: z_port,
                         t_back: cs.port_t,
                     },
@@ -1077,8 +1188,8 @@ impl Engine {
             exchange_with_reservoir(&mut cs.gas, &self.atm, blowby_area, dt);
 
             // Combustion events.
-            if crossed(prev, cur, ivc) || crossed(prev, cur, evc) {
-                valve_closings += 1;
+            if crossed(prev, cur, evc) {
+                cs.residual_kg = cs.gas.mass_kg;
             }
             if crossed(prev, cur, ivc) {
                 cs.trapped_kg = cs.gas.mass_kg;
@@ -1134,7 +1245,8 @@ impl Engine {
             cs.cycle_deg = cur;
 
             if new_burn {
-                let trapped = cs.trapped_kg;
+                // only the fresh charge carries fuel: what was trapped less the residual
+                let trapped = (cs.trapped_kg - cs.residual_kg).max(0.0);
                 let var = 1.0 + CYCLE_VARIATION * self.noise();
                 let j = self.def.sound.combustion_jitter;
                 let start_jitter = j * BURN_START_JITTER_DEG * self.noise();
@@ -1157,6 +1269,13 @@ impl Engine {
                 fv.step();
             }
             (Some(net), None) => {
+                net.set_outflow_mach(&self.tail_mach);
+                // the mean flows move over cycles: the pipes' friction follows them every 64 steps
+                self.friction_age += 1;
+                if self.friction_age >= 64 {
+                    self.friction_age = 0;
+                    net.set_mean_flow(&self.cyl_mean_flow, &self.tail_mean_flow);
+                }
                 net.step(&self.flows);
             }
             (None, None) => {}
@@ -1168,8 +1287,9 @@ impl Engine {
                 ex.tail_spacing_m,
                 snd.listener_distance_m,
                 snd.listener_angle_deg,
-                PI * 0.25 * ex.tail_diameter_m.powi(2),
+                PI * 0.25 * ex.outlet_diameter().powi(2),
                 dt,
+                snd.ground_heights(),
             );
             self.listener = Some((dt, l));
         }
@@ -1183,9 +1303,8 @@ impl Engine {
             None => 0.0,
         };
         let throttle_area = self.throttle_area(self.plate);
-        let bore_area = self.throttle_area(1.0);
         // 0D: throttle into the plenum. 1D: the network steps itself (ITBs take the same area each).
-        let (throttle_dm, induction, throttle_flow) = match &mut self.intake_net {
+        let (throttle_dm, _induction, drawn) = match &mut self.intake_net {
             Some(net) => {
                 // `throttle_diameter_m` is the total equivalent opening; ITBs share it.
                 let area = if self.def.intake.individual_throttles {
@@ -1194,36 +1313,72 @@ impl Engine {
                     throttle_area
                 };
                 let induction = net.step(area);
-                (-net.last_inducted(), induction, net.inducted_rate())
+                (-net.last_inducted(), induction, net.drawn_rate())
             }
             None => {
                 let dm = exchange_with_reservoir(&mut self.plenum, &self.atm, throttle_area, dt);
-                (dm, 0.0, dm / dt)
+                // `dm` is the atmosphere's change: negative drawing in
+                (dm, 0.0, -dm / dt)
             }
         };
 
         self.inducted_kg -= throttle_dm;
 
-        // Texture: jet noise at the tails, induction sound, valvetrain clicks.
+        // The intake mouth is a sink of the air it draws in: a monopole of volume flow
+        // −ṁ/ρ₀ (1D: what the trumpets take in; 0D: the throttle's flow), heard from the
+        // tails' mean distance — no gain chosen by ear. `sound.intake` scales it (1 = physical).
         let snd = &self.def.sound;
-        let rpm = rad_s_to_rpm(self.omega);
-        for _ in 0..valve_closings {
-            self.texture.valve_closed(rpm, snd.mechanical);
-        }
-        // The texture layers are signals in the tails' units (ρc·u); until each is replaced by
-        // its physical source, they radiate from the tails like the exhaust does.
-        let texture = self.texture.intake(throttle_flow, bore_area, snd.intake)
-            + snd.intake * INTAKE_SOUND_GAIN * induction
-            + self.texture.clicks(dt);
-        self.texture_signal = texture;
+        // `drawn`: the mouth's mass flow into the engine, kg/s (1D: held between FV steps)
+        let intake_flow = -snd.intake * drawn / AIR_DENSITY;
+        self.texture_signal = intake_flow;
         // each tail's jet: its exit velocity u = (ρc·u)/ρc, its own distance to the listener
+        // Exit velocity at each tail: the mean is mass continuity, ṁ/(ρA), with ṁ the exhaust
+        // valves' flow averaged over a cycle; the swing is the waveguide's, without its own
+        // average (a linear line's DC is no flow: losses and reflections do not conserve it).
+        if self.tail_groups.len() != tails.len() {
+            let mut groups = self.def.exhaust.groups(self.cyl.len());
+            groups.resize(tails.len(), Vec::new());
+            self.tail_groups = groups;
+            self.tail_mean_flow = vec![0.0; tails.len()];
+            self.tail_dc = vec![0.0; tails.len()];
+            self.tail_u = vec![0.0; tails.len()];
+            self.tail_backpressure = vec![0.0; tails.len()];
+            self.exit_losses = Some(self.def.exhaust.exit_losses());
+            self.tail_mach = vec![0.0; tails.len()];
+        }
+        {
+            let z = crate::exhaust::tail_impedance();
+            // one engine cycle (two turns), bounded for a stopped or racing crank
+            let k = (dt * self.omega.abs() / (4.0 * PI)).clamp(dt, 1.0);
+            if self.cyl_mean_flow.len() != self.cyl.len() {
+                self.cyl_mean_flow = vec![0.0; self.cyl.len()];
+            }
+            for (mean, cs) in self.cyl_mean_flow.iter_mut().zip(&self.cyl) {
+                *mean += (cs.port_flow - *mean) * k;
+            }
+            for (t, &signal) in tails.iter().enumerate() {
+                let m: f64 = self.tail_groups[t]
+                    .iter()
+                    .map(|&i| self.cyl[i].port_flow)
+                    .sum();
+                self.tail_mean_flow[t] += (m - self.tail_mean_flow[t]) * k;
+                self.tail_dc[t] += (signal - self.tail_dc[t]) * k;
+                let losses = self
+                    .exit_losses
+                    .get_or_insert_with(|| self.def.exhaust.exit_losses());
+                let (back, u_mean) = tail_exit(self.tail_mean_flow[t], losses);
+                self.tail_backpressure[t] = back;
+                self.tail_mach[t] = u_mean / crate::exhaust::C_TAIL;
+                // the swing rides on the mean; no exit blows past sound (it chokes first)
+                self.tail_u[t] = (u_mean + (signal - self.tail_dc[t]) / z).min(TAIL_SONIC);
+            }
+        }
         let mut jets = 0.0;
         if snd.flow_noise > 0.0
             && let Some((_, l)) = &self.listener
         {
-            let z = crate::exhaust::tail_impedance();
             let rho = crate::exhaust::tail_reference_density();
-            let d = self.def.exhaust.tail_diameter_m;
+            let d = self.def.exhaust.outlet_diameter();
             if self.jets.len() != tails.len() {
                 // seeded from the engine's own generator: deterministic for a seed
                 let base = self.rng;
@@ -1231,15 +1386,15 @@ impl Engine {
                     .map(|k| JetNoise::new(base.wrapping_add(k as u64 + 1)))
                     .collect();
             }
-            for ((jet, signal), r) in self.jets.iter_mut().zip(tails).zip(l.distances()) {
-                jets += jet.step(signal / z, d, rho, *r, dt);
+            for ((jet, u), r) in self.jets.iter_mut().zip(&self.tail_u).zip(l.distances()) {
+                jets += jet.step(*u, d, rho, *r, dt);
             }
             jets *= snd.flow_noise;
         }
         let audio = heard
             + jets
             + match &mut self.listener {
-                Some((_, l)) => l.radiate_shared(texture),
+                Some((_, l)) => l.radiate_flow(intake_flow),
                 None => 0.0,
             };
 
@@ -1262,6 +1417,11 @@ impl Engine {
         }
         self.theta = (self.theta + self.omega * dt).rem_euclid(4.0 * PI);
         audio
+    }
+
+    /// Exit velocity at each tail pipe this step, m/s (mean from mass continuity).
+    pub fn tail_exit_velocity(&self) -> &[f64] {
+        &self.tail_u
     }
 
     pub fn rpm(&self) -> f64 {
@@ -1926,6 +2086,7 @@ mod tests {
         let weno = run(Fidelity::default());
         let muscl = run(Fidelity {
             pipe_scheme: crate::fv::Scheme::MusclRk2,
+            ..Fidelity::default()
         });
         assert!(muscl.iter().all(|x| x.is_finite()));
         let rms = |x: &[f64]| (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
@@ -2018,35 +2179,51 @@ mod tests {
         assert!((0.5..0.7).contains(&t), "idle to 9000 in {t:.3} s");
     }
 
+    /// Overrun fuel cut until injection reactivates near idle, then the idle control takes
+    /// over (Bosch, Gasoline Engine Management): back at idle within a few seconds and staying
+    /// there, not hung at the cut-off speed. One test per engine, so they run side by side.
+    fn settles_at_its_idle_when_released(d: EngineDef) {
+        let target = d.idle_rpm;
+        let (_, trace) = rev_and_release(d.clone(), 0.8 * d.redline_rpm, 8.0);
+        let tail = &trace[(6.0 / DT) as usize..];
+        let mean = tail.iter().sum::<f64>() / tail.len() as f64;
+        let low = tail.iter().copied().fold(f64::INFINITY, f64::min);
+        assert!(
+            (mean / target - 1.0).abs() < 0.1,
+            "{}: settled at {mean:.0} vs {target}; trace {:?}",
+            d.name,
+            trace
+                .iter()
+                .step_by((0.25 / DT) as usize)
+                .map(|r| *r as i64)
+                .collect::<Vec<_>>()
+        );
+        assert!(low > 0.6 * target, "{}: dipped to {low:.0}", d.name);
+    }
+
     #[test]
-    fn released_from_high_revs_every_engine_settles_at_its_idle() {
-        // Overrun fuel cut until injection reactivates near idle, then the idle control takes
-        // over (Bosch, Gasoline Engine Management): back at idle within a few seconds and
-        // staying there, not hung at the cut-off speed.
-        for d in [
-            EngineDef::single(),
-            EngineDef::inline4(),
-            EngineDef::lfa_v10(),
-            EngineDef::flatplane_v8(),
-            EngineDef::crossplane_v8(),
-        ] {
-            let target = d.idle_rpm;
-            let (_, trace) = rev_and_release(d.clone(), 0.8 * d.redline_rpm, 8.0);
-            let tail = &trace[(6.0 / DT) as usize..];
-            let mean = tail.iter().sum::<f64>() / tail.len() as f64;
-            let low = tail.iter().copied().fold(f64::INFINITY, f64::min);
-            assert!(
-                (mean / target - 1.0).abs() < 0.1,
-                "{}: settled at {mean:.0} vs {target}; trace {:?}",
-                d.name,
-                trace
-                    .iter()
-                    .step_by((0.25 / DT) as usize)
-                    .map(|r| *r as i64)
-                    .collect::<Vec<_>>()
-            );
-            assert!(low > 0.6 * target, "{}: dipped to {low:.0}", d.name);
-        }
+    fn released_from_high_revs_the_single_settles_at_its_idle() {
+        settles_at_its_idle_when_released(EngineDef::single());
+    }
+
+    #[test]
+    fn released_from_high_revs_the_inline4_settles_at_its_idle() {
+        settles_at_its_idle_when_released(EngineDef::inline4());
+    }
+
+    #[test]
+    fn released_from_high_revs_the_lfa_settles_at_its_idle() {
+        settles_at_its_idle_when_released(EngineDef::lfa_v10());
+    }
+
+    #[test]
+    fn released_from_high_revs_the_flatplane_settles_at_its_idle() {
+        settles_at_its_idle_when_released(EngineDef::flatplane_v8());
+    }
+
+    #[test]
+    fn released_from_high_revs_the_crossplane_settles_at_its_idle() {
+        settles_at_its_idle_when_released(EngineDef::crossplane_v8());
     }
 
     #[test]
@@ -2603,10 +2780,9 @@ mod tests {
     }
 
     #[test]
-    fn the_trumpets_are_heard_at_their_mean_flow() {
-        // With only the intake texture on, its signal(1) − signal(0) is the trumpets' radiation
-        // 0.3·c·Σρu plus the throttle tone 0.15·c·ṁ/A_bore. Over the runners Σρu averages
-        // ṁ/A_runner, so its mean is c·ṁ·(0.3/A_runner + 0.15/A_bore), c = 343 m/s.
+    fn the_trumpets_draw_what_the_engine_breathes() {
+        // 1D intake: the mouth's volume flow is what the trumpets take in, −ṁ/ρ₀ with
+        // ρ₀ = 101325/(287·300) = 1.1768 kg/m³; its mean is the inducted mass rate's
         let out = |level: f64| {
             let mut d = EngineDef::lfa_v10();
             d.sound = crate::sound::SoundDef {
@@ -2634,10 +2810,7 @@ mod tests {
         };
         let ((quiet, _), (heard, mdot)) = (out(0.0), out(1.0));
         let mean = heard.iter().zip(&quiet).map(|(a, b)| a - b).sum::<f64>() / heard.len() as f64;
-        let d = EngineDef::lfa_v10();
-        let a_runner = std::f64::consts::PI * 0.25 * d.intake.runner_diameter_m.powi(2);
-        let a_bore = DISCHARGE_CD * std::f64::consts::PI * 0.25 * d.throttle_diameter_m.powi(2);
-        let want = 343.0 * mdot * (0.3 / a_runner + 0.15 / a_bore);
+        let want = -mdot / 1.1768;
         assert!(
             (mean / want - 1.0).abs() < 0.1,
             "mean {mean} vs {want} (ṁ {mdot})"
@@ -2709,6 +2882,7 @@ mod tests {
             90.0,
             PI * 0.25 * d.exhaust.tail_diameter_m.powi(2),
             DT,
+            d.sound.ground_heights(),
         );
         let mut tails = Vec::new();
         let (mut got, mut want) = (Vec::new(), Vec::new());
@@ -2835,33 +3009,45 @@ mod tests {
         assert!(max_p(&e) < 1.5e5, "still {} Pa", max_p(&e));
     }
 
+    /// Cranked from where it stalled (`seed` picks the position), the engine starts.
+    fn restarts_from_stall_position(def: EngineDef, k: u64) {
+        let mut e = stalled(def.clone(), k, 0.5 + 0.013 * k as f64);
+        run(
+            &mut e,
+            1.5,
+            &Controls {
+                starter: true,
+                ..Controls::default()
+            },
+        );
+        run(&mut e, 1.5, &Controls::default());
+        assert!(
+            e.rpm() > 400.0,
+            "{} seed {k}: {} rpm after start",
+            def.name,
+            e.rpm()
+        );
+    }
+
+    // Seeds 0, 7, 9 stalled the I4 against compression (found by sweeping 60 positions).
     #[test]
-    fn restarts_from_any_stall_position() {
-        // Seeds 0, 7, 9 stalled the I4 against compression (found by sweeping 60 positions).
-        for (def, seeds) in [
-            (EngineDef::inline4(), vec![0u64, 7]),
-            (EngineDef::single(), vec![38]),
-            (EngineDef::lfa_v10(), vec![0]),
-        ] {
-            for k in seeds {
-                let mut e = stalled(def.clone(), k, 0.5 + 0.013 * k as f64);
-                run(
-                    &mut e,
-                    1.5,
-                    &Controls {
-                        starter: true,
-                        ..Controls::default()
-                    },
-                );
-                run(&mut e, 1.5, &Controls::default());
-                assert!(
-                    e.rpm() > 400.0,
-                    "{} seed {k}: {} rpm after start",
-                    def.name,
-                    e.rpm()
-                );
-            }
-        }
+    fn the_inline4_restarts_from_stall_position_0() {
+        restarts_from_stall_position(EngineDef::inline4(), 0);
+    }
+
+    #[test]
+    fn the_inline4_restarts_from_stall_position_7() {
+        restarts_from_stall_position(EngineDef::inline4(), 7);
+    }
+
+    #[test]
+    fn the_single_restarts_from_stall_position_38() {
+        restarts_from_stall_position(EngineDef::single(), 38);
+    }
+
+    #[test]
+    fn the_lfa_restarts_from_stall_position_0() {
+        restarts_from_stall_position(EngineDef::lfa_v10(), 0);
     }
 
     #[test]
@@ -2994,7 +3180,11 @@ mod tests {
             leveling: 0.0,
             ..crate::sound::SoundDef::default()
         };
-        let on = crate::sound::SoundDef::default();
+        // the flow textures (the valvetrain's clicks do not depend on load)
+        let on = crate::sound::SoundDef {
+            mechanical: 0.0,
+            ..crate::sound::SoundDef::default()
+        };
         let (dry_wot, wet_wot) = (hf(off.clone(), 1.0), hf(on.clone(), 1.0));
         let (dry_coast, wet_coast) = (hf(off, 0.0), hf(on, 0.0));
         assert!(wet_wot > 1.3 * dry_wot, "WOT: {dry_wot} → {wet_wot}");
@@ -3397,6 +3587,299 @@ mod tests {
     }
 
     #[test]
+    fn the_jets_blow_at_the_mean_flow_the_engine_pushes_out() {
+        // The tail's mean exit velocity is mass continuity, ṁ/(ρA): a 2.0 L at 5000 rpm WOT
+        // with η_v ≈ 0.9 breathes 2.0e-3·0.9·1.18·5000/120 = 0.0885 kg/s of air, + fuel/14.7
+        // = 0.094 kg/s, out through 50 mm (A = 1.963e-3 m²) at 622 K (ρ = 0.567): 84 m/s. The
+        // waveguide's own DC is not a flow (a lossy or reflecting line does not conserve it).
+        let mut e = Engine::new(EngineDef::inline4(), 5000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(5000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.5, &c);
+        let n = (0.2 / DT) as usize;
+        let mut u = 0.0;
+        for _ in 0..n {
+            e.step(DT, &c);
+            u += e.tail_exit_velocity()[0] / n as f64;
+        }
+        assert!((70.0..100.0).contains(&u), "mean exit velocity {u} m/s");
+    }
+
+    /// Brake torque and the tail's exit velocities of an inline-4 at 5000 rpm WOT with a tail
+    /// of `d` metres.
+    fn with_tail(d: f64) -> (f64, Vec<f64>) {
+        let mut def = EngineDef::inline4();
+        *def.exhaust.tail_mut().1 = d;
+        let mut e = Engine::new(def, 5000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(5000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.6, &c);
+        let mut u = Vec::new();
+        for _ in 0..(0.2 / DT) as usize {
+            e.step(DT, &c);
+            u.push(e.tail_exit_velocity()[0]);
+        }
+        (e.torque_nm(), u)
+    }
+
+    #[test]
+    fn a_choked_tail_pipe_holds_the_engine_back() {
+        // 0.094 kg/s through 15 mm would leave at ~900 m/s: past sonic (c = 500 m/s in the
+        // 622 K gas), so the exit chokes — the pressure behind it rises until the sonic flow
+        // passes it (p* = 0.528 p₀): ≈ 2.9 bar of backpressure, which costs torque. The exit
+        // never blows faster than sound; a 50 mm tail barely notices (≈ 2 kPa).
+        let (t50, u50) = with_tail(0.050);
+        let (t15, u15) = with_tail(0.015);
+        let fastest = u15.iter().cloned().fold(f64::MIN, f64::max);
+        assert!(
+            fastest <= 1.05 * crate::exhaust::C_TAIL,
+            "exit at {fastest} m/s"
+        );
+        assert!(t15 < 0.8 * t50, "torque {t15} with a 15 mm tail vs {t50}");
+        let mean50 = u50.iter().sum::<f64>() / u50.len() as f64;
+        assert!(
+            (70.0..100.0).contains(&mean50),
+            "50 mm mean exit {mean50} m/s"
+        );
+    }
+
+    #[test]
+    fn the_inline4_has_its_own_flywheel() {
+        // a car's dual-mass flywheel and clutch, heavier than the single's 0.12 kg·m²
+        assert_eq!(EngineDef::inline4().flywheel_inertia_kgm2, 0.15);
+    }
+
+    #[test]
+    fn the_mean_exhaust_flows_are_the_valves_cycle_averages() {
+        // mass conservation over a cycle: what leaves each tail on average is what its cylinders'
+        // exhaust valves pass, averaged over exactly whole cycles (5000 rpm: 24 ms per cycle).
+        // The running means follow one cycle's window, so they sit within a few percent of it.
+        let mut e = Engine::new(EngineDef::inline4(), 5000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(5000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.4, &c);
+        let cycle = (0.024 / DT).round() as usize;
+        let (mut tail, mut cyl0, mut track) = (0.0, 0.0, Vec::new());
+        for _ in 0..4 * cycle {
+            e.step(DT, &c);
+            tail += e.cyl.iter().map(|cs| cs.port_flow).sum::<f64>();
+            cyl0 += e.cyl[0].port_flow;
+            track.push((e.tail_mean_flow[0], e.cyl_mean_flow[0]));
+        }
+        let (tail, cyl0) = (tail / (4 * cycle) as f64, cyl0 / (4 * cycle) as f64);
+        // four cylinders' pulses overlap: the tail's running mean barely ripples
+        for &(t, _) in &track {
+            assert!(
+                (t / tail - 1.0).abs() < 0.05,
+                "tail mean {t} vs {tail} kg/s"
+            );
+        }
+        // one cylinder pulses once a cycle: its running mean ripples, but over whole cycles it
+        // averages to the valve's flow
+        let c0 = track.iter().map(|p| p.1).sum::<f64>() / track.len() as f64;
+        assert!(
+            (c0 / cyl0 - 1.0).abs() < 0.01,
+            "cylinder mean {c0} vs {cyl0} kg/s"
+        );
+        let hi = track.iter().map(|p| p.1).fold(f64::MIN, f64::max);
+        let lo = track.iter().map(|p| p.1).fold(f64::MAX, f64::min);
+        // a one-cycle time constant (24 ms): between pulses the mean decays by at most e^(−1)
+        // per cycle, so its ripple stays under a factor e (measured 2.05; at 0.57 cycle, 3.57)
+        assert!(hi / lo < std::f64::consts::E, "ripple {hi}/{lo}");
+    }
+
+    #[test]
+    fn the_tail_jet_swings_with_the_tail_wave_around_its_mean() {
+        // u = ū + (s − s̄)/ρc: over whole cycles the swing averages out (the mean exit velocity
+        // is the continuity one, Mach ū/c), and it follows the outgoing wave s = ρc·u with slope
+        // 1/ρc, ρc = 1.4·101325/500 = 283.71 kg/(m²·s) in the tail's reference gas
+        let mut e = Engine::new(EngineDef::inline4(), 5000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(5000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.4, &c);
+        let n = 4 * (0.024 / DT).round() as usize;
+        let (mut swing, mut wave, mut us, mut mach) = (Vec::new(), Vec::new(), 0.0, 0.0);
+        for _ in 0..n {
+            e.step(DT, &c);
+            let s = e.net.as_ref().unwrap().last_tails()[0];
+            // ū this step is the continuity one, c·Mach
+            swing.push(e.tail_u[0] - 500.0 * e.tail_mach[0]);
+            wave.push(s);
+            us += e.tail_u[0];
+            mach += e.tail_mach[0];
+        }
+        let (us, u_bar) = (us / n as f64, 500.0 * mach / n as f64);
+        // the wave against its own average over the whole cycles
+        let s_bar = wave.iter().sum::<f64>() / n as f64;
+        for s in &mut wave {
+            *s -= s_bar;
+        }
+        assert!(
+            (us / u_bar - 1.0).abs() < 0.03,
+            "mean exit {us} vs ū {u_bar} m/s"
+        );
+        let cov: f64 = swing.iter().zip(&wave).map(|(u, s)| u * s).sum();
+        let var: f64 = wave.iter().map(|s| s * s).sum();
+        let slope = cov / var;
+        assert!(
+            (slope * 283.71 - 1.0).abs() < 0.04,
+            "slope {slope} vs 1/283.71"
+        );
+    }
+
+    #[test]
+    fn the_engine_hands_its_mean_flows_to_the_exhaust_pipes() {
+        // the pipes' friction follows the cycle-mean flows: the net holds what it was last
+        // given, refreshed every 64 steps — the cylinders' and the tails' running means
+        let mut e = Engine::new(EngineDef::inline4(), 5000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(5000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.3, &c);
+        while e.friction_age != 0 {
+            e.step(DT, &c);
+        }
+        // (handed over before this step's means moved on: within a step's change)
+        let (cyl, tails) = e.net.as_ref().unwrap().mean_flows();
+        let close = |a: &[f64], b: &[f64]| {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x / y - 1.0).abs() < 1e-3)
+        };
+        assert!(
+            close(cyl, &e.cyl_mean_flow),
+            "{cyl:?} vs {:?}",
+            e.cyl_mean_flow
+        );
+        assert!(
+            close(tails, &e.tail_mean_flow),
+            "{tails:?} vs {:?}",
+            e.tail_mean_flow
+        );
+        // a 2.0 L at 5000 rpm WOT breathes ~0.09 kg/s through its one tail
+        assert!((0.05..0.15).contains(&tails[0]), "{tails:?}");
+    }
+
+    #[test]
+    fn the_exhaust_pulses_alone_reach_the_listener() {
+        // every other source off: the pulses travel the pipes to the tails and out — a waveguide
+        // kept from step to step carries them (rebuilt each step it would hold nothing)
+        let mut d = EngineDef::inline4();
+        d.sound.flow_noise = 0.0;
+        d.sound.intake = 0.0;
+        let mut e = Engine::new(d, 5000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(5000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.3, &c);
+        let x = run(&mut e, 0.1, &c);
+        let rms = (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
+        assert!(rms > 0.1, "{rms} Pa");
+    }
+
+    #[test]
+    fn the_tail_exit_by_hand() {
+        // Gas at c = 500 m/s: T = 500²/(1.4·287) = 622.22 K. Through a 50 mm outlet
+        // (A = 1.9635e-3 m²) the choked flow from p₀ = 3 atm is
+        // A·p₀/√(R·T)·0.68473 = 1.9635e-3·303975/422.58·0.68473 = 0.96711 kg/s: the pressure
+        // that passes it is 2 atm over the street's, and the jet leaves at c* = 500·√(2/2.4)
+        let losses = |friction: f64, laminar: f64| crate::exhaust::ExitLosses {
+            outlet_area: 1.963_495e-3,
+            friction,
+            laminar,
+        };
+        let (back, u) = tail_exit(0.967_11, &losses(0.0, 0.0));
+        assert!((back / 202_650.0 - 1.0).abs() < 1e-3, "{back} Pa");
+        assert!((u - 456.435).abs() < 0.05, "{u} m/s");
+        // the pipes' friction and the catalyst's laminar resistance add at ρ = p₀/(R·T) =
+        // 1.70222 kg/m³: 1000·m²/(2ρ) = 274.73 Pa and 1000·m/ρ = 568.15 Pa
+        let (with, _) = tail_exit(0.967_11, &losses(1000.0, 1000.0));
+        assert!((with - back - 842.88).abs() < 1.0, "{} Pa", with - back);
+        // subsonic: 1.1 atm behind the outlet passes (pr = 1/1.1, q = pr^(2/7) = 0.973136)
+        // A·p₀/√(RT)·(pr/q)·√(7(1 − q)) = 0.209798 kg/s, leaving at √(2·c_p·T·(1 − q)) =
+        // 183.249 m/s with 10 132.5 Pa behind it
+        let (back, u) = tail_exit(0.209_798, &losses(0.0, 0.0));
+        assert!((back / 10_132.5 - 1.0).abs() < 1e-3, "{back} Pa");
+        assert!((u - 183.249).abs() < 0.05, "{u} m/s");
+        // no flow, no backpressure
+        assert_eq!(tail_exit(0.0, &losses(1000.0, 1000.0)), (0.0, 0.0));
+    }
+
+    #[test]
+    fn no_tail_blows_past_sound() {
+        // a 15 mm tail at full throttle: the pulses would drive it far past sonic, but a choked
+        // exit leaves at c* = 500·√(2/2.4) = 456.435 m/s, and no faster
+        let (_, u15) = with_tail(0.015);
+        let fastest = u15.iter().cloned().fold(f64::MIN, f64::max);
+        assert!((fastest - 456.435).abs() < 0.01, "exit at {fastest} m/s");
+    }
+
+    #[test]
+    fn a_two_branch_engine_sizes_each_road_exhaust_for_its_half() {
+        // the LFA's two banks each feed one road exhaust: half of 4.8048e-3 m³ swept, so its
+        // catalyst brick (0.13 m long) is √(4·2.4024e-3/(π·0.13)) = 0.1534 m across
+        let d = EngineDef::lfa_v10();
+        let brick = d.exhaust.after_collector.iter().find_map(|s| match s {
+            crate::exhaust::Segment::Catalyst { diameter_m, .. } => Some(*diameter_m),
+            _ => None,
+        });
+        assert_eq!(brick, Some(0.1534));
+    }
+
+    #[test]
+    fn only_the_fresh_charge_burns() {
+        // At part throttle the residual (the mass left when the exhaust valve closed) is a fair
+        // share of what is trapped (measured 7.3 % here): each burn's energy is the fresh
+        // charge's, (m_IVC − m_EVC)/(1 + AFR)·LHV·η, within the ±4 % cycle variation — the
+        // whole trapped mass's would be 7.9 % more.
+        let mut e = Engine::new(EngineDef::inline4(), 3000.0, 1);
+        let c = Controls {
+            throttle: 0.15,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.5, &c);
+        let mut checked = 0;
+        let mut was_burning = e.cyl[0].burn.is_some();
+        for _ in 0..(0.5 / DT) as usize {
+            e.step(DT, &c);
+            let cs = &e.cyl[0];
+            if !was_burning && let Some(b) = &cs.burn {
+                let fresh = cs.trapped_kg - cs.residual_kg;
+                assert!(
+                    cs.residual_kg > 0.05 * cs.trapped_kg,
+                    "residual {} of {}",
+                    cs.residual_kg,
+                    cs.trapped_kg
+                );
+                let want = charge_energy(fresh, AFR_STOICH, COMBUSTION_EFFICIENCY);
+                assert!(
+                    (b.energy_j / want - 1.0).abs() <= 0.041,
+                    "{} vs {want}",
+                    b.energy_j
+                );
+                checked += 1;
+            }
+            was_burning = cs.burn.is_some();
+        }
+        assert!(checked >= 5, "{checked} burns");
+    }
+
+    #[test]
     fn each_texture_source_adds_to_the_output() {
         let dry = textured(0.0, 0.0, 0.0, 5000.0, 1.0);
         // the tail jets: zero-mean broadband pressure at the listener. By hand, a 2.0 L at
@@ -3422,30 +3905,29 @@ mod tests {
             (0.01..0.2).contains(&r) && m.abs() < 0.05 * r,
             "jets: mean {m} rms {r} Pa"
         );
-        // intake: the tone c·ṁ/A_bore is a positive offset under load
+        // intake: the mouth is a sink of the air drawn in, −ṁ/ρ₀. A 2.0 L at 5000 rpm WOT with
+        // η_v ≈ 0.9 breathes 2.0e-3·0.9·1.177·5000/120 = 0.088 kg/s: −0.075 m³/s
         let (m, _) = mean_rms_of_difference(&textured(0.0, 1.0, 0.0, 5000.0, 1.0), &dry);
-        assert!(m > 100.0, "intake tone mean {m}");
-        // valvetrain: clicks, more of them and louder at higher rpm
-        let (_, r5) = mean_rms_of_difference(&textured(0.0, 0.0, 1.0, 5000.0, 1.0), &dry);
-        let dry2 = textured(0.0, 0.0, 0.0, 2000.0, 1.0);
-        let (_, r2) = mean_rms_of_difference(&textured(0.0, 0.0, 1.0, 2000.0, 1.0), &dry2);
         assert!(
-            r5 > 1.5 * r2 && r2 > 0.0,
-            "clicks 2000 rpm {r2} vs 5000 rpm {r5}"
+            (-0.09..-0.06).contains(&m),
+            "intake mouth mean flow {m} m³/s"
         );
+        // valvetrain: no physical model yet, so the level does nothing
+        let (m, r) = mean_rms_of_difference(&textured(0.0, 0.0, 1.0, 5000.0, 1.0), &dry);
+        assert_eq!((m, r), (0.0, 0.0));
     }
 
     #[test]
-    fn intake_tone_follows_the_throttle_flow() {
-        // c·ṁ/A_bore: twice the flow, twice the offset. WOT vs a light throttle at the same rpm.
-        let off = |throttle: f64| {
+    fn the_intake_mouth_follows_the_throttle_flow() {
+        // −ṁ/ρ₀: more air at full throttle than at a light one, at the same speed
+        let draw = |throttle: f64| {
             let dry = textured(0.0, 0.0, 0.0, 4000.0, throttle);
-            mean_rms_of_difference(&textured(0.0, 1.0, 0.0, 4000.0, throttle), &dry).0
+            -mean_rms_of_difference(&textured(0.0, 1.0, 0.0, 4000.0, throttle), &dry).0
         };
-        let (light, wot) = (off(0.1), off(1.0));
+        let (light, wot) = (draw(0.1), draw(1.0));
         assert!(
             wot > 2.0 * light && light > 0.0,
-            "light {light} vs WOT {wot}"
+            "light {light} vs WOT {wot} m³/s"
         );
     }
 

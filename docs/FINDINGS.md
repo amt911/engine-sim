@@ -426,3 +426,29 @@ bracket. It runs until the bracket is tight and returns the end with the smaller
 **What misled.** Four times shorter sub-steps "fixed" it, and running the junction through
 the RK3 stages halved it. Both hinted at a time-lag instability; it was not one. Print the
 first boundary state that disagrees with a plain characteristic ghost before theorising.
+
+## Measuring renders against recordings: hound writes WAVE_FORMAT_EXTENSIBLE
+
+**Symptom.** Every render looked like flat broadband noise next to real recordings (low
+line-to-floor contrast, a treble that rose to 8 kHz) — a whole afternoon chased a "noise floor"
+in the physics that did not exist.
+**Cause.** `hound` writes 32-bit float WAVs with format tag 0xFFFE (extensible), not 3; a loader
+that keys float on tag 3 reads the floats as int16 pairs: noise. The reference recordings
+(ffmpeg, tag 3) read fine, so only our side was wrong.
+**Fix.** `scripts/realism.py` treats 0xFFFE at 32 bits as float and has `--self-test` (a harmonic
+series written as extensible float must read back as itself and as lines). Run it before
+trusting any comparison. Free reference recordings (Freesound, CC-BY/CC0) live outside the repo
+in `target/refs` — compare like with like: an under-bonnet or open-header recording is not a
+road car's tailpipe.
+
+## An idling engine's "background air" was the jet model's leftover filter state (2026-10-23)
+
+**Symptom.** Every preset at idle had a steady hiss above 500 Hz, 17–30 dB over everything else
+there; its band envelopes were as flat as white noise (p98/median ≈ 7.5–8.5 dB, `scripts/realism.py`
+contrast), where real idles are pulse-modulated (10–19 dB).
+**Cause.** At idle the tail flow swings through zero every pulse (median exit velocity −0.7 m/s).
+`JetNoise::step` returned the band-pass's raw output when nothing blew out — its state is *unit*
+white noise, not pascals (~0.05 Pa ≈ 67 dB), and it re-tuned the filter to 1 kHz on the way. By
+the correlation a 20 m/s idle jet is ≈ 18 dB SPL: inaudible.
+**Fix.** No outflow → 0 Pa; the filter runs down on silence. Ablate one source at a time at idle
+and read the contrast column: a source that is "everywhere" at noise-level contrast is a suspect.

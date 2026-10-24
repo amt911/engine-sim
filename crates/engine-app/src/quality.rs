@@ -40,10 +40,21 @@ impl Quality {
     /// How finely the engine's pipes are stepped.
     pub fn fidelity(self) -> Fidelity {
         match self {
-            Quality::Medium => Fidelity {
-                pipe_scheme: Scheme::MusclRk2,
+            Quality::Ultra => Fidelity::default(),
+            // offline: half Ultra's segments, as it steps at twice Ultra's rate
+            Quality::Reference => Fidelity {
+                lining_segment_m: 0.005,
+                ..Fidelity::default()
             },
-            _ => Fidelity::default(),
+            // silencers' packing in 2 cm segments (17 % off at 4 kHz, where it has cut 30 dB)
+            Quality::High => Fidelity {
+                lining_segment_m: 0.02,
+                ..Fidelity::default()
+            },
+            Quality::Medium | Quality::Low => Fidelity {
+                pipe_scheme: Scheme::MusclRk2,
+                lining_segment_m: 0.04,
+            },
         }
     }
 
@@ -175,10 +186,15 @@ mod tests {
             "reference".parse(),
             Ok(QualityChoice::Fixed(Quality::Reference))
         );
-        // Medium steps the 1D pipes with the cheap scheme; High and Ultra with the reference
+        // Medium steps the 1D pipes with the cheap scheme; High and Ultra with the reference;
+        // the silencers' packing gets coarser below Ultra and finer for offline renders
         assert_eq!(Quality::Medium.fidelity().pipe_scheme, Scheme::MusclRk2);
-        assert_eq!(Quality::High.fidelity(), Fidelity::default());
+        assert_eq!(Quality::High.fidelity().pipe_scheme, Scheme::Weno5Rk3);
         assert_eq!(Quality::Ultra.fidelity(), Fidelity::default());
+        assert_eq!(Quality::Ultra.fidelity().lining_segment_m, 0.01);
+        assert_eq!(Quality::High.fidelity().lining_segment_m, 0.02);
+        assert_eq!(Quality::Low.fidelity().lining_segment_m, 0.04);
+        assert_eq!(Quality::Reference.fidelity().lining_segment_m, 0.005);
     }
 
     #[test]
