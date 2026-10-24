@@ -487,6 +487,52 @@ pub struct ExhaustNet {
     pub dt: f64,
 }
 
+/// Where an [`Engine`](crate::engine::Engine) sends its exhaust's per-step work when the net
+/// runs elsewhere (another thread, in the app): the boundary that keeps this crate free of
+/// threads. Calls come in order, once per step: `submit` the step's valve flows, tail Mach and
+/// (every few dozen steps) the mean flows; `arriving_next` the waves at the valves for the next
+/// step; `tails` the radiated tail signals of the oldest submitted step not yet collected.
+pub trait ExhaustLink: Send {
+    fn submit(&mut self, flows: &[f64], mach: &[f64], mean: Option<(&[f64], &[f64])>);
+    fn arriving_next(&mut self, out: &mut [f64]);
+    fn tails(&mut self, out: &mut [f64]);
+}
+
+/// [`ExhaustLink`] that runs the net right here, in order: the reference the threaded one is
+/// compared against (and the test of the engine's split step without threads).
+pub struct LocalLink {
+    pub net: ExhaustNet,
+    tails: std::collections::VecDeque<Vec<f64>>,
+    next: Vec<f64>,
+}
+
+impl LocalLink {
+    pub fn new(net: ExhaustNet) -> Self {
+        Self {
+            next: vec![0.0; net.primaries.len()],
+            net,
+            tails: std::collections::VecDeque::new(),
+        }
+    }
+}
+
+impl ExhaustLink for LocalLink {
+    fn submit(&mut self, flows: &[f64], mach: &[f64], mean: Option<(&[f64], &[f64])>) {
+        self.net.prepare(mach, mean);
+        self.net.arriving_next(&mut self.next);
+        self.net.step(flows);
+        self.tails.push_back(self.net.last_tails().to_vec());
+    }
+    fn arriving_next(&mut self, out: &mut [f64]) {
+        out.copy_from_slice(&self.next);
+    }
+    fn tails(&mut self, out: &mut [f64]) {
+        if let Some(t) = self.tails.pop_front() {
+            out.copy_from_slice(&t);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 struct Scratch {
     from_far: Vec<f64>,
@@ -591,6 +637,29 @@ impl ExhaustNet {
     /// Gauge pressure at cylinder `i`'s valve end now (p⁺ + p⁻).
     pub fn valve_pressure(&self, i: usize) -> f64 {
         self.primaries[i].at_near() + self.sent[i]
+    }
+
+    /// The start of a step: the tails' outflow Mach and, when given, the mean flows the pipes'
+    /// friction follows — what [`Engine`](crate::engine::Engine) applies before each
+    /// [`ExhaustNet::step`].
+    pub fn prepare(&mut self, mach: &[f64], mean: Option<(&[f64], &[f64])>) {
+        self.set_outflow_mach(mach);
+        if let Some((cyl, branch)) = mean {
+            self.set_mean_flow(cyl, branch);
+        }
+    }
+
+    /// The wave each primary will bring to its valve after the next [`ExhaustNet::step`],
+    /// known before it: a primary at least two steps long carries nothing from this step's
+    /// sends to its valve end yet. False (and `out` untouched) if a primary is shorter.
+    pub fn arriving_next(&self, out: &mut [f64]) -> bool {
+        if self.primaries.iter().any(|p| p.at_near_next().is_none()) {
+            return false;
+        }
+        for (o, p) in out.iter_mut().zip(&self.primaries) {
+            *o = p.at_near_next().unwrap_or(0.0);
+        }
+        true
     }
 
     /// Advance one step. `flows[i]`: mass flow (kg/s) from cylinder `i` into its primary

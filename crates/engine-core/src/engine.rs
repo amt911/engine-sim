@@ -5,7 +5,7 @@
 //! Model ladder and references: `docs/research/simulador-motor-rust.md`.
 
 use crate::combustion::{AFR_STOICH, charge_energy, wiebe};
-use crate::exhaust::{ExhaustDef, ExhaustModel, ExhaustNet};
+use crate::exhaust::{ExhaustDef, ExhaustLink, ExhaustModel, ExhaustNet};
 use crate::exhaust_fv::ExhaustFv;
 use crate::gas::{
     GasVolume, Reservoir, exchange_with_reservoir, exhaust_valve_flow, plan_exchange,
@@ -660,6 +660,40 @@ impl Default for Fidelity {
     }
 }
 
+/// The exhaust net's side of an [`Engine`] whose net runs elsewhere: the link to it, the
+/// waves arriving at the valves this step, and the step whose sound waits for its tails.
+struct Remote {
+    link: Box<dyn ExhaustLink>,
+    arriving: Vec<f64>,
+    z_port: f64,
+    tails: Vec<f64>,
+    /// (the intake mouth's and the block's sound, the cycle-mean constant) of the waiting step
+    pending: Option<(f64, f64)>,
+    /// Its tails' mean exit velocities, and a spare buffer to swap with.
+    u_pending: Vec<f64>,
+    u_spare: Vec<f64>,
+}
+
+/// Holds a [`Remote`]. A clone of an engine does not carry it (the link is not cloneable): a
+/// clone runs no exhaust until one is attached again.
+struct RemoteSlot(Option<Box<Remote>>);
+
+impl Clone for RemoteSlot {
+    fn clone(&self) -> Self {
+        RemoteSlot(None)
+    }
+}
+
+impl std::fmt::Debug for RemoteSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "remote exhaust"
+        } else {
+            "-"
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Engine {
     def: EngineDef,
@@ -716,6 +750,12 @@ pub struct Engine {
     tail_mean_flow: Vec<f64>,
     tail_dc: Vec<f64>,
     tail_u: Vec<f64>,
+    /// Each tail's mean exit velocity this step (mass continuity), m/s.
+    tail_u_mean: Vec<f64>,
+    /// The tails' signals this step, kept between steps (no allocation per step).
+    tails_buf: Vec<f64>,
+    /// The exhaust net when it runs elsewhere ([`Engine::detach_exhaust`]).
+    remote: RemoteSlot,
     /// Mean backpressure each tail puts on its cylinders' exhaust ports, Pa.
     tail_backpressure: Vec<f64>,
     /// The exhaust's mean-flow losses after the collector (from its segments).
@@ -853,6 +893,9 @@ impl Engine {
             tail_mean_flow: Vec::new(),
             tail_dc: Vec::new(),
             tail_u: Vec::new(),
+            tail_u_mean: Vec::new(),
+            tails_buf: Vec::new(),
+            remote: RemoteSlot(None),
             tail_backpressure: Vec::new(),
             exit_losses: None,
             tail_mach: Vec::new(),
@@ -1053,7 +1096,7 @@ impl Engine {
         match self.def.exhaust.model {
             ExhaustModel::Waveguide => {
                 self.fv = None;
-                if self.net.as_ref().is_none_or(|n| n.dt != dt) {
+                if self.remote.0.is_none() && self.net.as_ref().is_none_or(|n| n.dt != dt) {
                     self.net = Some(ExhaustNet::with_lining(
                         &self.def.exhaust,
                         self.cyl.len(),
@@ -1078,9 +1121,17 @@ impl Engine {
         let blowby_area = BLOWBY_AREA_FRACTION * g.piston_area();
 
         let mut gas_torque = 0.0;
-        let z_port = self.net.as_ref().map_or(1.0, |n| n.port_impedance());
+        let z_port = match (&self.net, &self.remote.0) {
+            (Some(n), _) => n.port_impedance(),
+            (None, Some(r)) => r.z_port,
+            (None, None) => 1.0,
+        };
         for i in 0..self.cyl.len() {
-            let arriving = self.net.as_ref().map_or(0.0, |n| n.arriving(i));
+            let arriving = match (&self.net, &self.remote.0) {
+                (Some(n), _) => n.arriving(i),
+                (None, Some(r)) => r.arriving[i],
+                (None, None) => 0.0,
+            };
             let back_at_port = self
                 .tail_groups
                 .iter()
@@ -1268,21 +1319,33 @@ impl Engine {
         }
         // Acoustic source: what the tail pipes radiate.
         // advance the exhaust; what each tail radiates is read below (`last_tails`)
-        match (&mut self.net, &mut self.fv) {
-            (_, Some(fv)) => {
+        match (&mut self.net, &mut self.fv, &mut self.remote.0) {
+            (_, Some(fv), _) => {
                 fv.step();
             }
-            (Some(net), None) => {
-                net.set_outflow_mach(&self.tail_mach);
+            (Some(net), None, _) => {
                 // the mean flows move over cycles: the pipes' friction follows them every 64 steps
                 self.friction_age += 1;
-                if self.friction_age >= 64 {
+                let due = self.friction_age >= 64;
+                if due {
                     self.friction_age = 0;
-                    net.set_mean_flow(&self.cyl_mean_flow, &self.tail_mean_flow);
                 }
+                let mean = due.then_some((&self.cyl_mean_flow[..], &self.tail_mean_flow[..]));
+                net.prepare(&self.tail_mach, mean);
                 net.step(&self.flows);
             }
-            (None, None) => {}
+            (None, None, Some(r)) => {
+                // the net runs elsewhere: hand it this step, take back the next step's waves
+                self.friction_age += 1;
+                let due = self.friction_age >= 64;
+                if due {
+                    self.friction_age = 0;
+                }
+                let mean = due.then_some((&self.cyl_mean_flow[..], &self.tail_mean_flow[..]));
+                r.link.submit(&self.flows, &self.tail_mach, mean);
+                r.link.arriving_next(&mut r.arriving);
+            }
+            _ => {}
         }
         if self.listener.as_ref().is_none_or(|l| l.0 != dt) {
             let (ex, snd) = (&self.def.exhaust, &self.def.sound);
@@ -1297,14 +1360,11 @@ impl Engine {
             );
             self.listener = Some((dt, l));
         }
-        let tails = match (&self.net, &self.fv) {
-            (_, Some(fv)) => fv.last_tails(),
-            (Some(net), None) => net.last_tails(),
-            (None, None) => &[],
-        };
-        let heard = match &mut self.listener {
-            Some((_, l)) => l.process(tails),
-            None => 0.0,
+        let n_tails = match (&self.net, &self.fv, &self.remote.0) {
+            (_, Some(fv), _) => fv.last_tails().len(),
+            (Some(net), None, _) => net.last_tails().len(),
+            (None, None, Some(r)) => r.tails.len(),
+            _ => 0,
         };
         let throttle_area = self.throttle_area(self.plate);
         // 0D: throttle into the plenum. 1D: the network steps itself (ITBs take the same area each).
@@ -1339,61 +1399,48 @@ impl Engine {
         // Exit velocity at each tail: the mean is mass continuity, ṁ/(ρA), with ṁ the exhaust
         // valves' flow averaged over a cycle; the swing is the waveguide's, without its own
         // average (a linear line's DC is no flow: losses and reflections do not conserve it).
-        if self.tail_groups.len() != tails.len() {
+        if self.tail_groups.len() != n_tails {
             let mut groups = self.def.exhaust.groups(self.cyl.len());
-            groups.resize(tails.len(), Vec::new());
+            groups.resize(n_tails, Vec::new());
             self.tail_groups = groups;
-            self.tail_mean_flow = vec![0.0; tails.len()];
-            self.tail_dc = vec![0.0; tails.len()];
-            self.tail_u = vec![0.0; tails.len()];
-            self.tail_backpressure = vec![0.0; tails.len()];
+            self.tail_mean_flow = vec![0.0; n_tails];
+            self.tail_dc = vec![0.0; n_tails];
+            self.tail_u = vec![0.0; n_tails];
+            self.tail_u_mean = vec![0.0; n_tails];
+            self.tail_backpressure = vec![0.0; n_tails];
             self.exit_losses = Some(self.def.exhaust.exit_losses());
-            self.tail_mach = vec![0.0; tails.len()];
+            self.tail_mach = vec![0.0; n_tails];
         }
+        // one engine cycle (two turns), bounded for a stopped or racing crank
+        let k = (dt * self.omega.abs() / (4.0 * PI)).clamp(dt, 1.0);
         {
-            let z = crate::exhaust::tail_impedance();
-            // one engine cycle (two turns), bounded for a stopped or racing crank
-            let k = (dt * self.omega.abs() / (4.0 * PI)).clamp(dt, 1.0);
             if self.cyl_mean_flow.len() != self.cyl.len() {
                 self.cyl_mean_flow = vec![0.0; self.cyl.len()];
             }
             for (mean, cs) in self.cyl_mean_flow.iter_mut().zip(&self.cyl) {
                 *mean += (cs.port_flow - *mean) * k;
             }
-            for (t, &signal) in tails.iter().enumerate() {
+            for t in 0..n_tails {
                 let m: f64 = self.tail_groups[t]
                     .iter()
                     .map(|&i| self.cyl[i].port_flow)
                     .sum();
                 self.tail_mean_flow[t] += (m - self.tail_mean_flow[t]) * k;
-                self.tail_dc[t] += (signal - self.tail_dc[t]) * k;
                 let losses = self
                     .exit_losses
                     .get_or_insert_with(|| self.def.exhaust.exit_losses());
                 let (back, u_mean) = tail_exit(self.tail_mean_flow[t], losses);
                 self.tail_backpressure[t] = back;
                 self.tail_mach[t] = u_mean / crate::exhaust::C_TAIL;
-                // the swing rides on the mean; no exit blows past sound (it chokes first)
-                self.tail_u[t] = (u_mean + (signal - self.tail_dc[t]) / z).min(TAIL_SONIC);
+                self.tail_u_mean[t] = u_mean;
             }
         }
-        let mut jets = 0.0;
-        if snd.flow_noise > 0.0
-            && let Some((_, l)) = &self.listener
-        {
-            let rho = crate::exhaust::tail_reference_density();
-            let d = self.def.exhaust.outlet_diameter();
-            if self.jets.len() != tails.len() {
-                // seeded from the engine's own generator: deterministic for a seed
-                let base = self.rng;
-                self.jets = (0..tails.len())
-                    .map(|k| JetNoise::new(base.wrapping_add(k as u64 + 1)))
-                    .collect();
-            }
-            for ((jet, u), r) in self.jets.iter_mut().zip(&self.tail_u).zip(l.distances()) {
-                jets += jet.step(*u, d, rho, *r, dt);
-            }
-            jets *= snd.flow_noise;
+        if snd.flow_noise > 0.0 && self.listener.is_some() && self.jets.len() != n_tails {
+            // seeded from the engine's own generator: deterministic for a seed
+            let base = self.rng;
+            self.jets = (0..n_tails)
+                .map(|k| JetNoise::new(base.wrapping_add(k as u64 + 1)))
+                .collect();
         }
         // The block: every cylinder's pressure shakes the same structure, which radiates it as
         // combustion noise, heard from the tails' mean distance like the intake mouth.
@@ -1409,12 +1456,49 @@ impl Engine {
         } else {
             0.0
         };
-        let audio = heard
-            + jets
-            + match &mut self.listener {
-                Some((_, l)) => l.radiate_flow(intake_flow) + l.spread_from_1m(block),
+        // what does not wait for the tails: the intake mouth and the block
+        let rest = match &mut self.listener {
+            Some((_, l)) => l.radiate_flow(intake_flow) + l.spread_from_1m(block),
+            None => 0.0,
+        };
+        let audio = if let Some(r) = self.remote.0.as_mut() {
+            // the net runs elsewhere: the tails of the step before arrive now, and its sound is
+            // finished one step late (the same samples, in the same order)
+            std::mem::swap(&mut r.u_pending, &mut r.u_spare);
+            r.u_pending.clone_from(&self.tail_u_mean);
+            match r.pending.replace((rest, k)) {
+                Some((rest_prev, k_prev)) => {
+                    r.link.tails(&mut r.tails);
+                    let tails = std::mem::take(&mut r.tails);
+                    let u = std::mem::take(&mut r.u_spare);
+                    let a = self.tails_sound(&tails, &u, rest_prev, k_prev, dt);
+                    if let Some(r) = self.remote.0.as_mut() {
+                        r.tails = tails;
+                        r.u_spare = u;
+                    }
+                    a
+                }
                 None => 0.0,
-            };
+            }
+        } else {
+            let mut tails = std::mem::take(&mut self.tails_buf);
+            match (&self.net, &self.fv) {
+                (_, Some(fv)) => {
+                    tails.clear();
+                    tails.extend_from_slice(fv.last_tails());
+                }
+                (Some(net), None) => {
+                    tails.clear();
+                    tails.extend_from_slice(net.last_tails());
+                }
+                _ => tails.clear(),
+            }
+            let u = std::mem::take(&mut self.tail_u_mean);
+            let a = self.tails_sound(&tails, &u, rest, k, dt);
+            self.tail_u_mean = u;
+            self.tails_buf = tails;
+            a
+        };
 
         // Crank dynamics.
         let starter = if c.starter && rad_s_to_rpm(self.omega) < 600.0 {
@@ -1435,6 +1519,93 @@ impl Engine {
         }
         self.theta = (self.theta + self.omega * dt).rem_euclid(4.0 * PI);
         audio
+    }
+
+    /// The sound of a step whose tails are in: the listener hears them, each tail's jet swings
+    /// with its wave around the mean exit velocity `u_mean`, and `rest` (intake mouth, block)
+    /// adds. `k`: that step's cycle-mean constant.
+    fn tails_sound(&mut self, tails: &[f64], u_mean: &[f64], rest: f64, k: f64, dt: f64) -> f64 {
+        let heard = match &mut self.listener {
+            Some((_, l)) => l.process(tails),
+            None => 0.0,
+        };
+        let z = crate::exhaust::tail_impedance();
+        for (t, &signal) in tails.iter().enumerate() {
+            self.tail_dc[t] += (signal - self.tail_dc[t]) * k;
+            // the swing rides on the mean; no exit blows past sound (it chokes first)
+            self.tail_u[t] = (u_mean[t] + (signal - self.tail_dc[t]) / z).min(TAIL_SONIC);
+        }
+        let mut jets = 0.0;
+        let snd = &self.def.sound;
+        if snd.flow_noise > 0.0
+            && let Some((_, l)) = &self.listener
+        {
+            let rho = crate::exhaust::tail_reference_density();
+            let d = self.def.exhaust.outlet_diameter();
+            for ((jet, u), r) in self.jets.iter_mut().zip(&self.tail_u).zip(l.distances()) {
+                jets += jet.step(*u, d, rho, *r, dt);
+            }
+            jets *= snd.flow_noise;
+        }
+        heard + jets + rest
+    }
+
+    /// Run the waveguide exhaust elsewhere from now on: `link` is handed the net (it will
+    /// receive each step's work, [`ExhaustLink`]). The sound comes out one step late — each
+    /// [`Engine::step`] returns the step before's — and [`Engine::flush_exhaust`] gives the last
+    /// one. The same samples as running it here. False (nothing changed) without a waveguide
+    /// net, or with a primary shorter than two steps (its next wave is not known a step early).
+    pub fn detach_exhaust(
+        &mut self,
+        link: impl FnOnce(ExhaustNet) -> Box<dyn ExhaustLink>,
+    ) -> bool {
+        let Some(net) = self.net.as_ref() else {
+            return false;
+        };
+        let n = self.cyl.len();
+        let mut probe = vec![0.0; n];
+        if self.remote.0.is_some() || !net.arriving_next(&mut probe) {
+            return false;
+        }
+        let arriving = (0..n).map(|i| net.arriving(i)).collect();
+        let z_port = net.port_impedance();
+        let tails = vec![0.0; net.last_tails().len()];
+        let Some(net) = self.net.take() else {
+            return false;
+        };
+        self.remote = RemoteSlot(Some(Box::new(Remote {
+            link: link(net),
+            arriving,
+            z_port,
+            tails,
+            pending: None,
+            u_pending: Vec::new(),
+            u_spare: Vec::new(),
+        })));
+        true
+    }
+
+    /// The sound of the last step taken with the net elsewhere (waiting for its tails), if
+    /// one is waiting. Then the link has nothing outstanding.
+    pub fn flush_exhaust(&mut self, dt: f64) -> Option<f64> {
+        let r = self.remote.0.as_mut()?;
+        let (rest, k) = r.pending.take()?;
+        std::mem::swap(&mut r.u_pending, &mut r.u_spare);
+        r.link.tails(&mut r.tails);
+        let tails = std::mem::take(&mut r.tails);
+        let u = std::mem::take(&mut r.u_spare);
+        let a = self.tails_sound(&tails, &u, rest, k, dt);
+        if let Some(r) = self.remote.0.as_mut() {
+            r.tails = tails;
+            r.u_spare = u;
+        }
+        Some(a)
+    }
+
+    /// Take the net back to run here (after [`Engine::flush_exhaust`]); the link is dropped.
+    pub fn attach_exhaust(&mut self, net: ExhaustNet) {
+        self.remote = RemoteSlot(None);
+        self.net = Some(net);
     }
 
     /// Exit velocity at each tail pipe this step, m/s (mean from mass continuity).
@@ -3789,6 +3960,43 @@ mod tests {
         );
         // a 2.0 L at 5000 rpm WOT breathes ~0.09 kg/s through its one tail
         assert!((0.05..0.15).contains(&tails[0]), "{tails:?}");
+    }
+
+    #[test]
+    fn an_exhaust_run_elsewhere_gives_the_same_samples_a_step_late() {
+        // the net behind a link (here run in order, as a thread would) against the net in the
+        // engine: identical samples, each one step later; flushing gives the last. A blip midway
+        // moves the mean flows the pipes' friction follows.
+        for def in [EngineDef::lfa_v10(), EngineDef::inline4()] {
+            let mut a = Engine::new(def.clone(), 3000.0, 1);
+            let mut b = Engine::new(def.clone(), 3000.0, 1);
+            let n = (0.15 / DT) as usize;
+            let c = |k: usize| Controls {
+                throttle: if (n / 3..n / 2).contains(&k) {
+                    1.0
+                } else {
+                    0.2
+                },
+                ..Controls::default()
+            };
+            // a few steps in place first (the net is built on the first step)
+            for k in 0..10 {
+                assert_eq!(a.step(DT, &c(k)), b.step(DT, &c(k)));
+            }
+            assert!(b.detach_exhaust(|net| Box::new(crate::exhaust::LocalLink::new(net))));
+            let mut previous = None;
+            for k in 10..n {
+                let x = a.step(DT, &c(k));
+                let y = b.step(DT, &c(k));
+                if let Some(p) = previous {
+                    assert_eq!(y, p, "{} step {k}", def.name);
+                }
+                previous = Some(x);
+            }
+            assert_eq!(b.flush_exhaust(DT), previous, "{}", def.name);
+            assert_eq!(b.flush_exhaust(DT), None);
+            assert_eq!(a.rpm(), b.rpm());
+        }
     }
 
     #[test]
