@@ -1449,7 +1449,7 @@ impl Engine {
         }
         if self.listener.as_ref().is_none_or(|l| l.0 != dt) {
             let (ex, snd) = (&self.def.exhaust, &self.def.sound);
-            let l = Listener::new(
+            let l = Listener::with_street(
                 self.tail_pipes,
                 ex.tail_spacing_m,
                 snd.listener_distance_m,
@@ -1457,6 +1457,7 @@ impl Engine {
                 PI * 0.25 * ex.outlet_diameter().powi(2),
                 dt,
                 snd.ground_heights(),
+                snd.street(),
             );
             self.listener = Some((dt, l));
         }

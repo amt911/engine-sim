@@ -42,10 +42,24 @@ pub struct SoundDef {
     /// Heights above the ground of the tail pipes and of the listener's ear, m.
     pub tail_height_m: f64,
     pub listener_height_m: f64,
+    /// A street around the car and the listener: the distance between its façades, m (the car
+    /// in the middle). 0 = open ground, nothing but the ground reflects.
+    pub street_width_m: f64,
+    /// Share of the sound pressure each façade returns (ISO 9613-2, Table 4: 0.8 for building
+    /// walls with windows, 1 for flat hard walls).
+    pub wall_reflection: f64,
 }
 
 impl SoundDef {
     /// (tail height, ear height) when the ground reflects, for [`crate::listener::Listener`].
+    /// The street the listener stands in, if any ([`crate::listener::Street`]).
+    pub fn street(&self) -> Option<crate::listener::Street> {
+        (self.street_width_m > 0.0).then_some(crate::listener::Street {
+            width_m: self.street_width_m,
+            reflection: self.wall_reflection.clamp(0.0, 1.0),
+        })
+    }
+
     pub fn ground_heights(&self) -> Option<(f64, f64)> {
         self.ground
             .then_some((self.tail_height_m, self.listener_height_m))
@@ -68,6 +82,8 @@ impl Default for SoundDef {
             // a road car's tail pipe and a standing adult's ear
             tail_height_m: 0.3,
             listener_height_m: 1.6,
+            street_width_m: 0.0,
+            wall_reflection: 0.8,
         }
     }
 }
@@ -80,6 +96,28 @@ pub const BURN_DURATION_JITTER: f64 = 0.05;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_street_round_trips_and_old_files_stand_in_the_open() {
+        let d = SoundDef {
+            street_width_m: 12.0,
+            wall_reflection: 0.9,
+            ..SoundDef::default()
+        };
+        let j: SoundDef = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+        let y: SoundDef = serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&d).unwrap()).unwrap();
+        assert_eq!(j, d);
+        assert_eq!(y, d);
+        assert_eq!(
+            d.street(),
+            Some(crate::listener::Street {
+                width_m: 12.0,
+                reflection: 0.9
+            })
+        );
+        let old: SoundDef = serde_yaml_ng::from_str("reverb: 0.0\n").unwrap();
+        assert_eq!(old.street(), None);
+    }
 
     #[test]
     fn an_engine_is_heard_outdoors_without_a_room() {

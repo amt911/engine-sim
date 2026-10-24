@@ -12,6 +12,88 @@ const C_AMBIENT: f64 = 343.0;
 /// Density of that air, kg/m³ (20 °C, 1 atm).
 const RHO_AMBIENT: f64 = 1.204;
 
+/// A street's façades: `width_m` apart (the car in the middle), each reflecting a share
+/// `reflection` of the sound pressure (ISO 9613-2, Table 4: 1 for flat hard walls, 0.8 for
+/// building walls with windows and small installations).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Street {
+    pub width_m: f64,
+    pub reflection: f64,
+}
+
+/// One reflected path: its delay and monopole gain, and the air's absorption along it as a
+/// one-pole low-pass at [`air_corner_hz`] of its length.
+#[derive(Debug, Clone)]
+struct Image {
+    delay: usize,
+    gain: f64,
+    /// One-pole coefficient, its state, and the last signal it heard (the monopole hears
+    /// changes).
+    k: f64,
+    state: f64,
+    last: f64,
+}
+
+impl Image {
+    fn new(delay: usize, gain: f64, path_m: f64, dt: f64) -> Self {
+        // a path whose air keeps everything audible (corner at the 20 kHz cap) passes untouched
+        let fc = air_corner_hz(path_m);
+        let k = if fc >= 20_000.0 {
+            1.0
+        } else {
+            1.0 - (-2.0 * std::f64::consts::PI * fc.min(0.45 / dt) * dt).exp()
+        };
+        Self {
+            delay,
+            gain,
+            k,
+            state: 0.0,
+            last: 0.0,
+        }
+    }
+    /// The pressure this path adds for the tail signal `x` it hears now.
+    fn hear(&mut self, x: f64) -> f64 {
+        self.state += (x - self.state) * self.k;
+        let p = self.gain * (self.state - self.last);
+        self.last = self.state;
+        p
+    }
+}
+
+/// Atmospheric absorption of ISO 9613-1 (eqs. 3–5) at 20 °C, 70 % RH, 1 atm, dB/m, at octave
+/// centres: (Hz, α).
+const AIR_ABSORPTION: [(f64, f64); 8] = [
+    (125.0, 0.0003),
+    (250.0, 0.0011),
+    (500.0, 0.0028),
+    (1000.0, 0.0050),
+    (2000.0, 0.0090),
+    (4000.0, 0.0231),
+    (8000.0, 0.0776),
+    (16000.0, 0.2811),
+];
+
+/// The frequency at which a path of `path_m` metres of air takes 3 dB off (α(f)·r = 3 dB),
+/// interpolated log-log in [`AIR_ABSORPTION`]; capped at 20 kHz: the corner of the one-pole
+/// that stands for the air on that path.
+pub fn air_corner_hz(path_m: f64) -> f64 {
+    let need = 3.0 / path_m.max(1e-3);
+    let mut prev = AIR_ABSORPTION[0];
+    if need <= prev.1 {
+        return prev.0;
+    }
+    for &(f, a) in &AIR_ABSORPTION[1..] {
+        if need <= a {
+            let t = (need.ln() - prev.1.ln()) / (a.ln() - prev.1.ln());
+            return (prev.0.ln() + t * (f.ln() - prev.0.ln()))
+                .exp()
+                .min(20_000.0);
+        }
+        prev = (f, a);
+    }
+    20_000.0
+}
+
 /// The tails spread evenly across `spacing_m` at the rear (x across the car, y = 0), the
 /// listener at `distance_m` from their centre, `angle_deg` off the car's axis (0 = straight
 /// behind). Free-field monopoles, each heard after its own path; only the delay differences
@@ -24,9 +106,8 @@ pub struct Listener {
     gain: Vec<f64>,
     lines: Vec<Vec<f64>>,
     last: Vec<f64>,
-    /// Per tail, its ground image: (delay, gain); empty in free field.
-    image: Vec<(usize, f64)>,
-    image_last: Vec<f64>,
+    /// Per tail, its images (the ground's, the façades'): each a reflected path.
+    images: Vec<Vec<Image>>,
     pos: usize,
     /// For a signal radiated from all the tails alike (at their mean gain, no delay).
     shared_last: f64,
@@ -46,6 +127,33 @@ impl Listener {
         tail_area_m2: f64,
         dt: f64,
         ground: Option<(f64, f64)>,
+    ) -> Self {
+        Self::with_street(
+            tails,
+            spacing_m,
+            distance_m,
+            angle_deg,
+            tail_area_m2,
+            dt,
+            ground,
+            None,
+        )
+    }
+
+    /// [`Listener::new`] in a street: façades parallel to the car's axis, `street.width_m`
+    /// apart with the car in the middle, each returning the tails from their images across it
+    /// (first and second bounces, each also off the ground when it reflects), weakened by the
+    /// wall's reflection factor per bounce and by the air along the longer path (ISO 9613-1).
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_street(
+        tails: usize,
+        spacing_m: f64,
+        distance_m: f64,
+        angle_deg: f64,
+        tail_area_m2: f64,
+        dt: f64,
+        ground: Option<(f64, f64)>,
+        street: Option<Street>,
     ) -> Self {
         let n = tails.max(1);
         let (lx, ly) = {
@@ -75,22 +183,42 @@ impl Listener {
         let to_q = tail_area_m2 / crate::exhaust::tail_impedance();
         let monopole = |ri: f64| RHO_AMBIENT / (4.0 * std::f64::consts::PI * ri) * to_q / dt;
         let gain = r.iter().map(|&ri| monopole(ri)).collect();
-        // the rigid ground (asphalt: reflection Q ≈ 1 at these frequencies, ISO 9613-2) returns
-        // each tail from its image below it, later and weaker
-        let image: Vec<(usize, f64)> = match image_rise {
-            Some(h) => xs
-                .iter()
-                .map(|&x| {
-                    let ri = path(x, h);
-                    (steps(ri), monopole(ri))
-                })
-                .collect(),
-            None => Vec::new(),
-        };
+        // Images of each tail at (x', height): the rigid ground (asphalt: reflection ≈ 1 at these
+        // frequencies, ISO 9613-2) below it; with a street, its mirror across each façade
+        // (x' = ±W − x) and across both (x' = x ± 2W), each with and without the ground.
+        let images: Vec<Vec<Image>> = xs
+            .iter()
+            .map(|&x| {
+                let mut out = Vec::new();
+                let mut add = |xi: f64, h: f64, factor: f64| {
+                    let ri = path(xi, h);
+                    out.push(Image::new(steps(ri), factor * monopole(ri), ri, dt));
+                };
+                if let Some(h) = image_rise {
+                    add(x, h, 1.0);
+                }
+                if let Some(st) = street {
+                    let w = st.width_m;
+                    let rho = st.reflection;
+                    for (xi, f) in [
+                        (w - x, rho),
+                        (-w - x, rho),
+                        (2.0 * w + x, rho * rho),
+                        (-2.0 * w + x, rho * rho),
+                    ] {
+                        add(xi, rise, f);
+                        if let Some(h) = image_rise {
+                            add(xi, h, f);
+                        }
+                    }
+                }
+                out
+            })
+            .collect();
         let delay_max = delay
             .iter()
             .copied()
-            .chain(image.iter().map(|i| i.0))
+            .chain(images.iter().flatten().map(|i| i.delay))
             .max()
             .unwrap_or(0);
         let len = delay_max + 1;
@@ -101,8 +229,7 @@ impl Listener {
             gain,
             lines: vec![vec![0.0; len]; n],
             last: vec![0.0; n],
-            image_last: vec![0.0; image.len()],
-            image,
+            images,
             pos: 0,
             shared_last: 0.0,
             flow_last: 0.0,
@@ -155,10 +282,9 @@ impl Listener {
             let heard = line[(self.pos + len - self.delay[k]) % len];
             y += self.gain[k] * (heard - self.last[k]);
             self.last[k] = heard;
-            if let Some(&(d, g)) = self.image.get(k) {
-                let reflected = line[(self.pos + len - d) % len];
-                y += g * (reflected - self.image_last[k]);
-                self.image_last[k] = reflected;
+            for im in self.images[k].iter_mut() {
+                let reflected = line[(self.pos + len - im.delay) % len];
+                y += im.hear(reflected);
             }
         }
         self.pos = (self.pos + 1) % len;
@@ -191,6 +317,43 @@ mod tests {
     /// A tail signal (ρc·u) whose volume flow Q = A·u rises at 1 m³/s per second.
     fn unit_ramp(n: usize) -> f64 {
         n as f64 * DT * Z / A
+    }
+
+    #[test]
+    fn a_street_returns_the_tail_from_its_facades() {
+        // One tail 3 m straight behind, free field below (no ground), between façades 10 m
+        // apart (the car in the middle) reflecting ρ = 0.8 (ISO 9613-2, Table 4: walls of
+        // buildings with windows). Images at x = ±10 m (one bounce) and ±20 m (two): paths
+        // √(10² + 3²) = 10.440 m and √(20² + 3²) = 20.224 m. A tail flow rising steadily is heard
+        // first alone, then from 21.7 ms ((10.440 − 3)/343) with each façade's image, and from
+        // 49.2 ms with the second bounces: 1 + 2·0.8·3/10.440 + 2·0.64·3/20.224 = 1.6496 times
+        // the direct sound (the air's absorption passes a steady signal whole)
+        let street = Some(Street {
+            width_m: 10.0,
+            reflection: 0.8,
+        });
+        let mut l = Listener::with_street(1, 0.9, 3.0, 0.0, A, DT, None, street);
+        let ys: Vec<f64> = (0..(0.08 / DT) as usize)
+            .map(|n| l.process(&[unit_ramp(n)]))
+            .collect();
+        let direct = ys[100];
+        let first = (0.021_69 / DT) as usize;
+        assert!(
+            (ys[first - 20] / direct - 1.0).abs() < 1e-9,
+            "before the façades"
+        );
+        assert!(ys[first + 400] > 1.3 * direct, "the façades' images");
+        let steady = ys[ys.len() - 1] / direct;
+        assert!((steady / 1.6496 - 1.0).abs() < 0.005, "{steady}");
+    }
+
+    #[test]
+    fn the_air_takes_the_highs_off_a_long_path() {
+        // ISO 9613-1 at 20 °C, 70 % RH: α = 0.0776 dB/m at 8 kHz, so a 38.66 m path loses 3 dB
+        // there: its one-pole's corner. Short paths keep everything up to the 20 kHz cap
+        assert!((air_corner_hz(3.0 / 0.0776) / 8000.0 - 1.0).abs() < 0.01);
+        assert_eq!(air_corner_hz(3.0), 20_000.0);
+        assert!(air_corner_hz(100.0) < air_corner_hz(40.0));
     }
 
     #[test]

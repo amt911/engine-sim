@@ -97,6 +97,8 @@ engine:
     ground: true
     tail_height_m: 0.3
     listener_height_m: 1.6
+    street_width_m: 0.0
+    wall_reflection: 0.8
   exhaust_reverse_cd_ratio: 0.75
   overrun_fuel_cut_rpm: 1300.0
   vehicle:
