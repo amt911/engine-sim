@@ -545,6 +545,29 @@ mod tests {
     }
 
     #[test]
+    fn a_resistive_neck_flattens_the_resonators_notch() {
+        // the same resonator with a neck resistance equal to the duct's ρc/S = 144 492 Pa·s/m³:
+        // at f₀ the branch is the resistance alone, TL = 20·log(1 + ½) = 3.522 dB; at 1.2 f₀
+        // (X = ωM − 1/ωC = 15 975) TL = 20·log|1 + 72 246/(144 492 + 15 975j)| = 3.493 dB
+        let dt = 1.0 / 192_000.0;
+        let duct = || {
+            Duct::with_nodes(
+                vec![
+                    Pipe::new(1.0, 0.05, 500.0, dt, 0.0),
+                    Pipe::new(1.0, 0.05, 500.0, dt, 0.0),
+                ],
+                vec![Node::Shunt(Shunt::helmholtz(
+                    0.03, 0.05, 0.003, 144_492.3, 283.71, 500.0, dt,
+                ))],
+            )
+        };
+        for (f, want) in [(172.75, 3.522), (207.30, 3.493)] {
+            let tl = -20.0 * transmission(duct(), f, dt).log10();
+            assert!((tl - want).abs() < 0.1, "{f} Hz: {tl:.3} dB, want {want}");
+        }
+    }
+
+    #[test]
     fn an_expansion_chamber_has_munjals_transmission_loss() {
         // m = 8 (A₂/A₁), L = 0.4 m, c = 500 m/s, lossless: TL = 10·log[1 + ¼(m − 1/m)²·sin²(kL)]
         // (Munjal, *Acoustics of Ducts and Mufflers*, 1987, ch. 3, the simple expansion chamber):
