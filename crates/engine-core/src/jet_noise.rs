@@ -69,7 +69,7 @@ fn jet_p_rms(v: f64, d: f64, rho_jet: f64, r: f64) -> f64 {
 #[derive(Debug, Clone)]
 pub struct JetNoise {
     rng: u64,
-    // band-pass state (transposed direct form II)
+    // band-pass state (the SVF's two integrators)
     s1: f64,
     s2: f64,
 }
@@ -111,17 +111,22 @@ impl JetNoise {
         p_rms * norm * self.band(n, fc, dt)
     }
 
-    /// RBJ band-pass (0 dB peak) at `fc`, Q = BAND_Q.
+    /// Band-pass (0 dB peak) at `fc`, Q = BAND_Q: the trapezoidal state-variable filter of
+    /// A. Simper ("Linear trapezoidal integrated SVF", Cytomic, 2013). As a fixed filter it is
+    /// the same prewarped bilinear transform as the RBJ cookbook's band-pass (so the variance
+    /// kept, α/(1 + α), is unchanged); unlike a direct-form biquad its state stays bounded while
+    /// `fc` jumps every sample, as it does when the exit flow keeps reversing.
     fn band(&mut self, x: f64, fc: f64, dt: f64) -> f64 {
-        let w0 = 2.0 * PI * fc * dt;
-        let alpha = band_alpha(fc, dt);
-        let a0 = 1.0 + alpha;
-        let (b0, b2) = (alpha / a0, -alpha / a0);
-        let (a1, a2) = (-2.0 * w0.cos() / a0, (1.0 - alpha) / a0);
-        let y = b0 * x + self.s1;
-        self.s1 = -a1 * y + self.s2;
-        self.s2 = b2 * x - a2 * y;
-        y
+        let g = (PI * fc * dt).tan();
+        let k = 1.0 / BAND_Q;
+        let a1 = 1.0 / (1.0 + g * (g + k));
+        let (a2, a3) = (g * a1, g * g * a1);
+        let v3 = x - self.s2;
+        let v1 = a1 * self.s1 + a2 * v3;
+        let v2 = self.s2 + a2 * self.s1 + a3 * v3;
+        self.s1 = 2.0 * v1 - self.s1;
+        self.s2 = 2.0 * v2 - self.s2;
+        k * v1
     }
 }
 
