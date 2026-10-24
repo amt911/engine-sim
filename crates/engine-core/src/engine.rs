@@ -1602,7 +1602,13 @@ impl Engine {
         Some(a)
     }
 
-    /// Take the net back to run here (after [`Engine::flush_exhaust`]); the link is dropped.
+    /// Stop running the net elsewhere (after [`Engine::flush_exhaust`]): the link, to get the
+    /// net back from wherever it runs and [`Engine::attach_exhaust`] it.
+    pub fn end_detached(&mut self) -> Option<Box<dyn ExhaustLink>> {
+        self.remote.0.take().map(|r| r.link)
+    }
+
+    /// Run the net here again.
     pub fn attach_exhaust(&mut self, net: ExhaustNet) {
         self.remote = RemoteSlot(None);
         self.net = Some(net);

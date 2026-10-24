@@ -56,6 +56,9 @@ fn voice_for(def: &EngineDef, sample_rate: f64) -> Voice {
     v
 }
 
+/// Samples rendered per pass (a few milliseconds of audio).
+const RENDER_CHUNK: usize = 1024;
+
 pub struct Simulation {
     engine: Engine,
     /// The engine as the user defined it; the physics runs `quality.apply(def)`.
@@ -71,6 +74,11 @@ pub struct Simulation {
     trace_deg: usize,
     scope: Vec<f32>,
     scope_pos: usize,
+    /// The exhaust net's own thread, when the machine has cores to spare (`None`: it runs
+    /// here, the same samples).
+    exhaust_thread: Option<crate::exhaust_thread::ExhaustThread>,
+    /// One block's physics-step sound, before the anti-alias filter (kept: no allocation).
+    steps: Vec<f64>,
 }
 
 impl Simulation {
@@ -111,6 +119,10 @@ impl Simulation {
             trace_deg: 0,
             scope: vec![0.0; SCOPE_LEN],
             scope_pos: 0,
+            exhaust_thread: crate::exhaust_thread::ExhaustThread::worthwhile()
+                .then(crate::exhaust_thread::ExhaustThread::spawn)
+                .and_then(Result::ok),
+            steps: Vec::new(),
         }
     }
     #[cfg(test)]
@@ -176,21 +188,34 @@ impl Simulation {
 
     /// Fill `out` with mono samples.
     pub fn render(&mut self, out: &mut [f32]) {
+        // in chunks: the engine builds its exhaust on its first step, so a long render (headless,
+        // offline) hands it to the thread from the second chunk on; and the buffer stays small
+        for chunk in out.chunks_mut(RENDER_CHUNK) {
+            self.render_chunk(chunk);
+        }
+    }
+
+    fn render_chunk(&mut self, out: &mut [f32]) {
         let substeps = self.quality.substeps();
         let dt = 1.0 / (self.sample_rate * substeps as f64);
         self.vehicle.set_gear(self.drive.gear);
         self.vehicle
             .set_clutch(if self.drive.clutch_pedal { 0.0 } else { 1.0 });
         let mut c = self.controls;
-        for s in out.iter_mut() {
-            let mut p = 0.0;
+        // the exhaust on its thread for this block: each step's sound then comes a step late
+        let detached = match &self.exhaust_thread {
+            Some(w) => self.engine.detach_exhaust(|net| w.link(net)),
+            None => false,
+        };
+        self.steps.clear();
+        for _ in 0..out.len() {
             for _ in 0..substeps {
                 // The vehicle sees the crank speed and answers with the load for the next step.
                 let omega = rpm_to_rad_s(self.engine.rpm());
                 let load = self.vehicle.step(dt, omega, self.drive.brake);
                 c.load_torque_nm = self.controls.load_torque_nm + load.torque_nm;
                 c.extra_inertia_kgm2 = self.controls.extra_inertia_kgm2 + load.inertia_kgm2;
-                p = self.anti_alias.process(self.engine.step(dt, &c));
+                self.steps.push(self.engine.step(dt, &c));
             }
             let c0 = self.engine.cylinder(0);
             // Fill every degree passed since the last sample, so none keeps a stale value.
@@ -201,10 +226,38 @@ impl Simulation {
                 self.trace[d] = c0.pressure_pa as f32;
             }
             self.trace_deg = cur;
+        }
+        // with the exhaust away the first step returned nothing yet and the last comes now
+        let first = if detached {
+            if let Some(last) = self.engine.flush_exhaust(dt) {
+                self.steps.push(last);
+            }
+            if let (Some(w), Some(mut link)) = (&self.exhaust_thread, self.engine.end_detached())
+                && let Some(net) = w.back(&mut *link)
+            {
+                self.engine.attach_exhaust(net);
+            }
+            1
+        } else {
+            0
+        };
+        for (s, chunk) in out.iter_mut().zip(self.steps[first..].chunks(substeps)) {
+            let mut p = 0.0;
+            for &x in chunk {
+                p = self.anti_alias.process(x);
+            }
             *s = self.voice.process(p);
             self.scope[self.scope_pos] = *s;
             self.scope_pos = (self.scope_pos + 1) % SCOPE_LEN;
         }
+    }
+    /// Run the exhaust net on its own thread or here: the same samples either way.
+    #[cfg(test)]
+    pub fn set_exhaust_thread(&mut self, on: bool) {
+        // forced either way: the test is that both give the same samples, whatever the cores
+        self.exhaust_thread = on
+            .then(crate::exhaust_thread::ExhaustThread::spawn)
+            .and_then(Result::ok);
     }
     pub fn snapshot(&self) -> Snapshot {
         let e = &self.engine;
@@ -277,6 +330,29 @@ pub(crate) mod tests {
     /// Diagnostic (run by hand): a free-running drive in neutral (idle, three blips, a pull to
     /// the limiter, lift-off) rendered through the app's chain, per preset and sound layer, to
     /// `target/sound/<preset>-<mix>.wav` with the throttle trace in `throttle.csv`.
+    #[test]
+    fn the_exhaust_on_its_thread_gives_the_same_samples() {
+        // the net on a worker thread against the net in place: byte-identical sound, through a
+        // blip (the controls change between blocks, as from the UI) and several blocks
+        for def in [EngineDef::lfa_v10(), EngineDef::inline4()] {
+            let render = |thread: bool| {
+                let mut sim = Simulation::new(def.clone(), FS, 1);
+                sim.set_exhaust_thread(thread);
+                let mut out = Vec::new();
+                for b in 0..12 {
+                    sim.controls.throttle = if (4..7).contains(&b) { 1.0 } else { 0.1 };
+                    let mut buf = vec![0.0f32; 2000];
+                    sim.render(&mut buf);
+                    out.extend_from_slice(&buf);
+                }
+                out
+            };
+            let (here, away) = (render(false), render(true));
+            assert!(here.iter().any(|x| *x != 0.0));
+            assert!(here == away, "{}: the thread changed the sound", def.name);
+        }
+    }
+
     /// `cargo test -p engine-app --release drive_render -- --ignored --nocapture`
     #[test]
     #[ignore]

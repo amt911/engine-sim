@@ -496,6 +496,8 @@ pub trait ExhaustLink: Send {
     fn submit(&mut self, flows: &[f64], mach: &[f64], mean: Option<(&[f64], &[f64])>);
     fn arriving_next(&mut self, out: &mut [f64]);
     fn tails(&mut self, out: &mut [f64]);
+    /// No more steps: whatever runs the net may hand it back.
+    fn stop(&mut self) {}
 }
 
 /// [`ExhaustLink`] that runs the net right here, in order: the reference the threaded one is
@@ -637,6 +639,11 @@ impl ExhaustNet {
     /// Gauge pressure at cylinder `i`'s valve end now (p⁺ + p⁻).
     pub fn valve_pressure(&self, i: usize) -> f64 {
         self.primaries[i].at_near() + self.sent[i]
+    }
+
+    /// How many valves (cylinders) feed the net.
+    pub fn valves(&self) -> usize {
+        self.primaries.len()
     }
 
     /// The start of a step: the tails' outflow Mach and, when given, the mean flows the pipes'
