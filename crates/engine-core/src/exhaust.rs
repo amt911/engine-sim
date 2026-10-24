@@ -109,7 +109,8 @@ pub enum Segment {
     },
 }
 
-/// A road car's exhaust after one collector, from sizing rules rather than one car's drawings:
+/// A road car's exhaust after one collector, from sizing rules rather than one car's drawings
+/// (a starting point to design from; no preset uses it — the rule is not any car's data):
 /// a close-coupled catalyst of about the swept volume (standard 400 cpsi / 0.165 mm substrate)
 /// and silencers totalling ten times it (a long-standing rule of thumb for muffler volume, e.g.
 /// US patent 3,318,412), a fifth in a centre resonator and the rest in the rear box, both
