@@ -76,3 +76,4 @@ Semlyen 1999) — a few biquads per silencer.
   either 16 or 4.9 kPa·s/m² packing: the right silencer physics alone does not bring the idle's 0.5–4 kHz up to real
   recordings — that band must come mostly from sources we lack (valvetrain/mechanical radiation, flow noise
   regenerated after the silencers).
+- `pkill -f <pattern>` kills the shell running it when the pattern is in that command line: use `pgrep -x <process-name>`.
