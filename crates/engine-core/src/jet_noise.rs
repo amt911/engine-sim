@@ -190,9 +190,136 @@ impl FineScale {
     }
 }
 
+/// The jet through an open exhaust valve, heard inside the port: gas expanding from the
+/// cylinder (`p_cyl`, `t_cyl`) to the port (`p_port`, `t_port`) through the curtain's effective
+/// area `a_curtain`, isentropically, at most at c* (choked). Its turbulent mixing noise follows
+/// the same correlation as a tail jet's ([`jet_oaspl_db`], ARP876), with the port's gas as the
+/// medium (ρc² = γp: at one pressure the correlation needs no correction for hot gas); its
+/// acoustic power W = 4πr²·p²/(ρc) goes into the primary of area `a_pipe` as plane waves (below
+/// the first cut-on, 1.84c/πD), half downstream: p = √(½·W·ρc/A). The plane-wave rms pressure
+/// it sends down the pipe, Pa; 0 with the valve shut or the flow reversed.
+pub fn valve_jet_level(
+    (p_cyl, t_cyl): (f64, f64),
+    (p_port, t_port): (f64, f64),
+    a_curtain: f64,
+    a_pipe: f64,
+) -> (f64, f64, f64) {
+    use crate::gas::{CP, GAMMA, R_AIR};
+    if a_curtain <= 0.0 || p_port >= p_cyl || t_cyl <= 0.0 || t_port <= 0.0 {
+        return (0.0, 0.0, 0.0);
+    }
+    let ratio = (p_port / p_cyl).max(crate::gas::CRITICAL_PRESSURE_RATIO);
+    // the step's hot path: the correlation's dB terms taken as one product (no logs), and
+    // ratio^((γ−1)/γ) = ratio / ratio^(1/γ)
+    let r_g = ratio.powf(1.0 / GAMMA);
+    let u = (2.0 * CP * t_cyl * (1.0 - ratio / r_g)).sqrt();
+    // ρ_jet / ρ_port, both ideal gas
+    let density_ratio = p_cyl * r_g * t_port / (t_cyl * p_port);
+    let c_a = (GAMMA * R_AIR * t_port).sqrt();
+    let d = (4.0 * a_curtain / PI).sqrt();
+    let m = u / c_a;
+    let sqrt_m = m.sqrt();
+    let m35 = m * m * m * sqrt_m;
+    let w = 3.0 * m35 / (0.6 + m35) - 1.0;
+    // p₁² = P_REF²·10^14.1·(ρ_j/ρ_a)^w·M^7.5/(1 + 0.01·M^4.5)·A; W = 4πr²p₁²/(ρc), half of it
+    // down the pipe as a plane wave p = √(½Wρc/A_pipe): ρc cancels
+    const P_REF_10_705: f64 = P_REF * 1.122_018_454_301_963_3e7;
+    let p1_sq = density_ratio.powf(w) * m35 * m35 * sqrt_m / (1.0 + 0.01 * m35 * m) * a_curtain;
+    (P_REF_10_705 * (2.0 * PI * p1_sq / a_pipe).sqrt(), u, d)
+}
+
+/// The noise of one exhaust valve's jet as a pressure signal in its primary: seeded white noise
+/// through Tam's fine-scale spectrum ([`FineScale`]) peaking at the jet's Strouhal frequency
+/// 0.2·u/d, scaled to [`valve_jet_level`].
+#[derive(Debug, Clone)]
+pub struct ValveJet {
+    rng: u64,
+    spectrum: FineScale,
+}
+
+impl ValveJet {
+    /// ∫ of the fitted fine-scale shape's power over f/f_F (the filter's own, for its level).
+    const SHAPE_INTEGRAL: f64 = 4.052_433_9;
+
+    pub fn new(seed: u64) -> Self {
+        Self {
+            rng: seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1,
+            spectrum: FineScale::new(),
+        }
+    }
+
+    /// One step of `dt`: the pressure (Pa) the valve's jet sends down the primary.
+    pub fn step(
+        &mut self,
+        cyl: (f64, f64),
+        port: (f64, f64),
+        a_curtain: f64,
+        a_pipe: f64,
+        dt: f64,
+    ) -> f64 {
+        self.rng ^= self.rng >> 12;
+        self.rng ^= self.rng << 25;
+        self.rng ^= self.rng >> 27;
+        let x = (self.rng.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 / (1u64 << 53) as f64;
+        let white = (x - 0.5) * 12f64.sqrt();
+        let (level, u, d) = valve_jet_level(cyl, port, a_curtain, a_pipe);
+        if level == 0.0 {
+            self.spectrum
+                .process(0.0, self.spectrum.f_peak.max(1.0), dt);
+            return 0.0;
+        }
+        // the shape (to 50·f_F) inside the band the steps resolve
+        let f_peak = (PEAK_STROUHAL * u / d).min(0.05 / dt);
+        // unit white noise through the shape keeps 2·f_F·∫G/fs of its variance
+        let kept = (2.0 * f_peak * Self::SHAPE_INTEGRAL * dt).sqrt();
+        level / kept * self.spectrum.process(white, f_peak, dt)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_choked_exhaust_valve_jet_by_hand() {
+        // 3 bar, 1200 K in the cylinder, the port at 1 bar, 900 K: choked (1/3 < 0.528), the jet
+        // at c* = √(2γRT/(γ + 1)) = 633.9 m/s with the throat's 0.8711·0.6339 = 0.5522 kg/m³,
+        // into port gas of 0.38715 kg/m³ and c = 601.4 m/s: M = 1.0541, w = 1.0014. Through 4 cm²:
+        // 141 + 1.5444 + 1.7163 − 0.0547 − 33.979 = 110.227 dB at 1 m (6.497 Pa), W =
+        // 4π·6.497²/(0.38715·601.4) = 2.278 W, half of it down a 42 mm primary (1.3854e-3 m²):
+        // √(½·2.278·232.83/1.3854e-3) = 437.5 Pa
+        let a_pipe = PI * 0.25 * 0.042 * 0.042;
+        let (p, u, _) = valve_jet_level((3e5, 1200.0), (1e5, 900.0), 4e-4, a_pipe);
+        assert!((u - 633.9).abs() < 0.2, "{u} m/s");
+        assert!((p / 437.5 - 1.0).abs() < 0.01, "{p} Pa");
+        // shut, or the port above the cylinder (reversion): no jet
+        assert_eq!(
+            valve_jet_level((3e5, 1200.0), (1e5, 900.0), 0.0, a_pipe).0,
+            0.0
+        );
+        assert_eq!(
+            valve_jet_level((1e5, 900.0), (1.2e5, 900.0), 4e-4, a_pipe).0,
+            0.0
+        );
+    }
+
+    #[test]
+    fn a_valve_jet_sends_its_level_down_the_pipe() {
+        // the generated noise carries valve_jet_level's rms (within the variance of 0.2 s)
+        let dt = 1.0 / 192_000.0;
+        let a_pipe = PI * 0.25 * 0.042 * 0.042;
+        let mut j = ValveJet::new(3);
+        let n = (0.2 / dt) as usize;
+        let cyl = (3e5, 1200.0);
+        let port = (1e5, 900.0);
+        let x: Vec<f64> = (0..n)
+            .map(|_| j.step(cyl, port, 4e-4, a_pipe, dt))
+            .collect();
+        let rms = (x.iter().map(|v| v * v).sum::<f64>() / n as f64).sqrt();
+        assert!((rms / 437.5 - 1.0).abs() < 0.1, "{rms} Pa");
+        // and nothing while the valve is shut
+        assert!((0..1000).all(|_| j.step(cyl, port, 0.0, a_pipe, dt) == 0.0));
+    }
 
     #[test]
     fn the_fine_scale_spectrum_is_tams() {

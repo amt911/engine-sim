@@ -766,6 +766,8 @@ struct Remote {
     link: Box<dyn ExhaustLink>,
     arriving: Vec<f64>,
     z_port: f64,
+    /// The primaries' area, m².
+    a_pipe: f64,
     tails: Vec<f64>,
     /// (the intake mouth's and the block's sound, the cycle-mean constant) of the waiting step
     pending: Option<(f64, f64)>,
@@ -844,6 +846,8 @@ pub struct Engine {
     texture_signal: f64,
     /// The turbulent jet at each tail pipe.
     jets: Vec<JetNoise>,
+    /// Each exhaust valve's jet ([`crate::jet_noise::ValveJet`]).
+    valve_jets: Vec<crate::jet_noise::ValveJet>,
     /// Per tail: the cylinders blowing into it, their exhaust mass flow averaged over a cycle
     /// (kg/s), the waveguide signal's own average, and the exit velocity (m/s) the jets see.
     tail_groups: Vec<Vec<usize>>,
@@ -989,6 +993,7 @@ impl Engine {
             structure: None,
             texture_signal: 0.0,
             jets: Vec::new(),
+            valve_jets: Vec::new(),
             tail_groups: Vec::new(),
             tail_mean_flow: Vec::new(),
             tail_dc: Vec::new(),
@@ -1226,7 +1231,8 @@ impl Engine {
             (None, Some(r)) => r.z_port,
             (None, None) => 1.0,
         };
-        for i in 0..self.cyl.len() {
+        let n_cyl = self.cyl.len();
+        for i in 0..n_cyl {
             let arriving = match (&self.net, &self.remote.0) {
                 (Some(n), _) => n.arriving(i),
                 (None, Some(r)) => r.arriving[i],
@@ -1323,10 +1329,37 @@ impl Engine {
                 }
             }
             cs.port_flow = f_ex.map_or(0.0, |f| f.dm / dt);
+            let cyl_state = (cs.gas.pressure(), cs.gas.temperature());
+            let port_t = cs.port_t;
             self.flows[i] = f_ex.map_or(0.0, |f| {
                 f.apply_to(&mut cs.gas);
                 exhaust_source_flow(f.dm / dt, f.h)
             });
+            // The valve's jet: its mixing noise, generated in the port, rides down the primary
+            // with the pulse — a pressure added to the wave the valve sends (waveguide only).
+            let jet_level = self.def.sound.valve_jet;
+            let a_pipe = match (&self.net, &self.remote.0) {
+                (Some(n), _) => Some(n.primary_area()),
+                (None, Some(r)) => Some(r.a_pipe),
+                _ => None,
+            };
+            if let Some(a_pipe) = a_pipe
+                && jet_level > 0.0
+                && a_ex > 0.0
+            {
+                if self.valve_jets.len() != n_cyl {
+                    let base = self.rng;
+                    self.valve_jets = (0..n_cyl)
+                        .map(|k| crate::jet_noise::ValveJet::new(base.wrapping_add(101 + k as u64)))
+                        .collect();
+                }
+                let c = crate::exhaust::C_PRIMARY;
+                // the port: the atmosphere, the wave arriving and the one the flow sends (p⁺ + p⁻)
+                let p_port = ATM_PA + 2.0 * arriving + c * self.flows[i] / a_pipe;
+                let port = (p_port, port_t);
+                let p = self.valve_jets[i].step(cyl_state, port, a_ex, a_pipe, dt);
+                self.flows[i] += jet_level * p * a_pipe / c;
+            }
             {
                 let ex = &self.def.exhaust;
                 let m = primary_gas_mass(ex, cs.port_t);
@@ -1669,6 +1702,7 @@ impl Engine {
         }
         let arriving = (0..n).map(|i| net.arriving(i)).collect();
         let z_port = net.port_impedance();
+        let a_pipe = net.primary_area();
         let tails = vec![0.0; net.last_tails().len()];
         let Some(net) = self.net.take() else {
             return false;
@@ -1677,6 +1711,7 @@ impl Engine {
             link: link(net),
             arriving,
             z_port,
+            a_pipe,
             tails,
             pending: None,
             u_pending: Vec::new(),
@@ -3553,6 +3588,7 @@ mod tests {
             combustion_jitter: 0.0,
             reverb: 0.0,
             leveling: 0.0,
+            valve_jet: 0.0,
             ..crate::sound::SoundDef::default()
         };
         // the flow textures (the valvetrain's clicks do not depend on load)
@@ -4277,6 +4313,29 @@ mod tests {
         let x = run(&mut e, 0.1, &c);
         let rms = (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
         assert!(rms > 0.05, "{rms} Pa");
+    }
+
+    #[test]
+    fn the_valve_jets_ride_the_blowdowns() {
+        // what the valve jets add at the listener: broadband (zero-mean), and it comes with the
+        // blowdowns — its envelope, a cycle at a time, follows the valves' outflow
+        let heard = |jet: f64| {
+            let mut d = EngineDef::inline4();
+            d.sound.valve_jet = jet;
+            let mut e = Engine::new(d, 4000.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(4000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &c);
+            run(&mut e, 0.2, &c)
+        };
+        let (m, r) = mean_rms_of_difference(&heard(1.0), &heard(0.0));
+        assert!(
+            r > 1e-3 && m.abs() < 0.05 * r,
+            "valve jets: mean {m} rms {r} Pa"
+        );
     }
 
     #[test]
