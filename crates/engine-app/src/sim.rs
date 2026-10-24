@@ -77,6 +77,8 @@ pub struct Simulation {
     /// The exhaust net's own thread, when the machine has cores to spare (`None`: it runs
     /// here, the same samples).
     exhaust_thread: Option<crate::exhaust_thread::ExhaustThread>,
+    /// Half the ITB runners' own thread, when the machine has more cores still.
+    runner_thread: Option<crate::exhaust_thread::RunnerThread>,
     /// One block's physics-step sound, before the anti-alias filter (kept: no allocation).
     steps: Vec<f64>,
 }
@@ -121,6 +123,9 @@ impl Simulation {
             scope_pos: 0,
             exhaust_thread: crate::exhaust_thread::ExhaustThread::worthwhile()
                 .then(crate::exhaust_thread::ExhaustThread::spawn)
+                .and_then(Result::ok),
+            runner_thread: crate::exhaust_thread::RunnerThread::worthwhile()
+                .then(crate::exhaust_thread::RunnerThread::spawn)
                 .and_then(Result::ok),
             steps: Vec::new(),
         }
@@ -207,6 +212,12 @@ impl Simulation {
             Some(w) => self.engine.detach_exhaust(|net| w.link(net)),
             None => false,
         };
+        // and half the ITB runners on theirs: the same samples, no delay
+        let half = self.engine.cylinders() / 2;
+        let runners_away = match &self.runner_thread {
+            Some(w) => self.engine.detach_runners(half, |set| w.link(set)),
+            None => false,
+        };
         self.steps.clear();
         for _ in 0..out.len() {
             for _ in 0..substeps {
@@ -226,6 +237,13 @@ impl Simulation {
                 self.trace[d] = c0.pressure_pa as f32;
             }
             self.trace_deg = cur;
+        }
+        if runners_away
+            && let (Some(w), Some(mut link)) =
+                (&self.runner_thread, self.engine.end_detached_runners())
+            && let Some(set) = w.back(&mut *link)
+        {
+            self.engine.attach_runners(set);
         }
         // with the exhaust away the first step returned nothing yet and the last comes now
         let first = if detached {
@@ -257,6 +275,9 @@ impl Simulation {
         // forced either way: the test is that both give the same samples, whatever the cores
         self.exhaust_thread = on
             .then(crate::exhaust_thread::ExhaustThread::spawn)
+            .and_then(Result::ok);
+        self.runner_thread = on
+            .then(crate::exhaust_thread::RunnerThread::spawn)
             .and_then(Result::ok);
     }
     pub fn snapshot(&self) -> Snapshot {

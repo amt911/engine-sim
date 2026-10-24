@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 pub const AMBIENT_T_K: f64 = 300.0;
 /// Speed of sound of ambient air, for the induction-sound source c·(ρu).
 pub const C_AIR: f64 = 343.0;
-const MAX_SUBCYCLES: usize = 16;
+/// Most substeps of an FV step (the CFL limit is never reached at the worst flow).
+pub const MAX_SUBCYCLES: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

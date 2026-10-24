@@ -1643,6 +1643,11 @@ impl Engine {
         &self.tail_u
     }
 
+    /// How many cylinders the engine runs.
+    pub fn cylinders(&self) -> usize {
+        self.cyl.len()
+    }
+
     pub fn rpm(&self) -> f64 {
         rad_s_to_rpm(self.omega)
     }
