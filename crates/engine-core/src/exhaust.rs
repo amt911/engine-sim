@@ -479,6 +479,8 @@ pub struct ExhaustNet {
     branches: Vec<Branch>,
     /// Radiated pressure at each tail pipe in the last step (one per collector branch).
     tails: Vec<f64>,
+    /// The mean flows last handed to the pipes' friction (per cylinder, per branch), kg/s.
+    mean_flows: (Vec<f64>, Vec<f64>),
     pub dt: f64,
 }
 
@@ -520,6 +522,7 @@ impl ExhaustNet {
             primaries,
             sent: vec![0.0; cylinders],
             tails: vec![0.0; def.groups(cylinders).len()],
+            mean_flows: (Vec::new(), Vec::new()),
             branches,
             dt,
         }
@@ -528,6 +531,11 @@ impl ExhaustNet {
     /// Mean mass flows, kg/s: through each cylinder's primary and each branch's collector and
     /// what follows it (their turbulent friction, [`Pipe::set_mean_flow`]).
     pub fn set_mean_flow(&mut self, per_cylinder: &[f64], per_branch: &[f64]) {
+        // reuses the vectors' room: this runs every few dozen steps on the sim thread
+        self.mean_flows.0.clear();
+        self.mean_flows.0.extend_from_slice(per_cylinder);
+        self.mean_flows.1.clear();
+        self.mean_flows.1.extend_from_slice(per_branch);
         for (p, m) in self.primaries.iter_mut().zip(per_cylinder) {
             p.set_mean_flow(*m);
         }
@@ -535,6 +543,11 @@ impl ExhaustNet {
             b.collector.set_mean_flow(*m);
             b.tail.set_mean_flow(*m);
         }
+    }
+
+    /// The mean flows the pipes' friction last followed: (per cylinder, per branch), kg/s.
+    pub fn mean_flows(&self) -> (&[f64], &[f64]) {
+        (&self.mean_flows.0, &self.mean_flows.1)
     }
 
     /// Mean outflow Mach number at each tail's open end (see [`OpenEnd::set_outflow_mach`]).
@@ -618,6 +631,108 @@ impl ExhaustNet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_catalyst_brick_resists_as_laminar_channels() {
+        // 400 cpsi, 0.165 mm walls: pitch 25.4/√400 = 1.27 mm, channel 1.105 mm, open frontal
+        // area (1.105/1.27)² = 0.75704. A 0.13 m × 110 mm brick at 600 K (μ = 3.0164e-5):
+        // 28.45·μ·L/d_h²/(OFA·A) = 28.45·3.0164e-5·0.13/1.105e-3²/(0.75704·9.5033e-3)
+        // = 12 699.6 Pa·s/m³
+        let (r, ofa) = catalyst_resistance(0.13, 0.11, 400.0, 0.000_165, 600.0);
+        assert!((r / 12_699.6 - 1.0).abs() < 1e-4, "{r}");
+        assert!((ofa - 0.757_04).abs() < 1e-5, "{ofa}");
+    }
+
+    #[test]
+    fn the_exit_losses_add_up_each_piece_by_hand() {
+        // Darcy f = 0.025 over each passage: f·L/(d·A²) — a 1 m and a 0.4 m length of 50 mm
+        // (the packed silencer's tube) and 0.3 m of an empty 100 mm shell:
+        // 0.025·(1.4/(0.05·(1.9635e-3)²) + 0.3/(0.1·(7.8540e-3)²)) = 182 783 m⁻⁴; the catalyst's
+        // laminar resistance at the tail's 622.2 K (μ = 3.0888e-5): 13 004.5 Pa·s/m³
+        let d = ExhaustDef {
+            after_collector: vec![
+                Segment::Pipe {
+                    length_m: 1.0,
+                    diameter_m: 0.05,
+                },
+                Segment::Muffler {
+                    length_m: 0.4,
+                    diameter_m: 0.12,
+                    tube_diameter_m: 0.05,
+                    packing_resistivity: 16_000.0,
+                    packing_porosity: 0.95,
+                },
+                Segment::Muffler {
+                    length_m: 0.3,
+                    diameter_m: 0.1,
+                    tube_diameter_m: 0.0,
+                    packing_resistivity: 16_000.0,
+                    packing_porosity: 0.95,
+                },
+                Segment::Catalyst {
+                    length_m: 0.13,
+                    diameter_m: 0.11,
+                    cells_per_in2: 400.0,
+                    wall_m: 0.000_165,
+                },
+                Segment::Pipe {
+                    length_m: 0.0,
+                    diameter_m: 0.05,
+                },
+            ],
+            ..ExhaustDef::default()
+        };
+        let l = d.exit_losses();
+        assert!(
+            (l.friction / 182_783.4 - 1.0).abs() < 1e-5,
+            "{}",
+            l.friction
+        );
+        assert!((l.laminar / 13_004.5 - 1.0).abs() < 1e-4, "{}", l.laminar);
+        assert!((l.outlet_area - 1.963_495e-3).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_silencer_file_without_packing_gets_road_car_fibre() {
+        let s: Segment =
+            serde_yaml_ng::from_str("kind: muffler\nlength_m: 0.3\ndiameter_m: 0.12\n").unwrap();
+        assert_eq!(
+            s,
+            Segment::Muffler {
+                length_m: 0.3,
+                diameter_m: 0.12,
+                tube_diameter_m: 0.0,
+                packing_resistivity: 16_000.0,
+                packing_porosity: 0.95,
+            }
+        );
+    }
+
+    #[test]
+    fn an_old_can_wider_than_the_tail_is_a_can_and_unpacked_is_empty() {
+        // 1.5 L over the 0.4 m can: 3.75e-3 m² of shell against the 1.9635e-3 m² tail — a can
+        let mut d = ExhaustDef {
+            muffler_volume_m3: 0.0015,
+            ..ExhaustDef::default()
+        };
+        assert_eq!(d.path().len(), 2);
+        // without packing the can is an empty chamber: no inner tube
+        d.muffler_packing.thickness_m = 0.0;
+        let Segment::Muffler {
+            tube_diameter_m, ..
+        } = d.path()[0]
+        else {
+            panic!("{:?}", d.path()[0])
+        };
+        assert_eq!(tube_diameter_m, 0.0);
+    }
+
+    #[test]
+    fn exhaust_gas_viscosity_follows_sutherland() {
+        // 1.458e-6·600^1.5/(600 + 110.4) = 1.458e-6·14696.94/710.4 = 3.0164e-5 Pa·s at 600 K
+        // (White's table for air: 3.06e-5)
+        assert!((gas_viscosity(600.0) / 3.0164e-5 - 1.0).abs() < 1e-4);
+    }
 
     #[test]
     fn an_old_file_reads_as_a_packed_can_and_a_tail() {
@@ -731,6 +846,105 @@ mod tests {
             }
         }
         panic!("nothing radiated");
+    }
+
+    /// Peak radiated pressure once settled, a cylinder blowing a tone of `f` Hz into `def`.
+    fn tone_through(def: &ExhaustDef, f: f64) -> f64 {
+        let mut net = ExhaustNet::with_lining(def, 1, DT, LINING_SEGMENT_M);
+        let n = (0.3 / DT) as usize;
+        let mut peak: f64 = 0.0;
+        for k in 0..n {
+            let x = 0.01 * (2.0 * std::f64::consts::PI * f * k as f64 * DT).sin();
+            let y = net.step(&[x]);
+            if k > n / 2 {
+                peak = peak.max(y.abs());
+            }
+        }
+        peak
+    }
+
+    fn with_path(path: Vec<Segment>) -> ExhaustDef {
+        ExhaustDef {
+            after_collector: path,
+            ..ExhaustDef::default()
+        }
+    }
+
+    fn packed_can(length_m: f64, tube_diameter_m: f64) -> Segment {
+        // the old default can: 138.2 mm shell, 25 mm of 16 kPa·s/m² packing round an 88.2 mm tube
+        Segment::Muffler {
+            length_m,
+            diameter_m: 0.138_198,
+            tube_diameter_m,
+            packing_resistivity: 16_000.0,
+            packing_porosity: 0.95,
+        }
+    }
+
+    #[test]
+    fn a_designed_silencer_attenuates_as_its_packed_line() {
+        // the packing lines the tube over the can's length: 0.4 m more of it takes the
+        // transmission line's e^(−0.4·Re γ) off a 2 kHz tone, Re γ = 2.4839 Np/m (hand value of
+        // the waveguide test for this very passage): 8.63 dB
+        let tail = Segment::Pipe {
+            length_m: 0.5,
+            diameter_m: 0.05,
+        };
+        let short = tone_through(
+            &with_path(vec![packed_can(0.4, 0.088_198), tail.clone()]),
+            2000.0,
+        );
+        let long = tone_through(
+            &with_path(vec![packed_can(0.8, 0.088_198), tail.clone()]),
+            2000.0,
+        );
+        let db = 20.0 * (short / long).log10();
+        assert!((db - 8.63).abs() < 0.1 * 8.63, "{db} dB");
+        // a tube as wide as the shell is no packing: an empty shell, as one with no tube
+        let wide = tone_through(
+            &with_path(vec![packed_can(0.4, 0.138_198), tail.clone()]),
+            2000.0,
+        );
+        let empty = tone_through(&with_path(vec![packed_can(0.4, 0.0), tail]), 2000.0);
+        assert_eq!(wide, empty);
+    }
+
+    #[test]
+    fn the_net_hands_the_mean_flows_and_the_outflow_to_its_pipes_and_end() {
+        // an impulse's ring-down in the tail: with the jet carrying sound off at M = 0.5 each
+        // reflection at the open end keeps (1 − M)/(1 + M) = 1/3 of it; with friction from a
+        // mean flow every pass wears the waves down. Both leave less ringing after the first
+        // arrival than the still, stagnant system.
+        let def = ExhaustDef::default();
+        let ring = |mach: f64, flow: f64| {
+            let mut net = ExhaustNet::new(&def, 1, DT);
+            net.set_outflow_mach(&[mach]);
+            net.set_mean_flow(&[flow], &[flow]);
+            let (mut first, mut late) = (None, 0.0);
+            for k in 0..40_000 {
+                let y = net.step(&[if k < 20 { 0.2 } else { 0.0 }]);
+                if first.is_none() && y.abs() > 1.0 {
+                    first = Some(k);
+                }
+                if let Some(f) = first
+                    && k > f + 2_000
+                {
+                    late += y * y;
+                }
+            }
+            late
+        };
+        let still = ring(0.0, 0.0);
+        assert!(
+            ring(0.5, 0.0) < 0.5 * still,
+            "outflow: {} vs {still}",
+            ring(0.5, 0.0)
+        );
+        assert!(
+            ring(0.0, 0.08) < 0.9 * still,
+            "friction: {} vs {still}",
+            ring(0.0, 0.08)
+        );
     }
 
     #[test]

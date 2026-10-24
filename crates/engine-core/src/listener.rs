@@ -169,6 +169,16 @@ impl Listener {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_flow_source_radiates_as_a_monopole() {
+        // p = ρ₀/(4πr)·dQ/dt: Q stepping 0 → 1e-3 m³/s in 10 µs, 3 m away (one tail, straight
+        // behind, free field): 1.204/(4π·3)·1e-3/1e-5 = 3.19366 Pa, then nothing while it holds
+        let mut l = Listener::new(1, 0.0, 3.0, 0.0, 1e-3, 1e-5, None);
+        assert_eq!(l.radiate_flow(0.0), 0.0);
+        assert!((l.radiate_flow(1e-3) - 3.193_66).abs() < 1e-4);
+        assert_eq!(l.radiate_flow(1e-3), 0.0);
+    }
     use approx::assert_relative_eq;
 
     const DT: f64 = 1.0 / 192_000.0;
@@ -276,6 +286,27 @@ mod tests {
             .map(|i| f.process(&[if i == 0 { 1.0 } else { 0.0 }]))
             .collect();
         assert!(out[2..].iter().all(|v| *v == 0.0));
+        // a step at the tail: one spike from the tail, one from its image, then silence — each
+        // path radiates the step's change once
+        let mut l = Listener::new(1, 0.9, 3.0, 0.0, A, DT, Some((0.3, 1.5)));
+        let ys: Vec<f64> = (0..400).map(|_| l.process(&[1.0])).collect();
+        let spikes: Vec<f64> = ys.iter().copied().filter(|y| *y != 0.0).collect();
+        assert_eq!(spikes.len(), 2, "{spikes:?}");
+        // the image 150 steps (0.2675 m) after the tail
+        let at: Vec<usize> = (0..ys.len()).filter(|&i| ys[i] != 0.0).collect();
+        assert_eq!(at[1] - at[0], 150, "{at:?}");
+        // two tails 0.9 m apart, heard 3 m out at 30°, ears 1.6 m up: the nearer tail (x = +0.45)
+        // is 3.0891 m away, its image 3.3856 m: 166 steps later; the farther one's paths are
+        // 3.4989 and 3.7633 m (229 and 377 steps after the nearest arrival)
+        let mut l = Listener::new(2, 0.9, 3.0, 30.0, A, DT, Some((0.3, 1.6)));
+        let ys: Vec<f64> = (0..600).map(|_| l.process(&[0.0, 1.0])).collect();
+        let at: Vec<usize> = (0..ys.len()).filter(|&i| ys[i] != 0.0).collect();
+        assert_eq!(at, [0, 166], "{at:?}");
+        let mut l = Listener::new(2, 0.9, 3.0, 30.0, A, DT, Some((0.3, 1.6)));
+        let ys: Vec<f64> = (0..600).map(|_| l.process(&[1.0, 0.0])).collect();
+        let at: Vec<usize> = (0..ys.len()).filter(|&i| ys[i] != 0.0).collect();
+        assert_eq!(at, [229, 377], "{at:?}");
+        assert_relative_eq!(spikes[1] / spikes[0], 0.923_54, max_relative = 1e-4);
     }
 
     #[test]

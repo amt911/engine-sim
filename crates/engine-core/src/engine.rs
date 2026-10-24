@@ -3675,6 +3675,142 @@ mod tests {
     }
 
     #[test]
+    fn the_mean_exhaust_flows_are_the_valves_cycle_averages() {
+        // mass conservation over a cycle: what leaves each tail on average is what its cylinders'
+        // exhaust valves pass, averaged over exactly whole cycles (5000 rpm: 24 ms per cycle).
+        // The running means follow one cycle's window, so they sit within a few percent of it.
+        let mut e = Engine::new(EngineDef::inline4(), 5000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(5000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.4, &c);
+        let cycle = (0.024 / DT).round() as usize;
+        let (mut tail, mut cyl0, mut track) = (0.0, 0.0, Vec::new());
+        for _ in 0..4 * cycle {
+            e.step(DT, &c);
+            tail += e.cyl.iter().map(|cs| cs.port_flow).sum::<f64>();
+            cyl0 += e.cyl[0].port_flow;
+            track.push((e.tail_mean_flow[0], e.cyl_mean_flow[0]));
+        }
+        let (tail, cyl0) = (tail / (4 * cycle) as f64, cyl0 / (4 * cycle) as f64);
+        // four cylinders' pulses overlap: the tail's running mean barely ripples
+        for &(t, _) in &track {
+            assert!(
+                (t / tail - 1.0).abs() < 0.05,
+                "tail mean {t} vs {tail} kg/s"
+            );
+        }
+        // one cylinder pulses once a cycle: its running mean ripples, but over whole cycles it
+        // averages to the valve's flow
+        let c0 = track.iter().map(|p| p.1).sum::<f64>() / track.len() as f64;
+        assert!(
+            (c0 / cyl0 - 1.0).abs() < 0.01,
+            "cylinder mean {c0} vs {cyl0} kg/s"
+        );
+        let hi = track.iter().map(|p| p.1).fold(f64::MIN, f64::max);
+        let lo = track.iter().map(|p| p.1).fold(f64::MAX, f64::min);
+        // a one-cycle time constant (24 ms): between pulses the mean decays by at most e^(−1)
+        // per cycle, so its ripple stays under a factor e (measured 2.05; at 0.57 cycle, 3.57)
+        assert!(hi / lo < std::f64::consts::E, "ripple {hi}/{lo}");
+    }
+
+    #[test]
+    fn the_tail_jet_swings_with_the_tail_wave_around_its_mean() {
+        // u = ū + (s − s̄)/ρc: over whole cycles the swing averages out (the mean exit velocity
+        // is the continuity one, Mach ū/c), and it follows the outgoing wave s = ρc·u with slope
+        // 1/ρc, ρc = 1.4·101325/500 = 283.71 kg/(m²·s) in the tail's reference gas
+        let mut e = Engine::new(EngineDef::inline4(), 5000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(5000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.4, &c);
+        let n = 4 * (0.024 / DT).round() as usize;
+        let (mut swing, mut wave, mut us, mut mach) = (Vec::new(), Vec::new(), 0.0, 0.0);
+        for _ in 0..n {
+            e.step(DT, &c);
+            let s = e.net.as_ref().unwrap().last_tails()[0];
+            // ū this step is the continuity one, c·Mach
+            swing.push(e.tail_u[0] - 500.0 * e.tail_mach[0]);
+            wave.push(s);
+            us += e.tail_u[0];
+            mach += e.tail_mach[0];
+        }
+        let (us, u_bar) = (us / n as f64, 500.0 * mach / n as f64);
+        // the wave against its own average over the whole cycles
+        let s_bar = wave.iter().sum::<f64>() / n as f64;
+        for s in &mut wave {
+            *s -= s_bar;
+        }
+        assert!(
+            (us / u_bar - 1.0).abs() < 0.03,
+            "mean exit {us} vs ū {u_bar} m/s"
+        );
+        let cov: f64 = swing.iter().zip(&wave).map(|(u, s)| u * s).sum();
+        let var: f64 = wave.iter().map(|s| s * s).sum();
+        let slope = cov / var;
+        assert!(
+            (slope * 283.71 - 1.0).abs() < 0.04,
+            "slope {slope} vs 1/283.71"
+        );
+    }
+
+    #[test]
+    fn the_engine_hands_its_mean_flows_to_the_exhaust_pipes() {
+        // the pipes' friction follows the cycle-mean flows: the net holds what it was last
+        // given, refreshed every 64 steps — the cylinders' and the tails' running means
+        let mut e = Engine::new(EngineDef::inline4(), 5000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(5000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.3, &c);
+        while e.friction_age != 0 {
+            e.step(DT, &c);
+        }
+        // (handed over before this step's means moved on: within a step's change)
+        let (cyl, tails) = e.net.as_ref().unwrap().mean_flows();
+        let close = |a: &[f64], b: &[f64]| {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x / y - 1.0).abs() < 1e-3)
+        };
+        assert!(
+            close(cyl, &e.cyl_mean_flow),
+            "{cyl:?} vs {:?}",
+            e.cyl_mean_flow
+        );
+        assert!(
+            close(tails, &e.tail_mean_flow),
+            "{tails:?} vs {:?}",
+            e.tail_mean_flow
+        );
+        // a 2.0 L at 5000 rpm WOT breathes ~0.09 kg/s through its one tail
+        assert!((0.05..0.15).contains(&tails[0]), "{tails:?}");
+    }
+
+    #[test]
+    fn the_exhaust_pulses_alone_reach_the_listener() {
+        // every other source off: the pulses travel the pipes to the tails and out — a waveguide
+        // kept from step to step carries them (rebuilt each step it would hold nothing)
+        let mut d = EngineDef::inline4();
+        d.sound.flow_noise = 0.0;
+        d.sound.intake = 0.0;
+        let mut e = Engine::new(d, 5000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(5000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.3, &c);
+        let x = run(&mut e, 0.1, &c);
+        let rms = (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
+        assert!(rms > 0.1, "{rms} Pa");
+    }
+
+    #[test]
     fn the_tail_exit_by_hand() {
         // Gas at c = 500 m/s: T = 500²/(1.4·287) = 622.22 K. Through a 50 mm outlet
         // (A = 1.9635e-3 m²) the choked flow from p₀ = 3 atm is
@@ -3692,6 +3828,12 @@ mod tests {
         // 1.70222 kg/m³: 1000·m²/(2ρ) = 274.73 Pa and 1000·m/ρ = 568.15 Pa
         let (with, _) = tail_exit(0.967_11, &losses(1000.0, 1000.0));
         assert!((with - back - 842.88).abs() < 1.0, "{} Pa", with - back);
+        // subsonic: 1.1 atm behind the outlet passes (pr = 1/1.1, q = pr^(2/7) = 0.973136)
+        // A·p₀/√(RT)·(pr/q)·√(7(1 − q)) = 0.209798 kg/s, leaving at √(2·c_p·T·(1 − q)) =
+        // 183.249 m/s with 10 132.5 Pa behind it
+        let (back, u) = tail_exit(0.209_798, &losses(0.0, 0.0));
+        assert!((back / 10_132.5 - 1.0).abs() < 1e-3, "{back} Pa");
+        assert!((u - 183.249).abs() < 0.05, "{u} m/s");
         // no flow, no backpressure
         assert_eq!(tail_exit(0.0, &losses(1000.0, 1000.0)), (0.0, 0.0));
     }

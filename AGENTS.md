@@ -204,7 +204,7 @@ scripts/smoke.sh                                        # real-environment smoke
 ```
 
 System deps (Arch): `alsa-lib`, `vulkan-icd-loader`, `llvm` (for coverage). Tools:
-`cargo install cargo-llvm-cov cargo-mutants`.
+`cargo install cargo-llvm-cov cargo-mutants cargo-nextest` (mutants run under nextest: `.cargo/mutants.toml`).
 
 ---
 

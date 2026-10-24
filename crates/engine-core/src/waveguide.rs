@@ -429,6 +429,27 @@ mod tests {
     }
 
     #[test]
+    fn a_longer_flowing_pipe_and_an_extra_loss_by_hand() {
+        // M = 0.2 in a 50 mm pipe: α = 0.025·0.2/0.05 = 0.1 Np/m, so 2 m keep e^(−0.2) = 0.818731
+        // on top of the still loss (1 − 0.03)² = 0.9409
+        let dt = 1.0 / 192_000.0;
+        let a = std::f64::consts::PI * 0.25 * 0.05 * 0.05;
+        let mut p = Pipe::new(2.0, 0.05, 500.0, dt, 0.03);
+        p.set_mean_flow(0.2 * 283.71 * a);
+        assert!(
+            (p.gain / 0.9409 - 0.818_731).abs() < 1e-5,
+            "{}",
+            p.gain / 0.9409
+        );
+        // an extra per-trip factor (a muffler's) multiplies a fresh pipe's: 0.97·0.5
+        let mut q = Pipe::new(1.0, 0.05, 500.0, dt, 0.03).with_extra_gain(0.5);
+        assert!((q.gain - 0.485).abs() < 1e-12, "{}", q.gain);
+        // and it stays when the flow sets the gain afresh from the still pipe's
+        q.set_mean_flow(0.0);
+        assert!((q.gain - 0.485).abs() < 1e-12, "{}", q.gain);
+    }
+
+    #[test]
     fn a_flowing_pipe_wears_its_waves_down() {
         // D = 50 mm, 1 m, c = 500 m/s (ρc = γp/c = 283.71): 0.0557 kg/s is M = 0.2; f = 0.025
         // → α = f·M/D = 0.1 Np/m: a wave keeps e^(−0.1) = 0.904837 of itself, on top of the
@@ -524,6 +545,95 @@ mod tests {
             assert!((tl - want).abs() < 0.25, "{f} Hz: {tl:.3} dB, want {want}");
         }
         assert!(-20.0 * transmission(duct(), 172.75, dt).log10() > 30.0);
+    }
+
+    #[test]
+    fn a_resistive_neck_flattens_the_resonators_notch() {
+        // the same resonator with a neck resistance equal to the duct's ρc/S = 144 492 Pa·s/m³:
+        // at f₀ the branch is the resistance alone, TL = 20·log(1 + ½) = 3.522 dB; at 1.2 f₀
+        // (X = ωM − 1/ωC = 15 975) TL = 20·log|1 + 72 246/(144 492 + 15 975j)| = 3.493 dB
+        let dt = 1.0 / 192_000.0;
+        let duct = || {
+            Duct::with_nodes(
+                vec![
+                    Pipe::new(1.0, 0.05, 500.0, dt, 0.0),
+                    Pipe::new(1.0, 0.05, 500.0, dt, 0.0),
+                ],
+                vec![Node::Shunt(Shunt::helmholtz(
+                    0.03, 0.05, 0.003, 144_492.3, 283.71, 500.0, dt,
+                ))],
+            )
+        };
+        for (f, want) in [(172.75, 3.522), (207.30, 3.493)] {
+            let tl = -20.0 * transmission(duct(), f, dt).log10();
+            assert!((tl - want).abs() < 0.1, "{f} Hz: {tl:.3} dB, want {want}");
+        }
+    }
+
+    #[test]
+    fn joined_ducts_keep_one_node_per_junction_in_place() {
+        // three lined pipes (two shunt nodes), then through a series resistance into two plain
+        // pipes: five pipes, four junctions — shunt, shunt, the series one, plain
+        let dt = 1.0 / 192_000.0;
+        let lined = Duct::with_shunts(
+            (0..3)
+                .map(|_| Pipe::new(0.1, 0.05, 500.0, dt, 0.0))
+                .collect(),
+            Shunt::lining(crate::lining::Packing::default(), 0.157, 0.1, 283.71, dt),
+        );
+        let plain = Duct::new(
+            (0..2)
+                .map(|_| Pipe::new(0.1, 0.05, 500.0, dt, 0.0))
+                .collect(),
+        );
+        let d = lined.then_through(Node::Series(1000.0, 283.71), plain);
+        assert_eq!(d.pipes.len(), 5);
+        assert_eq!(d.nodes.len(), 4);
+        assert!(matches!(d.nodes[0], Node::Shunt(_)) && matches!(d.nodes[1], Node::Shunt(_)));
+        assert!(matches!(d.nodes[2], Node::Series(r, _) if r == 1000.0));
+        assert!(matches!(d.nodes[3], Node::Plain));
+    }
+
+    #[test]
+    fn a_duct_carries_both_ways_and_wears_its_waves_with_flow() {
+        // two 1 m, 50 mm pipes through a series resistance: equal pulses from both ends meet
+        // at it with no pressure across it, so no flow — each end gets a whole pulse back
+        let dt = 1.0 / 192_000.0;
+        let pair = || {
+            Duct::with_nodes(
+                vec![
+                    Pipe::new(1.0, 0.05, 500.0, dt, 0.0),
+                    Pipe::new(1.0, 0.05, 500.0, dt, 0.0),
+                ],
+                vec![Node::Series(50_000.0, 283.71)],
+            )
+        };
+        let mut d = pair();
+        let (mut near, mut far): (f64, f64) = (0.0, 0.0);
+        for k in 0..2_000 {
+            near = near.max(d.at_near().abs());
+            far = far.max(d.at_far().abs());
+            let x = if k == 0 { 1.0 } else { 0.0 };
+            d.send(x, x);
+        }
+        assert!(
+            (near - 1.0).abs() < 1e-12 && (far - 1.0).abs() < 1e-12,
+            "{near} {far}"
+        );
+        // a mean flow of M = 0.2 through both pipes: α = 0.025·0.2/0.05 = 0.1 Np/m, so a pulse
+        // crossing the 2 m keeps e^(−0.2) = 0.818731 (the resistance aside: here a plain duct)
+        let a = std::f64::consts::PI * 0.25 * 0.05 * 0.05;
+        let mut d = Duct::new(vec![
+            Pipe::new(1.0, 0.05, 500.0, dt, 0.0),
+            Pipe::new(1.0, 0.05, 500.0, dt, 0.0),
+        ]);
+        d.set_mean_flow(0.2 * 283.71 * a);
+        let mut got: f64 = 0.0;
+        for k in 0..2_000 {
+            got = got.max(d.at_far().abs());
+            d.send(if k == 0 { 1.0 } else { 0.0 }, 0.0);
+        }
+        assert!((got - 0.818_731).abs() < 1e-5, "{got}");
     }
 
     #[test]
