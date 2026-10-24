@@ -1608,6 +1608,30 @@ impl Engine {
         self.remote.0.take().map(|r| r.link)
     }
 
+    /// Step the 1D intake's runners from `first` on elsewhere (individual throttles only):
+    /// `link` is handed them ([`IntakeFv::detach_runners`]). The same samples, no delay.
+    pub fn detach_runners(
+        &mut self,
+        first: usize,
+        link: impl FnOnce(crate::intake_fv::RunnerSet) -> Box<dyn crate::intake_fv::RunnerLink>,
+    ) -> bool {
+        self.intake_net
+            .as_mut()
+            .is_some_and(|n| n.detach_runners(first, link))
+    }
+
+    /// Stop stepping runners elsewhere: the link, to get them back and attach them again.
+    pub fn end_detached_runners(&mut self) -> Option<Box<dyn crate::intake_fv::RunnerLink>> {
+        self.intake_net.as_mut().and_then(|n| n.end_detached())
+    }
+
+    /// The detached runners back.
+    pub fn attach_runners(&mut self, set: crate::intake_fv::RunnerSet) {
+        if let Some(n) = self.intake_net.as_mut() {
+            n.attach_runners(set);
+        }
+    }
+
     /// Run the net here again.
     pub fn attach_exhaust(&mut self, net: ExhaustNet) {
         self.remote = RemoteSlot(None);
@@ -4003,6 +4027,39 @@ mod tests {
             assert_eq!(b.flush_exhaust(DT), None);
             assert_eq!(a.rpm(), b.rpm());
         }
+    }
+
+    #[test]
+    fn runners_stepped_elsewhere_give_the_same_samples() {
+        // half the LFA's ITB runners behind a link (stepped in order here, as a thread would):
+        // identical samples step by step, through a blip; then back in place, still identical
+        let def = EngineDef::lfa_v10();
+        let mut a = Engine::new(def.clone(), 3000.0, 1);
+        let mut b = Engine::new(def, 3000.0, 1);
+        let n = (0.12 / DT) as usize;
+        let c = |k: usize| Controls {
+            throttle: if (n / 3..n / 2).contains(&k) {
+                1.0
+            } else {
+                0.2
+            },
+            ..Controls::default()
+        };
+        for k in 0..10 {
+            assert_eq!(a.step(DT, &c(k)), b.step(DT, &c(k)));
+        }
+        assert!(b.detach_runners(5, |set| Box::new(crate::intake_fv::LocalRunners::new(set))));
+        for k in 10..n {
+            assert_eq!(a.step(DT, &c(k)), b.step(DT, &c(k)), "step {k}");
+            assert_eq!(a.plenum_pressure_pa(), b.plenum_pressure_pa(), "step {k}");
+        }
+        let _ = b.end_detached_runners();
+        assert!(
+            b.intake_net
+                .as_ref()
+                .is_some_and(|n| n.manifold_pressure() > 0.0)
+        );
+        assert_eq!(a.rpm(), b.rpm());
     }
 
     #[test]
