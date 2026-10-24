@@ -204,6 +204,104 @@ impl AntiAlias {
     }
 }
 
+/// How far ahead the limiter looks, s: long enough to ramp its gain down over a firing pulse's
+/// rise without a click, short enough to stay unheard as latency.
+pub const LIMITER_LOOKAHEAD_S: f64 = 0.005;
+/// Time constant of the limiter's recovery, s.
+pub const LIMITER_RELEASE_S: f64 = 0.15;
+/// Highest sample the limiter lets out (−1 dBFS).
+pub const LIMITER_THRESHOLD: f64 = 0.891;
+
+/// A look-ahead peak limiter: the output stage's protection against overload, which turns the
+/// level down for a moment instead of bending the wave (a soft clip adds harmonics: heard as
+/// distortion). The gain each sample needs, min(1, T/|x|), is held at its minimum over the
+/// look-ahead window, recovers with [`LIMITER_RELEASE_S`], and is averaged over the window while
+/// the signal waits as long; every gain the average covers already holds the sample it meets,
+/// so no output exceeds [`LIMITER_THRESHOLD`] (the brick-wall look-ahead design, e.g.
+/// G. Massberg / Signalsmith "limiter" notes). Below the threshold it is a pure delay.
+/// Fixed buffers: nothing allocates after `new`.
+#[derive(Debug, Clone)]
+pub struct Limiter {
+    n: usize,
+    /// The signal waiting its turn: a ring of n − 1 samples (the window's last sample is the
+    /// one each average covers in all its windows).
+    delay: Vec<f64>,
+    /// The window's needed gains as a monotonic queue (rising from front to back): positions in
+    /// a ring of n, with their sample index.
+    queue: Vec<(u64, f64)>,
+    head: usize,
+    len: usize,
+    /// The held, recovering gain's last n values (ring) and their running sum.
+    held: Vec<f64>,
+    sum: f64,
+    release: f64,
+    last: f64,
+    t: u64,
+}
+
+impl Limiter {
+    pub fn new(sample_rate: f64) -> Self {
+        let n = ((LIMITER_LOOKAHEAD_S * sample_rate).round() as usize).max(1);
+        Self {
+            n,
+            delay: vec![0.0; n - 1],
+            queue: vec![(0, 1.0); n],
+            head: 0,
+            len: 0,
+            held: vec![1.0; n],
+            sum: n as f64,
+            release: 1.0 - (-1.0 / (LIMITER_RELEASE_S * sample_rate)).exp(),
+            last: 1.0,
+            t: 0,
+        }
+    }
+
+    /// Samples between a sample going in and coming out.
+    pub fn latency(&self) -> usize {
+        self.n - 1
+    }
+
+    pub fn process(&mut self, x: f64) -> f64 {
+        let n = self.n;
+        let t = self.t;
+        let need = if x.abs() > LIMITER_THRESHOLD {
+            LIMITER_THRESHOLD / x.abs()
+        } else {
+            1.0
+        };
+        // sliding minimum of the needed gain over the last n samples
+        while self.len > 0 && self.queue[(self.head + self.len - 1) % n].1 >= need {
+            self.len -= 1;
+        }
+        self.queue[(self.head + self.len) % n] = (t, need);
+        self.len += 1;
+        if self.queue[self.head].0 + n as u64 <= t {
+            self.head = (self.head + 1) % n;
+            self.len -= 1;
+        }
+        let hold = self.queue[self.head].1;
+        // recover towards 1, never above what the window holds
+        let g = hold.min(self.last + (1.0 - self.last) * self.release);
+        self.last = g;
+        // average over the window: the gain that meets the sample now leaving
+        let slot = (t % n as u64) as usize;
+        self.sum += g - self.held[slot];
+        self.held[slot] = g;
+        if slot == 0 {
+            // a fresh sum each window, so rounding cannot drift
+            self.sum = self.held.iter().sum();
+        }
+        let out = if self.delay.is_empty() {
+            x
+        } else {
+            let k = (t % self.delay.len() as u64) as usize;
+            std::mem::replace(&mut self.delay[k], x)
+        };
+        self.t += 1;
+        out * (self.sum / n as f64)
+    }
+}
+
 /// Sound pressure that plays at full scale: 0 dBFS = 120 dB SPL (20 µPa reference), so an
 /// engine heard at 100 dB plays at −20 dBFS and the levels between engines and operating points
 /// stay the physical ones.
@@ -211,12 +309,13 @@ pub const FULL_SCALE_PA: f64 = 20.0;
 
 /// The engine voice: sound pressure at the listener (Pa, from the physics, already radiated)
 /// → speaker sample in [-1, 1]. It only reproduces: DC block (a speaker cannot hold a static
-/// pressure), optional room reverb and leveler, a fixed calibration, and a soft limit against
-/// overload. No tone shaping.
+/// pressure), optional room reverb and leveler, a fixed calibration, and a look-ahead limiter
+/// against overload ([`Limiter`]: it turns the level down, never bends the wave). No tone shaping.
 #[derive(Debug, Clone)]
 pub struct Voice {
     dc: DcBlocker,
     reverb: Reverb,
+    limiter: Limiter,
     /// Wet level of the body/room reverb (0 = dry).
     pub reverb_mix: f64,
     sample_rate: f64,
@@ -234,6 +333,7 @@ impl Voice {
         Self {
             dc: DcBlocker::new(3.0, sample_rate),
             reverb: Reverb::new(sample_rate, 0.35),
+            limiter: Limiter::new(sample_rate),
             reverb_mix: 0.0,
             sample_rate,
             full_scale_pa: FULL_SCALE_PA,
@@ -258,7 +358,7 @@ impl Voice {
             self.leveler.amount = amount;
             return 0.0;
         }
-        y.tanh() as f32
+        self.limiter.process(y) as f32
     }
 }
 
@@ -483,8 +583,8 @@ mod tests {
 
     #[test]
     fn voice_plays_pascals_at_a_fixed_calibration_without_tone_shaping() {
-        // 0 dBFS = 120 dB SPL = 20 Pa: a 2 Pa tone (100 dB) plays at 0.1 of full scale
-        // (tanh(0.1) = 0.0997), at 200 Hz and at 8 kHz alike
+        // 0 dBFS = 120 dB SPL = 20 Pa: a 2 Pa tone (100 dB) plays at 0.1 of full scale, at
+        // 200 Hz and at 8 kHz alike (under the limiter's threshold the chain is linear)
         for f in [200.0, 8_000.0] {
             let mut v = Voice::new(FS);
             v.leveler.amount = 0.0;
@@ -494,7 +594,7 @@ mod tests {
                 .skip(FS as usize / 2)
                 .collect();
             let amp = (2.0 * ys.iter().map(|y| y * y).sum::<f64>() / ys.len() as f64).sqrt();
-            assert_relative_eq!(amp, 0.0997, max_relative = 0.01);
+            assert_relative_eq!(amp, 0.1, max_relative = 0.01);
         }
     }
 
@@ -511,7 +611,7 @@ mod tests {
     #[test]
     fn voice_keeps_its_calibration_through_a_reset() {
         // a runaway resets the filters but not the full scale it was given: a 2 Pa tone against 4 Pa
-        // full scale peaks at tanh(0.5) = 0.4621 after it
+        // full scale peaks at 2/4 = 0.5 after it
         let mut v = Voice::new(FS);
         v.full_scale_pa = 4.0;
         v.leveler.amount = 0.0;
@@ -526,10 +626,83 @@ mod tests {
             .map(|i| v.process(2.0 * (2.0 * PI * 200.0 * i as f64 / FS).sin()) as f64)
             .skip(FS as usize / 2)
             .fold(0.0f64, |m, y| m.max(y.abs()));
-        assert_relative_eq!(peak, 0.4621, max_relative = 0.01);
+        assert_relative_eq!(peak, 0.5, max_relative = 0.01);
+    }
+
+    fn sine(amp: f64, f: f64, n: usize) -> Vec<f64> {
+        (0..n)
+            .map(|i| amp * (2.0 * PI * f * i as f64 / FS).sin())
+            .collect()
+    }
+
+    #[test]
+    fn the_limiter_passes_what_fits_untouched_only_later() {
+        // a tone under the threshold comes out sample for sample, LIMITER_LOOKAHEAD_S late
+        let mut lim = Limiter::new(FS);
+        let x = sine(0.5, 200.0, FS as usize);
+        let y: Vec<f64> = x.iter().map(|&v| lim.process(v)).collect();
+        let d = lim.latency();
+        assert_eq!(d, (LIMITER_LOOKAHEAD_S * FS).round() as usize - 1);
+        for i in d..x.len() {
+            assert_eq!(y[i], x[i - d], "sample {i}");
+        }
+    }
+
+    #[test]
+    fn the_limiter_holds_a_loud_tone_under_its_threshold_without_distorting_it() {
+        // a tone 3.5× past the threshold: no sample above it, and once the gain settles the tone
+        // is a clean, scaled sine (its 3rd harmonic 60 dB down; a tanh clip leaves ~−15 dB)
+        let mut lim = Limiter::new(FS);
+        let y: Vec<f64> = sine(3.0, 200.0, 2 * FS as usize)
+            .iter()
+            .map(|&v| lim.process(v))
+            .collect();
+        assert!(y.iter().all(|v| v.abs() <= LIMITER_THRESHOLD + 1e-12));
+        let tail = &y[FS as usize..];
+        let tone = |f: f64| {
+            let (c, s) = tail.iter().enumerate().fold((0.0, 0.0), |(c, s), (i, v)| {
+                let w = 2.0 * PI * f * i as f64 / FS;
+                (c + v * w.cos(), s + v * w.sin())
+            });
+            (c * c + s * s).sqrt()
+        };
+        assert!(
+            tone(600.0) < 1e-3 * tone(200.0),
+            "3rd harmonic {}",
+            tone(600.0) / tone(200.0)
+        );
+        let peak = tail.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        assert!(peak > 0.97 * LIMITER_THRESHOLD, "settled peak {peak}");
+    }
+
+    #[test]
+    fn the_limiter_lets_go_after_a_burst() {
+        // a loud burst, then a quiet tone: within five release times the tone is back at full
+        let mut lim = Limiter::new(FS);
+        for v in sine(5.0, 200.0, FS as usize / 2) {
+            lim.process(v);
+        }
+        let n = (5.0 * LIMITER_RELEASE_S * FS) as usize;
+        let y: Vec<f64> = sine(0.5, 200.0, n + FS as usize / 10)
+            .iter()
+            .map(|&v| lim.process(v))
+            .collect();
+        let peak = y[n..].iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        assert!((peak - 0.5).abs() < 0.01, "peak {peak}");
     }
 
     proptest! {
+        #[test]
+        fn the_limiter_never_lets_a_sample_past_its_threshold(
+            xs in proptest::collection::vec(-1e4f64..1e4, 1..3000)
+        ) {
+            let mut lim = Limiter::new(FS);
+            for x in xs {
+                let y = lim.process(x);
+                prop_assert!(y.abs() <= LIMITER_THRESHOLD * (1.0 + 1e-9), "{}", y);
+            }
+        }
+
         #[test]
         fn voice_output_bounded(xs in proptest::collection::vec(-1e7f64..1e7, 1..500)) {
             let mut v = Voice::new(FS);
