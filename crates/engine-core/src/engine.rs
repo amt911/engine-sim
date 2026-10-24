@@ -1834,6 +1834,49 @@ mod tests {
     }
 
     #[test]
+    fn coasting_down_from_the_redline_stays_a_sound() {
+        // Every engine lifted off at its redline and coasting down a quarter of it. A K20A from 8300 rpm (fuel cut, throttle closed): the tail
+        // flow keeps swinging through zero and the jets' band-pass follows it every sample. As a
+        // direct-form biquad it ran away at ~6860 rpm (2.3 kPa rms, 264 kPa peaks: the "rarísimo"
+        // distortion); the output must stay at the engine's own level (its peaks at full throttle)
+        for d in [
+            EngineDef::single(),
+            EngineDef::inline4(),
+            EngineDef::honda_k20a(),
+            EngineDef::lfa_v10(),
+            EngineDef::flatplane_v8(),
+            EngineDef::crossplane_v8(),
+        ] {
+            let top = d.redline_rpm - 100.0;
+            let mut e = Engine::new(d, top, 1);
+            let wot = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(top),
+                ..Controls::default()
+            };
+            let at_wot = run(&mut e, 1.0, &wot)
+                .iter()
+                .fold(0.0f64, |a, v| a.max(v.abs()));
+            let mut peak = 0.0f64;
+            for k in 0..40 {
+                let c = Controls {
+                    throttle: 0.0,
+                    hold_rpm: Some(top * (1.0 - 0.25 * k as f64 / 40.0)),
+                    ..Controls::default()
+                };
+                peak = run(&mut e, 0.1, &c)
+                    .iter()
+                    .fold(peak, |a, v| a.max(v.abs()));
+            }
+            assert!(
+                peak < 3.0 * at_wot,
+                "{}: coasting peak {peak:.1} Pa, WOT {at_wot:.1} Pa",
+                e.def.name
+            );
+        }
+    }
+
+    #[test]
     fn displacement_and_even_firing_offsets() {
         let d = EngineDef::inline4();
         // 4 × 4.99556e-4 = 1.99822e-3 m³
