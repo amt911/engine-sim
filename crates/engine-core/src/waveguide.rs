@@ -429,6 +429,24 @@ mod tests {
     }
 
     #[test]
+    fn a_longer_flowing_pipe_and_an_extra_loss_by_hand() {
+        // M = 0.2 in a 50 mm pipe: α = 0.025·0.2/0.05 = 0.1 Np/m, so 2 m keep e^(−0.2) = 0.818731
+        // on top of the still loss (1 − 0.03)² = 0.9409
+        let dt = 1.0 / 192_000.0;
+        let a = std::f64::consts::PI * 0.25 * 0.05 * 0.05;
+        let mut p = Pipe::new(2.0, 0.05, 500.0, dt, 0.03);
+        p.set_mean_flow(0.2 * 283.71 * a);
+        assert!(
+            (p.gain / 0.9409 - 0.818_731).abs() < 1e-5,
+            "{}",
+            p.gain / 0.9409
+        );
+        // an extra per-trip factor (a muffler's) multiplies a fresh pipe's: 0.97·0.5
+        let q = Pipe::new(1.0, 0.05, 500.0, dt, 0.03).with_extra_gain(0.5);
+        assert!((q.gain - 0.485).abs() < 1e-12, "{}", q.gain);
+    }
+
+    #[test]
     fn a_flowing_pipe_wears_its_waves_down() {
         // D = 50 mm, 1 m, c = 500 m/s (ρc = γp/c = 283.71): 0.0557 kg/s is M = 0.2; f = 0.025
         // → α = f·M/D = 0.1 Np/m: a wave keeps e^(−0.1) = 0.904837 of itself, on top of the
