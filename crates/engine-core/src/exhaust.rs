@@ -479,6 +479,8 @@ pub struct ExhaustNet {
     branches: Vec<Branch>,
     /// Radiated pressure at each tail pipe in the last step (one per collector branch).
     tails: Vec<f64>,
+    /// The mean flows last handed to the pipes' friction (per cylinder, per branch), kg/s.
+    mean_flows: (Vec<f64>, Vec<f64>),
     pub dt: f64,
 }
 
@@ -520,6 +522,7 @@ impl ExhaustNet {
             primaries,
             sent: vec![0.0; cylinders],
             tails: vec![0.0; def.groups(cylinders).len()],
+            mean_flows: (Vec::new(), Vec::new()),
             branches,
             dt,
         }
@@ -528,6 +531,11 @@ impl ExhaustNet {
     /// Mean mass flows, kg/s: through each cylinder's primary and each branch's collector and
     /// what follows it (their turbulent friction, [`Pipe::set_mean_flow`]).
     pub fn set_mean_flow(&mut self, per_cylinder: &[f64], per_branch: &[f64]) {
+        // reuses the vectors' room: this runs every few dozen steps on the sim thread
+        self.mean_flows.0.clear();
+        self.mean_flows.0.extend_from_slice(per_cylinder);
+        self.mean_flows.1.clear();
+        self.mean_flows.1.extend_from_slice(per_branch);
         for (p, m) in self.primaries.iter_mut().zip(per_cylinder) {
             p.set_mean_flow(*m);
         }
@@ -535,6 +543,11 @@ impl ExhaustNet {
             b.collector.set_mean_flow(*m);
             b.tail.set_mean_flow(*m);
         }
+    }
+
+    /// The mean flows the pipes' friction last followed: (per cylinder, per branch), kg/s.
+    pub fn mean_flows(&self) -> (&[f64], &[f64]) {
+        (&self.mean_flows.0, &self.mean_flows.1)
     }
 
     /// Mean outflow Mach number at each tail's open end (see [`OpenEnd::set_outflow_mach`]).

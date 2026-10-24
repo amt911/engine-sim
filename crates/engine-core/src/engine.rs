@@ -3740,6 +3740,39 @@ mod tests {
     }
 
     #[test]
+    fn the_engine_hands_its_mean_flows_to_the_exhaust_pipes() {
+        // the pipes' friction follows the cycle-mean flows: the net holds what it was last
+        // given, refreshed every 64 steps — the cylinders' and the tails' running means
+        let mut e = Engine::new(EngineDef::inline4(), 5000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(5000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.3, &c);
+        while e.friction_age != 0 {
+            e.step(DT, &c);
+        }
+        // (handed over before this step's means moved on: within a step's change)
+        let (cyl, tails) = e.net.as_ref().unwrap().mean_flows();
+        let close = |a: &[f64], b: &[f64]| {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x / y - 1.0).abs() < 1e-3)
+        };
+        assert!(
+            close(cyl, &e.cyl_mean_flow),
+            "{cyl:?} vs {:?}",
+            e.cyl_mean_flow
+        );
+        assert!(
+            close(tails, &e.tail_mean_flow),
+            "{tails:?} vs {:?}",
+            e.tail_mean_flow
+        );
+        // a 2.0 L at 5000 rpm WOT breathes ~0.09 kg/s through its one tail
+        assert!((0.05..0.15).contains(&tails[0]), "{tails:?}");
+    }
+
+    #[test]
     fn the_exhaust_pulses_alone_reach_the_listener() {
         // every other source off: the pulses travel the pipes to the tails and out — a waveguide
         // kept from step to step carries them (rebuilt each step it would hold nothing)
@@ -3776,6 +3809,12 @@ mod tests {
         // 1.70222 kg/m³: 1000·m²/(2ρ) = 274.73 Pa and 1000·m/ρ = 568.15 Pa
         let (with, _) = tail_exit(0.967_11, &losses(1000.0, 1000.0));
         assert!((with - back - 842.88).abs() < 1.0, "{} Pa", with - back);
+        // subsonic: 1.1 atm behind the outlet passes (pr = 1/1.1, q = pr^(2/7) = 0.973136)
+        // A·p₀/√(RT)·(pr/q)·√(7(1 − q)) = 0.209798 kg/s, leaving at √(2·c_p·T·(1 − q)) =
+        // 183.249 m/s with 10 132.5 Pa behind it
+        let (back, u) = tail_exit(0.209_798, &losses(0.0, 0.0));
+        assert!((back / 10_132.5 - 1.0).abs() < 1e-3, "{back} Pa");
+        assert!((u - 183.249).abs() < 0.05, "{u} m/s");
         // no flow, no backpressure
         assert_eq!(tail_exit(0.0, &losses(1000.0, 1000.0)), (0.0, 0.0));
     }
