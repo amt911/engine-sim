@@ -58,3 +58,9 @@ differences) so the output stays bit-identical. Ceiling ≈ 2–3× on the runne
 - Cost measured with `cyc.sh` (cycles of user time per audio second, load-independent) and the
   real-time factor under the CPU lock.
 - Target: LFA Ultra with ≥ 1.5× real-time headroom on this machine.
+
+## Status (2026-10-24)
+
+- Steps 1–3 done (PR #23).
+- Step 4, first part: WENO5-Z across cells, not across runners. Four cells per vector (`wide::f64x4`, SSE2 baseline, no AVX needed). It applies to every 1D pipe, intake and exhaust. LFA Ultra: 12.9 → 10.9 Gcyc of user time per 2 s of audio (−15 %). The WAVs are byte-identical, and a property test pins it, bit for bit.
+- Next candidate: HLLC flux across faces (branches become blends), ~18 % of the time left in `Pipe1d::step`.

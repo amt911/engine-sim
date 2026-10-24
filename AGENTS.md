@@ -154,13 +154,14 @@ starving, timeouts were scored as killed mutants and the result meant nothing.
 | UI plots | `egui_plot` | torque/power curves, p–V, pressure traces |
 | Audio out | `cpal` | device I/O; callback only pops samples |
 | Lock-free | `rtrb` | SPSC ring buffer sim → audio |
+| SIMD | `wide` | four cells at once in the 1D pipes' WENO reconstruction (SSE2 baseline, bit-identical) |
 | Config | `serde` + `serde_json` + `serde_yaml_ng` | engine import/export (JSON/YAML) |
 | CLI | `clap` | `--engine`, `--headless`, `--wav` |
 | WAV | `hound` | headless render for tests/smoke |
 | Tests | `proptest`, `approx`, `egui_kittest` | invariants, float compare, UI tests |
 
 Planned (add when the phase needs them, then update this table): `fft-convolver` (IR), `rubato`
-(resampling), `pulp`/`wide` (SIMD), `criterion` (benches), `no_denormals` (FTZ).
+(resampling), `criterion` (benches), `no_denormals` (FTZ).
 
 ## Workspace structure
 
