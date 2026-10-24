@@ -76,33 +76,7 @@ engine:
     tail_spacing_m: 0.25
     after_collector:
     - kind: pipe
-      length_m: 0.4
-      diameter_m: 0.06
-    - kind: catalyst
-      length_m: 0.13
-      diameter_m: 0.1534
-      cells_per_in2: 400.0
-      wall_m: 0.000165
-    - kind: pipe
-      length_m: 1.0
-      diameter_m: 0.06
-    - kind: muffler
-      length_m: 0.35
-      diameter_m: 0.1322
-      tube_diameter_m: 0.06
-      packing_resistivity: 16000.0
-      packing_porosity: 0.95
-    - kind: pipe
-      length_m: 0.8
-      diameter_m: 0.06
-    - kind: muffler
-      length_m: 0.45
-      diameter_m: 0.2332
-      tube_diameter_m: 0.06
-      packing_resistivity: 16000.0
-      packing_porosity: 0.95
-    - kind: pipe
-      length_m: 0.3
+      length_m: 1.2
       diameter_m: 0.06
   intake:
     model: fv

@@ -167,7 +167,7 @@ impl EngineDef {
             vehicle: crate::drivetrain::VehicleDef::inline4(),
             ..Self::single()
         }
-        .with_road_exhaust()
+        .with_tail_pipe()
     }
 
     /// Lexus LFA, Toyota 1LR-GUE: 4.8 L 72° V10, 88 × 79 mm, CR 12.0, even firing,
@@ -250,7 +250,7 @@ impl EngineDef {
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::lfa_v10(),
         }
-        .with_road_exhaust()
+        .with_tail_pipe()
     }
 
     /// Flat-plane V8 after the Ferrari F136 F (458 Italia): 4,497 cc from 94 × 81 mm,
@@ -321,7 +321,7 @@ impl EngineDef {
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::flatplane_v8(),
         }
-        .with_road_exhaust()
+        .with_tail_pipe()
     }
 
     /// Cross-plane V8 after the GM LS3 (C6 Corvette): 6,162 cc from 103.25 × 92 mm, 10.7:1,
@@ -392,7 +392,7 @@ impl EngineDef {
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::crossplane_v8(),
         }
-        .with_road_exhaust()
+        .with_tail_pipe()
     }
 
     /// Spark advance (° BTDC) at `rpm`: `spark_advance_deg` is the full-speed value, retarded at
@@ -402,14 +402,15 @@ impl EngineDef {
         self.spark_advance_deg * (0.35 + 0.65 * rpm.max(0.0) / 4000.0).min(1.0)
     }
 
-    /// This engine with a road car's exhaust after each collector
-    /// ([`crate::exhaust::road_exhaust`]), its pipes the tail's bore.
-    fn with_road_exhaust(mut self) -> Self {
-        let branches = self.exhaust.groups(self.cylinders).len().max(1);
-        self.exhaust.after_collector = crate::exhaust::road_exhaust(
-            self.displacement_m3() / branches as f64,
-            self.exhaust.tail_diameter_m,
-        );
+    /// This engine with the exhaust its preset has data for after each collector: one pipe, the
+    /// tail's own length and bore. The road car's silencers of [`crate::exhaust::road_exhaust`]
+    /// are sized by a rule of thumb, not from a drawing: no preset carries them until one does
+    /// (they reshaped the whole spectrum — the V10's 500–1000 Hz band 23 dB over 250–500 Hz).
+    fn with_tail_pipe(mut self) -> Self {
+        self.exhaust.after_collector = vec![crate::exhaust::Segment::Pipe {
+            length_m: self.exhaust.tail_length_m,
+            diameter_m: self.exhaust.tail_diameter_m,
+        }];
         self
     }
 
@@ -3848,15 +3849,27 @@ mod tests {
     }
 
     #[test]
-    fn a_two_branch_engine_sizes_each_road_exhaust_for_its_half() {
-        // the LFA's two banks each feed one road exhaust: half of 4.8048e-3 m³ swept, so its
-        // catalyst brick (0.13 m long) is √(4·2.4024e-3/(π·0.13)) = 0.1534 m across
-        let d = EngineDef::lfa_v10();
-        let brick = d.exhaust.after_collector.iter().find_map(|s| match s {
-            crate::exhaust::Segment::Catalyst { diameter_m, .. } => Some(*diameter_m),
-            _ => None,
-        });
-        assert_eq!(brick, Some(0.1534));
+    fn each_preset_carries_only_the_exhaust_it_has_data_for() {
+        // after each collector, the tail pipe of the preset's own length and bore — no silencer
+        // sized by rule
+        for d in [
+            EngineDef::inline4(),
+            EngineDef::lfa_v10(),
+            EngineDef::flatplane_v8(),
+            EngineDef::crossplane_v8(),
+        ] {
+            assert_eq!(
+                d.exhaust.after_collector,
+                [crate::exhaust::Segment::Pipe {
+                    length_m: d.exhaust.tail_length_m,
+                    diameter_m: d.exhaust.tail_diameter_m,
+                }],
+                "{}",
+                d.name
+            );
+        }
+        assert_eq!(EngineDef::inline4().exhaust.tail_length_m, 1.5);
+        assert_eq!(EngineDef::lfa_v10().exhaust.tail_length_m, 1.2);
     }
 
     #[test]
