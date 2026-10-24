@@ -91,21 +91,30 @@ impl SurgeTank {
         stretches.extend((1..n).map(|_| pipe(slot - NODE_M, a_tank)));
         stretches.push(pipe(0.5 * slot - 0.5 * NODE_M, a_tank));
         let node = GasVolume::at(ATM_PA, AMBIENT_T_K, a_tank * NODE_M);
+        // the inlet keeps its whole length: its joint's extra half cell (below) is a little more
+        // volume, where a shorter neck would lose inertia (a 5 cm neck, 10 % of it)
         let mut inlet = pipe(def.inlet_length_m, a_inlet);
         inlet.left = Boundary::Open {
             p: ATM_PA,
             rho: air.rho,
         };
+        let inlet_node = if def.inlet_at <= 0.0 {
+            0
+        } else {
+            ((def.inlet_at.min(1.0) * n as f64).floor() as usize).min(n - 1) + 1
+        };
+        // A joint holds half a cell of every pipe it joins: the tank's (as above) and, at the
+        // inlet's joint, the inlet's too. Its gas must outlast what those pipes carry through it
+        // in a step; a wide inlet on a node sized for the tank alone was not (a 150 mm inlet on
+        // a 0.01 m² tank rang at the mesh rate: 2–10 kHz noise, LFA at 8000 rpm).
+        let mut nodes = vec![node; n + 1];
+        nodes[inlet_node] = GasVolume::at(ATM_PA, AMBIENT_T_K, (a_tank + 0.5 * a_inlet) * CELL_M);
         Self {
             inlet,
             stretches,
-            nodes: vec![node; n + 1],
+            nodes,
             inlet_psi: 1.0 / (1.0 + def.inlet_loss.max(0.0)).sqrt(),
-            inlet_node: if def.inlet_at <= 0.0 {
-                0
-            } else {
-                ((def.inlet_at.min(1.0) * n as f64).floor() as usize).min(n - 1) + 1
-            },
+            inlet_node,
             a_tank,
             a_inlet,
             drawn: 0.0,
@@ -175,20 +184,12 @@ impl SurgeTank {
             self.a_inlet,
             1.0,
         );
-        for k in 0..=n {
-            take(
-                &mut self.nodes[k],
-                self.stretches[k].end_flux.0,
-                self.a_tank,
-                -1.0,
-            );
+        // each stretch: its left end leaves node k, its right end enters node k + 1 (the last
+        // ends at the wall); runner k leaves node k + 1
+        for (k, s) in self.stretches.iter().enumerate() {
+            take(&mut self.nodes[k], s.end_flux.0, self.a_tank, -1.0);
             if k < n {
-                take(
-                    &mut self.nodes[k + 1],
-                    self.stretches[k].end_flux.1,
-                    self.a_tank,
-                    1.0,
-                );
+                take(&mut self.nodes[k + 1], s.end_flux.1, self.a_tank, 1.0);
                 take(
                     &mut self.nodes[k + 1],
                     runners[k].end_flux.0,
@@ -330,76 +331,49 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "debug probe"]
-    fn probe_lfa_tank_modes() {
-        for (d, l) in [
-            (0.07, 0.2),
-            (0.09, 0.1),
-            (0.1, 0.05),
-            (0.12, 0.05),
-            (0.15, 0.03),
-            (0.2, 0.02),
-        ] {
-            for at in [0.0, 0.5] {
-                let def = SurgeTankDef {
-                    length_m: 0.485,
-                    area_m2: 0.01,
-                    inlet_diameter_m: d,
-                    inlet_length_m: l,
-                    inlet_loss: 0.0,
-                    inlet_at: at,
-                };
-                let (x, h) = ring(&def, 5, 200.0, 0.1);
-                eprintln!("PROBE inlet {d} × {l} at {at}: {} Hz", frequency(&x, h));
-            }
-        }
-    }
-
-    /// Mean pressure drop below the atmosphere at the inlet's joint, Pa, over the last 0.1 s of
-    /// 0.4 s of each of five runners drawing a fifth of 0.174 m³/s, behind an inlet loss `k`.
-    fn drop_drawing(k: f64) -> f64 {
+    fn drawing_through_an_air_cleaner_costs_its_loss() {
+        // Air drawn steadily through an inlet whose cleaner has loss k = 35.1: the air reaches
+        // the duct through an effective area 1/√(1 + k) of it with no pressure recovery
+        // (Benson's partially open end), so the duct's static pressure sits (1 + k)·½ρu² below
+        // the atmosphere — the cleaner's k·½ρu² plus the duct's own dynamic head. The runners
+        // empty into a sink 8 kPa below the atmosphere, which absorbs the waves (a steady draw).
         let def = SurgeTankDef {
             length_m: 0.485,
             area_m2: 0.01,
             inlet_diameter_m: 0.15,
             inlet_length_m: 0.03,
             inlet_at: 0.5,
-            inlet_loss: k,
+            inlet_loss: 35.1,
         };
         let mut tank = SurgeTank::new(&def, 5);
         let mut runners = shut(5);
-        let a_runner = 0.045f64.powi(2) * std::f64::consts::PI / 4.0;
         let rho = ATM_PA / (R_AIR * AMBIENT_T_K);
-        let m_flux = 0.2 * 0.174 * rho / a_runner;
+        for r in runners.iter_mut() {
+            r.right = Boundary::Open {
+                p: ATM_PA - 8000.0,
+                rho,
+            };
+        }
+        let a_runner = 0.045f64.powi(2) * std::f64::consts::PI / 4.0;
         let h = 0.8 * tank.max_dt(0.8).min(runners[0].max_dt(0.8));
-        let n = (0.4 / h) as usize;
-        let (mut sum, mut count) = (0.0, 0);
+        let n = (0.5 / h) as usize;
+        let (mut dp, mut head, mut count) = (0.0, 0.0, 0);
         for step in 0..n {
-            for r in runners.iter_mut() {
-                let last = r.prim(r.cells.len() - 1);
-                r.right = Boundary::Flux(crate::fv::flux_boundary(
-                    m_flux,
-                    m_flux * crate::gas::CP * AMBIENT_T_K,
-                    last,
-                ));
-            }
             tank.substep(h, &mut runners, a_runner, 1.0);
-            if step > n * 3 / 4 {
-                sum += tank.nodes[tank.inlet_node].pressure();
+            if step > n / 2 {
+                let c = tank.inlet.prim(0);
+                dp += ATM_PA - c.p;
+                head += 0.5 * c.rho * c.u * c.u;
                 count += 1;
             }
         }
-        ATM_PA - sum / count as f64
-    }
-
-    #[test]
-    fn drawing_through_an_air_cleaner_costs_its_loss() {
-        // 0.174 m³/s of air (one LFA bank at 8700 rpm) through a 150 mm inlet: u = 0.174/0.01767
-        // = 9.85 m/s, so a cleaner of k = 35.1 costs k·½ρu² = 35.1·½·1.177·9.85² = 2004 Pa. The
-        // same draw without it isolates that cost (the rig's own runners, driven by a fixed flow
-        // and undamped, ring and shift the mean by themselves)
-        let cost = drop_drawing(35.1) - drop_drawing(0.0);
-        assert!((cost / 2004.0 - 1.0).abs() < 0.15, "{cost} Pa");
+        let ratio = dp / head;
+        assert!(
+            head / count as f64 > 10.0,
+            "barely any flow: {} Pa",
+            head / count as f64
+        );
+        assert!((ratio / 36.1 - 1.0).abs() < 0.1, "Δp/(½ρu²) = {ratio}");
     }
 
     #[test]
