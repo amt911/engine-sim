@@ -93,6 +93,7 @@ engine:
   sound:
     flow_noise: 1.0
     intake: 1.0
+    block: 1.0
     mechanical: 1.0
     combustion_jitter: 1.0
     reverb: 0.15

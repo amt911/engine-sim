@@ -16,6 +16,7 @@ use crate::jet_noise::JetNoise;
 use crate::layout::Layout;
 use crate::listener::Listener;
 use crate::sound::{BURN_DURATION_JITTER, BURN_START_JITTER_DEG, SoundDef};
+use crate::structure::StructureResponse;
 use crate::units::{ATM_PA, deg_to_rad, rad_s_to_rpm, rpm_to_rad_s};
 use crate::valve::ValveTiming;
 use serde::{Deserialize, Serialize};
@@ -703,6 +704,8 @@ pub struct Engine {
     tail_pipes: usize,
     /// Where the listener hears the tails from, built for the step size it was made with.
     listener: Option<(f64, Listener)>,
+    /// The block's structure response at the step it was built for ([`crate::structure`]).
+    structure: Option<(f64, StructureResponse)>,
     /// The texture layers' signal this step, in the tails' units, before it is radiated.
     texture_signal: f64,
     /// The turbulent jet at each tail pipe.
@@ -843,6 +846,7 @@ impl Engine {
             intake_net: None,
             tail_pipes,
             listener: None,
+            structure: None,
             texture_signal: 0.0,
             jets: Vec::new(),
             tail_groups: Vec::new(),
@@ -1391,10 +1395,24 @@ impl Engine {
             }
             jets *= snd.flow_noise;
         }
+        // The block: every cylinder's pressure shakes the same structure, which radiates it as
+        // combustion noise, heard from the tails' mean distance like the intake mouth.
+        let block = if snd.block > 0.0 {
+            if self.structure.as_ref().is_none_or(|s| s.0 != dt) {
+                self.structure = Some((dt, StructureResponse::new(dt)));
+            }
+            let p: f64 = self.cyl.iter().map(|cs| cs.gas.pressure()).sum();
+            match &mut self.structure {
+                Some((_, s)) => snd.block * s.process(p),
+                None => 0.0,
+            }
+        } else {
+            0.0
+        };
         let audio = heard
             + jets
             + match &mut self.listener {
-                Some((_, l)) => l.radiate_flow(intake_flow),
+                Some((_, l)) => l.radiate_flow(intake_flow) + l.spread_from_1m(block),
                 None => 0.0,
             };
 
@@ -2864,6 +2882,7 @@ mod tests {
         d.sound = crate::sound::SoundDef {
             flow_noise: 0.0,
             mechanical: 0.0,
+            block: 0.0,
             combustion_jitter: 0.0,
             intake: 0.0,
             listener_angle_deg: 90.0,
@@ -3877,6 +3896,42 @@ mod tests {
             was_burning = cs.burn.is_some();
         }
         assert!(checked >= 5, "{checked} burns");
+    }
+
+    #[test]
+    fn the_block_radiates_the_cylinder_pressure() {
+        // what the block adds at the listener: inline-4, 5000 rpm WOT. By hand: each cylinder's
+        // pressure as a Gaussian pulse, 7 MPa peak, 60° wide at half height (σ = 0.85 ms), once
+        // per 24 ms cycle; its harmonic k has 2Pσ√(2π)/T·exp(−(2πfσ)²/2), four cylinders adding
+        // at the firing orders: 3.3 MPa at 167 Hz, 1.0 MPa at 333 Hz, 0.14 MPa at 500 Hz. The
+        // figure's structure response there (26, 39.5, 47 dB for 1 kPa) gives 1.3, 1.9, 0.6 Pa
+        // at 1 m: 1.7 Pa rms, 0.53 Pa at the 3.27 m to the ear. The real pulse rises faster than
+        // a Gaussian (more above 300 Hz), so up to a few times that
+        let heard = |block: f64, distance: f64| {
+            let mut d = EngineDef::inline4();
+            d.sound.block = block;
+            d.sound.listener_distance_m = distance;
+            let mut e = Engine::new(d, 5000.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(5000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &c);
+            run(&mut e, 0.2, &c)
+        };
+        let (m, near) = mean_rms_of_difference(&heard(1.0, 3.0), &heard(0.0, 3.0));
+        assert!(
+            (0.25..1.6).contains(&near) && m.abs() < 0.05 * near,
+            "block: mean {m} rms {near} Pa"
+        );
+        // a spherical spreader, 1/r: the ear 1.3 m above the tails, so 3 m and 6 m out are
+        // √(3² + 1.3²) = 3.27 m and √(6² + 1.3²) = 6.14 m away: 0.533 of the pressure
+        let (_, far) = mean_rms_of_difference(&heard(1.0, 6.0), &heard(0.0, 6.0));
+        assert!(
+            (far / near - 0.533).abs() < 0.005,
+            "{far} at 6 m vs {near} at 3 m"
+        );
     }
 
     #[test]

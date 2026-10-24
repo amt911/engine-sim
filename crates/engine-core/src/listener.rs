@@ -139,6 +139,12 @@ impl Listener {
         p
     }
 
+    /// A sound pressure measured 1 m from a compact source (the block) heard at the tails'
+    /// mean distance: spherical spreading, p ∝ 1/r (Kinsler §7.2), Pa.
+    pub fn spread_from_1m(&self, p_1m: f64) -> f64 {
+        p_1m / self.mean_distance
+    }
+
     /// One step: the tails' outlet signals in, the sound pressure at the listener (Pa) out.
     /// Missing tails read as silent ones.
     pub fn process(&mut self, tails: &[f64]) -> f64 {
