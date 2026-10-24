@@ -141,7 +141,15 @@ pub trait RunnerLink: Send {
 /// [`RunnerLink`] that steps the set right here (the reference for the threaded one).
 pub struct LocalRunners {
     pub set: RunnerSet,
-    pending: Option<(usize, f64, f64, Vec<(f64, f64)>)>,
+    pending: Option<Submitted>,
+}
+
+/// An FV step submitted to [`LocalRunners`], waiting to be collected.
+struct Submitted {
+    k: usize,
+    dt: f64,
+    throttle_area: f64,
+    acc: Vec<(f64, f64)>,
 }
 
 impl LocalRunners {
@@ -152,11 +160,16 @@ impl LocalRunners {
 
 impl RunnerLink for LocalRunners {
     fn submit(&mut self, k: usize, dt: f64, throttle_area: f64, acc: &[(f64, f64)]) {
-        self.pending = Some((k, dt, throttle_area, acc.to_vec()));
+        self.pending = Some(Submitted {
+            k,
+            dt,
+            throttle_area,
+            acc: acc.to_vec(),
+        });
     }
     fn collect(&mut self, out: &mut RunnerResult) {
-        if let Some((k, dt, area, acc)) = self.pending.take() {
-            self.set.fv_step(k, dt, area, &acc, out);
+        if let Some(j) = self.pending.take() {
+            self.set.fv_step(j.k, j.dt, j.throttle_area, &j.acc, out);
         }
     }
 }
