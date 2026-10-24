@@ -86,6 +86,28 @@ impl Default for EngineDef {
     }
 }
 
+/// Peak force of a valve striking its seat at `SEAT_FORCE_RPM`, N: an exhaust valve of a
+/// 4-cylinder petrol engine at 2500 rpm full load, 292 N in the head-coupled model validated
+/// against the running engine (Zheng et al., Appl. Sci. 10(15) 5145, 2020, Fig. 22; 412 N
+/// with a rigid head).
+const SEAT_FORCE_N: f64 = 292.0;
+const SEAT_FORCE_RPM: f64 = 2500.0;
+/// Duration of the strike, s: the impulse m·Δv of the valve's equivalent mass (292 N /
+/// 4474 m/s², Zheng Fig. 21: 0.065 kg) against a closing-ramp speed of ~0.3 m/s at 2500 rpm
+/// (an estimate: ramps of ~0.02 mm/° at 15 000 °/s), as a half-sine of the peak:
+/// τ = πmΔv/2F ≈ 0.1 ms; taken as 0.15 ms.
+pub(crate) const SEAT_PULSE_S: f64 = 1.5e-4;
+
+/// The force of a seat strike of `peak` N, `t` s after it began: a half-sine over
+/// [`SEAT_PULSE_S`].
+pub(crate) fn seat_pulse(peak: f64, t: f64) -> f64 {
+    if (0.0..=SEAT_PULSE_S).contains(&t) {
+        peak * (std::f64::consts::PI * t / SEAT_PULSE_S).sin()
+    } else {
+        0.0
+    }
+}
+
 impl EngineDef {
     /// 500 cc four-stroke single (86 × 86 mm).
     pub fn single() -> Self {
@@ -840,6 +862,8 @@ pub struct Engine {
     listener: Option<(f64, Listener)>,
     /// The block's structure response at the step it was built for ([`crate::structure`]).
     structure: Option<(f64, StructureResponse)>,
+    /// Valve strikes still ringing: (time since the strike, s; its peak force, N).
+    seat_strikes: Vec<(f64, f64)>,
     /// The texture layers' signal this step, in the tails' units, before it is radiated.
     texture_signal: f64,
     /// The turbulent jet at each tail pipe.
@@ -987,6 +1011,7 @@ impl Engine {
             tail_pipes,
             listener: None,
             structure: None,
+            seat_strikes: Vec::new(),
             texture_signal: 0.0,
             jets: Vec::new(),
             tail_groups: Vec::new(),
@@ -1164,6 +1189,7 @@ impl Engine {
     pub fn step(&mut self, dt: f64, c: &Controls) -> f64 {
         let g = self.def.geometry;
         let crank_deg = self.theta.to_degrees();
+        let rpm_now = self.rpm();
         // the ECU first decides whether it injects, then trims the idle accordingly
         self.fuel_cutoffs(c.throttle);
         self.idle_control(dt, c);
@@ -1343,6 +1369,13 @@ impl Engine {
             exchange_with_reservoir(&mut cs.gas, &self.atm, blowby_area, dt);
 
             // Combustion events.
+            // a valve closing strikes its seat (both kinds: one valve each, conservative)
+            let strike = SEAT_FORCE_N * (rpm_now / SEAT_FORCE_RPM);
+            if self.def.sound.mechanical > 0.0
+                && (crossed(prev, cur, evc) || crossed(prev, cur, ivc))
+            {
+                self.seat_strikes.push((0.0, strike));
+            }
             if crossed(prev, cur, evc) {
                 cs.residual_kg = cs.gas.mass_kg;
             }
@@ -1544,13 +1577,23 @@ impl Engine {
         }
         // The block: every cylinder's pressure shakes the same structure, which radiates it as
         // combustion noise, heard from the tails' mean distance like the intake mouth.
-        let block = if snd.block > 0.0 {
+        // The valves striking their seats shake the same structure through the head, a force
+        // F standing for a pressure F/A_bore on it (the path the gas force takes): the
+        // valvetrain's ticking (`sound.mechanical`, 1 = physical).
+        let mut seat_force = 0.0;
+        for (t, peak) in self.seat_strikes.iter_mut() {
+            seat_force += seat_pulse(*peak, *t);
+            *t += dt;
+        }
+        self.seat_strikes.retain(|(t, _)| *t <= SEAT_PULSE_S);
+        let block = if snd.block > 0.0 || snd.mechanical > 0.0 {
             if self.structure.as_ref().is_none_or(|s| s.0 != dt) {
                 self.structure = Some((dt, StructureResponse::new(dt)));
             }
             let p: f64 = self.cyl.iter().map(|cs| cs.gas.pressure()).sum();
+            let seats = seat_force / g.piston_area();
             match &mut self.structure {
-                Some((_, s)) => snd.block * s.process(p),
+                Some((_, s)) => s.process(snd.block * p + snd.mechanical * seats),
                 None => 0.0,
             }
         } else {
@@ -1874,6 +1917,52 @@ mod tests {
                 e.def.name
             );
         }
+    }
+
+    #[test]
+    fn a_seating_pulse_carries_its_impulse() {
+        // a half-sine of peak F over τ carries ∫ = 2Fτ/π: 292 N over 0.15 ms is 27.885 mN·s
+        let dt = 1e-6;
+        let j: f64 = (0..200)
+            .map(|k| seat_pulse(292.0, k as f64 * dt) * dt)
+            .sum();
+        assert!((j / 0.027885 - 1.0).abs() < 0.01, "{j}");
+        assert_eq!(seat_pulse(292.0, -1e-6), 0.0);
+        assert_eq!(seat_pulse(292.0, SEAT_PULSE_S + 1e-9), 0.0);
+    }
+
+    #[test]
+    fn the_valves_tick_harder_as_the_engine_turns_faster() {
+        // valve seating heard through the block alone (no combustion noise, no exhaust): each
+        // seat strikes with a force ∝ its closing speed ∝ rpm, twice as often at twice the
+        // speed, so the ticking's energy grows ~ rpm³: ×8 from 2000 to 4000 rpm
+        let ticks = |rpm: f64| {
+            let tick = |mech: f64| {
+                let mut d = EngineDef::inline4();
+                d.sound.block = 0.0;
+                d.sound.mechanical = mech;
+                let mut e = Engine::new(d, rpm, 1);
+                let c = Controls {
+                    throttle: 0.5,
+                    hold_rpm: Some(rpm),
+                    ..Controls::default()
+                };
+                run(&mut e, 0.3, &c);
+                run(&mut e, 0.3, &c)
+            };
+            let (with, without) = (tick(1.0), tick(0.0));
+            with.iter()
+                .zip(&without)
+                .map(|(a, b)| (a - b).powi(2))
+                .sum::<f64>()
+        };
+        let (slow, fast) = (ticks(2000.0), ticks(4000.0));
+        assert!(slow > 0.0, "no ticking at all");
+        let r = fast / slow;
+        assert!(
+            (4.0..16.0).contains(&r),
+            "energy ×{r} from 2000 to 4000 rpm"
+        );
     }
 
     #[test]

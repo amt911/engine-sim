@@ -19,8 +19,8 @@ pub struct SoundDef {
     /// The block's radiated combustion noise ([`crate::structure`]): the cylinder pressure
     /// through the measured structure response of engine blocks, 1 = physical, 0 = off.
     pub block: f64,
-    /// Valvetrain noise. No physical model yet (valve seating radiated by the block): kept so
-    /// older files load; it has no effect.
+    /// Valvetrain noise: each valve striking its seat shakes the block (Zheng et al. 2020),
+    /// heard through its structure response. 1 = physical, 0 = none.
     pub mechanical: f64,
     /// Cycle-to-cycle combustion variability (1 = ±1.5° burn start, ±5 % duration).
     pub combustion_jitter: f64,
