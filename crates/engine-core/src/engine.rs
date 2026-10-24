@@ -502,7 +502,7 @@ impl EngineDef {
         if self.layout.banks.len() == 2 && n >= 2 {
             let half = n / 2;
             self.layout.banks = vec![(1..=half).collect(), (half + 1..=n).collect()];
-            if n % 2 == 0 {
+            if n.is_multiple_of(2) {
                 self.layout.bank_angle_deg = 720.0 / n as f64;
             }
             if self.exhaust.collectors.len() == 2 {
