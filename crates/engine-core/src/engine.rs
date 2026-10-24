@@ -86,6 +86,26 @@ impl Default for EngineDef {
     }
 }
 
+/// One bank's surge tank on the LFA (see [`EngineDef::lfa_v10`]).
+fn lfa_surge_tank() -> crate::surge_tank::SurgeTankDef {
+    // The paper (Fig. 18) shows the air cleaner case joined to the middle of the tank, the air
+    // spreading from there to the runners; tuned to 400 Hz. Fed in the middle, each half of a
+    // 0.485 m tank is a quarter-wave pipe of c/(4·0.243) = 358 Hz; a wide, short opening (150 ×
+    // 30 mm, an estimate) puts the tank's lowest resonance at ~320 Hz in the model, against a
+    // narrow 70 × 200 mm duct's ~100 Hz. The air box's own volume is not modelled; its filter is.
+    crate::surge_tank::SurgeTankDef {
+        length_m: 5.0 * 0.097,
+        area_m2: 0.1 * 0.1,
+        inlet_diameter_m: 0.15,
+        inlet_length_m: 0.03,
+        // the air cleaner the tank draws through: Heywood (§6.3.2) gives each intake part "a few
+        // percent" of the atmosphere at full flow; 2 kPa at the bank's 0.174 m³/s (8700 rpm)
+        // through the 150 mm opening (u = 9.85 m/s) is k = 2000/(½·1.177·9.85²) = 35.1
+        inlet_loss: 35.1,
+        inlet_at: 0.5,
+    }
+}
+
 impl EngineDef {
     /// 500 cc four-stroke single (86 × 86 mm).
     pub fn single() -> Self {
@@ -241,7 +261,8 @@ impl EngineDef {
             geometry: CylinderGeometry {
                 bore_m: 0.088,
                 stroke_m: 0.079,
-                rod_m: 0.140,
+                // Okamoto et al., SAE 2011-01-2024, Fig. 3
+                rod_m: 0.14325,
                 compression_ratio: 12.0,
             },
             cylinders: 10,
@@ -316,6 +337,12 @@ impl EngineDef {
                 runner_length_m: 0.325,
                 runner_diameter_m: 0.045,
                 individual_throttles: true,
+                // Each bank's runners draw from its own surge tank ("400 Hz tuned by surge
+                // tank", Okamoto et al., SAE 2011-01-2024, Fig. 18; each bank "completely
+                // separated", §7). Length: the bank, five cylinders 97 mm apart (Fig. 3).
+                // Cross-section and inlet: estimates without a source, see [`lfa_surge_tank`] and
+                // docs/superpowers/specs/2026-10-24-lfa-from-toyota.md
+                surge_tanks: vec![lfa_surge_tank(), lfa_surge_tank()],
                 ..IntakeDef::default()
             },
             redline_rpm: 9000.0,
@@ -1827,6 +1854,13 @@ mod tests {
     use approx::assert_relative_eq;
 
     const DT: f64 = 1.0 / 48_000.0 / 4.0;
+
+    /// The LFA with open ITB trumpets (no surge tanks): runners independent of each other.
+    fn open_itb_lfa() -> EngineDef {
+        let mut d = EngineDef::lfa_v10();
+        d.intake.surge_tanks.clear();
+        d
+    }
 
     fn run(e: &mut Engine, seconds: f64, c: &Controls) -> Vec<f64> {
         let n = (seconds / DT) as usize;
@@ -4230,8 +4264,15 @@ mod tests {
     #[test]
     fn runners_stepped_elsewhere_give_the_same_samples() {
         // half the LFA's ITB runners behind a link (stepped in order here, as a thread would):
-        // identical samples step by step, through a blip; then back in place, still identical
-        let def = EngineDef::lfa_v10();
+        // identical samples step by step, through a blip; then back in place, still identical.
+        // Open trumpets: the real LFA's surge tanks couple each bank's runners every sub-step,
+        // so they cannot leave
+        let mut tanked = Engine::new(EngineDef::lfa_v10(), 3000.0, 1);
+        tanked.step(DT, &Controls::default());
+        assert!(
+            !tanked.detach_runners(5, |set| Box::new(crate::intake_fv::LocalRunners::new(set)))
+        );
+        let def = open_itb_lfa();
         let mut a = Engine::new(def.clone(), 3000.0, 1);
         let mut b = Engine::new(def, 3000.0, 1);
         let n = (0.12 / DT) as usize;
@@ -4264,7 +4305,7 @@ mod tests {
     fn an_engine_detached_and_taken_back_runs_as_one_never_detached() {
         // the net and half the runners handed out and straight back (a render block's start and
         // end with nothing in between): the same samples as an engine that kept them
-        let def = EngineDef::lfa_v10();
+        let def = open_itb_lfa();
         let mut a = Engine::new(def.clone(), 3000.0, 1);
         let mut b = Engine::new(def, 3000.0, 1);
         let c = Controls {
