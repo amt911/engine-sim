@@ -15,7 +15,7 @@ use crate::intake_fv::{IntakeDef, IntakeFv, IntakeModel};
 use crate::jet_noise::JetNoise;
 use crate::layout::Layout;
 use crate::listener::Listener;
-use crate::sound::{BURN_DURATION_JITTER, BURN_START_JITTER_DEG, SoundDef};
+use crate::sound::SoundDef;
 use crate::structure::StructureResponse;
 use crate::units::{ATM_PA, deg_to_rad, rad_s_to_rpm, rpm_to_rad_s};
 use crate::valve::ValveTiming;
@@ -593,7 +593,18 @@ const MAX_SPARK_ADVANCE_DEG: f64 = 50.0;
 /// LFA makes 494 N·m against the published 480.
 const COMBUSTION_EFFICIENCY: f64 = 0.96;
 /// Cycle-to-cycle variation of released energy (±), drives the "lumpy" idle.
-const CYCLE_VARIATION: f64 = 0.04;
+/// σ of the equivalence ratio near the plug each cycle, relative: 2–6 % (Heywood Fig. 9-34a).
+const PHI_DISPERSION: f64 = 0.04;
+/// σ of the residual fraction near the plug each cycle, relative: the CO₂ scatter of Heywood
+/// Fig. 9-34b (≈ ±0.35 in ≈ 4 % CO₂).
+const RESIDUAL_DISPERSION: f64 = 0.09;
+/// σ of the turbulence intensity at the plug each cycle, relative: "of comparable importance" to
+/// the A/F and residual variations (Heywood §9.4.2) — the size that moves the flame's angles
+/// as much as the A/F's σ does.
+const TURBULENCE_DISPERSION: f64 = 0.03;
+/// σ of how much each cylinder breathes apart from the others, fixed: "typically a few
+/// percent" (Heywood §9.4.2, §7.6).
+const CYLINDER_IMBALANCE: f64 = 0.02;
 const WALL_TEMP_K: f64 = 400.0;
 const AMBIENT_K: f64 = 300.0;
 const DISCHARGE_CD: f64 = 0.8;
@@ -708,6 +719,15 @@ fn woschni_htc(bore_m: f64, p_pa: f64, t_k: f64, w_m_s: f64) -> f64 {
 
 /// Mean piston speed S̄p = 2·S·N, m/s (Heywood, *ICE Fundamentals*, eq. 2.2), whichever way the
 /// crank turns.
+/// The burned share of a trapped charge: residual / trapped mass.
+fn dilution_of(cs: &CylinderState) -> f64 {
+    if cs.trapped_kg > 0.0 {
+        cs.residual_kg / cs.trapped_kg
+    } else {
+        0.0
+    }
+}
+
 /// The flame's crank angles relative to the reference state at which a preset's
 /// `burn_duration_deg` and [`IGNITION_DELAY_DEG`] hold: Hires et al. (SAE 780232) eqs. 13/32,
 /// (S_p·ν)^⅓·(h/S_L)^⅔ ([`flame_angle_scale`]), for the charge at the spark — pressure and
@@ -721,7 +741,7 @@ fn flame_ratio(
     (p, t): (f64, f64),
     rho: f64,
     v: f64,
-    dilution: f64,
+    (phi, dilution): (f64, f64),
 ) -> f64 {
     const T_REF: f64 = 700.0;
     const P_REF: f64 = 20.0 * ATM_PA;
@@ -742,7 +762,7 @@ fn flame_ratio(
         piston_speed.max(0.1),
         nu(t, rho),
         g.clearance_volume() / g.piston_area(),
-        laminar_flame_speed(1.0, t, p, dilution),
+        laminar_flame_speed(phi, t, p, dilution),
     );
     here / reference
 }
@@ -782,6 +802,9 @@ struct CylinderState {
     /// The trapped charge's flame, crank-angle ratio to the reference ([`flame_ratio`]): sets
     /// its spark (the ECU's MBT timing) and its burn.
     flame: f64,
+    /// How much more or less this cylinder breathes than the mean, fixed (see
+    /// [`CYLINDER_IMBALANCE`]).
+    charge_bias: f64,
     /// The charge trapped at intake closing still awaits its spark: one spark per charge,
     /// whatever the ECU does with the timing meanwhile.
     armed: bool,
@@ -1005,6 +1028,7 @@ impl Engine {
                     trapped_kg: 0.0,
                     residual_kg: 0.0,
                     flame: 1.0,
+                    charge_bias: 1.0,
                     armed: false,
                     port_t: PIPE_COLD_K,
                     port_flow: 0.0,
@@ -1017,7 +1041,7 @@ impl Engine {
                 }
             })
             .collect();
-        Self {
+        let mut e = Self {
             plenum: GasVolume::at(ATM_PA, AMBIENT_K, def.plenum_volume_m3),
             def,
             cyl,
@@ -1065,7 +1089,13 @@ impl Engine {
             reversion_kg: 0.0,
             inducted_kg: 0.0,
             fidelity: Fidelity::default(),
+        };
+        // each cylinder's share of the air, a fixed few percent apart (seeded: deterministic)
+        for k in 0..e.cyl.len() {
+            let n = e.noise() + e.noise() + e.noise();
+            e.cyl[k].charge_bias = 1.0 + CYLINDER_IMBALANCE * n;
         }
+        e
     }
 
     /// [`Engine::new`] at another [`Fidelity`].
@@ -1431,7 +1461,7 @@ impl Engine {
                     (cs.ref_p, cs.ref_t),
                     cs.gas.mass_kg / cs.ref_v,
                     cs.ref_v,
-                    dilution,
+                    (1.0, dilution),
                 );
                 if ratio.is_finite() {
                     cs.flame = ratio;
@@ -1490,17 +1520,44 @@ impl Engine {
                 let trapped = (cs.trapped_kg - cs.residual_kg).max(0.0);
                 // the flame this charge lights: its delay, burn and their dispersion scale
                 // from the preset's values at the reference state (see `flame_ratio`)
-                let ratio = cs.flame;
-                let var = 1.0 + CYCLE_VARIATION * self.noise();
+                // This cycle's charge as the spark finds it (Heywood §9.4.2): the mixture near
+                // the plug — its A/F (σ 2–6 % of the mean, Fig. 9-34a: 4 %) and its residual
+                // (CO₂ scatter ±9 %, Fig. 9-34b) — and the turbulence there, of comparable
+                // weight: a 3 % σ in u′, which moves the flame's angles as u′^(−2/3) (Hires
+                // eqs. 6–7) as much as the A/F's 4 % moves them through S_L^(−2/3). The flame
+                // the ECU timed (`cs.flame`) is the mean one.
+                let (dilution, ref_p, ref_t, ref_v, mean_flame, bias) = (
+                    dilution_of(cs),
+                    cs.ref_p,
+                    cs.ref_t,
+                    cs.ref_v,
+                    cs.flame,
+                    cs.charge_bias,
+                );
+                let rho_ivc = cs.trapped_kg / cs.ref_v;
                 let j = self.def.sound.combustion_jitter;
-                let start_jitter = j * BURN_START_JITTER_DEG * ratio * self.noise();
-                let duration = self.def.burn_duration_deg
-                    * ratio
-                    * (1.0 + j * BURN_DURATION_JITTER * self.noise());
+                let mut gauss = || self.noise() + self.noise() + self.noise();
+                let phi = 1.0 + j * PHI_DISPERSION * gauss();
+                let f_local = (dilution * (1.0 + j * RESIDUAL_DISPERSION * gauss())).max(0.0);
+                let u_turb = (1.0 + j * TURBULENCE_DISPERSION * gauss()).max(0.3);
+                let local = flame_ratio(
+                    &g,
+                    mean_piston_speed,
+                    (ref_p, ref_t),
+                    rho_ivc,
+                    ref_v,
+                    (phi, f_local),
+                );
+                let ratio =
+                    if local.is_finite() { local } else { mean_flame } * u_turb.powf(-2.0 / 3.0);
+                // the charge itself: each cylinder breathes a fixed few percent apart from the
+                // others. Heywood's "±5 percent" cycle-to-cycle is the mixture composition
+                // within the cylinder — the A/F spread above, not a second draw on the fuel
+                let var = bias;
+                let duration = self.def.burn_duration_deg * ratio;
                 let cs = &mut self.cyl[i];
                 cs.burn = Some(Burn {
-                    start_deg: (spark_deg + IGNITION_DELAY_DEG * ratio + start_jitter)
-                        .rem_euclid(720.0),
+                    start_deg: (spark_deg + IGNITION_DELAY_DEG * ratio).rem_euclid(720.0),
                     duration_deg: duration,
                     energy_j: charge_energy(trapped, AFR_STOICH, COMBUSTION_EFFICIENCY * var),
                     released: 0.0,
@@ -1969,10 +2026,77 @@ mod tests {
         let ((b_l, _), (b_f, _)) = (stats(&light, 1), stats(&full, 1));
         assert!(b_l > 1.15 * b_f, "burn {b_l:.1}° light vs {b_f:.1}° full");
         assert!(d_l > 1.15 * d_f, "delay {d_l:.2}° light vs {d_f:.2}° full");
+        // the spread is a fixed share of each cycle's flame (Heywood §9.4.2's measured spreads,
+        // not load-dependent in the model): in degrees it is at least the full-load one.
+        // The measured growth at light load beyond that (partial burns) is a known gap
         assert!(
-            sd_l > 1.15 * sd_f,
-            "delay spread {sd_l:.2}° light vs {sd_f:.2}° full"
+            sd_l >= sd_f,
+            "delay spread {sd_l:.3}° of {d_l:.2}° light vs {sd_f:.3}° of {d_f:.2}° full"
         );
+    }
+
+    /// Peak pressure of each cycle of cylinder 1, held at `rpm` with `throttle`, over `secs`.
+    fn cycle_peaks(d: EngineDef, rpm: f64, throttle: f64, secs: f64) -> Vec<f64> {
+        let mut e = Engine::new(d, rpm, 1);
+        let c = Controls {
+            throttle,
+            hold_rpm: Some(rpm),
+            ..Controls::default()
+        };
+        run(&mut e, 1.0, &c);
+        let (mut peaks, mut pk, mut prev) = (Vec::new(), 0.0f64, e.cyl[0].cycle_deg);
+        for _ in 0..(secs / DT) as usize {
+            e.step(DT, &c);
+            let cur = e.cyl[0].cycle_deg;
+            if cur < prev {
+                peaks.push(pk);
+                pk = 0.0;
+            }
+            pk = pk.max(e.cyl[0].gas.pressure());
+            prev = cur;
+        }
+        peaks.remove(0);
+        peaks
+    }
+
+    fn cov(x: &[f64]) -> f64 {
+        let m = x.iter().sum::<f64>() / x.len() as f64;
+        (x.iter().map(|v| (v - m).powi(2)).sum::<f64>() / x.len() as f64).sqrt() / m
+    }
+
+    #[test]
+    fn each_cylinder_breathes_a_few_percent_apart() {
+        // Heywood §9.4.2: the air and fuel each cylinder gets differ by "typically a few
+        // percent", fixed — what puts sub-firing orders between a multi-cylinder engine's
+        // harmonics. Seeded: the same engine twice is the same engine
+        let e = Engine::new(EngineDef::lfa_v10(), 1000.0, 7);
+        let b: Vec<f64> = e.cyl.iter().map(|c| c.charge_bias).collect();
+        let m = b.iter().sum::<f64>() / b.len() as f64;
+        let sd = (b.iter().map(|x| (x - m).powi(2)).sum::<f64>() / b.len() as f64).sqrt();
+        assert!((0.005..0.05).contains(&sd), "spread {sd}: {b:?}");
+        let again: Vec<f64> = Engine::new(EngineDef::lfa_v10(), 1000.0, 7)
+            .cyl
+            .iter()
+            .map(|c| c.charge_bias)
+            .collect();
+        assert_eq!(b, again);
+    }
+
+    #[test]
+    fn cycles_vary_as_measured_engines_do() {
+        // Singotia & Saraswati (IOP Conf. Ser. 691, 012061, 2019), a gasoline engine at
+        // 2500 rpm: COV of peak pressure 1.6 % at high load, 5.0 % at a medium one, 13.2 % at a
+        // low one — the residual gas slowing a lean-of-air charge's flame. From Heywood §9.4's
+        // sources (charge ±5 %, A/F σ 2–6 %, residual and turbulence of comparable weight) the
+        // model must sit near the high-load figure
+        // Known gap: the measured growth at light load (to 13 %) comes from partial burns near
+        // the flammability limit, which the model lacks; it stays near its full-load figure
+        // (2.6 % at both, 2026-10-24). Every cycle alike (combustion_jitter 0) is 0.
+        let full = cov(&cycle_peaks(EngineDef::inline4(), 2500.0, 1.0, 4.0));
+        assert!((0.01..0.03).contains(&full), "full load COV {full}");
+        let mut flat = EngineDef::inline4();
+        flat.sound.combustion_jitter = 0.0;
+        assert!(cov(&cycle_peaks(flat, 2500.0, 1.0, 1.0)) < 1e-4);
     }
 
     #[test]
