@@ -3740,6 +3740,25 @@ mod tests {
     }
 
     #[test]
+    fn the_exhaust_pulses_alone_reach_the_listener() {
+        // every other source off: the pulses travel the pipes to the tails and out — a waveguide
+        // kept from step to step carries them (rebuilt each step it would hold nothing)
+        let mut d = EngineDef::inline4();
+        d.sound.flow_noise = 0.0;
+        d.sound.intake = 0.0;
+        let mut e = Engine::new(d, 5000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(5000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.3, &c);
+        let x = run(&mut e, 0.1, &c);
+        let rms = (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
+        assert!(rms > 0.1, "{rms} Pa");
+    }
+
+    #[test]
     fn the_tail_exit_by_hand() {
         // Gas at c = 500 m/s: T = 500²/(1.4·287) = 622.22 K. Through a 50 mm outlet
         // (A = 1.9635e-3 m²) the choked flow from p₀ = 3 atm is

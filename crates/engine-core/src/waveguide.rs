@@ -592,6 +592,48 @@ mod tests {
     }
 
     #[test]
+    fn a_duct_carries_both_ways_and_wears_its_waves_with_flow() {
+        // two 1 m, 50 mm pipes through a series resistance: equal pulses from both ends meet
+        // at it with no pressure across it, so no flow — each end gets a whole pulse back
+        let dt = 1.0 / 192_000.0;
+        let pair = || {
+            Duct::with_nodes(
+                vec![
+                    Pipe::new(1.0, 0.05, 500.0, dt, 0.0),
+                    Pipe::new(1.0, 0.05, 500.0, dt, 0.0),
+                ],
+                vec![Node::Series(50_000.0, 283.71)],
+            )
+        };
+        let mut d = pair();
+        let (mut near, mut far): (f64, f64) = (0.0, 0.0);
+        for k in 0..2_000 {
+            near = near.max(d.at_near().abs());
+            far = far.max(d.at_far().abs());
+            let x = if k == 0 { 1.0 } else { 0.0 };
+            d.send(x, x);
+        }
+        assert!(
+            (near - 1.0).abs() < 1e-12 && (far - 1.0).abs() < 1e-12,
+            "{near} {far}"
+        );
+        // a mean flow of M = 0.2 through both pipes: α = 0.025·0.2/0.05 = 0.1 Np/m, so a pulse
+        // crossing the 2 m keeps e^(−0.2) = 0.818731 (the resistance aside: here a plain duct)
+        let a = std::f64::consts::PI * 0.25 * 0.05 * 0.05;
+        let mut d = Duct::new(vec![
+            Pipe::new(1.0, 0.05, 500.0, dt, 0.0),
+            Pipe::new(1.0, 0.05, 500.0, dt, 0.0),
+        ]);
+        d.set_mean_flow(0.2 * 283.71 * a);
+        let mut got: f64 = 0.0;
+        for k in 0..2_000 {
+            got = got.max(d.at_far().abs());
+            d.send(if k == 0 { 1.0 } else { 0.0 }, 0.0);
+        }
+        assert!((got - 0.818_731).abs() < 1e-5, "{got}");
+    }
+
+    #[test]
     fn an_expansion_chamber_has_munjals_transmission_loss() {
         // m = 8 (A₂/A₁), L = 0.4 m, c = 500 m/s, lossless: TL = 10·log[1 + ¼(m − 1/m)²·sin²(kL)]
         // (Munjal, *Acoustics of Ducts and Mufflers*, 1987, ch. 3, the simple expansion chamber):
