@@ -60,12 +60,245 @@ impl DelayLine {
     }
 }
 
+/// A delay line whose every sample keeps its own travel time: a simple wave's crests outrun its
+/// troughs. Along a characteristic of a simple wave the sample travels at u + c = c₀(1 + ε·p)
+/// (Earnshaw; Hamilton & Blackstock, *Nonlinear Acoustics*, ch. 4), so a sample of p pushed at
+/// step m reaches the far end at m + D/(1 + ε·p).
+///
+/// Where a later, higher sample would arrive before an earlier one the profile has folded into
+/// a shock (Hirschberg et al., "Shock waves in trombones", JASA 99, 1996: x_s =
+/// 2γp₀c/((γ+1)·max ∂p/∂t)). Weak-shock theory places the shock by the equal-area rule (it
+/// travels at the mean of the speeds ahead and behind it; Salomons, J. Theor. Comp. Acoust.
+/// 2025, §2): over the folded stretch from its foot to its head, ∫(t − t_s)·dp = 0, so
+/// t_s = ∫t·dp / (p_head − p_foot) along the folded profile. The stretch's inner samples are
+/// gone; the foot and the head arrive together at t_s, a jump. A shock that reaches the sample
+/// ahead of it (or an older shock) takes it in. The fold's energy is what the shock dissipates.
+///
+/// Linear interpolation in arrival time: with no amplitude it is [`DelayLine`]'s.
+#[derive(Debug, Clone)]
+pub struct WarpLine {
+    /// The samples still travelling, oldest first.
+    samples: std::collections::VecDeque<Sample>,
+    /// The shocks still travelling, oldest first.
+    shocks: std::collections::VecDeque<Shock>,
+    delay: f64,
+    eps: f64,
+    /// Step of the next push (and of the next read: reads come before pushes).
+    now: f64,
+    pushed: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Sample {
+    x: f64,
+    /// When it arrives (a shock's time for its foot and head).
+    t: f64,
+    /// When it would arrive on its own characteristic.
+    t0: f64,
+    id: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Shock {
+    foot: u64,
+    head: u64,
+    /// ∫t·dp along the folded profile from the foot to the head.
+    moment: f64,
+}
+
+/// The fastest and slowest a sample may travel against the small-signal speed: beyond these
+/// the simple-wave speed is meaningless (the waves are clamped far inside them anyway).
+const WARP_FASTEST: f64 = 2.0;
+const WARP_SLOWEST: f64 = 0.5;
+
+impl WarpLine {
+    /// `delay`: steps at the small-signal speed (≥ 1); `eps`: [`nonlinearity`] of the gas.
+    pub fn new(delay: f64, eps: f64) -> Self {
+        let delay = delay.max(1.0);
+        let n = (delay / WARP_SLOWEST).ceil() as usize + 4;
+        let mut samples = std::collections::VecDeque::with_capacity(n);
+        // the line starts full of silence, as a plain one
+        for m in -(delay.ceil() as i64 + 2)..0 {
+            let t = m as f64 + delay;
+            samples.push_back(Sample {
+                x: 0.0,
+                t,
+                t0: t,
+                id: 0,
+            });
+        }
+        Self {
+            samples,
+            shocks: std::collections::VecDeque::with_capacity(n),
+            delay,
+            eps,
+            now: 0.0,
+            pushed: 1,
+        }
+    }
+
+    /// The signal arriving at step `t`, from the samples now travelling.
+    fn at(&self, t: f64) -> f64 {
+        // the last sample arrived by `t` and the first after it
+        let mut before: Option<(f64, f64)> = None;
+        for s in &self.samples {
+            if s.t <= t {
+                before = Some((s.x, s.t));
+            } else {
+                return match before {
+                    Some((x, tb)) => x + (s.x - x) * (t - tb) / (s.t - tb),
+                    None => 0.0,
+                };
+            }
+        }
+        before.map_or(0.0, |b| b.0)
+    }
+
+    /// The value arriving now. Call before `push` each step.
+    pub fn read(&self) -> f64 {
+        self.at(self.now)
+    }
+
+    /// What [`WarpLine::read`] will return after the next `push`, before it: known when even
+    /// the fastest sample takes more than a step (`None` otherwise).
+    pub fn read_next(&self) -> Option<f64> {
+        if self.delay / WARP_FASTEST <= 1.0 {
+            return None;
+        }
+        Some(self.at(self.now + 1.0))
+    }
+
+    pub fn push(&mut self, x: f64) {
+        let speed = (1.0 + self.eps * x).clamp(WARP_SLOWEST, WARP_FASTEST);
+        let t0 = self.now + (self.delay / speed).max(1.0);
+        let id = self.pushed;
+        self.pushed += 1;
+        let new = Sample { x, t: t0, t0, id };
+        let Some(&last) = self.samples.back() else {
+            self.samples.push_back(new);
+            self.now += 1.0;
+            return;
+        };
+        if t0 >= last.t {
+            self.samples.push_back(new);
+        } else {
+            // it overtakes: it heads the shock the last sample was in, or a new one
+            let mut shock = match self.shocks.back() {
+                Some(s) if s.head == last.id => {
+                    let s = *s;
+                    self.shocks.pop_back();
+                    // the old head is now inside the fold (unless it was also the foot)
+                    if s.foot != last.id {
+                        self.samples.pop_back();
+                    }
+                    s
+                }
+                _ => Shock {
+                    foot: last.id,
+                    head: last.id,
+                    moment: 0.0,
+                },
+            };
+            shock.moment += 0.5 * (last.t0 + t0) * (x - last.x);
+            shock.head = id;
+            self.samples.push_back(new);
+            self.settle(shock);
+        }
+        self.now += 1.0;
+        // drop what has fully arrived: keep one at or before the next read for the interpolation
+        while self.samples.len() > 2 && self.samples[1].t <= self.now {
+            self.samples.pop_front();
+        }
+        let front = self.samples.front().map_or(0, |s| s.id);
+        while self.shocks.front().is_some_and(|s| s.foot < front) {
+            self.shocks.pop_front();
+        }
+    }
+
+    /// Place `shock` (its head the last sample, its foot just before it in the line) by the
+    /// equal-area rule, taking in whatever ahead of it it now reaches.
+    fn settle(&mut self, mut shock: Shock) {
+        loop {
+            let n = self.samples.len();
+            let (foot, head) = (self.samples[n - 2], self.samples[n - 1]);
+            let jump = head.x - foot.x;
+            let ts = if jump > 1e-12 {
+                shock.moment / jump
+            } else {
+                0.5 * (foot.t0 + head.t0)
+            };
+            self.samples[n - 2].t = ts;
+            self.samples[n - 1].t = ts;
+            // does it reach the sample ahead of its foot?
+            if n < 3 || self.samples[n - 3].t <= ts {
+                self.shocks.push_back(shock);
+                return;
+            }
+            let ahead = self.samples[n - 3];
+            match self.shocks.back() {
+                Some(s) if s.head == ahead.id => {
+                    // two shocks meet: one shock over both folds
+                    let older = *s;
+                    self.shocks.pop_back();
+                    shock.moment += older.moment + 0.5 * (ahead.t0 + foot.t0) * (foot.x - ahead.x);
+                    shock.foot = older.foot;
+                    // the older head and this foot are inside the fold now
+                    self.samples.remove(n - 2);
+                    if older.foot != ahead.id {
+                        self.samples.remove(n - 3);
+                    }
+                }
+                _ => {
+                    shock.moment += 0.5 * (ahead.t0 + foot.t0) * (foot.x - ahead.x);
+                    shock.foot = ahead.id;
+                    self.samples.remove(n - 2);
+                }
+            }
+        }
+    }
+}
+
+/// The coefficient of nonlinearity per pascal of a gas at `p0`: a simple wave's crest of p
+/// travels at c₀(1 + ε·p).
+pub fn nonlinearity(gamma: f64, p0: f64) -> f64 {
+    // u + c = c₀ + (γ+1)/2·u for a simple wave, u = p/(ρ₀c₀) and ρ₀c₀² = γp₀
+    (gamma + 1.0) / (2.0 * gamma * p0)
+}
+
+/// One direction of a pipe: a plain delay (small signals) or a warped one (finite amplitude).
+#[derive(Debug, Clone)]
+pub enum Line {
+    Plain(DelayLine),
+    Warped(WarpLine),
+}
+
+impl Line {
+    pub fn read(&self) -> f64 {
+        match self {
+            Line::Plain(d) => d.read(),
+            Line::Warped(w) => w.read(),
+        }
+    }
+    pub fn read_next(&self) -> Option<f64> {
+        match self {
+            Line::Plain(d) => d.read_next(),
+            Line::Warped(w) => w.read_next(),
+        }
+    }
+    pub fn push(&mut self, x: f64) {
+        match self {
+            Line::Plain(d) => d.push(x),
+            Line::Warped(w) => w.push(x),
+        }
+    }
+}
+
 /// A uniform pipe: area, one-way delay, and a per-trip amplitude loss.
 #[derive(Debug, Clone)]
 pub struct Pipe {
     pub area_m2: f64,
-    pub fwd: DelayLine,
-    pub bwd: DelayLine,
+    pub fwd: Line,
+    pub bwd: Line,
     gain: f64,
     /// Per-trip factor without flow (`gain` is it times the flow's friction loss).
     still_gain: f64,
@@ -80,8 +313,8 @@ impl Pipe {
         let delay = length_m / sound_speed / dt;
         Self {
             area_m2: std::f64::consts::PI * 0.25 * diameter_m * diameter_m,
-            fwd: DelayLine::new(delay),
-            bwd: DelayLine::new(delay),
+            fwd: Line::Plain(DelayLine::new(delay)),
+            bwd: Line::Plain(DelayLine::new(delay)),
             gain: (1.0 - loss_per_m).powf(length_m),
             still_gain: (1.0 - loss_per_m).powf(length_m),
             length_m,
@@ -89,6 +322,17 @@ impl Pipe {
             sound_speed,
         }
     }
+    /// Finite-amplitude propagation ([`WarpLine`]) in both directions, for gas at `p0` with
+    /// `gamma`: each wave steepens on its own as it travels (the waves crossing it do not bend
+    /// it — the simple-wave approximation; their effect on the speed is of the same order).
+    pub fn warped(mut self, dt: f64, gamma: f64, p0: f64) -> Self {
+        let delay = self.length_m / self.sound_speed / dt;
+        let eps = nonlinearity(gamma, p0);
+        self.fwd = Line::Warped(WarpLine::new(delay, eps));
+        self.bwd = Line::Warped(WarpLine::new(delay, eps));
+        self
+    }
+
     /// Extra per-trip amplitude factor (e.g. a muffler in this pipe).
     pub fn with_extra_gain(mut self, g: f64) -> Self {
         self.gain *= g;
@@ -466,6 +710,111 @@ mod tests {
         // and it stays when the flow sets the gain afresh from the still pipe's
         q.set_mean_flow(0.0);
         assert!((q.gain - 0.485).abs() < 1e-12, "{}", q.gain);
+    }
+
+    /// Amplitude of harmonic `k` of `f` in `x` (a whole number of periods).
+    fn harmonic(x: &[f64], f: f64, dt: f64, k: usize) -> f64 {
+        let (mut re, mut im) = (0.0, 0.0);
+        for (i, v) in x.iter().enumerate() {
+            let w = 2.0 * std::f64::consts::PI * f * k as f64 * i as f64 * dt;
+            re += v * w.cos();
+            im += v * w.sin();
+        }
+        2.0 * (re * re + im * im).sqrt() / x.len() as f64
+    }
+
+    /// A sine of `amp` Pa at `f` through a warped line of `delay` steps; the steady output.
+    fn warped_sine(delay: f64, amp: f64, f: f64, dt: f64) -> Vec<f64> {
+        let mut line = WarpLine::new(delay, nonlinearity(crate::gas::GAMMA, crate::units::ATM_PA));
+        let period = (1.0 / (f * dt)).round() as usize;
+        let mut out = Vec::new();
+        for i in 0..(delay as usize * 3 + 40 * period) {
+            let y = line.read();
+            line.push(amp * (2.0 * std::f64::consts::PI * f * i as f64 * dt).sin());
+            if i >= delay as usize * 3 {
+                out.push(y);
+            }
+        }
+        out.truncate(out.len() / period * period);
+        out
+    }
+
+    #[test]
+    fn a_loud_sine_steepens_as_fubini_solved_it() {
+        // Fubini's solution before the shock (Hamilton & Blackstock, *Nonlinear Acoustics*,
+        // ch. 4): at σ = x/x̄ the harmonics are B_n = 2·J_n(nσ)/(nσ) of the source amplitude,
+        // x̄ = 1/(ε·p_a·ω) in time of flight with ε = (γ+1)/(2γ·p₀). At σ = 0.5, with J₁(0.5) =
+        // 0.242268, J₂(1) = 0.114903, J₃(1.5) = 0.060964 (Abramowitz & Stegun, table 9.1):
+        // B₁ = 0.969072, B₂ = 0.229806, B₃ = 0.081285.
+        let dt = 1.0 / 192_000.0;
+        let (amp, f) = (5000.0, 500.0);
+        let eps = (1.4 + 1.0) / (2.0 * 1.4 * 101_325.0);
+        let delay = 0.5 / (eps * amp * 2.0 * std::f64::consts::PI * f * dt);
+        let y = warped_sine(delay, amp, f, dt);
+        let b: Vec<f64> = (1..=3).map(|k| harmonic(&y, f, dt, k) / amp).collect();
+        assert!((b[0] / 0.969_072 - 1.0).abs() < 0.01, "B1 {}", b[0]);
+        assert!((b[1] / 0.229_806 - 1.0).abs() < 0.03, "B2 {}", b[1]);
+        assert!((b[2] / 0.081_285 - 1.0).abs() < 0.05, "B3 {}", b[2]);
+    }
+
+    #[test]
+    fn far_past_the_shock_a_sine_is_a_decaying_sawtooth() {
+        // Weak-shock theory (Blackstock, JASA 39, 1966; Hamilton & Blackstock, *Nonlinear
+        // Acoustics*, ch. 4): well past the shock distance a sine is a sawtooth whose harmonics
+        // are B_n = 2/(n·(1 + σ)) of the source amplitude — the shocks dissipate it. At σ = 5:
+        // B₁ = 1/3, B₂ = 1/6. A shock that kept its full height would stay near B₁ = 2/π.
+        let dt = 1.0 / 192_000.0;
+        let (amp, f) = (5000.0, 500.0);
+        let eps = (1.4 + 1.0) / (2.0 * 1.4 * 101_325.0);
+        let delay = 5.0 / (eps * amp * 2.0 * std::f64::consts::PI * f * dt);
+        let y = warped_sine(delay, amp, f, dt);
+        let b1 = harmonic(&y, f, dt, 1) / amp;
+        let b2 = harmonic(&y, f, dt, 2) / amp;
+        assert!((b1 / (1.0 / 3.0) - 1.0).abs() < 0.05, "B1 {b1}");
+        assert!((b2 / (1.0 / 6.0) - 1.0).abs() < 0.08, "B2 {b2}");
+    }
+
+    #[test]
+    fn past_the_shock_distance_the_front_jumps() {
+        // at σ = 2 the crest has overtaken the front: the rise takes a step or two instead of
+        // the sine's 0.016 of the amplitude per step
+        let dt = 1.0 / 192_000.0;
+        let (amp, f) = (5000.0, 500.0);
+        let eps = (1.4 + 1.0) / (2.0 * 1.4 * 101_325.0);
+        let delay = 2.0 / (eps * amp * 2.0 * std::f64::consts::PI * f * dt);
+        let y = warped_sine(delay, amp, f, dt);
+        let jump = y.windows(2).map(|w| w[1] - w[0]).fold(0.0, f64::max);
+        assert!(jump > 0.5 * amp, "steepest rise {jump}");
+        assert!(y.iter().all(|v| v.abs() <= amp * 1.0001), "no overshoot");
+    }
+
+    #[test]
+    fn a_faint_wave_travels_as_in_a_plain_line() {
+        let mut plain = DelayLine::new(37.3);
+        let mut warped = WarpLine::new(37.3, nonlinearity(1.4, 101_325.0));
+        for k in 0..400 {
+            let x = 1e-3 * (k as f64 * 0.21).sin();
+            assert!((plain.read() - warped.read()).abs() < 1e-9, "step {k}");
+            plain.push(x);
+            warped.push(x);
+        }
+    }
+
+    #[test]
+    fn a_warped_line_knows_its_next_read_a_step_early() {
+        let mut d = WarpLine::new(24.0, nonlinearity(1.4, 101_325.0));
+        for k in 0..200 {
+            let next = d.read_next().unwrap();
+            d.push(30_000.0 * (k as f64 * 0.37).sin());
+            assert_eq!(d.read(), next, "step {k}");
+        }
+        assert_eq!(WarpLine::new(1.5, 1e-5).read_next(), None);
+    }
+
+    #[test]
+    fn the_nonlinearity_by_hand() {
+        // (γ+1)/(2γ·p₀) for air at one atmosphere: 2.4/(2.8·101 325) = 8.4593e-6 per Pa
+        assert!((nonlinearity(1.4, 101_325.0) / 8.4593e-6 - 1.0).abs() < 1e-4);
     }
 
     #[test]
