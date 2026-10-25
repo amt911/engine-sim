@@ -57,12 +57,13 @@ impl SimHandle {
             QualityChoice::Auto => Quality::Medium,
         };
         let sim = Simulation::with_quality(def, vehicle, rate as f64, 1, start);
+        let dropouts = output.as_ref().map(|o| o.dropouts.clone());
         let snapshot = Arc::new(Mutex::new(sim.snapshot()));
         let (tx, rx) = channel();
         let shared = snapshot.clone();
         let thread = std::thread::Builder::new()
             .name("sim".into())
-            .spawn(move || run(sim, quality, rx, producer, shared, repaint))
+            .spawn(move || run(sim, quality, rx, producer, shared, repaint, dropouts))
             .expect("spawn sim thread");
         Self {
             tx,
@@ -131,6 +132,7 @@ fn run(
     mut producer: Option<rtrb::Producer<f32>>,
     shared: Arc<Mutex<Snapshot>>,
     repaint: Option<eframe::egui::Context>,
+    dropouts: Option<Arc<std::sync::atomic::AtomicU64>>,
 ) {
     let rate = sim.sample_rate();
     let target = (rate * TARGET_LATENCY_S) as usize;
@@ -200,6 +202,9 @@ fn run(
             last_snap = Instant::now();
             if let Ok(mut s) = shared.try_lock() {
                 *s = sim.snapshot();
+                s.dropouts = dropouts
+                    .as_ref()
+                    .map_or(0, |d| d.load(std::sync::atomic::Ordering::Relaxed));
             }
             if let Some(ctx) = &repaint {
                 ctx.request_repaint();
