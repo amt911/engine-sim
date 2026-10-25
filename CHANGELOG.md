@@ -28,3 +28,14 @@ Each tag on `main` is a runnable snapshot of the simulator (for the timelapse).
 | `v0.15.1` | 2026-10-24 | **Presets without guessed silencers**: each preset carries only the exhaust it has data for (its own tail pipe after the collectors); the rule-of-thumb road silencers reshaped the spectrum (the V10's 500–1000 Hz +23 dB) and stay a design option |
 | `v0.16.0` | 2026-10-24 | **Real engines**: the LFA's banks fire evenly (each 5-into-1 collector every 144°; the preset had them odd/even), its unpublished geometry sized by physics and checked against Lexus' curve; a Honda K20A preset; changing the cylinder count keeps one coherent engine (a V12 at 60°, every cylinder in a collector) |
 | `v0.16.1` | 2026-10-24 | **Faster, same sound; clean renders**: the exhaust net and half an ITB intake's runners on their own threads (byte-identical output, LFA Ultra −24 % time), no per-step allocations; offline renders record an engine already idling (no start-up noise at the top of a track) |
+| `v0.16.2` | 2026-10-25 | **No distortion on lift-off**: the tail jets' noise filter stays stable on overrun (a filter runaway made a harsh noise when lifting at high rpm) |
+| `v0.16.3` | 2026-10-25 | **Outdoors by default**: no room reverb (the echo the user heard) |
+| `v0.16.4` | 2026-10-25 | **Clean loud passages**: a look-ahead limiter replaces the tanh soft clip (it turns the level down, never bends the wave) |
+| `v0.17.0` | 2026-10-25 | **Valve-jet hiss**: each exhaust valve's jet noise rides down its primary (SAE ARP876 level, Tam's fine-scale spectrum) |
+| `v0.17.1` | 2026-10-25 | **Lighter non-linear pipes**: the FV pipes reconstruct four cells at once (SIMD WENO, `wide`): same samples, ~15 % less CPU |
+| `v0.17.2` | 2026-10-25 | **Auto quality reacts in time**: it steps down within ~0.4 s when falling behind or when the audio buffer runs low, instead of after 2.4 s of dropouts (slow laptops) |
+| `v0.17.3` | 2026-10-25 | **No click as a valve lifts**: the valve's flow area is a smooth minimum of curtain and port area (Heywood p. 229), not a kink |
+| `v0.18.0` | 2026-10-25 | **Combustion from the flame**: burn angles from Hires (1978) with the Metghalchi–Keck laminar flame speed and residual dilution, MBT spark, and cycle-to-cycle variation from mixture, residual and turbulence (Heywood §9.4.2) |
+| `v0.18.1` | 2026-10-25 | **Dropouts counted**: the audio line shows how many times the buffer ran dry |
+| `v0.19.0` | 2026-10-25 | **Street environment**: ground and façade reflections (ISO 9613-2) and air absorption (ISO 9613-1), with width and reflection sliders |
+| `v0.19.1` | 2026-10-25 | **Valvetrain ticks**: each valve closing strikes its seat (force from Zheng 2020, scaled with speed), heard through the head's structure response |
