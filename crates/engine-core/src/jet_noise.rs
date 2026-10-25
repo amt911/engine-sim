@@ -69,7 +69,7 @@ fn jet_p_rms(v: f64, d: f64, rho_jet: f64, r: f64) -> f64 {
 #[derive(Debug, Clone)]
 pub struct JetNoise {
     rng: u64,
-    // band-pass state (transposed direct form II)
+    // band-pass state (the SVF's two integrators)
     s1: f64,
     s2: f64,
 }
@@ -111,17 +111,22 @@ impl JetNoise {
         p_rms * norm * self.band(n, fc, dt)
     }
 
-    /// RBJ band-pass (0 dB peak) at `fc`, Q = BAND_Q.
+    /// Band-pass (0 dB peak) at `fc`, Q = BAND_Q: the trapezoidal state-variable filter of
+    /// A. Simper ("Linear trapezoidal integrated SVF", Cytomic, 2013). As a fixed filter it is
+    /// the same prewarped bilinear transform as the RBJ cookbook's band-pass (so the variance
+    /// kept, α/(1 + α), is unchanged); unlike a direct-form biquad its state stays bounded while
+    /// `fc` jumps every sample, as it does when the exit flow keeps reversing.
     fn band(&mut self, x: f64, fc: f64, dt: f64) -> f64 {
-        let w0 = 2.0 * PI * fc * dt;
-        let alpha = band_alpha(fc, dt);
-        let a0 = 1.0 + alpha;
-        let (b0, b2) = (alpha / a0, -alpha / a0);
-        let (a1, a2) = (-2.0 * w0.cos() / a0, (1.0 - alpha) / a0);
-        let y = b0 * x + self.s1;
-        self.s1 = -a1 * y + self.s2;
-        self.s2 = b2 * x - a2 * y;
-        y
+        let g = (PI * fc * dt).tan();
+        let k = 1.0 / BAND_Q;
+        let a1 = 1.0 / (1.0 + g * (g + k));
+        let (a2, a3) = (g * a1, g * g * a1);
+        let v3 = x - self.s2;
+        let v1 = a1 * self.s1 + a2 * v3;
+        let v2 = self.s2 + a2 * self.s1 + a3 * v3;
+        self.s1 = 2.0 * v1 - self.s1;
+        self.s2 = 2.0 * v2 - self.s2;
+        k * v1
     }
 }
 
@@ -130,9 +135,228 @@ fn band_alpha(fc: f64, dt: f64) -> f64 {
     (2.0 * PI * fc * dt).sin() / (2.0 * BAND_Q)
 }
 
+/// The fine-scale turbulence similarity spectrum of jet mixing noise, G(f/f_F) of Tam,
+/// Golebiowski & Seiner (AIAA 96-1716, 1996, eq. 6; one shape for all their subsonic and
+/// supersonic jet data, f_F its peak), as a filter whose peak follows a moving f_F: a first-order
+/// high-pass at 0.1411·f_F and a second-order low-pass at 6.7866·f_F (Q 0.4094), fitted to
+/// eq. (6) within 0.47 dB rms (1.5 dB at worst) from 0.02 to 50·f_F. (Eq. 6 as printed takes
+/// log(f/f_F) between 10 and 30·f_F; it only joins its neighbours with log(f/10f_F), read so.)
+#[derive(Debug, Clone, Default)]
+pub struct FineScale {
+    hp: (f64, f64),
+    lp: [f64; 2],
+    coef: [f64; 6],
+    f_peak: f64,
+}
+
+impl FineScale {
+    const HP: f64 = 0.1411;
+    const LP: f64 = 6.7866;
+    const Q: f64 = 0.4094;
+    /// 10·log of the fitted shape at its peak (the fit's +0.105 dB offset taken out).
+    const GAIN: f64 = 0.987_970_6;
+
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// One step of `dt` of `x` through the spectrum peaking at `f_peak` Hz.
+    pub fn process(&mut self, x: f64, f_peak: f64, dt: f64) -> f64 {
+        if (f_peak - self.f_peak).abs() > 0.005 * self.f_peak.max(1.0) {
+            self.retune(f_peak, dt);
+        }
+        let [g, a1h, b0, b1, a1, a2] = self.coef;
+        // first-order high-pass (bilinear): y = g·(x − x₁) − a1h·y₁
+        let h = g * (x - self.hp.0) - a1h * self.hp.1;
+        self.hp = (x, h);
+        // second-order low-pass, transposed direct form II
+        let y = b0 * h + self.lp[0];
+        self.lp[0] = b1 * h - a1 * y + self.lp[1];
+        self.lp[1] = b0 * h - a2 * y;
+        Self::GAIN * y
+    }
+
+    fn retune(&mut self, f_peak: f64, dt: f64) {
+        let nyq = 0.45 / dt;
+        let w = |f: f64| (std::f64::consts::PI * f.min(nyq) * dt).tan();
+        // high-pass s/(s + ω): bilinear with pre-warping
+        let kh = w(Self::HP * f_peak);
+        let g = 1.0 / (1.0 + kh);
+        let a1h = (kh - 1.0) / (1.0 + kh);
+        // low-pass 1/(1 + s/(Qω) + (s/ω)²)
+        let k = w(Self::LP * f_peak);
+        let norm = 1.0 / (1.0 + k / Self::Q + k * k);
+        let b0 = k * k * norm;
+        let b1 = 2.0 * b0;
+        let a1 = 2.0 * (k * k - 1.0) * norm;
+        let a2 = (1.0 - k / Self::Q + k * k) * norm;
+        self.coef = [g, a1h, b0, b1, a1, a2];
+        self.f_peak = f_peak;
+    }
+}
+
+/// The jet through an open exhaust valve, heard inside the port: gas expanding from the
+/// cylinder (`p_cyl`, `t_cyl`) to the port (`p_port`, `t_port`) through the curtain's effective
+/// area `a_curtain`, isentropically, at most at c* (choked). Its turbulent mixing noise follows
+/// the same correlation as a tail jet's ([`jet_oaspl_db`], ARP876), with the port's gas as the
+/// medium (ρc² = γp: at one pressure the correlation needs no correction for hot gas); its
+/// acoustic power W = 4πr²·p²/(ρc) goes into the primary of area `a_pipe` as plane waves (below
+/// the first cut-on, 1.84c/πD), half downstream: p = √(½·W·ρc/A). The plane-wave rms pressure
+/// it sends down the pipe, Pa; 0 with the valve shut or the flow reversed.
+pub fn valve_jet_level(
+    (p_cyl, t_cyl): (f64, f64),
+    (p_port, t_port): (f64, f64),
+    a_curtain: f64,
+    a_pipe: f64,
+) -> (f64, f64, f64) {
+    use crate::gas::{CP, GAMMA, R_AIR};
+    if a_curtain <= 0.0 || p_port >= p_cyl || t_cyl <= 0.0 || t_port <= 0.0 {
+        return (0.0, 0.0, 0.0);
+    }
+    let ratio = (p_port / p_cyl).max(crate::gas::CRITICAL_PRESSURE_RATIO);
+    // the step's hot path: the correlation's dB terms taken as one product (no logs), and
+    // ratio^((γ−1)/γ) = ratio / ratio^(1/γ)
+    let r_g = ratio.powf(1.0 / GAMMA);
+    let u = (2.0 * CP * t_cyl * (1.0 - ratio / r_g)).sqrt();
+    // ρ_jet / ρ_port, both ideal gas
+    let density_ratio = p_cyl * r_g * t_port / (t_cyl * p_port);
+    let c_a = (GAMMA * R_AIR * t_port).sqrt();
+    let d = (4.0 * a_curtain / PI).sqrt();
+    let m = u / c_a;
+    let sqrt_m = m.sqrt();
+    let m35 = m * m * m * sqrt_m;
+    let w = 3.0 * m35 / (0.6 + m35) - 1.0;
+    // p₁² = P_REF²·10^14.1·(ρ_j/ρ_a)^w·M^7.5/(1 + 0.01·M^4.5)·A; W = 4πr²p₁²/(ρc), half of it
+    // down the pipe as a plane wave p = √(½Wρc/A_pipe): ρc cancels
+    const P_REF_10_705: f64 = P_REF * 1.122_018_454_301_963_3e7;
+    let p1_sq = density_ratio.powf(w) * m35 * m35 * sqrt_m / (1.0 + 0.01 * m35 * m) * a_curtain;
+    (P_REF_10_705 * (2.0 * PI * p1_sq / a_pipe).sqrt(), u, d)
+}
+
+/// The noise of one exhaust valve's jet as a pressure signal in its primary: seeded white noise
+/// through Tam's fine-scale spectrum ([`FineScale`]) peaking at the jet's Strouhal frequency
+/// 0.2·u/d, scaled to [`valve_jet_level`].
+#[derive(Debug, Clone)]
+pub struct ValveJet {
+    rng: u64,
+    spectrum: FineScale,
+}
+
+impl ValveJet {
+    /// ∫ of the fitted fine-scale shape's power over f/f_F (the filter's own, for its level).
+    const SHAPE_INTEGRAL: f64 = 4.052_433_9;
+
+    pub fn new(seed: u64) -> Self {
+        Self {
+            rng: seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1,
+            spectrum: FineScale::new(),
+        }
+    }
+
+    /// One step of `dt`: the pressure (Pa) the valve's jet sends down the primary.
+    pub fn step(
+        &mut self,
+        cyl: (f64, f64),
+        port: (f64, f64),
+        a_curtain: f64,
+        a_pipe: f64,
+        dt: f64,
+    ) -> f64 {
+        self.rng ^= self.rng >> 12;
+        self.rng ^= self.rng << 25;
+        self.rng ^= self.rng >> 27;
+        let x = (self.rng.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 / (1u64 << 53) as f64;
+        let white = (x - 0.5) * 12f64.sqrt();
+        let (level, u, d) = valve_jet_level(cyl, port, a_curtain, a_pipe);
+        if level == 0.0 {
+            self.spectrum
+                .process(0.0, self.spectrum.f_peak.max(1.0), dt);
+            return 0.0;
+        }
+        // the shape (to 50·f_F) inside the band the steps resolve
+        let f_peak = (PEAK_STROUHAL * u / d).min(0.05 / dt);
+        // unit white noise through the shape keeps 2·f_F·∫G/fs of its variance
+        let kept = (2.0 * f_peak * Self::SHAPE_INTEGRAL * dt).sqrt();
+        level / kept * self.spectrum.process(white, f_peak, dt)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_choked_exhaust_valve_jet_by_hand() {
+        // 3 bar, 1200 K in the cylinder, the port at 1 bar, 900 K: choked (1/3 < 0.528), the jet
+        // at c* = √(2γRT/(γ + 1)) = 633.9 m/s with the throat's 0.8711·0.6339 = 0.5522 kg/m³,
+        // into port gas of 0.38715 kg/m³ and c = 601.4 m/s: M = 1.0541, w = 1.0014. Through 4 cm²:
+        // 141 + 1.5444 + 1.7163 − 0.0547 − 33.979 = 110.227 dB at 1 m (6.497 Pa), W =
+        // 4π·6.497²/(0.38715·601.4) = 2.278 W, half of it down a 42 mm primary (1.3854e-3 m²):
+        // √(½·2.278·232.83/1.3854e-3) = 437.5 Pa
+        let a_pipe = PI * 0.25 * 0.042 * 0.042;
+        let (p, u, _) = valve_jet_level((3e5, 1200.0), (1e5, 900.0), 4e-4, a_pipe);
+        assert!((u - 633.9).abs() < 0.2, "{u} m/s");
+        assert!((p / 437.5 - 1.0).abs() < 0.01, "{p} Pa");
+        // shut, or the port above the cylinder (reversion): no jet
+        assert_eq!(
+            valve_jet_level((3e5, 1200.0), (1e5, 900.0), 0.0, a_pipe).0,
+            0.0
+        );
+        assert_eq!(
+            valve_jet_level((1e5, 900.0), (1.2e5, 900.0), 4e-4, a_pipe).0,
+            0.0
+        );
+    }
+
+    #[test]
+    fn a_valve_jet_sends_its_level_down_the_pipe() {
+        // the generated noise carries valve_jet_level's rms (within the variance of 0.2 s)
+        let dt = 1.0 / 192_000.0;
+        let a_pipe = PI * 0.25 * 0.042 * 0.042;
+        let mut j = ValveJet::new(3);
+        let n = (0.2 / dt) as usize;
+        let cyl = (3e5, 1200.0);
+        let port = (1e5, 900.0);
+        let x: Vec<f64> = (0..n)
+            .map(|_| j.step(cyl, port, 4e-4, a_pipe, dt))
+            .collect();
+        let rms = (x.iter().map(|v| v * v).sum::<f64>() / n as f64).sqrt();
+        assert!((rms / 437.5 - 1.0).abs() < 0.1, "{rms} Pa");
+        // and nothing while the valve is shut
+        assert!((0..1000).all(|_| j.step(cyl, port, 0.0, a_pipe, dt) == 0.0));
+    }
+
+    #[test]
+    fn the_fine_scale_spectrum_is_tams() {
+        // a tone through the filter against eq. (6) of Tam, Golebiowski & Seiner (1996):
+        // 10·log G = 0 at the peak; −5.57 dB at 0.1·f_F; −2.25 at 3·f_F; −11.8 at 10·f_F;
+        // −26.6 at 30·f_F (at 0.1·f_F, the segment below 0.15: −3.5 + [11.874876 + 2.1202444·m +
+        // 7.5211814·m²]·m with m = log(20·0.1/3) = −0.1761, = −3.5 − 2.067 = −5.57)
+        let fs = 192_000.0;
+        let f_peak = 1000.0;
+        let level = |f: f64| {
+            let mut g = FineScale::new();
+            let n = (0.5 * fs) as usize;
+            let mut peak = 0.0f64;
+            for i in 0..n {
+                let y = g.process((2.0 * PI * f * i as f64 / fs).sin(), f_peak, 1.0 / fs);
+                if i > n / 2 {
+                    peak = peak.max(y.abs());
+                }
+            }
+            20.0 * peak.log10()
+        };
+        for (x, db) in [
+            (0.1, -5.57),
+            (1.0, 0.0),
+            (3.0, -2.25),
+            (10.0, -11.8),
+            (30.0, -26.6),
+        ] {
+            let got = level(x * f_peak);
+            assert!((got - db).abs() < 1.6, "{x}·f_F: {got:.2} dB, eq. 6 {db}");
+        }
+    }
     use approx::assert_relative_eq;
 
     #[test]

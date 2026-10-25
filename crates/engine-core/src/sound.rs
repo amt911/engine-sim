@@ -16,6 +16,10 @@ pub struct SoundDef {
     pub flow_noise: f64,
     /// The intake mouth: a monopole of the air the engine draws (1 = physical, 0 = off).
     pub intake: f64,
+    /// The exhaust valves' jets ([`crate::jet_noise::valve_jet_level`]): the turbulent mixing
+    /// noise of each blowdown through the valve's curtain, sent down the pipes with the pulse.
+    /// 1 = physical, 0 = off.
+    pub valve_jet: f64,
     /// The block's radiated combustion noise ([`crate::structure`]): the cylinder pressure
     /// through the measured structure response of engine blocks, 1 = physical, 0 = off.
     pub block: f64,
@@ -25,7 +29,7 @@ pub struct SoundDef {
     /// Cycle-to-cycle combustion variability: 1 = the measured spreads of Heywood §9.4.2 (each
     /// cycle's charge, mixture, residual and turbulence near the plug), 0 = every cycle alike.
     pub combustion_jitter: f64,
-    /// Wet level of the body/room reverb applied in the voice.
+    /// Wet level of a room / car-body reverb applied in the voice; 0 (outdoors) by default.
     pub reverb: f64,
     /// How much the voice lifts quiet passages (idle) toward the full-load level, in dB:
     /// 1 = up to +12 dB, 0 = the raw dynamics of the physics (the default: idle, overrun and
@@ -58,10 +62,11 @@ impl Default for SoundDef {
         Self {
             flow_noise: 1.0,
             intake: 1.0,
+            valve_jet: 1.0,
             block: 1.0,
             mechanical: 1.0,
             combustion_jitter: 1.0,
-            reverb: 0.15,
+            reverb: 0.0,
             leveling: 0.0,
             listener_distance_m: 3.0,
             listener_angle_deg: 30.0,
@@ -78,6 +83,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_engine_is_heard_outdoors_without_a_room() {
+        // the listener stands outside (ground reflection only): a room's reverberation has no
+        // place in the default, it was heard as an echo (user, 2026-10-24); a file can add one
+        assert_eq!(SoundDef::default().reverb, 0.0);
+    }
+
+    #[test]
     fn listener_round_trips_and_defaults_for_old_files() {
         let old: SoundDef = serde_yaml_ng::from_str("reverb: 0.2\n").unwrap();
         assert_eq!(
@@ -87,6 +99,20 @@ mod tests {
         let s = SoundDef {
             listener_distance_m: 7.5,
             listener_angle_deg: -45.0,
+            ..SoundDef::default()
+        };
+        let json: SoundDef = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        let yaml: SoundDef =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&s).unwrap()).unwrap();
+        assert_eq!((json, yaml), (s.clone(), s));
+    }
+
+    #[test]
+    fn the_valve_jets_round_trip_and_old_files_hear_them() {
+        let old: SoundDef = serde_yaml_ng::from_str("reverb: 0.2\n").unwrap();
+        assert_eq!(old.valve_jet, 1.0);
+        let s = SoundDef {
+            valve_jet: 0.5,
             ..SoundDef::default()
         };
         let json: SoundDef = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
