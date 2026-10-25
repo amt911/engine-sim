@@ -248,19 +248,63 @@ pub fn valve_inflow(p_cyl: f64, psi: f64, arriving: f64, gas: &PipeGas) -> Valve
 /// pipes): every end has the same pressure, so the same A (all pipes referred to the same
 /// p_ref), and the mass flows into the junction sum to zero. `arriving[n]` is the variable
 /// coming into the junction along pipe n, A + k·Uₙ with Uₙ toward the junction;
-/// `weights[n]` = Fₙ/a_ref,n (ρₙuₙFₙ ∝ Uₙ·Fₙ/a_ref,n at a common pressure). Writes the variable
-/// each pipe receives, 2A − arriving, and returns A.
+/// `weights[n]` = Fₙ/a_ref,n (ρₙuₙFₙ ∝ Aₙ^(2/(κ−1))·Uₙ·Fₙ/a_ref,n). Writes the variable each
+/// pipe receives, 2Aₙ − arriving, and returns the junction's A.
+///
+/// The model assumes subsonic ends. A pipe end cannot pass flow faster than sound (its own
+/// characteristic would run backwards): where the common A would ask for |Uₙ| > Aₙ the end
+/// chokes at its sonic state, Uₙ = ±Aₙ with arriving = Aₙ(1 ± k), carrying a fixed mass flow
+/// that the other pipes share. Air at κ = 1.4 ([`crate::gas::GAMMA`]).
 pub fn junction(arriving: &[f64], weights: &[f64], sent: &mut [f64]) -> f64 {
-    // Σ wₙ·Uₙ = 0 with Uₙ = (arriving − A)/k: A is the weighted mean of what arrives
-    let total: f64 = weights.iter().sum();
-    let a = weights
-        .iter()
-        .zip(arriving)
-        .map(|(w, l)| w * l)
-        .sum::<f64>()
-        / total;
-    for (s, l) in sent.iter_mut().zip(arriving) {
-        *s = 2.0 * a - l;
+    let k = 0.5 * (crate::gas::GAMMA - 1.0);
+    let e = 2.0 / (crate::gas::GAMMA - 1.0);
+    // choked ends (bit n set), and the sonic state of each
+    let sonic = |l: f64, inflow: bool| if inflow { l / (1.0 + k) } else { l / (1.0 - k) };
+    let mut choked: u64 = 0;
+    let mut a = 1.0;
+    for _ in 0..=arriving.len().min(63) {
+        // the mass the choked ends carry in, at their own sonic states
+        let mut fixed = 0.0;
+        let (mut wsum, mut wl) = (0.0, 0.0);
+        for (n, (w, l)) in weights.iter().zip(arriving).enumerate().take(63) {
+            if choked & (1 << n) != 0 {
+                let inflow = *l > a;
+                let an = sonic(*l, inflow);
+                fixed += w * an.powf(e) * if inflow { an } else { -an };
+            } else {
+                wsum += w;
+                wl += w * l;
+            }
+        }
+        // the open ends: Σ w·A^e·(l − A)/k + fixed = 0; with none choked, A = Σwl/Σw
+        a = if choked == 0 {
+            wl / wsum
+        } else if wsum > 0.0 {
+            let g = |x: f64| x.powf(e) * (wl - wsum * x) / k + fixed;
+            let hi = arriving.iter().cloned().fold(f64::MIN, f64::max).max(1e-3);
+            crate::exhaust_fv::rising_root(|x| -g(x), 1e-3, hi)
+        } else {
+            a
+        };
+        // any open end now past sound?
+        let mut more = false;
+        for (n, l) in arriving.iter().enumerate().take(63) {
+            if choked & (1 << n) == 0 && ((l - a) / k).abs() > a {
+                choked |= 1 << n;
+                more = true;
+            }
+        }
+        if !more {
+            break;
+        }
+    }
+    for (n, (s, l)) in sent.iter_mut().zip(arriving).enumerate() {
+        let an = if n < 63 && choked & (1 << n) != 0 {
+            sonic(*l, *l > a)
+        } else {
+            a
+        };
+        *s = 2.0 * an - l;
     }
     a
 }
@@ -657,5 +701,26 @@ mod tests {
                 v.mass_flow
             );
         }
+    }
+
+    #[test]
+    fn a_pipe_cannot_rush_into_a_junction_faster_than_sound() {
+        // λ = 1.5 arriving against two pipes at 0.6: the constant-pressure junction alone would
+        // put A at 0.9 and the first pipe's end at U = (1.5 − 0.9)/0.2 = 3 sound speeds, sending
+        // back 2·0.9 − 1.5 = 0.3 — a near-vacuum. Its end chokes instead: U = A there, λ = A + kA,
+        // A = 1.5/1.2 = 1.25, and it receives β = 2·1.25 − 1.5 = 1.0. The others share what it
+        // passes; none receives a variable below the sonic outflow's.
+        let mut sent = [0.0; 3];
+        junction(&[1.5, 0.6, 0.6], &[1.0, 1.0, 1.0], &mut sent);
+        assert!(
+            (sent[0] - 1.0).abs() < 1e-9,
+            "choked pipe receives {}",
+            sent[0]
+        );
+        assert!(sent.iter().all(|s| *s > 0.0), "{sent:?}");
+        // a faint wave is untouched by the limit (the Kelly–Lochbaum test covers its values)
+        let mut faint = [0.0; 3];
+        junction(&[1.01, 1.0, 1.0], &[1.0, 1.0, 1.0], &mut faint);
+        assert!((faint[0] - (2.0 * 3.01 / 3.0 - 1.01)).abs() < 1e-12);
     }
 }

@@ -107,6 +107,28 @@ impl RiemannNet {
         v
     }
 
+    /// A prescribed mass flow `mdot` (kg/s, into the primary > 0) at cylinder `i`'s port this
+    /// step, against the β arriving there: the pipe-end state whose mass flux ρ_ref·A^(2/(κ−1))·
+    /// U·a_ref·F is `mdot`, with U = (A − β)/k. Call before [`Self::step`] instead of
+    /// [`Self::valve`].
+    pub fn inject(&mut self, i: usize, mdot: f64) {
+        let g = &self.primary_gas;
+        let k = 0.5 * (KAPPA - 1.0);
+        let e = 2.0 / (KAPPA - 1.0);
+        let beta = self.primaries[i].at_near();
+        let target = mdot / (KAPPA * g.p_ref / g.a_ref * g.area_m2);
+        let flux = |a: f64| a.powf(e) * (a - beta) / k - target;
+        // backflow: the flux A^e·(A − β) is most negative at A = eβ/(e + 1) (= 5β/6): a pipe
+        // cannot give more than that toward the port — it chokes there
+        let (lo, hi) = if mdot >= 0.0 {
+            (beta, beta + 1.0)
+        } else {
+            (e * beta / (e + 1.0), beta)
+        };
+        let a = crate::exhaust_fv::rising_root(flux, lo, hi);
+        self.sent[i] = 2.0 * a - beta;
+    }
+
     /// Stagnation temperature of the gas at cylinder `i`'s port, K: what a backflow carries in.
     pub fn port_stagnation_t(&self, i: usize) -> f64 {
         let g = &self.primary_gas;
@@ -331,5 +353,35 @@ mod tests {
         }
         assert!(highest < 5e5, "port up to {highest} Pa");
         assert!(lowest > -9.5e4, "port down to {lowest} Pa");
+    }
+
+    #[test]
+    fn a_prescribed_flow_sets_the_port_by_its_mass_flux() {
+        // 0.1 kg/s into a 40 mm primary at rest (β = 1, a_ref = 600 m/s, ρ_ref = κp/a² =
+        // 0.394042 kg/m³, F = 1.25664e-3 m²): A⁵·(A − 1)/0.2 = 0.1/(ρ_ref·a_ref·F) = 0.336587,
+        // whose root (bisection by hand) is A = 1.052197; the port's pressure is p_ref·A⁷
+        let d = ExhaustDef::default();
+        let mut rn = RiemannNet::new(&d, 1, DT);
+        rn.inject(0, 0.1);
+        let p = rn.valve_pressure(0) + ATM_PA;
+        let want = ATM_PA * 1.052_197f64.powi(7);
+        assert!((p / want - 1.0).abs() < 1e-5, "{p} vs {want}");
+        // no flow: the closed end's own β back, the rest pressure
+        let mut rn = RiemannNet::new(&d, 1, DT);
+        rn.inject(0, 0.0);
+        assert!(rn.valve_pressure(0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_prescribed_backflow_beyond_what_the_pipe_gives_chokes() {
+        // β = 1 at the port: the backflow A⁵·(A − 1)/0.2 is largest in magnitude at A = 5/6,
+        // (5/6)⁵·(1/6)/0.2 = 0.334898 of ρ_ref·a_ref·F. Asking ten times that sends no vacuum:
+        // the port sits at A = 5/6, p = p_ref·(5/6)⁷ = 0.279082·p_ref
+        let d = ExhaustDef::default();
+        let mut rn = RiemannNet::new(&d, 1, DT);
+        let max = 0.334_898 * (1.4 * ATM_PA / 600.0) * std::f64::consts::PI * 0.25 * 0.04 * 0.04;
+        rn.inject(0, -10.0 * max);
+        let p = rn.valve_pressure(0) + ATM_PA;
+        assert!((p / (0.279_082 * ATM_PA) - 1.0).abs() < 1e-4, "{p}");
     }
 }
