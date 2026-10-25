@@ -116,10 +116,6 @@ pub enum Segment {
 /// US patent 3,318,412), a fifth in a centre resonator and the rest in the rear box, both
 /// straight-through and packed, joined by `pipe_d` pipes. `swept_m3` is this branch's share.
 pub fn road_exhaust(swept_m3: f64, pipe_d: f64) -> Vec<Segment> {
-    // to a tenth of a millimetre: what a drawing would give (and a file keeps exactly)
-    let shell = |volume: f64, length: f64| {
-        ((4.0 * volume / (std::f64::consts::PI * length)).sqrt() * 1e4).round() / 1e4
-    };
     let pipe = |length_m: f64| Segment::Pipe {
         length_m,
         diameter_m: pipe_d,
@@ -133,18 +129,31 @@ pub fn road_exhaust(swept_m3: f64, pipe_d: f64) -> Vec<Segment> {
     };
     vec![
         pipe(0.4),
-        Segment::Catalyst {
-            length_m: 0.13,
-            diameter_m: shell(swept_m3, 0.13).max(1.5 * pipe_d),
-            cells_per_in2: 400.0,
-            wall_m: 0.000_165,
-        },
+        close_coupled_catalyst(swept_m3, pipe_d),
         pipe(1.0),
         silencer(2.0 * swept_m3, 0.35),
         pipe(0.8),
         silencer(8.0 * swept_m3, 0.45),
         pipe(0.3),
     ]
+}
+
+/// A shell of `volume` and `length`, its diameter to a tenth of a millimetre: what a drawing
+/// would give (and a file keeps exactly).
+fn shell(volume: f64, length: f64) -> f64 {
+    ((4.0 * volume / (std::f64::consts::PI * length)).sqrt() * 1e4).round() / 1e4
+}
+
+/// The catalyst right after a collector whose branch sweeps `swept_m3`, between `pipe_d` pipes:
+/// a brick of about the swept volume (a common sizing; estimate, no car's drawing), 0.13 m of the
+/// standard 400 cpsi / 6.5 mil (0.165 mm) substrate, never narrower than 1.5 pipes.
+pub fn close_coupled_catalyst(swept_m3: f64, pipe_d: f64) -> Segment {
+    Segment::Catalyst {
+        length_m: 0.13,
+        diameter_m: shell(swept_m3, 0.13).max(1.5 * pipe_d),
+        cells_per_in2: 400.0,
+        wall_m: 0.000_165,
+    }
 }
 
 /// Viscosity of exhaust gas at `t` K: Sutherland's law for air (μ₀ = 1.716e-5 Pa·s at 273 K,

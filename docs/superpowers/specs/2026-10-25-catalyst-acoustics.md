@@ -76,3 +76,24 @@ fingerprints are compared before and after.
 ## Out of scope
 
 Heat transfer from the gas to the monolith (light-off), and diesel particulate filters.
+
+## As built (2026-10-25)
+
+- **Fit** (`scripts/fit_narrow_tube.py`): non-negative least squares, 10 time constants; six
+  branches stay non-zero for each network. Within 1 % of the exact functions for
+  0.3 ≤ s ≤ 60. The low-frequency checks hold: Σrτ = 0.349 against the 1/3 mass excess, and
+  Σgτ = 1.003 against the isothermal limit.
+- **Elnemr's part has about 300 cpsi, not 400.** The cell pitch measured on its photograph
+  (2D FFT, 133 mm scale) is 1.43 mm.
+- **The rigid-channel theory is a lower bound.** It gives 0.9/3.1/2.7/4.8/5.0 dB against the
+  measured 1.3/5.0/5.5/8.0/9.5 dB at 50/260/600/1000/1200 Hz. The rest is probably the porous
+  ceramic walls, the mounting mat and the part's bends. The test asserts the bound, a rising
+  trend and a gap under 5 dB; the old model fell to 0.9 dB at 1200 Hz.
+- **Presets.** Every road-car preset carries a close-coupled catalyst sized by the rule; the
+  single does not.
+- **The LFA at 7500 rpm WOT against the recording** (orders re firing):
+  - order 5 (the banks' half order): −0.6 → −15.6 dB (real −14.2);
+  - order 15: −14.1 → −21.5 (real −19.4);
+  - order 25: −20.8 → −28.7 (real −30.8);
+  - order 35: −21.9 → −39.3 (real −19.7), the one that moved away;
+  - the 6–16 kHz bed: −26 → −37 dB (the recording −15 to −28, part wind).
