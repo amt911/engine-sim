@@ -5270,20 +5270,24 @@ mod tests {
 
     #[test]
     fn each_preset_carries_only_the_exhaust_it_has_data_for() {
-        // after each collector, the tail pipe of the preset's own length and bore — no silencer
-        // sized by rule
+        // after each collector, the catalyst every road car carries (sized by its rule) and the
+        // tail pipe of the preset's own length and bore — no silencer sized by rule
         for d in [
             EngineDef::inline4(),
             EngineDef::lfa_v10(),
             EngineDef::flatplane_v8(),
             EngineDef::crossplane_v8(),
         ] {
+            let branch = d.displacement_m3() / d.exhaust.collectors.len().max(1) as f64;
             assert_eq!(
                 d.exhaust.after_collector,
-                [crate::exhaust::Segment::Pipe {
-                    length_m: d.exhaust.tail_length_m,
-                    diameter_m: d.exhaust.tail_diameter_m,
-                }],
+                [
+                    crate::exhaust::close_coupled_catalyst(branch, d.exhaust.tail_diameter_m),
+                    crate::exhaust::Segment::Pipe {
+                        length_m: d.exhaust.tail_length_m,
+                        diameter_m: d.exhaust.tail_diameter_m,
+                    }
+                ],
                 "{}",
                 d.name
             );
