@@ -91,6 +91,87 @@ impl RPipe {
     }
 }
 
+/// The gas in a pipe the Riemann variables refer to: its reference pressure and sound speed,
+/// its cross-section and its ratio of heats.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PipeGas {
+    pub p_ref: f64,
+    pub a_ref: f64,
+    pub area_m2: f64,
+    pub kappa: f64,
+}
+
+/// What a valve boundary hands back: the variable it sends into the pipe, the mass flow
+/// (kg/s, out of the cylinder > 0) and the pressure at the pipe end.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ValveFlow {
+    pub sent: f64,
+    pub mass_flow: f64,
+    pub p_pipe: f64,
+}
+
+/// Outflow from a cylinder at stagnation (`p0`, `t0`) through a valve of effective area
+/// `psi`·(pipe area) into a pipe whose arriving variable is `arriving` (Benson §4.1, the
+/// constant-pressure model).
+///
+/// In cylinder units, U = u₂/a₀ and π = (p₂/p₀)^((κ−1)/2κ). The throat sets π(U):
+/// - subsonic (eq. 4.12), which with s = U/(1 − kU²), k = (κ−1)/2 and y = 1/π² is the
+///   quadratic y² − y − k·s²/ψ² = 0;
+/// - sonic below π* = (2/(κ+1))^½ (eqs. 4.15, 4.20);
+/// - and U is at most (2/(κ+1))^½, where the pipe itself chokes (eq. 4.21).
+///
+/// The pipe sets the other relation: the arriving β = A₂ − k·U·a₀/a_ref with A₂ = π·A₀,
+/// A₀ = (p₀/p_ref)^((κ−1)/2κ). The pipe's variable going out is λ = 2A₂ − β, and the mass flow
+/// is ρ₂u₂F₂ with a₂ from the energy equation, (a₂/a₀)² = 1 − kU² (eq. 4.10).
+/// A pipe at or above the cylinder's pressure gets no outflow and reflects as a closed end.
+pub fn valve_outflow(p0: f64, t0: f64, psi: f64, arriving: f64, gas: &PipeGas) -> ValveFlow {
+    let kappa = gas.kappa;
+    let k = 0.5 * (kappa - 1.0);
+    let a_cyl = sound_speed_ratio(p0 / gas.p_ref, kappa);
+    if psi <= 0.0 || arriving >= a_cyl {
+        return ValveFlow {
+            sent: closed_end(arriving),
+            mass_flow: 0.0,
+            p_pipe: gas.p_ref * pressure_ratio(arriving, kappa),
+        };
+    }
+    let a0 = (kappa * crate::gas::R_AIR * t0).sqrt();
+    let r = a0 / gas.a_ref;
+    let pi_star = (2.0 / (kappa + 1.0)).sqrt();
+    let u_choke = pi_star;
+    // the throat's π for a pipe velocity U (eqs. 4.12, 4.20)
+    let sonic_k = (2.0 / (kappa + 1.0)).powf((kappa + 1.0) / (2.0 * (kappa - 1.0)));
+    let pi_of = |u: f64| {
+        if u <= 0.0 {
+            return 1.0;
+        }
+        let sv = u / (1.0 - k * u * u);
+        let y = 0.5 * (1.0 + (1.0 + 4.0 * k * sv * sv / (psi * psi)).sqrt());
+        let pi = 1.0 / y.sqrt();
+        if pi >= pi_star {
+            pi
+        } else {
+            (psi * sonic_k * (1.0 - k * u * u) / u).powf((kappa - 1.0) / (2.0 * kappa))
+        }
+    };
+    // the pipe: g(U) = π(U)·A₀ − k·U·r − β falls with U from A₀ − β > 0
+    let g = |u: f64| pi_of(u) * a_cyl - k * u * r - arriving;
+    let u = if g(u_choke) >= 0.0 {
+        u_choke
+    } else {
+        crate::exhaust_fv::rising_root(|u| -g(u), 0.0, u_choke)
+    };
+    let pi = pi_of(u);
+    let p_pipe = p0 * pressure_ratio(pi, kappa);
+    let a2 = a0 * (1.0 - k * u * u).sqrt();
+    let rho2 = kappa * p_pipe / (a2 * a2);
+    ValveFlow {
+        sent: 2.0 * pi * a_cyl - arriving,
+        mass_flow: rho2 * u * a0 * gas.area_m2,
+        p_pipe,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,5 +300,66 @@ mod tests {
         // λ − 1 = 0.2 kept at half: 1.1; the rest state keeps 1
         assert!((p.at_far() - 1.1).abs() < 1e-9, "{}", p.at_far());
         assert!((p.at_near() - 1.0).abs() < 1e-12);
+    }
+
+    fn exhaust_gas() -> PipeGas {
+        // a 42 mm primary of air at 1 atm, 600 K (a = √(1.4·287·600) = 491.0 m/s)
+        PipeGas {
+            p_ref: crate::units::ATM_PA,
+            a_ref: (1.4 * crate::gas::R_AIR * 600.0f64).sqrt(),
+            area_m2: std::f64::consts::PI * 0.25 * 0.042 * 0.042,
+            kappa: 1.4,
+        }
+    }
+
+    #[test]
+    fn a_valve_passes_what_an_orifice_passes_to_the_same_pipe_pressure() {
+        // Whatever pipe state the boundary settles on, the flow through the throat is an
+        // isentropic orifice from the cylinder's stagnation state to that pressure
+        // (crate::gas::orifice_mass_flow: Heywood, App. C), subsonic or choked.
+        let gas = exhaust_gas();
+        for (p0, t0, psi) in [
+            (1.3e5, 900.0, 0.3),
+            (2.0e5, 1100.0, 0.5),
+            (4.0e5, 1200.0, 0.2),
+            (6.0e5, 1300.0, 0.05),
+        ] {
+            let v = valve_outflow(p0, t0, psi, 1.0, &gas);
+            let orifice = crate::gas::orifice_mass_flow(psi * gas.area_m2, p0, t0, v.p_pipe);
+            assert!(v.mass_flow > 0.0, "{p0} Pa: no flow");
+            assert!(
+                (v.mass_flow / orifice - 1.0).abs() < 1e-6,
+                "{p0} Pa, ψ {psi}: {} vs orifice {orifice}",
+                v.mass_flow
+            );
+            // and what it sends is the pipe-end state: (λ + β)/2 = (p/p_ref)^((κ−1)/2κ)
+            let a = 0.5 * (v.sent + 1.0);
+            assert!((a - sound_speed_ratio(v.p_pipe / gas.p_ref, 1.4)).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn no_outflow_against_a_higher_pipe_pressure() {
+        let gas = exhaust_gas();
+        // a cylinder at 1 atm against an arriving compression (β = 1.05: the pipe above 1 atm)
+        let v = valve_outflow(crate::units::ATM_PA, 900.0, 0.3, 1.05, &gas);
+        assert_eq!(v.mass_flow, 0.0);
+        assert_eq!(v.sent, 1.05, "a shut boundary reflects as a closed end");
+    }
+
+    #[test]
+    fn a_wide_valve_at_high_pressure_chokes_in_the_pipe() {
+        // ψ = 1 from 20 bar: the pipe itself runs sonic, U = (2/(κ+1))^½ = 0.912871 of a₀
+        // (Benson eq. 4.21), u₂ = a₂
+        let gas = exhaust_gas();
+        let (p0, t0) = (20e5, 1200.0);
+        let v = valve_outflow(p0, t0, 1.0, 1.0, &gas);
+        let a0 = (1.4 * crate::gas::R_AIR * t0).sqrt();
+        let u2 = 0.912_871 * a0;
+        let a2 = a0 * (1.0 - 0.2 * 0.912_871f64.powi(2)).sqrt();
+        // ρ₂u₂F₂ with u₂ = a₂ = 0.912871·a₀ and ρ₂ = κp₂/a₂²
+        let rho2 = 1.4 * v.p_pipe / (a2 * a2);
+        assert!((u2 / a2 - 1.0).abs() < 1e-5);
+        assert!((v.mass_flow / (rho2 * u2 * gas.area_m2) - 1.0).abs() < 1e-5);
     }
 }
