@@ -1583,6 +1583,14 @@ impl Engine {
                         cs.port_lit.fuel_kg += f;
                         cs.port_lit.air_kg += a;
                         cs.port_mix.flow(m, dm, 0.0, 0.0);
+                        // the hot gas also lights the primary's own mixture, if that can
+                        // carry a flame: the charge several misfires left there goes at once
+                        let st = cs.port_mix;
+                        if crate::fuel::flammable(st.fuel_kg, st.air_kg, m, cs.port_t, ATM_PA) {
+                            cs.port_lit.fuel_kg += st.fuel_kg;
+                            cs.port_lit.air_kg += st.air_kg;
+                            cs.port_mix = crate::fuel::ExhaustMixture::default();
+                        }
                     } else {
                         cs.port_mix.flow(m, dm, f, a);
                     }
@@ -1633,6 +1641,11 @@ impl Engine {
                 // still gives back its share. What the last cycle left unburnt stays in.
                 let fresh = (cs.trapped_kg - cs.residual_kg).max(0.0);
                 let air = fresh * AFR_STOICH / (1.0 + AFR_STOICH);
+                let film_x = crate::fuel::deposit_fraction(
+                    film_x,
+                    cs.gas.pressure(),
+                    self.omega.abs() / (2.0 * PI),
+                );
                 let fuel = if inject {
                     cs.film.meter(air / AFR_STOICH, film_x, film_share).1
                 } else {

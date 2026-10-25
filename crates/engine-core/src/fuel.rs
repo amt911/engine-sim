@@ -14,6 +14,16 @@ pub fn evaporated_share(period_s: f64, tau_s: f64) -> f64 {
     1.0 - (-period_s.max(0.0) / tau_s.max(1e-9)).exp()
 }
 
+/// The share X of an injection that lands on the port film, from its value `x_ref` at
+/// 100 kPa and 30 rev/s: Almkvist & Eriksson (SAE 941931, a warm port-injected engine at 90 °C)
+/// measure X rising with the manifold pressure, from about 0.3 of its full-load value at
+/// 20 kPa (Fig. 9: 0.06 against 0.2, linear between), and falling with speed about as n^(−½)
+/// (Fig. 10: halved from 10 to 40 rev/s). Held at the ends of their 10–40 rev/s range.
+pub fn deposit_fraction(x_ref: f64, p_pa: f64, rev_s: f64) -> f64 {
+    let load = 0.125 + 0.875 * p_pa.max(0.0) / 100e3;
+    x_ref * load * (30.0 / rev_s.clamp(10.0, 40.0)).sqrt()
+}
+
 /// The liquid fuel on one port's walls, kg.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct PortFilm {
@@ -50,6 +60,18 @@ pub fn burnable(fuel: f64, air: f64) -> f64 {
 pub fn unburnt(fuel: f64, air: f64, released: f64) -> (f64, f64) {
     let burnt = burnable(fuel, air) * released.clamp(0.0, 1.0);
     (fuel - burnt, (air - burnt * AFR_STOICH).max(0.0))
+}
+
+/// Whether `fuel` and `air` kg mixed through `m` kg of gas at `t_k` and `p_pa` can carry a flame:
+/// a Metghalchi–Keck laminar speed above zero for its equivalence ratio, with the rest of the
+/// gas as diluent within the fit's measured 0–0.4 ([`crate::combustion::laminar_flame_speed`]).
+pub fn flammable(fuel: f64, air: f64, m: f64, t_k: f64, p_pa: f64) -> bool {
+    if fuel <= 0.0 || air <= 0.0 {
+        return false;
+    }
+    let diluent = 1.0 - (fuel + air) / m.max(fuel + air);
+    let phi = fuel * AFR_STOICH / air;
+    diluent <= 0.4 && crate::combustion::laminar_flame_speed(phi, t_k, p_pa, diluent) > 0.0
 }
 
 /// Unburnt fuel and air in one exhaust primary, kg.
@@ -102,6 +124,37 @@ mod tests {
         assert_relative_eq!(evaporated_share(0.2, 0.2), 0.632_120_6, max_relative = 1e-6);
         assert_eq!(evaporated_share(0.0, 0.2), 0.0);
         assert_relative_eq!(evaporated_share(100.0, 0.2), 1.0);
+    }
+
+    #[test]
+    fn the_deposit_follows_load_and_speed() {
+        // hand: 0.18 at 100 kPa/30 rev/s; × (0.125 + 0.875·0.2) = 0.3 at 20 kPa; × √3 at
+        // 10 rev/s; × √(30/40) = 0.866025 at 120 rev/s (held at 40)
+        assert_relative_eq!(
+            deposit_fraction(0.18, 100e3, 30.0),
+            0.18,
+            max_relative = 1e-12
+        );
+        assert_relative_eq!(
+            deposit_fraction(0.18, 20e3, 30.0),
+            0.054,
+            max_relative = 1e-12
+        );
+        assert_relative_eq!(
+            deposit_fraction(0.18, 100e3, 10.0),
+            0.311_769,
+            max_relative = 1e-6
+        );
+        assert_relative_eq!(
+            deposit_fraction(0.18, 100e3, 120.0),
+            0.155_885,
+            max_relative = 1e-5
+        );
+        assert_relative_eq!(
+            deposit_fraction(0.18, 100e3, 2.0),
+            0.311_769,
+            max_relative = 1e-6
+        );
     }
 
     #[test]
@@ -167,6 +220,17 @@ mod tests {
         assert!(a.abs() < 1e-18, "{a}");
         // a misfire sends the whole charge out
         assert_eq!(unburnt(5e-6, 1.47e-4, 0.0), (5e-6, 1.47e-4));
+    }
+
+    #[test]
+    fn a_mixture_carries_a_flame_only_rich_enough_and_undiluted() {
+        // φ = 1e-5·14.7/1.47e-4 = 1 in 2e-4 kg: 21.5 % diluent, flammable; φ 0.3 is past the
+        // fit's lean zero (0.537); 84 % diluent is past the fit's range (hand)
+        let (t, p) = (700.0, 101_325.0);
+        assert!(flammable(1e-5, 1.47e-4, 2e-4, t, p));
+        assert!(!flammable(3e-6, 1.47e-4, 2e-4, t, p));
+        assert!(!flammable(1e-5, 1.47e-4, 1e-3, t, p));
+        assert!(!flammable(0.0, 0.0, 1e-3, t, p));
     }
 
     #[test]

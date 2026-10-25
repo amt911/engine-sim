@@ -320,11 +320,11 @@ mod tests {
                 "{f:?}"
             );
         }
-        // written before the film: Heywood §7.6.3's quarter left liquid, τ of order 1 s
+        // written before the film: Almkvist & Eriksson's warm port injection, X 0.18, τ 1 s
         let old = from_str("version: 2\nengine:\n  name: Old\n", Format::Yaml).unwrap();
         assert_eq!(
             (old.intake.film_fraction, old.intake.film_tau_s),
-            (0.25, 1.0)
+            (0.18, 1.0)
         );
     }
 
