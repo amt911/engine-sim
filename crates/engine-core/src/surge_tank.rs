@@ -61,6 +61,8 @@ pub struct SurgeTank {
     a_inlet: f64,
     /// Mass drawn in through the inlet during the last substep, kg.
     pub drawn: f64,
+    /// Each runner's draw from its joint over the last runner step: (kg/s, W). Scratch.
+    draws: Vec<(f64, f64)>,
 }
 
 impl SurgeTank {
@@ -118,6 +120,7 @@ impl SurgeTank {
             a_tank,
             a_inlet,
             drawn: 0.0,
+            draws: Vec::with_capacity(n),
         }
     }
 
@@ -134,6 +137,34 @@ impl SurgeTank {
     /// trumpets of area `a_runner`, each throttled to `psi` = effective area / runner area.
     /// Returns each runner's left-end mass flux (kg/(s·m²), +x: into the runner is negative).
     pub fn substep(&mut self, h: f64, runners: &mut [Pipe1d], a_runner: f64, psi: f64) {
+        // the runners first, at their own step, each trumpet reading its node's gas
+        let n = self.stretches.len() - 1;
+        for (k, r) in runners.iter_mut().enumerate().take(n) {
+            let v = &self.nodes[k + 1];
+            let (p, rho) = (v.pressure(), v.mass_kg / v.volume_m3);
+            r.left = Boundary::State(throttled_ghost(r.prim(0), p, rho, -1.0, psi));
+            r.step(h);
+        }
+        // what each runner drew from its node over that step (mass and energy rates)
+        self.draws.clear();
+        self.draws.extend(
+            runners
+                .iter()
+                .take(n)
+                .map(|r| (r.end_flux.0.rho * a_runner, r.end_flux.0.e * a_runner)),
+        );
+        // then the tank, as many steps as its own (finer) cells need: multirate, so a fine
+        // tank does not drag every runner down to its step; the runners' draw spread evenly
+        let m = (h / self.max_dt(0.9)).ceil().max(1.0);
+        let ht = h / m;
+        self.drawn = 0.0;
+        for _ in 0..m as usize {
+            self.tank_step(ht);
+        }
+    }
+
+    /// One step `h` of the tank's own pipes and joints, the runners drawing [`Self::draws`].
+    fn tank_step(&mut self, h: f64) {
         let state = |v: &GasVolume| (v.pressure(), v.mass_kg / v.volume_m3);
         let n = self.stretches.len() - 1;
         let last = |p: &Pipe1d| p.prim(p.cells.len() - 1);
@@ -162,16 +193,9 @@ impl SurgeTank {
                 Boundary::State(junction_ghost(last(s), pr, rr, 1.0))
             };
         }
-        for (k, r) in runners.iter_mut().enumerate().take(n) {
-            let (p, rho) = state(&self.nodes[k + 1]);
-            r.left = Boundary::State(throttled_ghost(r.prim(0), p, rho, -1.0, psi));
-        }
         self.inlet.step(h);
         for s in &mut self.stretches {
             s.step(h);
-        }
-        for r in runners.iter_mut().take(n) {
-            r.step(h);
         }
         // each node takes what its faces carried
         let take = |v: &mut GasVolume, f: crate::fv::Cons, area: f64, sign: f64| {
@@ -185,23 +209,21 @@ impl SurgeTank {
             1.0,
         );
         // each stretch: its left end leaves node k, its right end enters node k + 1 (the last
-        // ends at the wall); runner k leaves node k + 1
+        // ends at the wall); runner k draws from node k + 1
         for (k, s) in self.stretches.iter().enumerate() {
             take(&mut self.nodes[k], s.end_flux.0, self.a_tank, -1.0);
             if k < n {
                 take(&mut self.nodes[k + 1], s.end_flux.1, self.a_tank, 1.0);
-                take(
-                    &mut self.nodes[k + 1],
-                    runners[k].end_flux.0,
-                    a_runner,
-                    -1.0,
-                );
+                if let Some(&(dm, de)) = self.draws.get(k) {
+                    self.nodes[k + 1].mass_kg -= dm * h;
+                    self.nodes[k + 1].energy_j -= de * h;
+                }
             }
         }
         for v in &mut self.nodes {
             guard(v);
         }
-        self.drawn = self.inlet.end_flux.0.rho * self.a_inlet * h;
+        self.drawn += self.inlet.end_flux.0.rho * self.a_inlet * h;
     }
 
     /// Pressure at the closed end's cell, Pa (for the tests' probes).

@@ -455,11 +455,8 @@ impl IntakeFv {
             self.acc_mass[i] = 0.0;
             self.acc_energy[i] = 0.0;
         }
-        let limit = self
-            .tanks
-            .iter()
-            .map(|t| t.max_dt(0.9))
-            .fold(stable_dt(&self.runners), f64::min);
+        // the runners' own step: each tank sub-steps itself inside it (multirate)
+        let limit = stable_dt(&self.runners);
         let k = ((dt / limit).ceil() as usize).clamp(1, MAX_SUBCYCLES);
         let h = dt / k as f64;
         let psi = (throttle_area.max(0.0) * self.trumpet_cd).min(a * self.trumpet_cd) / a;
