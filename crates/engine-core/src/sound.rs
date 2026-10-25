@@ -16,6 +16,10 @@ pub struct SoundDef {
     pub flow_noise: f64,
     /// The intake mouth: a monopole of the air the engine draws (1 = physical, 0 = off).
     pub intake: f64,
+    /// The exhaust valves' jets ([`crate::jet_noise::valve_jet_level`]): the turbulent mixing
+    /// noise of each blowdown through the valve's curtain, sent down the pipes with the pulse.
+    /// 1 = physical, 0 = off.
+    pub valve_jet: f64,
     /// The block's radiated combustion noise ([`crate::structure`]): the cylinder pressure
     /// through the measured structure response of engine blocks, 1 = physical, 0 = off.
     pub block: f64,
@@ -57,6 +61,7 @@ impl Default for SoundDef {
         Self {
             flow_noise: 1.0,
             intake: 1.0,
+            valve_jet: 1.0,
             block: 1.0,
             mechanical: 1.0,
             combustion_jitter: 1.0,
@@ -98,6 +103,20 @@ mod tests {
         let s = SoundDef {
             listener_distance_m: 7.5,
             listener_angle_deg: -45.0,
+            ..SoundDef::default()
+        };
+        let json: SoundDef = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        let yaml: SoundDef =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&s).unwrap()).unwrap();
+        assert_eq!((json, yaml), (s.clone(), s));
+    }
+
+    #[test]
+    fn the_valve_jets_round_trip_and_old_files_hear_them() {
+        let old: SoundDef = serde_yaml_ng::from_str("reverb: 0.2\n").unwrap();
+        assert_eq!(old.valve_jet, 1.0);
+        let s = SoundDef {
+            valve_jet: 0.5,
             ..SoundDef::default()
         };
         let json: SoundDef = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
