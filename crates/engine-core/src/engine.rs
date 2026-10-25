@@ -777,10 +777,11 @@ fn cycle_flame(
     ratio.is_finite().then_some(ratio)
 }
 
-/// The burned share of a trapped charge: residual / trapped mass.
+/// The burned share of a trapped charge: the residual less its unburnt fuel and air, over the
+/// trapped mass.
 fn dilution_of(cs: &CylinderState) -> f64 {
     if cs.trapped_kg > 0.0 {
-        cs.residual_kg / cs.trapped_kg
+        (cs.residual_kg - cs.residual_unburnt_kg).max(0.0) / cs.trapped_kg
     } else {
         0.0
     }
@@ -862,6 +863,9 @@ struct CylinderState {
     /// Gas left in the cylinder when the exhaust valve closed: burnt, no fuel or oxygen to
     /// give (the residual; Heywood, *ICE Fundamentals*, §6.4).
     residual_kg: f64,
+    /// The part of the residual that is unburnt fuel and air (a cut or misfired cycle's), not
+    /// burnt diluent, kg.
+    residual_unburnt_kg: f64,
     /// The trapped charge's flame, crank-angle ratio to the reference ([`flame_ratio`]): sets
     /// its spark (the ECU's MBT timing) and its burn.
     flame: f64,
@@ -1119,6 +1123,7 @@ impl Engine {
                     gas: GasVolume::at(ATM_PA, AMBIENT_K, g.volume(deg_to_rad(cycle_deg))),
                     trapped_kg: 0.0,
                     residual_kg: 0.0,
+                    residual_unburnt_kg: 0.0,
                     flame: 1.0,
                     charge_bias: 1.0,
                     armed: false,
@@ -1633,6 +1638,7 @@ impl Engine {
                 } else {
                     cs.film.intake(0.0, film_x, film_share)
                 };
+                cs.residual_unburnt_kg = cs.slip.fuel_kg + cs.slip.air_kg;
                 cs.fuel_kg = fuel + cs.slip.fuel_kg;
                 cs.air_kg = air + cs.slip.air_kg;
                 cs.slip = crate::fuel::ExhaustMixture::default();
@@ -2345,6 +2351,17 @@ mod tests {
         assert_eq!(dilution_of(&e.cyl[0]), 0.0);
         e.cyl[0].trapped_kg = 4e-5;
         assert!((dilution_of(&e.cyl[0]) - 0.25).abs() < 1e-12);
+    }
+
+    #[test]
+    fn unburnt_residual_does_not_dilute_the_flame() {
+        // after a cut cycle the gas left in the cylinder is pumped air, not burnt gas: of a
+        // 1e-5 kg residual holding 6e-6 kg of unburnt air, 4e-6 kg dilute a 4e-5 kg charge, 0.1
+        let mut e = Engine::new(EngineDef::single(), 1000.0, 1);
+        e.cyl[0].trapped_kg = 4e-5;
+        e.cyl[0].residual_kg = 1e-5;
+        e.cyl[0].residual_unburnt_kg = 6e-6;
+        assert!((dilution_of(&e.cyl[0]) - 0.1).abs() < 1e-12);
     }
 
     #[test]
