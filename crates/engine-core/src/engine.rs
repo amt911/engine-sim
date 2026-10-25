@@ -707,8 +707,9 @@ struct Burn {
 
 impl Burn {
     /// What the flame leaves unburnt if it ends now.
-    fn unburnt(&self) -> (f64, f64) {
-        crate::fuel::unburnt(self.fuel_kg, self.air_kg, self.released)
+    fn unburnt(&self) -> crate::fuel::ExhaustMixture {
+        let (fuel_kg, air_kg) = crate::fuel::unburnt(self.fuel_kg, self.air_kg, self.released);
+        crate::fuel::ExhaustMixture { fuel_kg, air_kg }
     }
 }
 
@@ -895,11 +896,8 @@ struct CylinderState {
     /// Unburnt fuel and air in the cylinder's gas once its flame is over (a partial burn, a
     /// misfire, a lean charge's spare air), leaving with the gas through the exhaust valve.
     slip: crate::fuel::ExhaustMixture,
-    /// Unburnt mixture in this cylinder's exhaust primary: carried by blowdown gas above
-    /// [`crate::fuel::AFTERBURN_IGNITION_K`] while that flow lasts (`port_lit`), and mixed into
-    /// the primary's gas (`port_mix`).
-    port_lit: crate::fuel::ExhaustMixture,
-    port_mix: crate::fuel::ExhaustMixture,
+    /// Unburnt mixture in this cylinder's exhaust primary.
+    port_mix: crate::fuel::PortMixture,
 }
 
 /// How finely an engine is simulated (not part of its definition: the same engine at
@@ -993,6 +991,9 @@ pub struct Engine {
     fuel_energy_j: f64,
     /// Heat released by unburnt mixture burning in the exhaust primaries, J.
     afterburn_j: f64,
+    /// Fuel ledger, kg: into the cylinders, burnt there, burnt in the primaries, and out of the
+    /// primaries unburnt (the balance a test closes).
+    fuel_ledger: FuelLedger,
     rng: u64,
     /// Exhaust waveguide network, built for the current step size.
     net: Option<ExhaustNet>,
@@ -1088,12 +1089,28 @@ fn exhaust_source_flow(dm_dt: f64, h: f64) -> f64 {
     dm_dt * (h / crate::gas::CP).max(1.0) / t_ref
 }
 
-/// The waveguide exhaust's source for heat `q_dot` (W) released in a primary's gas: the
-/// isobaric expansion Q = (γ − 1)/γ·q̇/p as reference-gas mass, q̇/(c_p·T_ref) — what an
-/// enthalpy flux of q̇ weighs in [`exhaust_source_flow`].
-fn exhaust_heat_source(q_dot: f64) -> f64 {
+/// Where an engine's fuel went, kg.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct FuelLedger {
+    into_cylinders: f64,
+    burnt: f64,
+    afterburnt: f64,
+    exited: f64,
+}
+
+/// What heat `q` (J) released over `dt` in a primary's `m` kg of gas does: it warms that gas by
+/// q/(m·c_p), and it expands it at constant pressure, Q = (γ − 1)/γ·q̇/p — in the waveguide's
+/// reference-gas units q̇/(c_p·T_ref), the weight an enthalpy flux of q̇ has in
+/// [`exhaust_source_flow`]. Returns (temperature rise, K; source).
+fn primary_heat(q: f64, m: f64, dt: f64) -> (f64, f64) {
     let t_ref = crate::exhaust::C_PRIMARY.powi(2) / (crate::gas::GAMMA * crate::gas::R_AIR);
-    q_dot / (crate::gas::CP * t_ref)
+    (q / (m * crate::gas::CP), q / dt / (crate::gas::CP * t_ref))
+}
+
+/// Heat a flame releases burning all it can of `fuel` and `air` kg, J: LHV × the combustion
+/// efficiency × the cylinder's breathing `bias` ([`CYLINDER_IMBALANCE`]).
+fn burn_energy(fuel: f64, air: f64, bias: f64) -> f64 {
+    crate::fuel::burnable(fuel, air) * LHV_GASOLINE * COMBUSTION_EFFICIENCY * bias
 }
 
 /// Fraction of the plate's area a pedal position opens: 1 − cos(t·π/2), progressive at the
@@ -1139,8 +1156,7 @@ impl Engine {
                     fuel_kg: 0.0,
                     air_kg: 0.0,
                     slip: crate::fuel::ExhaustMixture::default(),
-                    port_lit: crate::fuel::ExhaustMixture::default(),
-                    port_mix: crate::fuel::ExhaustMixture::default(),
+                    port_mix: crate::fuel::PortMixture::default(),
                 }
             })
             .collect();
@@ -1168,6 +1184,7 @@ impl Engine {
             wall_heat_j: 0.0,
             fuel_energy_j: 0.0,
             afterburn_j: 0.0,
+            fuel_ledger: FuelLedger::default(),
             rng: seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1,
             net: None,
             fv: None,
@@ -1569,51 +1586,26 @@ impl Engine {
                 let ex = &self.def.exhaust;
                 let m = primary_gas_mass(ex, cs.port_t);
                 let (dm, t_in) = f_ex.map_or((0.0, cs.port_t), |f| (f.dm, f.h / crate::gas::CP));
-                // The unburnt mixture rides with the gas out of the cylinder. Carried by gas
-                // above 873 K it burns there, in its own slug, while the flow lasts; what is
-                // left then mixes into the primary's gas, which burns it only if it is that hot
-                // itself (Heywood §11.6.3). A reversion takes the primary's back.
-                let mut q = 0.0;
-                if dm > 0.0 {
-                    let share = (dm / (cs.gas.mass_kg + dm)).min(1.0);
-                    let (f, a) = (cs.slip.fuel_kg * share, cs.slip.air_kg * share);
-                    cs.slip.fuel_kg -= f;
-                    cs.slip.air_kg -= a;
-                    if t_in > crate::fuel::AFTERBURN_IGNITION_K {
-                        cs.port_lit.fuel_kg += f;
-                        cs.port_lit.air_kg += a;
-                        cs.port_mix.flow(m, dm, 0.0, 0.0);
-                        // the hot gas also lights the primary's own mixture, if that can
-                        // carry a flame: the charge several misfires left there goes at once
-                        let st = cs.port_mix;
-                        if crate::fuel::flammable(st.fuel_kg, st.air_kg, m, cs.port_t, ATM_PA) {
-                            cs.port_lit.fuel_kg += st.fuel_kg;
-                            cs.port_lit.air_kg += st.air_kg;
-                            cs.port_mix = crate::fuel::ExhaustMixture::default();
-                        }
-                    } else {
-                        cs.port_mix.flow(m, dm, f, a);
-                    }
-                    q += cs.port_lit.burn(t_in, dt, AFTERBURN_TAU_S);
+                // The unburnt mixture rides with the gas out of the cylinder into the primary
+                // (see `fuel::PortMixture`), and a reversion brings some back.
+                let out = if dm > 0.0 {
+                    cs.slip.take_share(dm / (cs.gas.mass_kg + dm))
                 } else {
-                    let lit = std::mem::take(&mut cs.port_lit);
-                    cs.port_mix.flow(m, 0.0, lit.fuel_kg, lit.air_kg);
-                    if dm < 0.0 {
-                        let (f, a) = cs.port_mix.flow(m, dm, 0.0, 0.0);
-                        cs.slip.fuel_kg += f;
-                        cs.slip.air_kg += a;
-                    }
-                }
+                    crate::fuel::ExhaustMixture::default()
+                };
                 let a_wall = PI * ex.primary_diameter_m * ex.primary_length_m;
                 cs.port_t = port_gas_temperature(cs.port_t, m, dm, t_in, cs.wall_t, a_wall, dt);
-                // The heat expands the primary's gas at constant pressure,
-                // Q = (γ − 1)/γ·q̇/p, which in the waveguide's reference-gas units is
-                // q̇/(c_p·T_ref), the weight of the valve's enthalpy flux
-                q += cs.port_mix.burn(cs.port_t, dt, AFTERBURN_TAU_S);
-                if q > 0.0 {
-                    cs.port_t += q / (m * crate::gas::CP);
-                    self.flows[i] += exhaust_heat_source(q / dt);
-                    self.afterburn_j += q;
+                let r =
+                    cs.port_mix
+                        .step(out, (m, dm), (t_in, cs.port_t, ATM_PA), dt, AFTERBURN_TAU_S);
+                cs.slip.add(r.back);
+                self.fuel_ledger.exited += r.exit.fuel_kg;
+                if r.heat_j > 0.0 {
+                    let (rise, source) = primary_heat(r.heat_j, m, dt);
+                    cs.port_t += rise;
+                    self.flows[i] += source;
+                    self.afterburn_j += r.heat_j;
+                    self.fuel_ledger.afterburnt += r.heat_j / LHV_GASOLINE;
                 }
                 cs.wall_t += (cs.port_t - cs.wall_t) * (dt / PIPE_WALL_TAU_S);
             }
@@ -1641,17 +1633,15 @@ impl Engine {
                 // still gives back its share. What the last cycle left unburnt stays in.
                 let fresh = (cs.trapped_kg - cs.residual_kg).max(0.0);
                 let air = fresh * AFR_STOICH / (1.0 + AFR_STOICH);
-                let film_x = crate::fuel::deposit_fraction(
-                    film_x,
-                    cs.gas.pressure(),
-                    self.omega.abs() / (2.0 * PI),
-                );
+                let film_x =
+                    crate::fuel::deposit_fraction(film_x, cs.gas.pressure(), self.omega.abs());
                 let fuel = if inject {
                     cs.film.meter(air / AFR_STOICH, film_x, film_share).1
                 } else {
                     cs.film.intake(0.0, film_x, film_share)
                 };
                 cs.residual_unburnt_kg = cs.slip.fuel_kg + cs.slip.air_kg;
+                self.fuel_ledger.into_cylinders += fuel;
                 cs.fuel_kg = fuel + cs.slip.fuel_kg;
                 cs.air_kg = air + cs.slip.air_kg;
                 cs.slip = crate::fuel::ExhaustMixture::default();
@@ -1680,21 +1670,20 @@ impl Engine {
             // and one that moved later cannot fire it again. A cut cylinder's charge passes.
             if cs.armed && (cur - spark_deg).rem_euclid(720.0) < 360.0 {
                 cs.armed = false;
-                new_burn = c.ignition
-                    && cs.trapped_kg > 0.0
-                    && crate::fuel::burnable(cs.fuel_kg, cs.air_kg) > 0.0;
+                // an empty or fuelless charge has no flame (`cycle_flame`)
+                new_burn = c.ignition;
             }
             // The exhaust valve opens on whatever the flame has not burnt yet: it leaves
             // unburnt with the gas (a partial burn), as does a charge that never lit.
             if crossed(prev, cur, self.def.exhaust_valve.open_deg) {
                 if let Some(b) = cs.burn.take() {
-                    let (f, a) = b.unburnt();
-                    cs.slip.fuel_kg += f;
-                    cs.slip.air_kg += a;
+                    cs.slip.add(b.unburnt());
                 }
                 if !cs.armed {
-                    cs.slip.fuel_kg += cs.fuel_kg;
-                    cs.slip.air_kg += cs.air_kg;
+                    cs.slip.add(crate::fuel::ExhaustMixture {
+                        fuel_kg: cs.fuel_kg,
+                        air_kg: cs.air_kg,
+                    });
                     (cs.fuel_kg, cs.air_kg) = (0.0, 0.0);
                 }
             }
@@ -1708,11 +1697,11 @@ impl Engine {
                 let x = wiebe(since, b.duration_deg);
                 cs.gas.energy_j += b.energy_j * (x - b.released);
                 self.fuel_energy_j += b.energy_j * (x - b.released);
+                self.fuel_ledger.burnt +=
+                    crate::fuel::burnable(b.fuel_kg, b.air_kg) * (x - b.released);
                 b.released = x;
                 if since > 2.0 * b.duration_deg {
-                    let (f, a) = b.unburnt();
-                    cs.slip.fuel_kg += f;
-                    cs.slip.air_kg += a;
+                    cs.slip.add(b.unburnt());
                     cs.burn = None;
                 }
             }
@@ -1781,11 +1770,10 @@ impl Engine {
                 // exhaust valve, unburnt
                 if let Some(ratio) = flame {
                     let duration = self.def.burn_duration_deg * ratio;
-                    let burnable = crate::fuel::burnable(fuel, air);
                     cs.burn = Some(Burn {
                         start_deg: (spark_deg + IGNITION_DELAY_DEG * ratio).rem_euclid(720.0),
                         duration_deg: duration,
-                        energy_j: burnable * LHV_GASOLINE * COMBUSTION_EFFICIENCY * var,
+                        energy_j: burn_energy(fuel, air, var),
                         released: 0.0,
                         fuel_kg: fuel,
                         air_kg: air,
@@ -4450,6 +4438,88 @@ mod tests {
         assert!(wot.1 < 1.0, "afterburn at steady WOT: {} J", wot.1);
         let total: f64 = lift.iter().map(|w| w.1).sum();
         assert!(total > 10.0, "no afterburn on the lift-off: {lift:?}");
+    }
+
+    #[test]
+    fn heat_in_a_primary_warms_and_expands_its_gas() {
+        // 100 J in 1e-3 kg over 1e-4 s: 100/(1e-3·1004.5) = 99.552 K; c_p·T_ref = c²/(γ − 1)
+        // = 600²/0.4 = 9e5, so the source is 1e6/9e5 = 1.11111 (hand)
+        let (rise, source) = primary_heat(100.0, 1e-3, 1e-4);
+        assert!((rise - 99.552).abs() < 1e-3, "{rise}");
+        assert!((source - 1.111_111).abs() < 1e-6, "{source}");
+    }
+
+    #[test]
+    fn a_flame_releases_the_fuel_its_air_can_burn() {
+        // lean 1e-5 kg × 44e6 × 0.96 × 1.02 = 430.848 J; rich 2e-5 kg in 1.47e-4 kg air burns
+        // 1e-5: 422.4 J (hand)
+        assert!((burn_energy(1e-5, 3e-4, 1.02) - 430.848).abs() < 1e-9);
+        assert!((burn_energy(2e-5, 1.47e-4, 1.0) - 422.4).abs() < 1e-9);
+    }
+
+    /// Fuel still held anywhere in `e`, kg: the charges awaiting their spark, the flames'
+    /// unreleased share, the gas leaving the cylinders and the primaries.
+    fn fuel_held(e: &Engine) -> f64 {
+        e.cyl
+            .iter()
+            .map(|c| {
+                let flame = c.burn.as_ref().map_or(0.0, |b| b.unburnt().fuel_kg);
+                c.fuel_kg + flame + c.slip.fuel_kg + c.port_mix.fuel_kg()
+            })
+            .sum()
+    }
+
+    #[test]
+    fn every_kilogram_of_fuel_is_accounted_for() {
+        // Mass balance through a pull, a lift-off and the limiter: what the ports delivered
+        // is burnt in the cylinders, burnt in the primaries, out of the primaries, or still held
+        for d in [EngineDef::lfa_v10(), EngineDef::inline4()] {
+            let top = d.redline_rpm;
+            let mut e = Engine::new(d, 3000.0, 1);
+            for (t, s) in [(1.0, 1.5), (0.0, 1.5), (1.0, 1.0)] {
+                let c = Controls {
+                    throttle: t,
+                    ..Controls::default()
+                };
+                run(&mut e, s, &c);
+            }
+            assert!(
+                e.rpm() > 0.9 * top,
+                "never reached the limiter: {}",
+                e.rpm()
+            );
+            let l = e.fuel_ledger;
+            let out = l.burnt + l.afterburnt + l.exited + fuel_held(&e);
+            assert!(
+                l.into_cylinders > 0.0 && l.afterburnt > 0.0 && l.exited > 0.0,
+                "{l:?}"
+            );
+            assert!(
+                (out / l.into_cylinders - 1.0).abs() < 1e-9,
+                "{}: {l:?}, held {}",
+                e.def.name,
+                fuel_held(&e)
+            );
+        }
+    }
+
+    #[test]
+    fn a_film_of_no_time_constant_holds_no_fuel() {
+        // τ = 0 disables the film: a cut delivers nothing at all
+        let mut d = EngineDef::lfa_v10();
+        d.intake.film_tau_s = 0.0;
+        let mut e = Engine::new(d, 8000.0, 1);
+        let hold = |throttle| Controls {
+            throttle,
+            hold_rpm: Some(8000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.5, &hold(1.0));
+        run(&mut e, 0.05, &hold(0.0));
+        let fed = e.fuel_ledger.into_cylinders;
+        run(&mut e, 0.25, &hold(0.0));
+        assert_eq!(e.fuel_ledger.into_cylinders, fed);
+        assert!(e.cyl.iter().all(|c| c.film.film_kg == 0.0));
     }
 
     #[test]
