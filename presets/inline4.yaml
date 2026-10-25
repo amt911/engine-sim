@@ -52,6 +52,7 @@ engine:
     - kind: pipe
       length_m: 1.5
       diameter_m: 0.05
+    collectors_join: false
   intake:
     model: zero_d
     runner_length_m: 0.3

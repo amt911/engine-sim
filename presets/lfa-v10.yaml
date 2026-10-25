@@ -78,6 +78,7 @@ engine:
     - kind: pipe
       length_m: 1.2
       diameter_m: 0.06
+    collectors_join: true
   intake:
     model: fv
     runner_length_m: 0.325

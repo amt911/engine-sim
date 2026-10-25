@@ -491,6 +491,15 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
                 "Tail pipe Ø (mm)",
             );
             ui.add_enabled_ui(x.groups(d.cylinders).len() > 1, |ui| {
+                ui.checkbox(&mut x.collectors_join, "Collectors join (one silencer)")
+                    .on_hover_text(
+                        "The collectors' pipes meet in one silencer and leave through one \
+                         tail: the banks' pulses add there.",
+                    );
+            })
+            .response
+            .on_disabled_hover_text("One collector: nothing to join");
+            ui.add_enabled_ui(x.tail_groups(d.cylinders).len() > 1, |ui| {
                 ui.add(
                     slider(&mut x.tail_spacing_m, 0.1..=2.0)
                         .step_by(0.05)
@@ -756,6 +765,24 @@ mod tests {
         nudge(&mut h, "Runner length (mm)");
         assert!(h.state().def.intake.runner_length_m > 0.3);
         assert!(h.state().engine_dirty);
+    }
+
+    #[test]
+    fn joining_the_collectors_leaves_one_tail_and_greys_out_its_spacing() {
+        let mut h = harness(EngineDef::flatplane_v8());
+        h.get_by_label("Intake & exhaust").click();
+        h.run();
+        // below the fold: through the keyboard, as the sliders are
+        h.get_by_label("Collectors join (one silencer)").focus();
+        h.run();
+        h.key_press(egui::Key::Space);
+        h.run();
+        assert!(h.state().def.exhaust.collectors_join);
+        assert!(h.state().engine_dirty);
+        // one tail now: its spacing slider stays put
+        let v = h.state().def.exhaust.tail_spacing_m;
+        nudge(&mut h, "Tail spacing (m)");
+        assert_eq!(h.state().def.exhaust.tail_spacing_m, v);
     }
 
     #[test]

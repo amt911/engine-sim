@@ -20,9 +20,18 @@ const MAX_SUBCYCLES: usize = 16;
 struct Branch {
     members: Vec<usize>,
     junction: GasVolume,
-    /// Collector, muffler can and tail pipe as one variable-area quasi-1D pipe.
+    /// Collector, muffler can and tail pipe as one variable-area quasi-1D pipe; only the
+    /// collector when the collectors join (the rest is the [`Trunk`]'s).
     out: Pipe1d,
     /// The can's packing, along its cells of `out`.
+    lining: Option<Lining>,
+}
+
+/// Joined collectors: the node where they meet, then the shared can and tail pipe.
+#[derive(Debug, Clone)]
+struct Trunk {
+    junction: GasVolume,
+    out: Pipe1d,
     lining: Option<Lining>,
 }
 
@@ -31,6 +40,7 @@ pub struct ExhaustFv {
     primaries: Vec<Pipe1d>,
     a_primary: f64,
     branches: Vec<Branch>,
+    trunk: Option<Trunk>,
     /// Physics steps per FV step, and the FV step.
     pub substeps: usize,
     pub dt_fv: f64,
@@ -239,6 +249,7 @@ impl ExhaustFv {
             .primaries
             .iter_mut()
             .chain(self.branches.iter_mut().map(|b| &mut b.out))
+            .chain(self.trunk.iter_mut().map(|t| &mut t.out))
         {
             p.scheme = scheme;
         }
@@ -253,44 +264,66 @@ impl ExhaustFv {
         };
         let vol = |v: f64| GasVolume::at(ATM_PA, INIT_T_K, v);
         let a_collector = area(def.collector_diameter_m);
+        // the merge region, about three collector diameters long
+        let merge = || vol(a_collector * 3.0 * def.collector_diameter_m.max(CELL_M));
+        // `collector`: the collector pipe ahead of the can and tail, or none (the trunk's)
+        let path = |collector: bool| {
+            let a_tail = area(def.tail_diameter_m);
+            let (a_can, perimeter, packing) =
+                chamber_passage(def.muffler_volume_m3, def.muffler_packing, a_tail);
+            let mut pieces = vec![(CHAMBER_LENGTH_M, a_can), (def.tail_length_m, a_tail)];
+            if collector {
+                pieces.insert(0, (def.collector_length_m, a_collector));
+            }
+            let mut out = Pipe1d::segmented(&pieces, CELL_M, init);
+            // the can's cells, as `segmented` counts them
+            let first = if collector {
+                ((def.collector_length_m / CELL_M).round() as usize).max(1)
+            } else {
+                0
+            };
+            let can = first..first + ((CHAMBER_LENGTH_M / CELL_M).round() as usize).max(1);
+            let lining = (packing.thickness_m > 0.0).then(|| {
+                let packed = def.muffler_volume_m3.max(1e-5) / CHAMBER_LENGTH_M - a_can;
+                Lining::new(&out, can, perimeter, packed, packing, (ATM_PA, INIT_T_K))
+            });
+            out.floors = (1e-3, 500.0);
+            out.friction = PIPE_FRICTION;
+            out.right = Boundary::Open {
+                p: ATM_PA,
+                rho: AMBIENT_RHO,
+            };
+            (out, lining)
+        };
+        let join = def.collectors_join;
         let branches = def
             .groups(cylinders)
             .into_iter()
             .map(|members| {
-                let a_tail = area(def.tail_diameter_m);
-                let (a_can, perimeter, packing) =
-                    chamber_passage(def.muffler_volume_m3, def.muffler_packing, a_tail);
-                let mut out = Pipe1d::segmented(
-                    &[
-                        (def.collector_length_m, a_collector),
-                        (CHAMBER_LENGTH_M, a_can),
-                        (def.tail_length_m, a_tail),
-                    ],
-                    CELL_M,
-                    init,
-                );
-                // the can's cells, as `segmented` counts them
-                let first = ((def.collector_length_m / CELL_M).round() as usize).max(1);
-                let can = first..first + ((CHAMBER_LENGTH_M / CELL_M).round() as usize).max(1);
-                let lining = (packing.thickness_m > 0.0).then(|| {
-                    let packed = def.muffler_volume_m3.max(1e-5) / CHAMBER_LENGTH_M - a_can;
-                    Lining::new(&out, can, perimeter, packed, packing, (ATM_PA, INIT_T_K))
-                });
-                out.floors = (1e-3, 500.0);
-                out.friction = PIPE_FRICTION;
-                out.right = Boundary::Open {
-                    p: ATM_PA,
-                    rho: AMBIENT_RHO,
+                let (out, lining) = if join {
+                    (
+                        pipe(def.collector_length_m, def.collector_diameter_m, init),
+                        None,
+                    )
+                } else {
+                    path(true)
                 };
                 Branch {
                     members,
-                    // junction: the merge region, about three collector diameters long
-                    junction: vol(a_collector * 3.0 * def.collector_diameter_m.max(CELL_M)),
+                    junction: merge(),
                     out,
                     lining,
                 }
             })
             .collect();
+        let trunk = join.then(|| {
+            let (out, lining) = path(false);
+            Trunk {
+                junction: merge(),
+                out,
+                lining,
+            }
+        });
         // 0.8 · cell / (|u| + c)_max with 800 m/s for hot, fast exhaust
         let dt_target = 0.8 * CELL_M / 800.0;
         let substeps = ((dt_target / dt).floor() as usize).max(1);
@@ -300,6 +333,7 @@ impl ExhaustFv {
                 .collect(),
             a_primary: area(def.primary_diameter_m),
             branches,
+            trunk,
             substeps,
             dt_fv: substeps as f64 * dt,
             dt,
@@ -307,7 +341,7 @@ impl ExhaustFv {
             acc_mass: vec![0.0; cylinders],
             acc_energy: vec![0.0; cylinders],
             radiated: 0.0,
-            tails: vec![0.0; def.groups(cylinders).len()],
+            tails: vec![0.0; def.tail_groups(cylinders).len()],
             vented: 0.0,
         }
     }
@@ -385,6 +419,7 @@ impl ExhaustFv {
             .primaries
             .iter()
             .chain(self.branches.iter().map(|b| &b.out))
+            .chain(self.trunk.iter().map(|t| &t.out))
             .map(|p| p.max_dt(0.9))
             .fold(f64::INFINITY, f64::min);
         let n = ((dt / limit).ceil() as usize).clamp(1, MAX_SUBCYCLES);
@@ -420,6 +455,15 @@ impl ExhaustFv {
             let first = b.out.prim(0);
             b.out.left = Boundary::State(junction_ghost(first, j.p, j.rho, -1.0));
         }
+        if let Some(t) = self.trunk.as_mut() {
+            let j = state(&t.junction);
+            for b in &mut self.branches {
+                let last = b.out.prim(b.out.cells.len() - 1);
+                b.out.right = Boundary::State(junction_ghost(last, j.p, j.rho, 1.0));
+            }
+            let first = t.out.prim(0);
+            t.out.left = Boundary::State(junction_ghost(first, j.p, j.rho, -1.0));
+        }
         for p in &mut self.primaries {
             p.step(h);
         }
@@ -440,18 +484,43 @@ impl ExhaustFv {
             b.junction.energy_j -= fc.e * a_in * h;
             guard(&mut b.junction);
         }
+        if let Some(t) = self.trunk.as_mut() {
+            t.out.step(h);
+            if let Some(l) = t.lining.as_mut() {
+                l.step(&mut t.out, h);
+            }
+            for b in &self.branches {
+                let (_, a_end) = b.out.end_areas();
+                let f = b.out.end_flux.1;
+                t.junction.mass_kg += f.rho * a_end * h;
+                t.junction.energy_j += f.e * a_end * h;
+            }
+            let (a_in, _) = t.out.end_areas();
+            let fc = t.out.end_flux.0;
+            t.junction.mass_kg -= fc.rho * a_in * h;
+            t.junction.energy_j -= fc.e * a_in * h;
+            guard(&mut t.junction);
+        }
         let mut radiated = 0.0;
-        for (bi, b) in self.branches.iter_mut().enumerate() {
-            let (_, a_out) = b.out.end_areas();
-            let o = b.out.end_flux.1;
+        let mut radiate = |out: &Pipe1d, tail: &mut f64| {
+            let (_, a_out) = out.end_areas();
+            let o = out.end_flux.1;
             self.vented += o.rho * a_out * h;
             // The outlet radiates its volume velocity (a monopole: p = ρ₀/4πr · dQ/dt; Kinsler et
             // al., Fundamentals of Acoustics, §7.4), not its mass flux: u = (ρu)/ρ at the exit,
             // scaled as ρ_ref·c·u about gas at C_TAIL, the waveguide's tail reference.
-            let rho_exit = b.out.prim(b.out.cells.len() - 1).rho.max(1e-3);
+            let rho_exit = out.prim(out.cells.len() - 1).rho.max(1e-3);
             let source = C_TAIL * crate::exhaust::tail_reference_density() * o.rho / rho_exit;
             radiated += source;
-            self.tails[bi] += weight * source;
+            *tail += weight * source;
+        };
+        match &self.trunk {
+            Some(t) => radiate(&t.out, &mut self.tails[0]),
+            None => {
+                for (b, tail) in self.branches.iter().zip(self.tails.iter_mut()) {
+                    radiate(&b.out, tail);
+                }
+            }
         }
         radiated
     }
@@ -475,6 +544,10 @@ impl ExhaustFv {
         for b in &self.branches {
             m += b.junction.mass_kg + pipe_mass(&b.out);
             m += b.lining.as_ref().map_or(0.0, Lining::mass_kg);
+        }
+        if let Some(t) = &self.trunk {
+            m += t.junction.mass_kg + pipe_mass(&t.out);
+            m += t.lining.as_ref().map_or(0.0, Lining::mass_kg);
         }
         m
     }
@@ -614,6 +687,58 @@ mod tests {
             m1 - m0,
             injected - vented
         );
+    }
+
+    #[test]
+    fn joined_collectors_conserve_mass_and_share_one_tail() {
+        let d = ExhaustDef {
+            collectors: vec![vec![1], vec![2]],
+            collectors_join: true,
+            ..def()
+        };
+        let mut net = ExhaustFv::new(&d, 2, DT);
+        assert_eq!(net.last_tails().len(), 1);
+        let m0 = net.total_mass();
+        let (mut injected, mut vented) = (0.0, 0.0);
+        for k in 0..6_000 {
+            let dm = if k % 400 < 40 { 2e-6 } else { 0.0 };
+            net.add_valve_flow(k % 2, dm, 1004.5 * 900.0);
+            injected += dm;
+            net.step();
+            vented += net.last_vented();
+        }
+        assert!(vented > 0.0, "nothing left through the shared tail");
+        let m1 = net.total_mass();
+        assert!(
+            ((m1 - m0) - (injected - vented)).abs() < 1e-6 * m0,
+            "Δm {} vs {}",
+            m1 - m0,
+            injected - vented
+        );
+    }
+
+    #[test]
+    fn joined_banks_hear_each_other_through_the_join() {
+        // a pulse into cylinder 1 lifts cylinder 2's port only when their collectors join
+        let rise = |join: bool| {
+            let d = ExhaustDef {
+                collectors: vec![vec![1], vec![2]],
+                collectors_join: join,
+                ..def()
+            };
+            let mut net = ExhaustFv::new(&d, 2, DT);
+            let mut worst: f64 = 0.0;
+            for k in 0..4_000 {
+                if k < 40 {
+                    net.add_valve_flow(0, 5e-7, 1004.5 * 600.0);
+                }
+                net.step();
+                worst = worst.max((net.port_state(1).0 - ATM_PA).abs());
+            }
+            worst
+        };
+        assert!(rise(false) < 1.0, "apart: {}", rise(false));
+        assert!(rise(true) > 100.0, "joined: {}", rise(true));
     }
 
     #[test]

@@ -683,6 +683,26 @@ pub(crate) mod tests {
         assert!(share >= 0.85, "harmonic share {share}");
     }
 
+    #[test]
+    fn a_coasting_lfa_is_heard_at_its_firing_order_not_a_banks() {
+        // User report (2026-10-25): lifting off in 3rd and coasting, the V10 "sounded like a
+        // fly". Each bank fires every 144°, cycle order 5 (171 Hz at 4100 rpm); the two banks
+        // are half a period apart there, so where they meet the order cancels and the firing
+        // order 10 remains. With a tail pipe per bank, heard from 30° off the axis, it did not
+        // cancel: order 5 measured 3.6× order 10 on overrun. Toyota routes both banks through
+        // one main muffler, where they meet: order 5 must stay well under order 10.
+        let mut sim = Simulation::new(EngineDef::lfa_v10(), FS, 1);
+        sim.controls = Controls {
+            throttle: 0.0,
+            hold_rpm: Some(4100.0),
+            ..Controls::default()
+        };
+        render_secs(&mut sim, 1.5);
+        let x = render_secs(&mut sim, 1.0);
+        let o = orders(&x, 4100.0);
+        assert!(o[4] < 0.3 * o[9], "order 5 {} vs order 10 {}", o[4], o[9]);
+    }
+
     /// Share of the energy in cycle orders 1–3 (below the firing order of a V8) at `rpm` WOT.
     fn low_order_share(def: EngineDef, rpm: f64) -> f64 {
         let mut sim = Simulation::new(def, FS, 1);

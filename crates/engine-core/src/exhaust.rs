@@ -1,5 +1,5 @@
 //! Exhaust system as a network of waveguides: one primary per cylinder, primaries merged in
-//! collectors (N-port junctions), each collector into its own tail pipe, which radiates.
+//! collectors (N-port junctions), each collector into its own tail pipe (or all into one, `collectors_join`), which radiates.
 //! Spec: `docs/superpowers/specs/2026-10-21-exhaust-waveguides.md`.
 
 use crate::waveguide::{Duct, Node, OpenEnd, Pipe, Shunt, junction};
@@ -61,6 +61,10 @@ pub struct ExhaustDef {
     /// What follows each collector, in order, to the open end. Empty: a can of
     /// `muffler_volume_m3` lined with `muffler_packing`, then the tail pipe (the fields above).
     pub after_collector: Vec<Segment>,
+    /// The collectors' pipes end in one shared path to a single open end (a Y-pipe, or both
+    /// banks' pipes routed into a common silencer box) instead of each collector having its
+    /// own: the banks then meet at one pressure node, where their pulses add.
+    pub collectors_join: bool,
 }
 
 /// The mean flow's losses after the collector: turbulent friction Σ f·L/(D·A²) over the pipes
@@ -205,6 +209,7 @@ impl Default for ExhaustDef {
             muffler_packing: crate::lining::Packing::default(),
             tail_spacing_m: 0.9,
             after_collector: Vec::new(),
+            collectors_join: false,
         }
     }
 }
@@ -310,6 +315,19 @@ impl ExhaustDef {
         }
     }
 
+    /// The cylinders behind each open end, 0-based: one per collector, or all in one when the
+    /// collectors join.
+    pub fn tail_groups(&self, cylinders: usize) -> Vec<Vec<usize>> {
+        let groups = self.groups(cylinders);
+        if self.collectors_join {
+            let mut all: Vec<usize> = groups.into_iter().flatten().collect();
+            all.sort_unstable();
+            vec![all]
+        } else {
+            groups
+        }
+    }
+
     /// Collector groups as 0-based cylinder indices (empty → all cylinders in one).
     pub fn groups(&self, cylinders: usize) -> Vec<Vec<usize>> {
         // Invalid indices are dropped (validation reports them; the sim must not panic).
@@ -336,7 +354,13 @@ impl ExhaustDef {
 struct Branch {
     members: Vec<usize>,
     collector: Pipe,
-    /// Muffler can and tail pipe.
+}
+
+/// What follows the collectors to one open end: the collectors it gathers (one, or all when
+/// they join), the muffler can and tail pipe, the end.
+#[derive(Debug, Clone)]
+struct Outlet {
+    feeds: Vec<usize>,
     tail: Duct,
     end: OpenEnd,
 }
@@ -478,7 +502,8 @@ pub struct ExhaustNet {
     /// Last wave sent into each primary from its valve end.
     sent: Vec<f64>,
     branches: Vec<Branch>,
-    /// Radiated pressure at each tail pipe in the last step (one per collector branch).
+    outlets: Vec<Outlet>,
+    /// Radiated pressure at each tail pipe in the last step (one per outlet).
     tails: Vec<f64>,
     /// Per-step scratch (reused: no allocation on the sim thread): the waves each primary
     /// receives from its collector, and one junction's areas, incoming and outgoing waves.
@@ -542,6 +567,8 @@ struct Scratch {
     areas: Vec<f64>,
     incoming: Vec<f64>,
     outgoing: Vec<f64>,
+    /// The wave each collector's near end takes this step.
+    near: Vec<f64>,
 }
 
 impl ExhaustNet {
@@ -574,6 +601,17 @@ impl ExhaustNet {
                     dt,
                     LOSS_PER_M,
                 ),
+            })
+            .collect::<Vec<_>>();
+        let feeds: Vec<Vec<usize>> = if def.collectors_join {
+            vec![(0..branches.len()).collect()]
+        } else {
+            (0..branches.len()).map(|b| vec![b]).collect()
+        };
+        let outlets: Vec<Outlet> = feeds
+            .into_iter()
+            .map(|feeds| Outlet {
+                feeds,
                 tail: after_collector(def, dt, lining_m),
                 end: OpenEnd::new(def.tail_diameter_m, dt),
             })
@@ -581,40 +619,44 @@ impl ExhaustNet {
         Self {
             primaries,
             sent: vec![0.0; cylinders],
-            tails: vec![0.0; def.groups(cylinders).len()],
+            tails: vec![0.0; outlets.len()],
             mean_flows: (Vec::new(), Vec::new()),
             scratch: Scratch::default(),
             branches,
+            outlets,
             dt,
         }
     }
 
-    /// Mean mass flows, kg/s: through each cylinder's primary and each branch's collector and
-    /// what follows it (their turbulent friction, [`Pipe::set_mean_flow`]).
-    pub fn set_mean_flow(&mut self, per_cylinder: &[f64], per_branch: &[f64]) {
+    /// Mean mass flows, kg/s: through each cylinder's primary and each outlet's path (their
+    /// turbulent friction, [`Pipe::set_mean_flow`]); a collector carries its cylinders' sum.
+    pub fn set_mean_flow(&mut self, per_cylinder: &[f64], per_tail: &[f64]) {
         // reuses the vectors' room: this runs every few dozen steps on the sim thread
         self.mean_flows.0.clear();
         self.mean_flows.0.extend_from_slice(per_cylinder);
         self.mean_flows.1.clear();
-        self.mean_flows.1.extend_from_slice(per_branch);
+        self.mean_flows.1.extend_from_slice(per_tail);
         for (p, m) in self.primaries.iter_mut().zip(per_cylinder) {
             p.set_mean_flow(*m);
         }
-        for (b, m) in self.branches.iter_mut().zip(per_branch) {
-            b.collector.set_mean_flow(*m);
-            b.tail.set_mean_flow(*m);
+        for b in self.branches.iter_mut() {
+            let m: f64 = b.members.iter().filter_map(|&i| per_cylinder.get(i)).sum();
+            b.collector.set_mean_flow(m);
+        }
+        for (o, m) in self.outlets.iter_mut().zip(per_tail) {
+            o.tail.set_mean_flow(*m);
         }
     }
 
-    /// The mean flows the pipes' friction last followed: (per cylinder, per branch), kg/s.
+    /// The mean flows the pipes' friction last followed: (per cylinder, per tail), kg/s.
     pub fn mean_flows(&self) -> (&[f64], &[f64]) {
         (&self.mean_flows.0, &self.mean_flows.1)
     }
 
     /// Mean outflow Mach number at each tail's open end (see [`OpenEnd::set_outflow_mach`]).
     pub fn set_outflow_mach(&mut self, mach: &[f64]) {
-        for (b, m) in self.branches.iter_mut().zip(mach) {
-            b.end.set_outflow_mach(*m);
+        for (o, m) in self.outlets.iter_mut().zip(mach) {
+            o.end.set_outflow_mach(*m);
         }
     }
 
@@ -680,11 +722,13 @@ impl ExhaustNet {
             areas,
             incoming,
             outgoing,
+            near,
         } = &mut self.scratch;
         from_far.clear();
         from_far.resize(n, 0.0);
+        near.clear();
         let mut radiated = 0.0;
-        for (b, tail_out) in self.branches.iter_mut().zip(self.tails.iter_mut()) {
+        for b in self.branches.iter_mut() {
             areas.clear();
             incoming.clear();
             for &m in &b.members {
@@ -698,18 +742,30 @@ impl ExhaustNet {
             for (k, &m) in b.members.iter().enumerate() {
                 from_far[m] = clamp_wave(outgoing[k]);
             }
-            let collector_near = clamp_wave(outgoing[b.members.len()]);
-            let mut two = [0.0; 2];
-            junction(
-                &[b.collector.area_m2, b.tail.end_areas().0],
-                &[b.collector.at_far(), b.tail.at_near()],
-                &mut two,
-            );
-            let (reflected, out) = b.end.process(b.tail.at_far());
+            near.push(clamp_wave(outgoing[b.members.len()]));
+        }
+        // each outlet: its collectors' far ends and its tail meet at one node
+        for (o, tail_out) in self.outlets.iter_mut().zip(self.tails.iter_mut()) {
+            areas.clear();
+            incoming.clear();
+            for &b in &o.feeds {
+                areas.push(self.branches[b].collector.area_m2);
+                incoming.push(self.branches[b].collector.at_far());
+            }
+            areas.push(o.tail.end_areas().0);
+            incoming.push(o.tail.at_near());
+            outgoing.resize(incoming.len(), 0.0);
+            junction(areas, incoming, outgoing);
+            let (reflected, out) = o.end.process(o.tail.at_far());
             radiated += out;
             *tail_out = out;
-            b.collector.send(collector_near, clamp_wave(two[0]));
-            b.tail.send(clamp_wave(two[1]), clamp_wave(reflected));
+            for (k, &b) in o.feeds.iter().enumerate() {
+                self.branches[b]
+                    .collector
+                    .send(near[b], clamp_wave(outgoing[k]));
+            }
+            o.tail
+                .send(clamp_wave(outgoing[o.feeds.len()]), clamp_wave(reflected));
         }
         for i in 0..n {
             let a = self.primaries[i].area_m2;
@@ -1073,6 +1129,66 @@ mod tests {
         let y: ExhaustDef =
             serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&d).unwrap()).unwrap();
         assert_eq!((j, y), (d.clone(), d));
+    }
+
+    #[test]
+    fn joined_collectors_round_trip_and_default_to_apart() {
+        let old: ExhaustDef = serde_yaml_ng::from_str("tail_length_m: 1.0\n").unwrap();
+        assert!(!old.collectors_join);
+        let d = ExhaustDef {
+            collectors: vec![vec![1], vec![2]],
+            collectors_join: true,
+            ..ExhaustDef::default()
+        };
+        let j: ExhaustDef = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+        let y: ExhaustDef =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&d).unwrap()).unwrap();
+        assert_eq!((j, y), (d.clone(), d));
+    }
+
+    #[test]
+    fn joined_collectors_leave_through_one_tail() {
+        let apart = ExhaustDef {
+            collectors: vec![vec![1, 3], vec![2, 4]],
+            ..ExhaustDef::default()
+        };
+        let joined = ExhaustDef {
+            collectors_join: true,
+            ..apart.clone()
+        };
+        assert_eq!(apart.tail_groups(4), vec![vec![0, 2], vec![1, 3]]);
+        assert_eq!(joined.tail_groups(4), vec![vec![0, 1, 2, 3]]);
+        // the collectors themselves stay as they were
+        assert_eq!(joined.groups(4), apart.groups(4));
+        assert_eq!(ExhaustNet::new(&apart, 4, DT).last_tails().len(), 2);
+        assert_eq!(ExhaustNet::new(&joined, 4, DT).last_tails().len(), 1);
+    }
+
+    #[test]
+    fn joined_banks_hear_each_other_through_the_join() {
+        // A pulse from cylinder 1 (first collector) reaches cylinder 2's valve (second
+        // collector) only through the join: primary, collector, the other collector and its
+        // primary, 2·(0.7/600 + 0.25/560) s = 3.2262 ms = 619.4 steps at 192 kHz. Apart, the
+        // banks never meet.
+        let apart = ExhaustDef {
+            collectors: vec![vec![1], vec![2]],
+            ..ExhaustDef::default()
+        };
+        let joined = ExhaustDef {
+            collectors_join: true,
+            ..apart.clone()
+        };
+        let first = |d: &ExhaustDef| {
+            let mut net = ExhaustNet::new(d, 2, DT);
+            (0..3000usize).find(|&k| {
+                let heard = net.arriving(1).abs() > 1.0;
+                net.step(&[if k < 5 { 0.1 } else { 0.0 }, 0.0]);
+                heard
+            })
+        };
+        assert_eq!(first(&apart), None);
+        let k = first(&joined).expect("the other bank never heard it");
+        assert!(k.abs_diff(619) <= 3, "arrived at {k}");
     }
 
     #[test]
