@@ -380,7 +380,7 @@ const TAIL_T: f64 = C_TAIL * C_TAIL / (crate::gas::GAMMA * crate::gas::R_AIR);
 /// (ch. 3); catalysts as their open channels plus their laminar resistance; resonators as
 /// side branches between their neighbours. `muffler_transmission` stays an extra lumped loss on
 /// the last pipe (1 = none).
-fn after_collector(def: &ExhaustDef, dt: f64, lining_m: f64) -> Duct {
+pub(crate) fn after_collector(def: &ExhaustDef, dt: f64, lining_m: f64) -> Duct {
     let rho_c = crate::gas::GAMMA * crate::units::ATM_PA / C_TAIL;
     let pipe = |len: f64, d: f64| Pipe::new(len, d, C_TAIL, dt, LOSS_PER_M);
     let mut duct: Option<Duct> = None;
@@ -480,6 +480,8 @@ pub struct ExhaustNet {
     branches: Vec<Branch>,
     /// Radiated pressure at each tail pipe in the last step (one per collector branch).
     tails: Vec<f64>,
+    /// The pressure wave each collector sent into its silencer and tail in the last step.
+    into_tails: Vec<f64>,
     /// Per-step scratch (reused: no allocation on the sim thread): the waves each primary
     /// receives from its collector, and one junction's areas, incoming and outgoing waves.
     scratch: Scratch,
@@ -582,6 +584,7 @@ impl ExhaustNet {
             primaries,
             sent: vec![0.0; cylinders],
             tails: vec![0.0; def.groups(cylinders).len()],
+            into_tails: vec![0.0; def.groups(cylinders).len()],
             mean_flows: (Vec::new(), Vec::new()),
             scratch: Scratch::default(),
             branches,
@@ -621,6 +624,11 @@ impl ExhaustNet {
     /// Radiated pressure at each tail pipe in the last step; they sum to `step`'s result.
     pub fn last_tails(&self) -> &[f64] {
         &self.tails
+    }
+
+    /// The pressure wave (Pa) each collector sent into its silencer and tail in the last step.
+    pub fn last_into_tails(&self) -> &[f64] {
+        &self.into_tails
     }
 
     pub fn primary_area(&self) -> f64 {
@@ -684,14 +692,21 @@ impl ExhaustNet {
         from_far.clear();
         from_far.resize(n, 0.0);
         let mut radiated = 0.0;
-        for (b, tail_out) in self.branches.iter_mut().zip(self.tails.iter_mut()) {
+        for ((b, tail_out), into_tail) in self
+            .branches
+            .iter_mut()
+            .zip(self.tails.iter_mut())
+            .zip(self.into_tails.iter_mut())
+        {
             areas.clear();
             incoming.clear();
+            // the junction conserves mass between gases of different sound speeds: each pipe's
+            // admittance to a pressure wave is F/c (ρuF = F·(p⁺ − p⁻)/c), not its area alone
             for &m in &b.members {
-                areas.push(self.primaries[m].area_m2);
+                areas.push(self.primaries[m].area_m2 / C_PRIMARY);
                 incoming.push(self.primaries[m].at_far());
             }
-            areas.push(b.collector.area_m2);
+            areas.push(b.collector.area_m2 / C_COLLECTOR);
             incoming.push(b.collector.at_near());
             outgoing.resize(incoming.len(), 0.0);
             junction(areas, incoming, outgoing);
@@ -701,7 +716,10 @@ impl ExhaustNet {
             let collector_near = clamp_wave(outgoing[b.members.len()]);
             let mut two = [0.0; 2];
             junction(
-                &[b.collector.area_m2, b.tail.end_areas().0],
+                &[
+                    b.collector.area_m2 / C_COLLECTOR,
+                    b.tail.end_areas().0 / C_TAIL,
+                ],
                 &[b.collector.at_far(), b.tail.at_near()],
                 &mut two,
             );
@@ -709,6 +727,7 @@ impl ExhaustNet {
             radiated += out;
             *tail_out = out;
             b.collector.send(collector_near, clamp_wave(two[0]));
+            *into_tail = clamp_wave(two[1]);
             b.tail.send(clamp_wave(two[1]), clamp_wave(reflected));
         }
         for i in 0..n {
