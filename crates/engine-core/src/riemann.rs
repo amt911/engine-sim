@@ -245,6 +245,27 @@ pub fn valve_inflow(p_cyl: f64, psi: f64, arriving: f64, gas: &PipeGas) -> Valve
     flow(a_pipe, u_star(a_pipe * c) / c)
 }
 
+/// A constant-pressure junction of pipe ends (Benson §5.5.1, eqs. 5.23–5.34, for any number of
+/// pipes): every end has the same pressure, so the same A (all pipes referred to the same
+/// p_ref), and the mass flows into the junction sum to zero. `arriving[n]` is the variable
+/// coming into the junction along pipe n, A + k·Uₙ with Uₙ toward the junction;
+/// `weights[n]` = Fₙ/a_ref,n (ρₙuₙFₙ ∝ Uₙ·Fₙ/a_ref,n at a common pressure). Writes the variable
+/// each pipe receives, 2A − arriving, and returns A.
+pub fn junction(arriving: &[f64], weights: &[f64], sent: &mut [f64]) -> f64 {
+    // Σ wₙ·Uₙ = 0 with Uₙ = (arriving − A)/k: A is the weighted mean of what arrives
+    let total: f64 = weights.iter().sum();
+    let a = weights
+        .iter()
+        .zip(arriving)
+        .map(|(w, l)| w * l)
+        .sum::<f64>()
+        / total;
+    for (s, l) in sent.iter_mut().zip(arriving) {
+        *s = 2.0 * a - l;
+    }
+    a
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -465,5 +486,49 @@ mod tests {
         // a cylinder above the pipe: no backflow, a closed end
         let v = valve_inflow(1.5e5, 0.3, 1.0, &gas);
         assert_eq!((v.mass_flow, v.sent), (0.0, 1.0));
+    }
+
+    #[test]
+    fn a_faint_wave_splits_at_a_junction_as_kelly_lochbaum() {
+        // Small amplitude: the pressure waves through the junction are the linear N-port's
+        // (crate::waveguide::junction), here three pipes of areas 1, 2 and 3 with a wave in the
+        // first. To first order p/p_ref − 1 = 2κ/(κ−1)·(A − 1), so a variable's deviation is
+        // proportional to the pressure wave it carries, and the junction must scatter the
+        // deviations as Kelly–Lochbaum scatters pressure waves.
+        let areas = [1.0, 2.0, 3.0];
+        let eps = 1e-6;
+        let mut sent = [0.0; 3];
+        junction(&[1.0 + eps, 1.0, 1.0], &areas, &mut sent);
+        // linear: incoming pressure wave p⁺ in pipe 0 only
+        let mut lin = [0.0; 3];
+        crate::waveguide::junction(&areas, &[1.0, 0.0, 0.0], &mut lin);
+        for (n, (s, l)) in sent.iter().zip(lin).enumerate() {
+            let got = (s - 1.0) / eps;
+            assert!((got - l).abs() < 1e-5, "pipe {n}: {got} vs {l}");
+        }
+    }
+
+    #[test]
+    fn a_junction_conserves_mass_at_finite_amplitude() {
+        // a strong compression into pipe 0 (λ = 1.15) and a rarefaction in pipe 2 (0.95):
+        // Σ ρₙ·uₙ·Fₙ into the junction is zero, with ρ ∝ A^(2/(κ−1))/a_ref² and u = U·a_ref
+        let (a_ref, areas) = ([600.0, 560.0, 500.0], [1.0, 1.0, 2.0]);
+        let weights: Vec<f64> = areas.iter().zip(a_ref).map(|(f, a)| f / a).collect();
+        let arriving = [1.15, 1.0, 0.95];
+        let mut sent = [0.0; 3];
+        let a = junction(&arriving, &weights, &mut sent);
+        let into: f64 = (0..3)
+            .map(|n| {
+                // velocity toward the junction from the variables arriving and leaving
+                let u = (arriving[n] - sent[n]) / (2.0 * 0.2) * a_ref[n];
+                let rho = a.powf(5.0) / (a_ref[n] * a_ref[n]);
+                rho * u * areas[n]
+            })
+            .sum();
+        assert!(into.abs() < 1e-15, "net mass flow {into}");
+        // and every end leaves at the common A
+        for n in 0..3 {
+            assert!((0.5 * (arriving[n] + sent[n]) - a).abs() < 1e-12);
+        }
     }
 }
