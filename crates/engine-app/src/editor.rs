@@ -576,6 +576,22 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
                     .step_by(0.05)
                     .text("Ear height (m)"),
             );
+            ui.add(
+                slider(&mut snd.street_width_m, 0.0..=40.0)
+                    .step_by(1.0)
+                    .text("Street width (m)"),
+            )
+            .on_hover_text(
+                "Façades on both sides, this far apart: each returns the car's sound from its \
+                 mirror image, later and weaker. 0 = open ground",
+            );
+            ui.add_enabled(
+                snd.street_width_m > 0.0,
+                slider(&mut snd.wall_reflection, 0.0..=1.0)
+                    .step_by(0.05)
+                    .text("Façade reflection"),
+            )
+            .on_hover_text("0.8: building walls with windows; 1: flat hard walls (ISO 9613-2)");
         });
 
     egui::CollapsingHeader::new("Mechanics").show(ui, |ui| {
@@ -827,6 +843,16 @@ mod tests {
         let x = &h.state().def.exhaust;
         assert!(!x.after_collector.is_empty());
         assert_eq!(x.after_collector, x.path());
+    }
+
+    #[test]
+    fn the_street_width_puts_facades_around_the_car() {
+        let mut h = harness(EngineDef::inline4());
+        assert_eq!(h.state().def.sound.street_width_m, 0.0);
+        nudge(&mut h, "Street width (m)");
+        assert!(h.state().def.sound.street_width_m > 0.0);
+        assert!(h.state().def.sound.street().is_some());
+        assert!(h.state().engine_dirty);
     }
 
     #[test]
