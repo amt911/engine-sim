@@ -38,3 +38,4 @@ Each tag on `main` is a runnable snapshot of the simulator (for the timelapse).
 | `v0.18.0` | 2026-10-25 | **Combustion from the flame**: burn angles from Hires (1978) with the Metghalchi–Keck laminar flame speed and residual dilution, MBT spark, and cycle-to-cycle variation from mixture, residual and turbulence (Heywood §9.4.2) |
 | `v0.18.1` | 2026-10-25 | **Dropouts counted**: the audio line shows how many times the buffer ran dry |
 | `v0.19.0` | 2026-10-25 | **Street environment**: ground and façade reflections (ISO 9613-2) and air absorption (ISO 9613-1), with width and reflection sliders |
+| `v0.19.1` | 2026-10-25 | **Valvetrain ticks**: each valve closing strikes its seat (force from Zheng 2020, scaled with speed), heard through the head's structure response |
