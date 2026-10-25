@@ -28,7 +28,7 @@ pub struct SoundDef {
     pub mechanical: f64,
     /// Cycle-to-cycle combustion variability (1 = ±1.5° burn start, ±5 % duration).
     pub combustion_jitter: f64,
-    /// Wet level of the body/room reverb applied in the voice.
+    /// Wet level of a room / car-body reverb applied in the voice; 0 (outdoors) by default.
     pub reverb: f64,
     /// How much the voice lifts quiet passages (idle) toward the full-load level, in dB:
     /// 1 = up to +12 dB, 0 = the raw dynamics of the physics (the default: idle, overrun and
@@ -65,7 +65,7 @@ impl Default for SoundDef {
             block: 1.0,
             mechanical: 1.0,
             combustion_jitter: 1.0,
-            reverb: 0.15,
+            reverb: 0.0,
             leveling: 0.0,
             listener_distance_m: 3.0,
             listener_angle_deg: 30.0,
@@ -85,6 +85,13 @@ pub const BURN_DURATION_JITTER: f64 = 0.05;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_engine_is_heard_outdoors_without_a_room() {
+        // the listener stands outside (ground reflection only): a room's reverberation has no
+        // place in the default, it was heard as an echo (user, 2026-10-24); a file can add one
+        assert_eq!(SoundDef::default().reverb, 0.0);
+    }
 
     #[test]
     fn listener_round_trips_and_defaults_for_old_files() {

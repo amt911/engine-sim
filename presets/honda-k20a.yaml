@@ -71,7 +71,7 @@ engine:
     block: 1.0
     mechanical: 1.0
     combustion_jitter: 1.0
-    reverb: 0.15
+    reverb: 0.0
     leveling: 0.0
     listener_distance_m: 3.0
     listener_angle_deg: 30.0
