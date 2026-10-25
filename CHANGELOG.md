@@ -39,3 +39,5 @@ Each tag on `main` is a runnable snapshot of the simulator (for the timelapse).
 | `v0.18.1` | 2026-10-25 | **Dropouts counted**: the audio line shows how many times the buffer ran dry |
 | `v0.19.0` | 2026-10-25 | **Street environment**: ground and façade reflections (ISO 9613-2) and air absorption (ISO 9613-1), with width and reflection sliders |
 | `v0.19.1` | 2026-10-25 | **Valvetrain ticks**: each valve closing strikes its seat (force from Zheng 2020, scaled with speed), heard through the head's structure response |
+| `v0.19.2` | 2026-10-25 | **No high-frequency clicks from the pipes' mouths**: tail pipes and the intake mouth radiate as open pipes above ka = 2 (Levine & Schwinger), not as monopoles that kept rising with frequency |
+| `v0.20.0` | 2026-10-25 | **Lift-off and limiter like a real engine**: the port wall film keeps feeding the cylinders after a fuel cut (Aquino x–τ, Almkvist's measured X and τ); slow flames leave fuel unburnt and too-lean or too-rich charges misfire; that mixture burns in a hot exhaust (pops and crackles, different on every engine) |
