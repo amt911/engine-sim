@@ -997,6 +997,11 @@ pub struct Engine {
     rng: u64,
     /// Exhaust waveguide network, built for the current step size.
     net: Option<ExhaustNet>,
+    /// With the FV exhaust, the valves' jet noise rides a linear waveguide of the same pipes
+    /// (a small perturbation, it superposes on the gas dynamics; the FV cells are too coarse to
+    /// carry it), and what its tails radiate adds to the FV tails'. Its sources, per cylinder.
+    jet_net: Option<ExhaustNet>,
+    jet_flows: Vec<f64>,
     /// Non-linear finite-volume exhaust, when `exhaust.model` is `fv`.
     fv: Option<ExhaustFv>,
     /// 1D intake runners, when `intake.model` is `fv`.
@@ -1187,6 +1192,8 @@ impl Engine {
             fuel_ledger: FuelLedger::default(),
             rng: seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1,
             net: None,
+            jet_net: None,
+            jet_flows: Vec::new(),
             fv: None,
             intake_net: None,
             tail_pipes,
@@ -1439,6 +1446,17 @@ impl Engine {
                             .with_scheme(self.fidelity.pipe_scheme),
                     );
                 }
+                if self.def.sound.valve_jet <= 0.0 {
+                    self.jet_net = None;
+                } else if self.jet_net.as_ref().is_none_or(|n| n.dt != dt) {
+                    self.jet_net = Some(ExhaustNet::with_lining(
+                        &self.def.exhaust,
+                        self.cyl.len(),
+                        dt,
+                        self.fidelity.lining_segment_m,
+                    ));
+                    self.jet_flows = vec![0.0; self.cyl.len()];
+                }
             }
         }
         if self.flows.len() != self.cyl.len() {
@@ -1558,11 +1576,13 @@ impl Engine {
                 exhaust_source_flow(f.dm / dt, f.h)
             });
             // The valve's jet: its mixing noise, generated in the port, rides down the primary
-            // with the pulse — a pressure added to the wave the valve sends (waveguide only).
+            // with the pulse — a pressure added to the wave the valve sends. With the FV exhaust
+            // it rides the jet net (`jet_net`): a small perturbation, linear on the gas dynamics.
             let jet_level = self.def.sound.valve_jet;
-            let a_pipe = match (&self.net, &self.remote.0) {
-                (Some(n), _) => Some(n.primary_area()),
-                (None, Some(r)) => Some(r.a_pipe),
+            let a_pipe = match (&self.net, &self.remote.0, &self.jet_net) {
+                (Some(n), _, _) => Some(n.primary_area()),
+                (None, Some(r), _) => Some(r.a_pipe),
+                (None, None, Some(j)) => Some(j.primary_area()),
                 _ => None,
             };
             if let Some(a_pipe) = a_pipe
@@ -1576,11 +1596,22 @@ impl Engine {
                         .collect();
                 }
                 let c = crate::exhaust::C_PRIMARY;
-                // the port: the atmosphere, the wave arriving and the one the flow sends (p⁺ + p⁻)
-                let p_port = ATM_PA + 2.0 * arriving + c * self.flows[i] / a_pipe;
-                let port = (p_port, port_t);
-                let p = self.valve_jets[i].step(cyl_state, port, a_ex, a_pipe, dt);
-                self.flows[i] += jet_level * p * a_pipe / c;
+                match &self.fv {
+                    None => {
+                        // the port: the atmosphere, the wave arriving and the one the flow sends
+                        // (p⁺ + p⁻)
+                        let p_port = ATM_PA + 2.0 * arriving + c * self.flows[i] / a_pipe;
+                        let port = (p_port, port_t);
+                        let p = self.valve_jets[i].step(cyl_state, port, a_ex, a_pipe, dt);
+                        self.flows[i] += jet_level * p * a_pipe / c;
+                    }
+                    Some(fv) => {
+                        // the port is the first FV cell's gas
+                        let port = fv.port_state(i);
+                        let p = self.valve_jets[i].step(cyl_state, port, a_ex, a_pipe, dt);
+                        self.jet_flows[i] = jet_level * p * a_pipe / c;
+                    }
+                }
             }
             {
                 let ex = &self.def.exhaust;
@@ -1788,6 +1819,11 @@ impl Engine {
         match (&mut self.net, &mut self.fv, &mut self.remote.0) {
             (_, Some(fv), _) => {
                 fv.step();
+                if let Some(j) = &mut self.jet_net {
+                    j.prepare(&self.tail_mach, None);
+                    j.step(&self.jet_flows);
+                    self.jet_flows.iter_mut().for_each(|f| *f = 0.0);
+                }
             }
             (Some(net), None, _) => {
                 // the mean flows move over cycles: the pipes' friction follows them every 64 steps
@@ -1970,6 +2006,11 @@ impl Engine {
                 (_, Some(fv)) => {
                     tails.clear();
                     tails.extend_from_slice(fv.last_tails());
+                    if let Some(j) = &self.jet_net {
+                        for (t, &n) in tails.iter_mut().zip(j.last_tails()) {
+                            *t += n;
+                        }
+                    }
                 }
                 (Some(net), None) => {
                     tails.clear();
@@ -4562,6 +4603,44 @@ mod tests {
         };
         run(&mut e, 0.3, &c);
         assert!(e.combustions() > 20, "0 disables the cut");
+    }
+
+    #[test]
+    fn the_valve_jets_hiss_through_the_fv_exhaust_too() {
+        // The valves' mixing noise rides down the primaries in both exhaust models. With every
+        // other random source off, an engine held at speed repeats every cycle; the jets' hiss
+        // is what does not: the energy of x(t) − x(t + one cycle) must rise with them on the FV
+        // exhaust as it does on the waveguide.
+        let aperiodic = |model: ExhaustModel, jet: f64| {
+            let mut d = EngineDef::inline4();
+            d.exhaust.model = model;
+            let s = &mut d.sound;
+            (s.flow_noise, s.block, s.mechanical, s.combustion_jitter) = (0.0, 0.0, 0.0, 0.0);
+            s.valve_jet = jet;
+            let rpm = 6000.0;
+            let mut e = Engine::new(d, rpm, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(rpm),
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &c);
+            let x = run(&mut e, 0.2, &c);
+            let cycle = (120.0 / rpm / DT).round() as usize;
+            let diff: f64 = x
+                .windows(cycle + 1)
+                .map(|w| (w[cycle] - w[0]).powi(2))
+                .sum();
+            let total: f64 = x.iter().map(|v| v * v).sum();
+            diff / total
+        };
+        for model in [ExhaustModel::Waveguide, ExhaustModel::Fv] {
+            let gain = 10.0 * (aperiodic(model, 1.0) / aperiodic(model, 0.0)).log10();
+            assert!(
+                gain > 6.0,
+                "{model:?}: the valve jets add {gain:.1} dB of hiss"
+            );
+        }
     }
 
     #[test]
