@@ -187,6 +187,9 @@ pub enum ExhaustModel {
     #[default]
     Waveguide,
     Fv,
+    /// Finite-amplitude waves on Riemann variables in the primaries and collectors (Benson
+    /// 1982), the linear waveguide in the silencers and tail ([`crate::exhaust_riemann`]).
+    Riemann,
 }
 
 impl Default for ExhaustDef {

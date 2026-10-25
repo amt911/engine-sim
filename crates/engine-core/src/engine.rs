@@ -834,6 +834,10 @@ pub struct Engine {
     net: Option<ExhaustNet>,
     /// Non-linear finite-volume exhaust, when `exhaust.model` is `fv`.
     fv: Option<ExhaustFv>,
+    /// Finite-amplitude exhaust on Riemann variables, when `exhaust.model` is `riemann`.
+    riemann: Option<crate::exhaust_riemann::RiemannNet>,
+    /// The step the Riemann net was built for.
+    riemann_dt: f64,
     /// 1D intake runners, when `intake.model` is `fv`.
     intake_net: Option<IntakeFv>,
     /// Tail pipes (one per collector group): each is its own jet for the flow noise.
@@ -987,6 +991,8 @@ impl Engine {
             rng: seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1,
             net: None,
             fv: None,
+            riemann: None,
+            riemann_dt: 0.0,
             intake_net: None,
             tail_pipes,
             listener: None,
@@ -1199,8 +1205,21 @@ impl Engine {
             }
         }
         match self.def.exhaust.model {
+            ExhaustModel::Riemann => {
+                self.net = None;
+                self.fv = None;
+                if self.riemann.is_none() || self.riemann_dt != dt {
+                    self.riemann = Some(crate::exhaust_riemann::RiemannNet::new(
+                        &self.def.exhaust,
+                        self.cyl.len(),
+                        dt,
+                    ));
+                    self.riemann_dt = dt;
+                }
+            }
             ExhaustModel::Waveguide => {
                 self.fv = None;
+                self.riemann = None;
                 if self.remote.0.is_none() && self.net.as_ref().is_none_or(|n| n.dt != dt) {
                     self.net = Some(ExhaustNet::with_lining(
                         &self.def.exhaust,
@@ -1212,6 +1231,7 @@ impl Engine {
             }
             ExhaustModel::Fv => {
                 self.net = None;
+                self.riemann = None;
                 if self.fv.as_ref().is_none_or(|n| n.dt != dt) {
                     self.fv = Some(
                         ExhaustFv::new(&self.def.exhaust, self.cyl.len(), dt)
@@ -1305,14 +1325,36 @@ impl Engine {
             };
             // Reverse flow (pipe → cylinder) passes the valve against the port's curve with a lower
             // discharge coefficient than forward flow (Blair measures separate in/out maps).
-            let f_ex = (a_ex > 0.0).then(|| {
-                let f = plan_ex(a_ex);
-                if f.dm < 0.0 && self.def.exhaust_reverse_cd_ratio < 1.0 {
-                    plan_ex(a_ex * self.def.exhaust_reverse_cd_ratio)
-                } else {
-                    f
+            let f_ex = match &mut self.riemann {
+                // Benson's valve boundaries decide the flow from the cylinder and the wave
+                // arriving at the port, every step (a shut valve reflects as a closed end)
+                Some(rn) => {
+                    let (p_c, t_c) = (cs.gas.pressure(), cs.gas.temperature());
+                    let mut v = rn.valve(i, p_c, t_c, a_ex);
+                    if v.mass_flow < 0.0 && self.def.exhaust_reverse_cd_ratio < 1.0 {
+                        v = rn.valve(i, p_c, t_c, a_ex * self.def.exhaust_reverse_cd_ratio);
+                    }
+                    (a_ex > 0.0).then(|| {
+                        let h = if v.mass_flow >= 0.0 {
+                            crate::gas::CP * t_c
+                        } else {
+                            crate::gas::CP * rn.port_stagnation_t(i)
+                        };
+                        crate::gas::Flow {
+                            dm: v.mass_flow * dt,
+                            h,
+                        }
+                    })
                 }
-            });
+                None => (a_ex > 0.0).then(|| {
+                    let f = plan_ex(a_ex);
+                    if f.dm < 0.0 && self.def.exhaust_reverse_cd_ratio < 1.0 {
+                        plan_ex(a_ex * self.def.exhaust_reverse_cd_ratio)
+                    } else {
+                        f
+                    }
+                }),
+            };
             if let Some(f) = f_ex
                 && f.dm < 0.0
             {
@@ -1370,6 +1412,23 @@ impl Engine {
             }
             if let (Some(fv), Some(f)) = (&mut self.fv, f_ex) {
                 fv.add_valve_flow(i, f.dm, f.h);
+            }
+            // the valve's jet on the Riemann exhaust: its mixing noise added to what the valve
+            // sends this step, at the port's pressure
+            if let Some(rn) = &mut self.riemann
+                && jet_level > 0.0
+                && a_ex > 0.0
+            {
+                if self.valve_jets.len() != n_cyl {
+                    let base = self.rng;
+                    self.valve_jets = (0..n_cyl)
+                        .map(|k| crate::jet_noise::ValveJet::new(base.wrapping_add(101 + k as u64)))
+                        .collect();
+                }
+                let a_pipe = rn.primary_area();
+                let port = (ATM_PA + rn.valve_pressure(i), port_t);
+                let p = self.valve_jets[i].step(cyl_state, port, a_ex, a_pipe, dt);
+                rn.add_to_sent(i, jet_level * p);
             }
             // Blow-by past the rings into the (vented) crankcase. Small while running, but it
             // is what lets a charge trapped at a stop bleed off so the starter can turn it.
@@ -1452,6 +1511,10 @@ impl Engine {
         }
         // Acoustic source: what the tail pipes radiate.
         // advance the exhaust; what each tail radiates is read below (`last_tails`)
+        if let Some(rn) = &mut self.riemann {
+            rn.set_outflow_mach(&self.tail_mach);
+            rn.step();
+        }
         match (&mut self.net, &mut self.fv, &mut self.remote.0) {
             (_, Some(fv), _) => {
                 fv.step();
@@ -1494,6 +1557,9 @@ impl Engine {
             self.listener = Some((dt, l));
         }
         let n_tails = match (&self.net, &self.fv, &self.remote.0) {
+            _ if self.riemann.is_some() => {
+                self.riemann.as_ref().map_or(0, |r| r.last_tails().len())
+            }
             (_, Some(fv), _) => fv.last_tails().len(),
             (Some(net), None, _) => net.last_tails().len(),
             (None, None, Some(r)) => r.tails.len(),
@@ -1616,6 +1682,12 @@ impl Engine {
         } else {
             let mut tails = std::mem::take(&mut self.tails_buf);
             match (&self.net, &self.fv) {
+                _ if self.riemann.is_some() => {
+                    tails.clear();
+                    if let Some(rn) = &self.riemann {
+                        tails.extend_from_slice(rn.last_tails());
+                    }
+                }
                 (_, Some(fv)) => {
                     tails.clear();
                     tails.extend_from_slice(fv.last_tails());
@@ -1820,6 +1892,9 @@ impl Engine {
 
     /// The exhaust backend running (None before the first step).
     pub fn exhaust_model(&self) -> Option<ExhaustModel> {
+        if self.riemann.is_some() {
+            return Some(ExhaustModel::Riemann);
+        }
         match (&self.net, &self.fv) {
             (_, Some(_)) => Some(ExhaustModel::Fv),
             (Some(_), None) => Some(ExhaustModel::Waveguide),
@@ -1829,6 +1904,9 @@ impl Engine {
 
     /// Gauge pressure in cylinder `i`'s exhaust port (waves standing at the valve), Pa.
     pub fn exhaust_port_gauge(&self, i: usize) -> f64 {
+        if let Some(rn) = &self.riemann {
+            return rn.valve_pressure(i);
+        }
         match (&self.net, &self.fv) {
             (_, Some(fv)) => fv.port_state(i).0 - ATM_PA,
             (Some(n), None) => n.valve_pressure(i),
@@ -1866,6 +1944,30 @@ mod tests {
     fn run(e: &mut Engine, seconds: f64, c: &Controls) -> Vec<f64> {
         let n = (seconds / DT) as usize;
         (0..n).map(|_| e.step(DT, c)).collect()
+    }
+
+    #[test]
+    fn the_riemann_exhaust_runs_a_v10_flat_out() {
+        // the LFA at 7400 rpm, full throttle, on the finite-amplitude exhaust: a finite sound
+        // that is not silence, and ports within real exhaust pressures
+        let mut d = EngineDef::lfa_v10();
+        d.exhaust.model = ExhaustModel::Riemann;
+        let mut e = Engine::new(d, 7400.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(7400.0),
+            ..Controls::default()
+        };
+        let xs = run(&mut e, 0.3, &c);
+        assert!(xs.iter().all(|x| x.is_finite()));
+        let rms =
+            (xs[xs.len() / 2..].iter().map(|x| x * x).sum::<f64>() / (xs.len() / 2) as f64).sqrt();
+        assert!(rms > 1.0, "rms {rms}");
+        assert_eq!(e.exhaust_model(), Some(ExhaustModel::Riemann));
+        for i in 0..10 {
+            let g = e.exhaust_port_gauge(i);
+            assert!((-1.0e5..1.0e6).contains(&g), "port {i}: {g} Pa");
+        }
     }
 
     #[test]

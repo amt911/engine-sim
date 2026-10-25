@@ -162,6 +162,29 @@ impl RiemannNet {
         radiated
     }
 
+    /// Mean outflow Mach number at each tail's open end ([`OpenEnd::set_outflow_mach`]).
+    pub fn set_outflow_mach(&mut self, mach: &[f64]) {
+        for (b, m) in self.branches.iter_mut().zip(mach) {
+            b.end.set_outflow_mach(*m);
+        }
+    }
+
+    /// Add a small pressure `dp` (Pa) to what valve `i` sends this step — the valve jet's
+    /// mixing noise riding out with the pulse. To first order p = p_ref·A^(2κ/(κ−1)), so
+    /// δλ = δA = dp·(κ−1)/(2κ·p_ref·A^((κ+1)/(κ−1))), with A the port's.
+    pub fn add_to_sent(&mut self, i: usize, dp: f64) {
+        let g = &self.primary_gas;
+        let a = 0.5 * (self.sent[i] + self.primaries[i].at_near());
+        let n = 2.0 * KAPPA / (KAPPA - 1.0);
+        self.sent[i] += dp / (n * g.p_ref * a.powf(n - 1.0));
+    }
+
+    /// Gauge pressure at cylinder `i`'s port this step, Pa.
+    pub fn valve_pressure(&self, i: usize) -> f64 {
+        let a = 0.5 * (self.sent[i] + self.primaries[i].at_near());
+        self.primary_gas.p_ref * (pressure_ratio(a, KAPPA) - 1.0)
+    }
+
     /// Radiated signal at each tail in the last step.
     pub fn last_tails(&self) -> &[f64] {
         &self.tails
@@ -274,5 +297,39 @@ mod tests {
             sr > 2.0 * sl,
             "steepest rise per peak: Riemann {sr} vs linear {sl}"
         );
+    }
+
+    #[test]
+    fn four_cylinders_blowing_down_in_turn_stay_physical() {
+        // Regression (2026-10-25): four cylinders at 4 bar, 1100 K, each opening a cam-shaped
+        // valve in turn into one 4-into-1 (6000 rpm: 20 ms a cycle, 5 ms apart). A valve barely
+        // off its seat sent a vacuum, and within a cycle the ports read 31 MPa. Port pressures
+        // must stay those of real exhaust ports: above a near-vacuum, below a few bar.
+        let d = ExhaustDef {
+            collectors: vec![vec![1, 2, 3, 4]],
+            ..ExhaustDef::default()
+        };
+        let mut rn = RiemannNet::new(&d, 4, DT);
+        let (mut highest, mut lowest) = (0.0f64, 0.0f64);
+        for k in 0..(0.06 / DT) as usize {
+            let t = k as f64 * DT;
+            for i in 0..4 {
+                let phase = (t - i as f64 * 5e-3).rem_euclid(20e-3);
+                let (area, p) = if phase < 6e-3 {
+                    (
+                        6e-4 * (std::f64::consts::PI * phase / 6e-3).sin().powi(2),
+                        4e5 * (1.0 - phase / 6e-3) + 1e5,
+                    )
+                } else {
+                    (0.0, 1e5)
+                };
+                rn.valve(i, p, 1100.0, area);
+                highest = highest.max(rn.valve_pressure(i));
+                lowest = lowest.min(rn.valve_pressure(i));
+            }
+            assert!(rn.step().is_finite());
+        }
+        assert!(highest < 5e5, "port up to {highest} Pa");
+        assert!(lowest > -9.5e4, "port down to {lowest} Pa");
     }
 }

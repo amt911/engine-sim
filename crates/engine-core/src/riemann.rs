@@ -114,11 +114,9 @@ pub struct ValveFlow {
 /// `psi`·(pipe area) into a pipe whose arriving variable is `arriving` (Benson §4.1, the
 /// constant-pressure model).
 ///
-/// In cylinder units, U = u₂/a₀ and π = (p₂/p₀)^((κ−1)/2κ). The throat sets π(U):
-/// - subsonic (eq. 4.12), which with s = U/(1 − kU²), k = (κ−1)/2 and y = 1/π² is the
-///   quadratic y² − y − k·s²/ψ² = 0;
-/// - sonic below π* = (2/(κ+1))^½ (eqs. 4.15, 4.20);
-/// - and U is at most (2/(κ+1))^½, where the pipe itself chokes (eq. 4.21).
+/// In cylinder units, U = u₂/a₀ and π = (p₂/p₀)^((κ−1)/2κ), k = (κ−1)/2. The throat ties U to
+/// π: subsonic (eq. 4.12), sonic below π* = (2/(κ+1))^½ (eqs. 4.15, 4.20), and U is at most
+/// (2/(κ+1))^½, where the pipe itself chokes (eq. 4.21).
 ///
 /// The pipe sets the other relation: the arriving β = A₂ − k·U·a₀/a_ref with A₂ = π·A₀,
 /// A₀ = (p₀/p_ref)^((κ−1)/2κ). The pipe's variable going out is λ = 2A₂ − β, and the mass flow
@@ -139,29 +137,30 @@ pub fn valve_outflow(p0: f64, t0: f64, psi: f64, arriving: f64, gas: &PipeGas) -
     let r = a0 / gas.a_ref;
     let pi_star = (2.0 / (kappa + 1.0)).sqrt();
     let u_choke = pi_star;
-    // the throat's π for a pipe velocity U (eqs. 4.12, 4.20)
+    // The pipe velocity U for a throat ratio π, in closed form (solved in π, not U: a valve
+    // barely off its seat makes π(U) a step, but U(π) stays smooth, ∝ ψ):
+    // - subsonic throat (eq. 4.12): s = (ψ/π)·√((1/π² − 1)/k) = U/(1 − kU²);
+    // - sonic throat (eq. 4.20): q = π^(2κ/(κ−1))/(ψ·K) = (1 − kU²)/U, K = (2/(κ+1))^((κ+1)/2(κ−1));
+    // both quadratics in U; at most the pipe's choking U (eq. 4.21).
     let sonic_k = (2.0 / (kappa + 1.0)).powf((kappa + 1.0) / (2.0 * (kappa - 1.0)));
-    let pi_of = |u: f64| {
-        if u <= 0.0 {
-            return 1.0;
-        }
-        let sv = u / (1.0 - k * u * u);
-        let y = 0.5 * (1.0 + (1.0 + 4.0 * k * sv * sv / (psi * psi)).sqrt());
-        let pi = 1.0 / y.sqrt();
-        if pi >= pi_star {
-            pi
+    let u_of = |pi: f64| {
+        let u = if pi >= pi_star {
+            let sv = (psi / pi) * ((1.0 / (pi * pi) - 1.0).max(0.0) / k).sqrt();
+            if sv <= 0.0 {
+                0.0
+            } else {
+                ((1.0 + 4.0 * k * sv * sv).sqrt() - 1.0) / (2.0 * k * sv)
+            }
         } else {
-            (psi * sonic_k * (1.0 - k * u * u) / u).powf((kappa - 1.0) / (2.0 * kappa))
-        }
+            let q = pi.powf(2.0 * kappa / (kappa - 1.0)) / (psi * sonic_k);
+            ((q * q + 4.0 * k).sqrt() - q) / (2.0 * k)
+        };
+        u.min(u_choke)
     };
-    // the pipe: g(U) = π(U)·A₀ − k·U·r − β falls with U from A₀ − β > 0
-    let g = |u: f64| pi_of(u) * a_cyl - k * u * r - arriving;
-    let u = if g(u_choke) >= 0.0 {
-        u_choke
-    } else {
-        crate::exhaust_fv::rising_root(|u| -g(u), 0.0, u_choke)
-    };
-    let pi = pi_of(u);
+    // the pipe: g(π) = π·A₀ − k·U(π)·r − β rises from −k·r·U_choke − β < 0 to A₀ − β > 0
+    let g = |pi: f64| pi * a_cyl - k * u_of(pi) * r - arriving;
+    let pi = crate::exhaust_fv::rising_root(g, 0.0, 1.0);
+    let u = u_of(pi);
     let p_pipe = p0 * pressure_ratio(pi, kappa);
     let a2 = a0 * (1.0 - k * u * u).sqrt();
     let rho2 = kappa * p_pipe / (a2 * a2);
@@ -641,5 +640,22 @@ mod tests {
             (tr / tf - 1.0).abs() < 0.02,
             "arrival: Riemann {tr} vs Euler {tf}"
         );
+    }
+
+    #[test]
+    fn a_barely_open_valve_is_almost_a_closed_end() {
+        // Regression (2026-10-25): a valve opening from its seat (ψ ~ 1e-31) against a
+        // rarefaction (β = 0.93) sent −0.89, a vacuum, and the net blew up. A sliver of a valve
+        // passes almost nothing and reflects as the closed end it nearly is.
+        let gas = exhaust_gas();
+        for psi in [1e-31, 1e-12, 1e-6] {
+            let v = valve_outflow(1e5, 1100.0, psi, 0.9307, &gas);
+            assert!((v.sent - 0.9307).abs() < 1e-3, "ψ {psi}: sent {}", v.sent);
+            assert!(
+                v.mass_flow >= 0.0 && v.mass_flow < 1e-3,
+                "ψ {psi}: {}",
+                v.mass_flow
+            );
+        }
     }
 }
