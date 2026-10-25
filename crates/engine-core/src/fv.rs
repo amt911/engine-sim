@@ -136,6 +136,11 @@ pub struct Pipe1d {
     w: Vec<Prim>,
     /// Volume flow u·A of every entry of `w` (scratch), and −f/(2D) per cell, from the areas.
     qv: Vec<f64>,
+    /// Density and pressure of every entry of `w` (scratch, laid out for the vector unit), and
+    /// the reconstructed edges of ρ, u·A and p ([left, right] per cell, WENO only).
+    rho_w: Vec<f64>,
+    p_w: Vec<f64>,
+    recon: [Vec<f64>; 6],
     wall_coef: Vec<f64>,
     edge_l: Vec<Prim>,
     edge_r: Vec<Prim>,
@@ -167,6 +172,9 @@ impl Pipe1d {
             right: Boundary::Wall,
             w: Vec::with_capacity(n + 6),
             qv: vec![0.0; n + 6],
+            rho_w: vec![0.0; n + 6],
+            p_w: vec![0.0; n + 6],
+            recon: std::array::from_fn(|_| vec![0.0; n + 6]),
             wall_coef: Vec::new(),
             edge_l: vec![init; n + 6],
             edge_r: vec![init; n + 6],
@@ -333,39 +341,101 @@ fn muscl(a: f64, s: f64, c: f64) -> (f64, f64) {
     (s - 0.5 * slope, s + 0.5 * slope)
 }
 
+/// A number the reconstruction can run on: one `f64`, or four at once on the vector unit. Both
+/// do the same IEEE operations in the same order, so a lane gives what the scalar gives.
+trait Lane:
+    Copy
+    + std::ops::Add<Output = Self>
+    + std::ops::Sub<Output = Self>
+    + std::ops::Mul<Output = Self>
+    + std::ops::Div<Output = Self>
+    + std::ops::Neg<Output = Self>
+{
+    fn k(x: f64) -> Self;
+    fn abs(self) -> Self;
+}
+
+impl Lane for f64 {
+    fn k(x: f64) -> Self {
+        x
+    }
+    fn abs(self) -> Self {
+        f64::abs(self)
+    }
+}
+
+impl Lane for wide::f64x4 {
+    fn k(x: f64) -> Self {
+        wide::f64x4::splat(x)
+    }
+    fn abs(self) -> Self {
+        wide::f64x4::abs(self)
+    }
+}
+
 /// WENO5-Z edge values of the middle cell of `v` = [v₋₂, v₋₁, v₀, v₁, v₂]: (left edge, right
 /// edge). Three third-order candidates weighted by their smoothness (Jiang & Shu, J. Comput.
 /// Phys. 126 (1996)) with the Z weights of Borges et al. (2008), which keep fifth order at
 /// smooth extrema, the crest of a sound wave. The left edge mirrors the stencil, so both share
 /// the smoothness indicators.
-fn weno5z(v: [f64; 5]) -> (f64, f64) {
+fn weno5z<T: Lane>(v: [T; 5]) -> (T, T) {
     let [a, b, c, d, e] = v;
-    let sq = |x: f64| x * x;
-    let b0 = 13.0 / 12.0 * sq(a - 2.0 * b + c) + 0.25 * sq(a - 4.0 * b + 3.0 * c);
-    let b1 = 13.0 / 12.0 * sq(b - 2.0 * c + d) + 0.25 * sq(b - d);
-    let b2 = 13.0 / 12.0 * sq(c - 2.0 * d + e) + 0.25 * sq(3.0 * c - 4.0 * d + e);
+    let k = T::k;
+    let sq = |x: T| x * x;
+    let b0 = k(13.0 / 12.0) * sq(a - k(2.0) * b + c) + k(0.25) * sq(a - k(4.0) * b + k(3.0) * c);
+    let b1 = k(13.0 / 12.0) * sq(b - k(2.0) * c + d) + k(0.25) * sq(b - d);
+    let b2 = k(13.0 / 12.0) * sq(c - k(2.0) * d + e) + k(0.25) * sq(k(3.0) * c - k(4.0) * d + e);
     let tau = (b0 - b2).abs();
     // ε guards a flat stencil (β = 0). 1e-40 (as in Borges et al.) keeps (τ/ε)² finite for
     // any τ these pipes produce (it would overflow only past τ ≈ 1e114); a denormal-sized ε
     // makes it infinite and the weights ∞/∞.
-    let z = |beta: f64| 1.0 + sq(tau / (beta + 1e-40));
+    let z = |beta: T| k(1.0) + sq(tau / (beta + k(1e-40)));
     let (z0, z1, z2) = (z(b0), z(b1), z(b2));
     // q_k = (stencil polynomial)/6: the 1/6 folds into the normalisation, one division each
     let right = {
-        let (a0, a1, a2) = (0.1 * z0, 0.6 * z1, 0.3 * z2);
-        (a0 * (2.0 * a - 7.0 * b + 11.0 * c)
-            + a1 * (-b + 5.0 * c + 2.0 * d)
-            + a2 * (2.0 * c + 5.0 * d - e))
-            / (6.0 * (a0 + a1 + a2))
+        let (a0, a1, a2) = (k(0.1) * z0, k(0.6) * z1, k(0.3) * z2);
+        (a0 * (k(2.0) * a - k(7.0) * b + k(11.0) * c)
+            + a1 * (-b + k(5.0) * c + k(2.0) * d)
+            + a2 * (k(2.0) * c + k(5.0) * d - e))
+            / (k(6.0) * (a0 + a1 + a2))
     };
     let left = {
-        let (a0, a1, a2) = (0.1 * z2, 0.6 * z1, 0.3 * z0);
-        (a0 * (2.0 * e - 7.0 * d + 11.0 * c)
-            + a1 * (-d + 5.0 * c + 2.0 * b)
-            + a2 * (2.0 * c + 5.0 * b - a))
-            / (6.0 * (a0 + a1 + a2))
+        let (a0, a1, a2) = (k(0.1) * z2, k(0.6) * z1, k(0.3) * z0);
+        (a0 * (k(2.0) * e - k(7.0) * d + k(11.0) * c)
+            + a1 * (-d + k(5.0) * c + k(2.0) * b)
+            + a2 * (k(2.0) * c + k(5.0) * b - a))
+            / (k(6.0) * (a0 + a1 + a2))
     };
     (left, right)
+}
+
+/// [`weno5z`] over every entry of `v` with two neighbours a side, into `left` and `right`
+/// (entries 2..len − 2): four cells at a time on the vector unit, the rest one by one.
+fn weno5z_run(v: &[f64], left: &mut [f64], right: &mut [f64]) {
+    use wide::f64x4;
+    let end = v.len() - 2;
+    let at = |i: usize| f64x4::from([v[i], v[i + 1], v[i + 2], v[i + 3]]);
+    let mut i = 2;
+    while i + 4 <= end {
+        let (l, r) = weno5z([at(i - 2), at(i - 1), at(i), at(i + 1), at(i + 2)]);
+        left[i..i + 4].copy_from_slice(&l.to_array());
+        right[i..i + 4].copy_from_slice(&r.to_array());
+        i += 4;
+    }
+    for i in i..end {
+        let (l, r) = weno5z([v[i - 2], v[i - 1], v[i], v[i + 1], v[i + 2]]);
+        left[i] = l;
+        right[i] = r;
+    }
+}
+
+/// [`muscl`] over every entry of `v` with a neighbour a side, into `left` and `right`.
+fn muscl_run(v: &[f64], left: &mut [f64], right: &mut [f64]) {
+    for i in 1..v.len() - 1 {
+        let (l, r) = muscl(v[i - 1], v[i], v[i + 1]);
+        left[i] = l;
+        right[i] = r;
+    }
 }
 
 /// Ghost state beyond an end, given the adjacent interior state. `outward` = +1 for the right
@@ -419,38 +489,39 @@ impl Pipe1d {
                 .collect();
         }
         // edges of every cell next to a face: w[2..n + 4]; a reconstruction that is not
-        // physical (ρ or p ≤ 0 at a strong shock) falls back to the cell's own state
+        // physical (ρ or p ≤ 0 at a strong shock) falls back to the cell's own state.
+        // Each quantity is reconstructed in its own straight loop over a contiguous array (the
+        // compiler runs it on the vector unit): the same operations per cell, so the same
+        // numbers as one cell at a time.
+        for (k, s) in w.iter().enumerate() {
+            self.rho_w[k] = s.rho;
+            self.p_w[k] = s.p;
+        }
+        let [rl, rr, ql, qr, pl, pr] = &mut self.recon;
+        let run = match self.scheme {
+            Scheme::Weno5Rk3 => weno5z_run,
+            Scheme::MusclRk2 => muscl_run,
+        };
+        run(&self.rho_w, rl, rr);
+        run(&self.qv, ql, qr);
+        run(&self.p_w, pl, pr);
         for i in 2..n + 4 {
             let s = w[i];
-            let recon = |v: [f64; 5]| match self.scheme {
-                Scheme::Weno5Rk3 => weno5z(v),
-                Scheme::MusclRk2 => muscl(v[1], v[2], v[3]),
-            };
-            let (rl, rr) = recon([
-                w[i - 2].rho,
-                w[i - 1].rho,
-                s.rho,
-                w[i + 1].rho,
-                w[i + 2].rho,
-            ]);
             // velocity as volume flow u·A, continuous across a compact area step (where u
-            // itself jumps by the area ratio), back to u with this cell's area
-            let q = &self.qv;
+            // itself jumps by the area ratio), back to u with this cell's area;
             // cell i (ghosts included) has faces i − 3 (left) and i − 2 (right)
             let face = |k: usize| self.face_area[k.clamp(3, n + 3) - 3];
-            let (ql, qr) = recon([q[i - 2], q[i - 1], q[i], q[i + 1], q[i + 2]]);
-            let (ul, ur) = (ql / face(i), qr / face(i + 1));
-            let (pl, pr) = recon([w[i - 2].p, w[i - 1].p, s.p, w[i + 1].p, w[i + 2].p]);
+            let (ul, ur) = (ql[i] / face(i), qr[i] / face(i + 1));
             let ok = |r: Prim| physical_or(r, s);
             self.edge_l[i] = ok(Prim {
-                rho: rl,
+                rho: rl[i],
                 u: ul,
-                p: pl,
+                p: pl[i],
             });
             self.edge_r[i] = ok(Prim {
-                rho: rr,
+                rho: rr[i],
                 u: ur,
-                p: pr,
+                p: pr[i],
             });
         }
         // face k sits between w[k + 2] and w[k + 3], k = 0..=n; cell j between faces j and j + 1
@@ -502,6 +573,23 @@ impl Pipe1d {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+
+    proptest::proptest! {
+        #[test]
+        fn the_vector_reconstruction_is_the_scalar_one_bit_for_bit(
+            v in proptest::collection::vec(-1e6f64..1e6, 5..40)
+        ) {
+            // four cells at a time on the vector unit must give exactly what one cell at a
+            // time gives (same IEEE operations in the same order), or the output would drift
+            let (mut l, mut r) = (vec![0.0; v.len()], vec![0.0; v.len()]);
+            weno5z_run(&v, &mut l, &mut r);
+            for i in 2..v.len() - 2 {
+                let (sl, sr) = weno5z([v[i - 2], v[i - 1], v[i], v[i + 1], v[i + 2]]);
+                proptest::prop_assert_eq!(l[i].to_bits(), sl.to_bits(), "left {}", i);
+                proptest::prop_assert_eq!(r[i].to_bits(), sr.to_bits(), "right {}", i);
+            }
+        }
+    }
 
     /// Sod shock tube at t = 0.2 (Toro, Test 1): left (1, 0, 1), right (0.125, 0, 0.1).
     /// Exact star region: p* = 0.30313, u* = 0.92745, ρ*L = 0.42632, ρ*R = 0.26557;
