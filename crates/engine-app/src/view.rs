@@ -241,10 +241,24 @@ pub fn gauges(ui: &mut egui::Ui, s: &Snapshot, audio: &Result<u32, String>) {
         s.def.cylinders,
         m3_to_cc(s.def.displacement_m3())
     ));
-    ui.label(match audio {
+    let line = audio_line(audio, s.dropouts);
+    if s.dropouts > 0 {
+        ui.colored_label(ui.visuals().warn_fg_color, line);
+    } else {
+        ui.label(line);
+    }
+}
+
+/// The audio status: the device's rate, and how many samples the device found missing (the
+/// simulation fell behind: heard as crackle), or why there is no sound.
+pub fn audio_line(audio: &Result<u32, String>, dropouts: u64) -> String {
+    match audio {
+        Ok(sr) if dropouts > 0 => {
+            format!("Audio: {sr} Hz · {dropouts} samples dropped (the simulation fell behind)")
+        }
         Ok(sr) => format!("Audio: {sr} Hz"),
         Err(e) => format!("No audio: {e}"),
-    });
+    }
 }
 
 /// Line plot of `ys` in a box, scaled to [lo, hi].
@@ -338,4 +352,17 @@ fn dyno_plot(ui: &mut egui::Ui, points: &[DynoPoint]) {
         Color32::from_rgb(110, 170, 255),
         48.0,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_audio_line_tells_when_the_simulation_fell_behind() {
+        assert_eq!(audio_line(&Ok(48_000), 0), "Audio: 48000 Hz");
+        let l = audio_line(&Ok(48_000), 1234);
+        assert!(l.contains("1234 samples dropped"), "{l}");
+        assert_eq!(audio_line(&Err("none".into()), 5), "No audio: none");
+    }
 }

@@ -5,6 +5,8 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, FromSample, SizedSample, StreamConfig};
 use rtrb::{Consumer, Producer, RingBuffer};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AudioError {
@@ -19,6 +21,8 @@ pub struct Output {
     _stream: cpal::Stream,
     pub sample_rate: u32,
     pub channels: u16,
+    /// Frames the device found the ring empty for (an underrun: the simulation fell behind).
+    pub dropouts: Arc<AtomicU64>,
 }
 
 /// Preferred device buffer, frames. Small for latency; ALSA defaults can be huge.
@@ -37,14 +41,15 @@ pub fn open(buffer_seconds: f64) -> Result<(Output, Producer<f32>), AudioError> 
     let sample_rate = config.sample_rate;
     let channels = config.channels;
     let cap = ((sample_rate as f64 * buffer_seconds) as usize).max(2048);
+    let dropouts = Arc::new(AtomicU64::new(0));
 
     let try_build = |config: StreamConfig| -> Result<(cpal::Stream, Producer<f32>), AudioError> {
         let (producer, consumer) = RingBuffer::<f32>::new(cap);
         let stream = match format {
-            cpal::SampleFormat::F32 => build::<f32>(&device, config, consumer),
-            cpal::SampleFormat::I16 => build::<i16>(&device, config, consumer),
-            cpal::SampleFormat::I32 => build::<i32>(&device, config, consumer),
-            cpal::SampleFormat::U16 => build::<u16>(&device, config, consumer),
+            cpal::SampleFormat::F32 => build::<f32>(&device, config, consumer, dropouts.clone()),
+            cpal::SampleFormat::I16 => build::<i16>(&device, config, consumer, dropouts.clone()),
+            cpal::SampleFormat::I32 => build::<i32>(&device, config, consumer, dropouts.clone()),
+            cpal::SampleFormat::U16 => build::<u16>(&device, config, consumer, dropouts.clone()),
             other => {
                 return Err(AudioError::Device(format!(
                     "unsupported sample format {other}"
@@ -70,6 +75,7 @@ pub fn open(buffer_seconds: f64) -> Result<(Output, Producer<f32>), AudioError> 
             _stream: stream,
             sample_rate,
             channels,
+            dropouts,
         },
         producer,
     ))
@@ -79,6 +85,7 @@ fn build<T>(
     device: &cpal::Device,
     config: StreamConfig,
     mut consumer: Consumer<f32>,
+    dropouts: Arc<AtomicU64>,
 ) -> Result<cpal::Stream, AudioError>
 where
     T: SizedSample + FromSample<f32>,
@@ -94,7 +101,11 @@ where
                     // zero-fill makes the device replay stale data ("the sound repeats").
                     last = match consumer.pop() {
                         Ok(s) => s,
-                        Err(_) => last * 0.995,
+                        Err(_) => {
+                            // a relaxed atomic add: no lock, no allocation
+                            dropouts.fetch_add(1, Ordering::Relaxed);
+                            last * 0.995
+                        }
                     };
                     let v = T::from_sample(last);
                     for s in frame.iter_mut() {

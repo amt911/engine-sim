@@ -31,6 +31,8 @@ pub struct Snapshot {
     pub clutch: f64,
     /// The level the physics runs at.
     pub quality: Quality,
+    /// Samples the audio device found missing so far: the simulation fell behind real time.
+    pub dropouts: u64,
 }
 
 /// The driver's pedals and lever, set from the UI.
@@ -288,6 +290,7 @@ impl Simulation {
         Snapshot {
             def: self.def.clone(),
             quality: self.quality,
+            dropouts: 0,
             rpm: e.rpm(),
             torque_nm: e.torque_nm(),
             power_w: e.power_w(),
