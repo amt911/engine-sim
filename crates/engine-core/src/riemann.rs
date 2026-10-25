@@ -568,4 +568,78 @@ mod tests {
         // and the two meet at rest
         assert!((open_end_flow(1.0, 1.4) - 1.0).abs() < 1e-12);
     }
+
+    #[test]
+    fn a_strong_pulse_travels_as_the_euler_solver_says() {
+        // The same 1 ms half-sine of mass flow (0.16 kg/s peak, about half a bar) into a 42 mm
+        // pipe of still air at 300 K, through 2 m: the finite-volume Euler solver (WENO5-Z +
+        // SSP-RK3, independent of this module) and the Riemann pipe must agree on the pulse
+        // they deliver. It steepens into a shock well before 2 m (x_s ≈ 0.4 m).
+        use crate::fv::{Boundary, Pipe1d, Prim, flux_boundary};
+        let (p0, t_ref, kappa) = (crate::units::ATM_PA, 300.0, 1.4);
+        let r = crate::gas::R_AIR;
+        let a_ref = (kappa * r * t_ref).sqrt();
+        let rho0 = p0 / (r * t_ref);
+        let area = std::f64::consts::PI * 0.25 * 0.042 * 0.042;
+        let dt = 5e-6;
+        let mdot = |t: f64| {
+            if t < 1e-3 {
+                0.16 * (std::f64::consts::PI * t / 1e-3).sin().powi(2)
+            } else {
+                0.0
+            }
+        };
+        let mut fv = Pipe1d::segmented(
+            &[(4.0, area)],
+            0.005,
+            Prim {
+                rho: rho0,
+                u: 0.0,
+                p: p0,
+            },
+        );
+        fv.right = Boundary::Wall;
+        let station = (2.0 / fv.dx).round() as usize;
+        let mut pipe = RPipe::new(2.0, a_ref, dt, kappa, 1.0);
+        let k = 0.5 * (kappa - 1.0);
+        let rho_ref = kappa * p0 / (a_ref * a_ref);
+        let cp = kappa / (kappa - 1.0) * r;
+        let (mut p_fv, mut p_r) = (Vec::new(), Vec::new());
+        for n in 0..1800 {
+            let t = n as f64 * dt;
+            // the Riemann pipe's near end: the state whose mass flux is ṁ against the arriving β
+            let beta = pipe.at_near();
+            let target = mdot(t) / (rho_ref * a_ref * area);
+            let a = crate::exhaust_fv::rising_root(
+                |a| a.powf(5.0) * (a - beta) / k - target,
+                beta,
+                beta + 0.5,
+            );
+            let u = (a - beta) / k * a_ref;
+            p_r.push(p0 * pressure_ratio(0.5 * (pipe.at_far() + 1.0), kappa));
+            pipe.send(2.0 * a - beta, 1.0);
+            // the Euler pipe gets the same mass and total-enthalpy flux
+            let m = mdot(t) / area;
+            let h0 = cp * t_ref * a * a + 0.5 * u * u;
+            fv.left = Boundary::Flux(flux_boundary(m, m * h0, fv.prim(0)));
+            fv.step(dt);
+            p_fv.push(fv.prim(station).p);
+        }
+        let peak = |x: &[f64]| x.iter().cloned().fold(0.0, f64::max) - p0;
+        let half = |x: &[f64]| {
+            let h = p0 + 0.5 * peak(x);
+            x.iter().position(|&p| p > h).unwrap() as f64 * dt
+        };
+        let (pf, pr) = (peak(&p_fv), peak(&p_r));
+        assert!(pf > 2e4, "a strong pulse: {pf} Pa");
+        assert!(
+            (pr / pf - 1.0).abs() < 0.05,
+            "peak: Riemann {pr} vs Euler {pf}"
+        );
+        let (tf, tr) = (half(&p_fv), half(&p_r));
+        assert!(
+            (tr / tf - 1.0).abs() < 0.02,
+            "arrival: Riemann {tr} vs Euler {tf}"
+        );
+    }
 }
