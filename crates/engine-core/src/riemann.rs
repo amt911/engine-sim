@@ -172,6 +172,79 @@ pub fn valve_outflow(p0: f64, t0: f64, psi: f64, arriving: f64, gas: &PipeGas) -
     }
 }
 
+/// Inflow from the pipe back into a cylinder at pressure `p_cyl` through a valve of effective
+/// area `psi`·(pipe area) (Benson §4.4: the partially open end of §3.4.1 with the cylinder
+/// as the receiver). Mass flow negative (into the cylinder). A pipe below the cylinder's
+/// pressure gets none and reflects as a closed end.
+///
+/// Referred to the cylinder pressure, A* = A·c and U* = |U|·c with c = (p_ref/p_cyl)^((κ−1)/2κ)
+/// (§4.4). The nozzle then sets:
+/// - subsonic, U*² = 2/(κ−1)·(A*² − 1) / (A*^(4/(κ−1))/ψ² − 1) (eq. 3.15), while the throat
+///   (at the cylinder pressure, A_t = 1) runs below its sound speed;
+/// - choked, U* = m·A* with m = ψ·r^(−(κ+1)/(κ−1)), where r = A/A_t is the subsonic root of
+///   2/(κ−1)·r² + ψ²·r^(−4/(κ−1)) = (κ+1)/(κ−1) (eqs. 3.18–3.20).
+///
+/// The pipe sets the other relation: the arriving β = A + k·|U|.
+pub fn valve_inflow(p_cyl: f64, psi: f64, arriving: f64, gas: &PipeGas) -> ValveFlow {
+    let kappa = gas.kappa;
+    let k = 0.5 * (kappa - 1.0);
+    let a_cyl = sound_speed_ratio(p_cyl / gas.p_ref, kappa);
+    if psi <= 0.0 || arriving <= a_cyl {
+        return ValveFlow {
+            sent: closed_end(arriving),
+            mass_flow: 0.0,
+            p_pipe: gas.p_ref * pressure_ratio(arriving, kappa),
+        };
+    }
+    let e = 2.0 / (kappa - 1.0);
+    let rho_ref = kappa * gas.p_ref / (gas.a_ref * gas.a_ref);
+    let flow = |a_pipe: f64, u: f64| ValveFlow {
+        sent: 2.0 * a_pipe - arriving,
+        mass_flow: -rho_ref * a_pipe.powf(e) * u * gas.a_ref * gas.area_m2,
+        p_pipe: gas.p_ref * pressure_ratio(a_pipe, kappa),
+    };
+    if psi >= 1.0 {
+        // no contraction: the pipe end is at the cylinder's pressure (an open end, §2.8.2)
+        // and β sets the velocity, at most sonic (then the pipe chokes: A = U = β/(1 + k))
+        let u = (arriving - a_cyl) / k;
+        return if u <= a_cyl {
+            flow(a_cyl, u)
+        } else {
+            let a = arriving / (1.0 + k);
+            flow(a, a)
+        };
+    }
+    let c = 1.0 / a_cyl;
+    // the choked line's slope: r from 2/(κ−1)·r² + ψ²·r^(−2e) = (κ+1)/(κ−1), r ≥ 1
+    let rhs = (kappa + 1.0) / (kappa - 1.0);
+    let r_max = ((kappa + 1.0) / 2.0).sqrt();
+    let r = crate::exhaust_fv::rising_root(
+        |r| e * r * r + psi * psi * r.powf(-2.0 * e) - rhs,
+        1.0,
+        r_max,
+    );
+    let m = psi * r.powf(-(kappa + 1.0) / (kappa - 1.0));
+    // U* of a pipe state A* (subsonic throat, else choked)
+    let u_star = |a: f64| {
+        if a <= 1.0 {
+            return 0.0;
+        }
+        let den = a.powf(2.0 * e) / (psi * psi) - 1.0;
+        let u2 = if den > 0.0 {
+            e * (a * a - 1.0) / den
+        } else {
+            f64::INFINITY
+        };
+        // the throat's velocity at the cylinder pressure, from the energy equation
+        let ut2 = (a * a + k * u2 - 1.0) / k;
+        if ut2 <= 1.0 { u2.sqrt() } else { m * a }
+    };
+    // g(A) = A + k·U*(A·c)/c − β rises from 1/c − β < 0 to k·U*(β·c)/c ≥ 0
+    let g = |a: f64| a + k * u_star(a * c) / c - arriving;
+    let a_pipe = crate::exhaust_fv::rising_root(g, a_cyl, arriving);
+    flow(a_pipe, u_star(a_pipe * c) / c)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,5 +434,36 @@ mod tests {
         let rho2 = 1.4 * v.p_pipe / (a2 * a2);
         assert!((u2 / a2 - 1.0).abs() < 1e-5);
         assert!((v.mass_flow / (rho2 * u2 * gas.area_m2) - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn backflow_into_the_cylinder_is_an_isentropic_nozzle_from_the_pipe() {
+        // Overrun: the cylinder at 0.3 bar opens onto a pipe at 1 atm and at rest (β = 1).
+        // Whatever pipe state the boundary settles on, the flow back through the throat is an
+        // isentropic orifice from that state's stagnation conditions to the cylinder pressure
+        // (crate::gas::orifice_mass_flow, Heywood App. C), subsonic or choked.
+        let gas = exhaust_gas();
+        let cp = 1.4 / 0.4 * crate::gas::R_AIR;
+        for (p_cyl, psi) in [(0.9e5, 0.3), (0.3e5, 0.3), (0.15e5, 0.05), (0.3e5, 1.0)] {
+            let v = valve_inflow(p_cyl, psi, 1.0, &gas);
+            assert!(v.mass_flow < 0.0, "{p_cyl} Pa: no backflow");
+            // the pipe-end state from the two variables
+            let (a, u) = state(v.sent, 1.0, 1.4);
+            assert!(u < 0.0, "flowing toward the valve");
+            let t = (a * gas.a_ref).powi(2) / (1.4 * crate::gas::R_AIR);
+            let vel = u * gas.a_ref;
+            let t0 = t + vel * vel / (2.0 * cp);
+            let p0 = v.p_pipe * (t0 / t).powf(1.4 / 0.4);
+            let orifice = crate::gas::orifice_mass_flow(psi * gas.area_m2, p0, t0, p_cyl);
+            assert!(
+                (-v.mass_flow / orifice - 1.0).abs() < 1e-6,
+                "{p_cyl} Pa, ψ {psi}: {} vs orifice {orifice}",
+                -v.mass_flow
+            );
+            assert!((a - sound_speed_ratio(v.p_pipe / gas.p_ref, 1.4)).abs() < 1e-9);
+        }
+        // a cylinder above the pipe: no backflow, a closed end
+        let v = valve_inflow(1.5e5, 0.3, 1.0, &gas);
+        assert_eq!((v.mass_flow, v.sent), (0.0, 1.0));
     }
 }
