@@ -171,7 +171,10 @@ mod tests {
 
     #[test]
     fn cold_exhaust_does_not_burn_the_mixture() {
-        let mut m = ExhaustMixture { fuel_kg: 1e-6, air_kg: 1e-4 };
+        let mut m = ExhaustMixture {
+            fuel_kg: 1e-6,
+            air_kg: 1e-4,
+        };
         assert_eq!(m.burn(800.0, 1e-3, 2e-3), 0.0);
         assert_eq!(m.fuel_kg, 1e-6);
     }
@@ -180,12 +183,18 @@ mod tests {
     fn hot_exhaust_burns_the_mixture_with_its_air() {
         // dt = τ: 1 − e^(−1) of 1e-6 kg burns, 6.32121e-7 × 44e6 = 27.813 J (hand), and its
         // air goes with it (×14.7)
-        let mut m = ExhaustMixture { fuel_kg: 1e-6, air_kg: 1e-4 };
+        let mut m = ExhaustMixture {
+            fuel_kg: 1e-6,
+            air_kg: 1e-4,
+        };
         assert_relative_eq!(m.burn(1000.0, 2e-3, 2e-3), 27.813_3, max_relative = 1e-5);
         assert_relative_eq!(m.fuel_kg, 3.678_794e-7, max_relative = 1e-6);
         assert_relative_eq!(m.air_kg, 1e-4 - 6.321_206e-7 * 14.7, max_relative = 1e-6);
         // fuel without air does not burn
-        let mut rich = ExhaustMixture { fuel_kg: 1e-6, air_kg: 0.0 };
+        let mut rich = ExhaustMixture {
+            fuel_kg: 1e-6,
+            air_kg: 0.0,
+        };
         assert_eq!(rich.burn(1000.0, 2e-3, 2e-3), 0.0);
     }
 
@@ -193,7 +202,10 @@ mod tests {
     fn flow_through_a_primary_displaces_its_mixture() {
         // 1e-3 kg with 2e-7 fuel enters 4e-3 kg holding 1e-6: mixed, 1.2e-6 in 5e-3 kg, and the
         // 1e-3 kg pushed on takes a fifth: 9.6e-7 fuel and 8e-5 air stay (hand)
-        let mut m = ExhaustMixture { fuel_kg: 1e-6, air_kg: 1e-4 };
+        let mut m = ExhaustMixture {
+            fuel_kg: 1e-6,
+            air_kg: 1e-4,
+        };
         let (f, a) = m.flow(4e-3, 1e-3, 2e-7, 0.0);
         assert_relative_eq!(m.fuel_kg, 9.6e-7, max_relative = 1e-12);
         assert_relative_eq!(m.air_kg, 8e-5, max_relative = 1e-12);

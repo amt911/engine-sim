@@ -35,6 +35,13 @@ pub struct IntakeDef {
     pub individual_throttles: bool,
     /// Entry loss coefficient of the trumpet (sharp edge ≈ 0.5, bellmouth ≈ 0.05; Blair).
     pub trumpet_loss: f64,
+    /// Share x of each injection that lands on the port walls as liquid film (Aquino's x–τ
+    /// model, SAE 810494). Heywood, *ICE Fundamentals*, §7.6.3: 70–80 % of the fuel was vapour
+    /// at the manifold exit of a warmed-up four-cylinder engine, so a quarter stays liquid.
+    pub film_fraction: f64,
+    /// Time constant τ of the film's evaporation, s. Heywood §7.6.3: of order 1 s for a
+    /// manifold film (2 s for a central-injection puddle). 0 disables the film.
+    pub film_tau_s: f64,
 }
 
 impl Default for IntakeDef {
@@ -45,6 +52,8 @@ impl Default for IntakeDef {
             runner_diameter_m: 0.042,
             individual_throttles: false,
             trumpet_loss: 0.1,
+            film_fraction: 0.25,
+            film_tau_s: 1.0,
         }
     }
 }

@@ -308,6 +308,27 @@ mod tests {
     }
 
     #[test]
+    fn the_port_film_round_trips_and_old_files_get_the_default() {
+        let mut def = EngineDef::single();
+        def.intake.film_fraction = 0.4;
+        def.intake.film_tau_s = 0.3;
+        for f in [Format::Yaml, Format::Json] {
+            let back = from_str(&to_string(&def, f).unwrap(), f).unwrap();
+            assert_eq!(
+                (back.intake.film_fraction, back.intake.film_tau_s),
+                (0.4, 0.3),
+                "{f:?}"
+            );
+        }
+        // written before the film: Heywood §7.6.3's quarter left liquid, τ of order 1 s
+        let old = from_str("version: 2\nengine:\n  name: Old\n", Format::Yaml).unwrap();
+        assert_eq!(
+            (old.intake.film_fraction, old.intake.film_tau_s),
+            (0.25, 1.0)
+        );
+    }
+
+    #[test]
     fn written_file_carries_version() {
         let y = to_string(&EngineDef::single(), Format::Yaml).unwrap();
         assert!(y.starts_with("version: 2\n"), "{y}");
