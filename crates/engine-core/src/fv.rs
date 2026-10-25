@@ -438,6 +438,35 @@ fn muscl_run(v: &[f64], left: &mut [f64], right: &mut [f64]) {
     }
 }
 
+/// An open end to a reservoir at rest (`p0`, `rho0`), continuous through a reversal of the
+/// flow. Along the characteristic that reaches the end from inside, p + Z·v is the interior's
+/// (Z = ρc of the interior gas, v the velocity along `outward`): P = p_i + Z·v_i (the linear
+/// form of Benson's method of characteristics, vol. 1, §2.8). Outflow (P ≥ p₀): the outside's
+/// pressure, v = (P − p₀)/Z. Inflow: the atmosphere accelerates into the pipe isentropically,
+/// p = p₀ − ½ρ₀v² (Benson §2.8.2, low Mach), and ½ρ₀v² − Z·v + (P − p₀) = 0 gives v < 0; the gas
+/// entering is the reservoir's (ρ₀ expanded to p). At v = 0 both read p₀: only the density jumps
+/// (a contact surface: outside air meets exhaust gas).
+fn open_end(p0: f64, rho0: f64, inner: Prim, outward: f64) -> Prim {
+    let z = inner.rho * inner.sound_speed();
+    let v_i = inner.u * outward;
+    let big_p = inner.p + z * v_i;
+    if big_p >= p0 {
+        return Prim {
+            rho: inner.rho * (p0 / inner.p).powf(1.0 / crate::gas::GAMMA),
+            u: (big_p - p0) / z * outward,
+            p: p0,
+        };
+    }
+    let disc = (z * z - 2.0 * rho0 * (big_p - p0)).max(0.0);
+    let v = (z - disc.sqrt()) / rho0;
+    let p = (p0 - 0.5 * rho0 * v * v).max(0.05 * p0);
+    Prim {
+        rho: rho0 * (p / p0).powf(1.0 / crate::gas::GAMMA),
+        u: v * outward,
+        p,
+    }
+}
+
 /// Ghost state beyond an end, given the adjacent interior state. `outward` = +1 for the right
 /// end (flow leaving when u > 0), −1 for the left end.
 fn ghost(b: Boundary, inner: Prim, outward: f64) -> Prim {
@@ -446,15 +475,7 @@ fn ghost(b: Boundary, inner: Prim, outward: f64) -> Prim {
             u: -inner.u,
             ..inner
         },
-        Boundary::Open { p, rho } => {
-            if inner.u * outward > 0.0 {
-                // subsonic outflow: the outside imposes its pressure
-                Prim { p, ..inner }
-            } else {
-                // inflow: reservoir density and pressure
-                Prim { rho, u: inner.u, p }
-            }
-        }
+        Boundary::Open { p, rho } => open_end(p, rho, inner, outward),
         Boundary::State(s) => s,
         // the face flux is overridden; reconstruction sees a wall
         Boundary::Flux(_) => Prim {
@@ -572,6 +593,50 @@ impl Pipe1d {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_open_end_draws_the_atmosphere_in_by_bernoulli() {
+        // Hot gas (ρ 0.4) at rest at p₀ − 2400 Pa inside the right end: c = √(1.4·98 925/0.4) =
+        // 588.42 m/s, Z = ρc = 235.37; ½·1.2·v² − 235.37·v − 2400 = 0 → v = (235.37 −
+        // √61 159)/1.2 = −9.945 m/s, and the air comes in at p₀ − ½ρ₀v² = p₀ − 59.34 Pa (hand)
+        let p0 = 101_325.0;
+        let inner = Prim {
+            rho: 0.4,
+            u: 0.0,
+            p: p0 - 2400.0,
+        };
+        let g = open_end(p0, 1.2, inner, 1.0);
+        assert!((g.u + 9.945).abs() < 0.01, "{}", g.u);
+        assert!((g.p - (p0 - 59.34)).abs() < 0.1, "{}", g.p);
+        // the gas that comes in is the outside air's, expanded to p
+        assert!(
+            (g.rho - 1.2 * (g.p / p0).powf(1.0 / 1.4)).abs() < 1e-9,
+            "{}",
+            g.rho
+        );
+    }
+
+    #[test]
+    fn an_open_end_passes_outflow_at_the_outside_pressure() {
+        // the same gas at p₀ moving out at 10 m/s: P = p₀ + 2400 → v = 10 m/s at p₀ (hand); at
+        // P = p₀ it stands still either way: no jump through a reversal
+        let p0 = 101_325.0;
+        let c2 = 600.0 * 600.0;
+        let gas = |p: f64, u: f64| Prim {
+            rho: crate::gas::GAMMA * p / c2,
+            u,
+            p,
+        };
+        let out = open_end(p0, 1.2, gas(p0, 10.0), 1.0);
+        assert!((out.u - 10.0).abs() < 1e-9 && out.p == p0, "{out:?}");
+        let left = open_end(p0, 1.2, gas(p0, -10.0), -1.0);
+        assert!((left.u + 10.0).abs() < 1e-9, "{left:?}");
+        let still = open_end(p0, 1.2, gas(p0, 0.0), 1.0);
+        assert!(
+            still.u.abs() < 1e-9 && (still.p - p0).abs() < 1e-6,
+            "{still:?}"
+        );
+    }
     use approx::assert_relative_eq;
 
     proptest::proptest! {
@@ -1170,11 +1235,17 @@ mod tests {
             }
             .to_cons();
         }
-        let open = Boundary::Open {
+        // the uniform flow comes in as it is; the open end lets it out (at P = p₀ + Z·50 it
+        // leaves at 50 m/s and p₀, the open end's outflow)
+        p.left = Boundary::State(Prim {
+            rho: 1.2,
+            u: 50.0,
+            p: 101_325.0,
+        });
+        p.right = Boundary::Open {
             p: 101_325.0,
             rho: 1.2,
         };
-        (p.left, p.right) = (open, open);
         let mut t = 0.0;
         while t < 1e-3 {
             let dt = p.max_dt(0.8).min(1e-3 - t);
@@ -1234,10 +1305,11 @@ mod tests {
             }
             .to_cons();
         }
-        p.left = Boundary::Open {
-            p: 101_325.0,
+        p.left = Boundary::State(Prim {
             rho: 1.2,
-        };
+            u: 50.0,
+            p: 101_325.0,
+        });
         p.right = Boundary::Open {
             p: 101_325.0,
             rho: 1.2,
@@ -1370,7 +1442,7 @@ mod tests {
     }
 
     #[test]
-    fn ghosts_mirror_walls_and_switch_open_ends_on_flow_direction() {
+    fn ghosts_mirror_walls_and_open_ends_follow_the_characteristic() {
         let inner = Prim {
             rho: 0.8,
             u: 30.0,
@@ -1384,14 +1456,34 @@ mod tests {
         });
         assert_eq!(ghost(f, inner, 1.0).u, -30.0);
         let open = Boundary::Open { p: 1.0e5, rho: 1.2 };
-        // right end, u > 0: outflow keeps the inner density, takes the outside pressure
+        // right end, u = 30 out: Z = 0.8·√(1.4·1.1e5/0.8) = 351.0, P = 1.1e5 + 351·30 =
+        // 120 530 ≥ p₀ → outflow at p₀, v = 20 530/351 = 58.49 m/s, the gas expanded to p₀:
+        // ρ = 0.8·(1/1.1)^(1/1.4) = 0.74735 (hand)
         let out = ghost(open, inner, 1.0);
-        assert_eq!((out.rho, out.u, out.p), (0.8, 30.0, 1.0e5));
-        // left end, same u: gas enters from the reservoir
+        assert!((out.u - 58.49).abs() < 0.01 && out.p == 1.0e5, "{out:?}");
+        assert!((out.rho - 0.747_35).abs() < 1e-4, "{out:?}");
+        // left end, the same u is inflow: P = 1.1e5 − 10 530 = 99 470 < p₀ → the reservoir's
+        // air comes in: 0.6v² − 351v − 530 = 0, v = −1.508 m/s (hand), u = +1.508
         let inflow = ghost(open, inner, -1.0);
-        assert_eq!((inflow.rho, inflow.u, inflow.p), (1.2, 30.0, 1.0e5));
-        // at rest nothing leaves: reservoir state
-        assert_eq!(ghost(open, Prim { u: 0.0, ..inner }, 1.0).rho, 1.2);
+        assert!((inflow.u - 1.508).abs() < 0.01, "{inflow:?}");
+        assert!(
+            (inflow.rho - 1.2).abs() < 1e-3 && inflow.p < 1.0e5,
+            "{inflow:?}"
+        );
+        // at rest at the outside pressure nothing moves
+        let still = ghost(
+            open,
+            Prim {
+                u: 0.0,
+                p: 1.0e5,
+                ..inner
+            },
+            1.0,
+        );
+        assert!(
+            still.u.abs() < 1e-9 && (still.p - 1.0e5).abs() < 1e-9,
+            "{still:?}"
+        );
     }
 
     #[test]
