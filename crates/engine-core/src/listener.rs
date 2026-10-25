@@ -37,6 +37,10 @@ pub struct Listener {
     /// state.
     radiation_k: f64,
     radiated: f64,
+    /// The same for the intake mouth ([`Listener::radiate_mouth`]): its area, corner and state.
+    mouth_area: f64,
+    mouth_k: f64,
+    mouth_radiated: f64,
 }
 
 impl Listener {
@@ -118,6 +122,9 @@ impl Listener {
             dt,
             radiation_k,
             radiated: 0.0,
+            mouth_area: 0.0,
+            mouth_k: 1.0,
+            mouth_radiated: 0.0,
         }
     }
 
@@ -147,6 +154,20 @@ impl Listener {
             / self.dt;
         self.flow_last = q;
         p
+    }
+
+    /// [`Listener::radiate_flow`] from an open mouth of area `mouth_area_m2` (the intake): as a
+    /// tail ([`Listener::radiate`]), it radiates as a monopole only below ka ≈ 2, flat above
+    /// (Levine & Schwinger 1948): H(s) = s/(1 + s/ω_c), ω_c = 2c/a. Pa.
+    pub fn radiate_mouth(&mut self, q: f64, mouth_area_m2: f64) -> f64 {
+        let p = self.radiate_flow(q);
+        if mouth_area_m2 != self.mouth_area {
+            let radius = (mouth_area_m2 / std::f64::consts::PI).sqrt().max(1e-3);
+            self.mouth_k = 1.0 - (-2.0 * C_AMBIENT / radius * self.dt).exp();
+            self.mouth_area = mouth_area_m2;
+        }
+        self.mouth_radiated += self.mouth_k * (p - self.mouth_radiated);
+        self.mouth_radiated
     }
 
     /// A sound pressure measured 1 m from a compact source (the block) heard at the tails'
@@ -353,6 +374,28 @@ mod tests {
             for i in 0..n {
                 let x = (2.0 * std::f64::consts::PI * f * i as f64 * DT).sin();
                 let p = l.radiate(&[x]);
+                if i > n / 2 {
+                    sum += p * p;
+                }
+            }
+            sum.sqrt()
+        };
+        let ratio = amp(16_000.0) / amp(1_000.0);
+        assert!((ratio / 4.32 - 1.0).abs() < 0.03, "ratio {ratio}");
+    }
+
+    #[test]
+    fn an_intake_mouth_radiates_like_an_open_pipe_above_ka_of_two() {
+        // the tails' rule for the intake: a 50 mm mouth (a = 25 mm), a steady volume flow
+        // amplitude, 16 kHz against 1 kHz: 4.32 (see the tails' test for the hand value), not
+        // the monopole's 16
+        let amp = |f: f64| {
+            let mut l = Listener::new(1, 0.0, 3.0, 0.0, A, DT, None);
+            let n = (0.05 / DT) as usize;
+            let mut sum = 0.0;
+            for i in 0..n {
+                let q = 1e-3 * (2.0 * std::f64::consts::PI * f * i as f64 * DT).sin();
+                let p = l.radiate_mouth(q, A);
                 if i > n / 2 {
                     sum += p * p;
                 }

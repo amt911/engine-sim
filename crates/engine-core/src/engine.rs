@@ -1589,9 +1589,17 @@ impl Engine {
         } else {
             0.0
         };
-        // what does not wait for the tails: the intake mouth and the block
+        // what does not wait for the tails: the intake mouth and the block. The mouth is a
+        // runner's trumpet with individual throttles, else the throttle bore (the air box's
+        // own inlet is not in the definition: an estimate).
+        let mouth_d = if self.def.intake.individual_throttles {
+            self.def.intake.runner_diameter_m
+        } else {
+            self.def.throttle_diameter_m
+        };
+        let mouth_area = PI * 0.25 * mouth_d * mouth_d;
         let rest = match &mut self.listener {
-            Some((_, l)) => l.radiate_flow(intake_flow) + l.spread_from_1m(block),
+            Some((_, l)) => l.radiate_mouth(intake_flow, mouth_area) + l.spread_from_1m(block),
             None => 0.0,
         };
         let audio = if let Some(r) = self.remote.0.as_mut() {
