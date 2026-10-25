@@ -57,12 +57,27 @@ burns perfectly from its first cycle. A real port-injected engine does neither:
    - Waveguide exhaust only. The FV exhaust takes mass with its energy and has no heat source
      yet.
    - It sounds through the same waveguide.
-5. **Parameters (data, with defaults).**
-   - `intake.film_fraction` x: an estimate for warm port injection until the ETH/SAE data
-     arrive (PAPERS.md).
-   - `intake.film_tau_s` τ, in seconds: Heywood gives "of order 2 s" for central injection;
-     port injection is faster.
+5. **Parameters (data, with defaults).** Measured on a warm port-injected engine by Almkvist &
+   Eriksson (SAE 941931):
+   - `intake.film_fraction`: X at 100 kPa and 30 rev/s, 0.18 (Fig. 9). It follows the
+     manifold pressure (about 0.3 of it at 20 kPa) and the speed as n^(−½) (Fig. 10), held at
+     the ends of the measured 10–40 rev/s.
+   - `intake.film_tau_s`: τ ≈ 1 s (Figs. 11–13; Heywood §7.6.3 agrees for a manifold film).
    - Both are serialized, with round-trip tests.
+
+## As built (2026-10-25)
+
+- **Two exhaust pools per primary.**
+  - Mixture carried by blowdown gas above 873 K burns in its own slug while that flow lasts.
+  - The rest mixes into the primary, which burns it only above 873 K itself.
+  - The hot gas also lights the primary's stock when that stock can carry a flame:
+    Metghalchi–Keck speed above zero, diluent within the fit's 0–0.4. The charge left by
+    several misfires then goes at once, as a hydrogen-engine study observed (postfire lighting
+    accumulated misfire charge).
+  - A single lumped pool instead burned a non-flammable φ≈0.3 stock at once: an 8× bang.
+- **Unburnt residual is not diluent.** After a cut cycle the residual is air, so only the
+  burnt part slows the next flame. Counting all of it stretched flames to 200–330°.
+- The afterburn time constant (2 ms) remains an estimate.
 
 ## Tests (values from outside the code)
 
