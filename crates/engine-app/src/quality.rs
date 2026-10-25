@@ -126,13 +126,19 @@ pub fn pick(mut rtf: impl FnMut(Quality) -> f64) -> Quality {
         .unwrap_or(Quality::Low)
 }
 
-/// Rendering above this share of real time is falling behind (the audio buffer drains).
-const OVERLOAD: f64 = 1.0;
-/// Seconds of audio the governor averages its load over.
-const WATCH_S: f64 = 1.0;
+/// Rendering above this share of real time leaves the OS and the UI no margin: the 40 ms
+/// buffer drains at the first stall. (A level is picked at 1/[`HEADROOM`] = 0.67 of it.)
+const OVERLOAD: f64 = 0.9;
+/// Seconds of audio the governor averages its load over: at 1.1× real time the buffer
+/// ([`crate::runner`]'s 40 ms) is gone in 0.4 s, so the watch must be shorter than that.
+const WATCH_S: f64 = 0.25;
+/// Audio rendered at a level before the governor judges it.
+const SETTLE_S: f64 = 0.3;
+/// The buffer below this share of its target is about to run dry: step down now.
+const STARVING: f64 = 0.25;
 
 /// Watches the sim thread at a chosen level: when rendering keeps taking more than
-/// 1/`OVERLOAD` of the audio it makes for about two seconds, the level is too dear.
+/// `OVERLOAD` of the audio it makes, or the buffer is nearly dry, the level is too dear.
 #[derive(Debug, Clone)]
 pub struct Governor {
     load: f64,
@@ -149,12 +155,22 @@ impl Governor {
 
     /// One block of `audio_s` seconds took `work_s` to render. True when the level should
     /// drop (and the watch starts over).
+    /// The buffer holds `fill` of its target. True when it is nearly dry once the level has
+    /// had time to fill it (the watch then starts over).
+    pub fn starved(&mut self, fill: f64) -> bool {
+        if self.rendered_s >= SETTLE_S && fill < STARVING {
+            *self = Self::new();
+            return true;
+        }
+        false
+    }
+
     pub fn overloaded(&mut self, audio_s: f64, work_s: f64) -> bool {
-        // the share of real time spent rendering, smoothed over about a second of audio
+        // the share of real time spent rendering, smoothed over a quarter of a second of audio
         let k = (audio_s / WATCH_S).min(1.0);
         self.load += (work_s / audio_s - self.load) * k;
         self.rendered_s += audio_s;
-        if self.load > OVERLOAD && self.rendered_s > 2.0 * WATCH_S {
+        if self.load > OVERLOAD && self.rendered_s >= SETTLE_S {
             *self = Self::new();
             return true;
         }
@@ -264,22 +280,43 @@ mod tests {
     }
 
     #[test]
-    fn the_governor_drops_after_two_seconds_behind_and_not_on_a_spike() {
+    fn the_governor_drops_before_the_buffer_drains_and_not_on_a_spike() {
         let block = 128.0 / 48_000.0;
         let mut g = Governor::new();
-        // comfortably ahead (half the audio time): never
-        assert!((0..2_000).all(|_| !g.overloaded(block, 0.5 * block)));
+        // comfortably ahead (half the audio time) or with a little margin (0.8): never
+        assert!((0..4_000).all(|_| !g.overloaded(block, 0.5 * block)));
+        assert!((0..4_000).all(|_| !g.overloaded(block, 0.8 * block)));
         // one slow block among fast ones: no
-        assert!(!g.overloaded(block, 5.0 * block));
-        assert!((0..200).all(|_| !g.overloaded(block, 0.5 * block)));
-        // just behind (1.1× the audio time) for long: after about two seconds of audio
         let mut g = Governor::new();
-        let n = (0..2_000)
-            .position(|_| g.overloaded(block, 1.1 * block))
-            .unwrap();
-        let t = (n + 1) as f64 * block;
-        assert!((1.5..3.0).contains(&t), "dropped after {t} s");
+        assert!((0..400).all(|_| !g.overloaded(block, 0.5 * block)));
+        assert!(!g.overloaded(block, 5.0 * block));
+        assert!((0..400).all(|_| !g.overloaded(block, 0.5 * block)));
+        // behind (1.1× the audio time): the 40 ms buffer drains in 0.4 s, so within 0.6 s
+        let dropped_after = |load: f64| {
+            let mut g = Governor::new();
+            let n = (0..4_000).position(|_| g.overloaded(block, load * block));
+            n.map(|n| (n + 1) as f64 * block)
+        };
+        let t = dropped_after(1.1).unwrap();
+        assert!(t <= 0.6, "dropped after {t} s");
+        // just under real time (0.95): no margin for the OS, within a second
+        let t = dropped_after(0.95).unwrap();
+        assert!(t <= 1.0, "dropped after {t} s");
+    }
+
+    #[test]
+    fn a_starving_buffer_drops_at_once_but_not_while_it_fills() {
+        let block = 128.0 / 48_000.0;
+        let mut g = Governor::new();
+        // just after a start (or a change of level) the buffer is empty and filling
+        assert!(!g.starved(0.0));
+        for _ in 0..200 {
+            g.overloaded(block, 0.5 * block);
+        }
+        // a quarter of the target left: no; less: at once
+        assert!(!g.starved(0.3));
+        assert!(g.starved(0.2));
         // and it starts over
-        assert!(!g.overloaded(block, 1.1 * block));
+        assert!(!g.starved(0.0));
     }
 }

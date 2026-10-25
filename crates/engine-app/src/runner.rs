@@ -171,18 +171,22 @@ fn run(
             governor = Governor::new();
             sim.set_quality(level);
         }
-        let due = match &producer {
-            Some(p) => p.buffer().capacity() - p.slots() < target,
+        // what the audio buffer holds, in samples (none without a device)
+        let filled = producer.as_ref().map(|p| p.buffer().capacity() - p.slots());
+        let due = match filled {
+            Some(f) => f < target,
             None => (start.elapsed().as_secs_f64() * rate) as u64 > produced,
         };
         if due {
             let t = Instant::now();
             sim.render(&mut block);
             let work = t.elapsed().as_secs_f64();
-            // Auto: a level that keeps falling behind steps down (never while benchmarking)
+            // Auto: a level that keeps falling behind, or lets the buffer run nearly dry, steps
+            // down (never while benchmarking)
+            let fill = filled.map_or(1.0, |f| f as f64 / target as f64);
             if choice == QualityChoice::Auto
                 && bench.is_none()
-                && governor.overloaded(BLOCK as f64 / rate, work)
+                && (governor.overloaded(BLOCK as f64 / rate, work) | governor.starved(fill))
                 && let Some(lower) = sim.quality().lower()
             {
                 sim.set_quality(lower);
