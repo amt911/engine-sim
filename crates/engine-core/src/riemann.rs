@@ -266,6 +266,30 @@ pub fn junction(arriving: &[f64], weights: &[f64], sent: &mut [f64]) -> f64 {
     a
 }
 
+/// The open end of a pipe at the outside pressure, with `arriving` the variable reaching it.
+/// Outflow (it arrives above the outside state, 1): the end is at the outside pressure, A = 1
+/// (Benson §2.8.2). Inflow: air from the still atmosphere (stagnation A₀ = 1) accelerates into
+/// the pipe isentropically, A² + k·U² = 1 (Benson §3.3), with U into the pipe. Either way at
+/// most sonic. Returns the variable sent back into the pipe.
+pub fn open_end_flow(arriving: f64, kappa: f64) -> f64 {
+    let k = 0.5 * (kappa - 1.0);
+    if arriving >= 1.0 {
+        // outflow at A = 1, U = (λ − 1)/k; past U = A it chokes: A = U = λ/(1 + k)
+        if (arriving - 1.0) / k <= 1.0 {
+            return open_end(arriving);
+        }
+        return arriving * (1.0 - k) / (1.0 + k);
+    }
+    // inflow: (k + 1)·A² − 2λ·A + λ² − k = 0, the root above λ; sonic (U = −A) below
+    // λ = (1 − k)/√(1 + k), where A = 1/√(1 + k) and β = A·(1 + k)
+    let a_sonic = 1.0 / (1.0 + k).sqrt();
+    if arriving <= a_sonic * (1.0 - k) {
+        return a_sonic * (1.0 + k);
+    }
+    let a = (arriving + (k * (1.0 + k) - k * arriving * arriving).sqrt()) / (1.0 + k);
+    2.0 * a - arriving
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,5 +554,18 @@ mod tests {
         for n in 0..3 {
             assert!((0.5 * (arriving[n] + sent[n]) - a).abs() < 1e-12);
         }
+    }
+
+    #[test]
+    fn an_open_end_draws_air_in_isentropically() {
+        // λ = 0.95 arriving (a rarefaction): A² + 0.2·U² = 1 with λ = A + 0.2·U gives
+        // 1.2A² − 1.9A + 0.7025 = 0, the root above λ: A = (1.9 + 0.4878524)/2.4 = 0.9949385,
+        // U = (0.95 − A)/0.2 = −0.224693 (into the pipe); β = 2A − λ = 1.0398770
+        let b = open_end_flow(0.95, 1.4);
+        assert!((b - 1.039_877_0).abs() < 1e-6, "{b}");
+        // outflow is the plain open end: A = 1
+        assert!((open_end_flow(1.05, 1.4) - 0.95).abs() < 1e-12);
+        // and the two meet at rest
+        assert!((open_end_flow(1.0, 1.4) - 1.0).abs() < 1e-12);
     }
 }
