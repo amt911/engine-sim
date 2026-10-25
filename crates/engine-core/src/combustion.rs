@@ -94,6 +94,24 @@ mod tests {
     }
 
     #[test]
+    fn a_rich_flame_is_metghalchi_and_kecks_too() {
+        // φ = 1.2, 298 K, 4 atm, undiluted: S_L0 = 27.58 − 78.34·(0.07)² = 27.196 cm/s;
+        // α = 2.18 − 0.16 (no effect at 298 K); β = −0.16 + 0.22·0.2 = −0.116 (eq. 17):
+        // 4^−0.116 = 0.851454 → 0.231562 m/s
+        assert_relative_eq!(
+            laminar_flame_speed(1.2, 298.0, 4.0 * ATM, 0.0),
+            0.231_562,
+            max_relative = 1e-4
+        );
+        // and its temperature exponent: 596 K, 1 atm: × 2^2.02 = 4.05583 → 1.103 03 m/s
+        assert_relative_eq!(
+            laminar_flame_speed(1.2, 596.0, ATM, 0.0),
+            0.271_96 * 4.055_83,
+            max_relative = 1e-4
+        );
+    }
+
+    #[test]
     fn the_burn_angles_scale_as_hires() {
         // (S_p·ν)^⅓·(h/S_L)^⅔ at 10 m/s, 1e-6 m²/s, 1 cm, 1 m/s: (1e-5)^⅓·(1e-2)^⅔ = (1e-9)^⅓
         assert_relative_eq!(

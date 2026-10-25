@@ -719,6 +719,28 @@ fn woschni_htc(bore_m: f64, p_pa: f64, t_k: f64, w_m_s: f64) -> f64 {
 
 /// Mean piston speed S̄p = 2·S·N, m/s (Heywood, *ICE Fundamentals*, eq. 2.2), whichever way the
 /// crank turns.
+/// This cycle's flame ratio ([`flame_ratio`]) for the charge as the spark finds it (Heywood
+/// §9.4.2): its equivalence ratio (σ [`PHI_DISPERSION`]) and residual (σ [`RESIDUAL_DISPERSION`])
+/// near the plug and the turbulence there (σ [`TURBULENCE_DISPERSION`]), each set by a draw of
+/// unit σ in `(phi, residual, turbulence)`. The turbulence moves the angles as u′^(−2/3) (Hires
+/// eqs. 6–7: Δt ∝ (L/u′)^⅓ (λ/S_L)^⅔ with λ ∝ (Lν/u′)^½). None if the flame is not finite.
+fn cycle_flame(
+    g: &crate::geometry::CylinderGeometry,
+    piston_speed: f64,
+    (p, t): (f64, f64),
+    rho: f64,
+    v: f64,
+    dilution: f64,
+    (n_phi, n_res, n_u): (f64, f64, f64),
+) -> Option<f64> {
+    let phi = 1.0 + PHI_DISPERSION * n_phi;
+    let f_local = (dilution * (1.0 + RESIDUAL_DISPERSION * n_res)).max(0.0);
+    let u_turb = (1.0 + TURBULENCE_DISPERSION * n_u).max(0.3);
+    let local = flame_ratio(g, piston_speed, (p, t), rho, v, (phi, f_local));
+    let ratio = local * u_turb.powf(-2.0 / 3.0);
+    ratio.is_finite().then_some(ratio)
+}
+
 /// The burned share of a trapped charge: residual / trapped mass.
 fn dilution_of(cs: &CylinderState) -> f64 {
     if cs.trapped_kg > 0.0 {
@@ -1450,11 +1472,7 @@ impl Engine {
                 cs.ref_v = cs.gas.volume_m3;
                 cs.ref_t = cs.gas.temperature();
                 // the ECU reads the charge (speed, manifold, temperature) and times its spark
-                let dilution = if cs.trapped_kg > 0.0 {
-                    cs.residual_kg / cs.trapped_kg
-                } else {
-                    0.0
-                };
+                let dilution = dilution_of(cs);
                 let ratio = flame_ratio(
                     &g,
                     mean_piston_speed,
@@ -1536,20 +1554,19 @@ impl Engine {
                 );
                 let rho_ivc = cs.trapped_kg / cs.ref_v;
                 let j = self.def.sound.combustion_jitter;
-                let mut gauss = || self.noise() + self.noise() + self.noise();
-                let phi = 1.0 + j * PHI_DISPERSION * gauss();
-                let f_local = (dilution * (1.0 + j * RESIDUAL_DISPERSION * gauss())).max(0.0);
-                let u_turb = (1.0 + j * TURBULENCE_DISPERSION * gauss()).max(0.3);
-                let local = flame_ratio(
+                // three near-Gaussian draws of unit σ (each a sum of three uniforms of ±1)
+                let mut draw = || -> f64 { (0..3).map(|_| self.noise()).sum() };
+                let draws = (j * draw(), j * draw(), j * draw());
+                let ratio = cycle_flame(
                     &g,
                     mean_piston_speed,
                     (ref_p, ref_t),
                     rho_ivc,
                     ref_v,
-                    (phi, f_local),
-                );
-                let ratio =
-                    if local.is_finite() { local } else { mean_flame } * u_turb.powf(-2.0 / 3.0);
+                    dilution,
+                    draws,
+                )
+                .unwrap_or(mean_flame);
                 // the charge itself: each cylinder breathes a fixed few percent apart from the
                 // others. Heywood's "±5 percent" cycle-to-cycle is the mixture composition
                 // within the cylinder — the A/F spread above, not a second draw on the fuel
@@ -2080,6 +2097,34 @@ mod tests {
             .map(|c| c.charge_bias)
             .collect();
         assert_eq!(b, again);
+    }
+
+    #[test]
+    fn each_cycles_flame_follows_its_mixture_and_turbulence() {
+        // the mean charge of an inline-4 at WOT, IVC state taken to TDC inside `flame_ratio`;
+        // a richer mixture (φ 1.04, still lean of the 1.13 peak of S_L) burns faster, more
+        // diluted burns slower, more turbulence shortens the angles (u′^(−2/3)): one σ each
+        let g = EngineDef::inline4().geometry;
+        let at = |n: (f64, f64, f64)| {
+            cycle_flame(&g, 10.0, (0.9e5, 330.0), 0.95, 5.5e-4, 0.07, n).unwrap()
+        };
+        let mean = at((0.0, 0.0, 0.0));
+        assert!(at((1.0, 0.0, 0.0)) < mean, "richer burns faster");
+        assert!(at((-1.0, 0.0, 0.0)) > mean, "leaner burns slower");
+        assert!(at((0.0, 1.0, 0.0)) > mean, "more residual burns slower");
+        // u′ × 1.03: the angles × 1.03^(−2/3) = 0.98049
+        assert!((at((0.0, 0.0, 1.0)) / mean - 0.980_49).abs() < 1e-4);
+        assert!(at((0.0, 0.0, -1.0)) > mean);
+    }
+
+    #[test]
+    fn an_empty_charge_is_undiluted() {
+        let mut e = Engine::new(EngineDef::single(), 1000.0, 1);
+        e.cyl[0].trapped_kg = 0.0;
+        e.cyl[0].residual_kg = 1e-5;
+        assert_eq!(dilution_of(&e.cyl[0]), 0.0);
+        e.cyl[0].trapped_kg = 4e-5;
+        assert!((dilution_of(&e.cyl[0]) - 0.25).abs() < 1e-12);
     }
 
     #[test]
