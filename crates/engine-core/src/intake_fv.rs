@@ -35,6 +35,9 @@ pub struct IntakeDef {
     pub individual_throttles: bool,
     /// Entry loss coefficient of the trumpet (sharp edge ≈ 0.5, bellmouth ≈ 0.05; Blair).
     pub trumpet_loss: f64,
+    /// With individual throttles: surge tanks the trumpets draw from instead of the open air,
+    /// one per equal group of consecutive runners (the LFA's two banks). Empty: open trumpets.
+    pub surge_tanks: Vec<crate::surge_tank::SurgeTankDef>,
 }
 
 impl Default for IntakeDef {
@@ -45,6 +48,7 @@ impl Default for IntakeDef {
             runner_diameter_m: 0.042,
             individual_throttles: false,
             trumpet_loss: 0.1,
+            surge_tanks: Vec::new(),
         }
     }
 }
@@ -56,6 +60,10 @@ pub struct IntakeFv {
     individual: bool,
     /// Common plenum (unused with individual throttles).
     plenum: GasVolume,
+    /// Surge tanks behind the individual throttles, each feeding an equal group of runners.
+    tanks: Vec<crate::surge_tank::SurgeTank>,
+    /// Mass each tank drew in through its inlet during the last FV step, kg.
+    tank_drawn: Vec<f64>,
     /// Discharge-coefficient factor of the trumpet entry, 1/√(1 + k).
     trumpet_cd: f64,
     pub substeps: usize,
@@ -292,6 +300,20 @@ impl IntakeFv {
             a_runner,
             individual: def.individual_throttles,
             plenum: GasVolume::at(ATM_PA, AMBIENT_T_K, plenum_volume_m3.max(1e-5)),
+            tanks: if def.individual_throttles {
+                def.surge_tanks
+                    .iter()
+                    .map(|t| {
+                        crate::surge_tank::SurgeTank::new(
+                            t,
+                            cylinders / def.surge_tanks.len().max(1),
+                        )
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            tank_drawn: vec![0.0; def.surge_tanks.len()],
             trumpet_cd: 1.0 / (1.0 + def.trumpet_loss.max(0.0)).sqrt(),
             substeps,
             dt_fv: substeps as f64 * dt,
@@ -346,6 +368,9 @@ impl IntakeFv {
         self.count = 0;
         let dt = self.dt_fv;
         let a = self.a_runner;
+        if self.individual && !self.tanks.is_empty() {
+            return self.tanks_step(throttle_area);
+        }
         if self.individual {
             let total =
                 self.runners.len() + self.remote.0.as_ref().map_or(0, |r| r.result.last.len());
@@ -417,6 +442,43 @@ impl IntakeFv {
         self.previous_rate = self.inducted_rate;
         self.inducted_rate = self.inducted / dt;
         radiated
+    }
+
+    /// One FV step of ITB runners drawing from surge tanks: the valve flows become the runners'
+    /// right-end fluxes, then each tank steps with its group of runners, all on one sub-step
+    /// (a tank couples its runners every sub-step). Returns the induction source at the inlets.
+    fn tanks_step(&mut self, throttle_area: f64) -> f64 {
+        let dt = self.dt_fv;
+        let a = self.a_runner;
+        for (i, pipe) in self.runners.iter_mut().enumerate() {
+            set_valve_boundary(pipe, self.acc_mass[i], self.acc_energy[i], a, dt);
+            self.acc_mass[i] = 0.0;
+            self.acc_energy[i] = 0.0;
+        }
+        // the runners' own step: each tank sub-steps itself inside it (multirate)
+        let limit = stable_dt(&self.runners);
+        let k = ((dt / limit).ceil() as usize).clamp(1, MAX_SUBCYCLES);
+        let h = dt / k as f64;
+        let psi = (throttle_area.max(0.0) * self.trumpet_cd).min(a * self.trumpet_cd) / a;
+        let group = self.runners.len() / self.tanks.len();
+        self.tank_drawn.iter_mut().for_each(|d| *d = 0.0);
+        for _ in 0..k {
+            for (g, tank) in self.tanks.iter_mut().enumerate() {
+                tank.substep(h, &mut self.runners[g * group..(g + 1) * group], a, psi);
+                self.tank_drawn[g] += tank.drawn;
+                self.inducted += tank.drawn;
+            }
+        }
+        self.radiated = C_AIR * self.inducted / (dt * a);
+        self.previous_rate = self.inducted_rate;
+        self.inducted_rate = self.inducted / dt;
+        self.radiated
+    }
+
+    /// Mass each surge tank drew in through its inlet during the last FV step, kg (empty without
+    /// tanks).
+    pub fn tank_drawn(&self) -> &[f64] {
+        &self.tank_drawn
     }
 
     /// One substep of a plenum intake (ITBs: [`itb_runners_step`]).
@@ -498,13 +560,19 @@ impl IntakeFv {
 
     /// Step the runners from `first` on elsewhere (ITBs only: they are independent of each
     /// other within an FV step): `link` is handed them. The same results as stepping them here.
-    /// False (nothing changed) with a plenum, nothing to hand over, or already detached.
+    /// False (nothing changed) with a plenum or surge tanks, nothing to hand over, or already
+    /// detached.
     pub fn detach_runners(
         &mut self,
         first: usize,
         link: impl FnOnce(RunnerSet) -> Box<dyn RunnerLink>,
     ) -> bool {
-        if !self.individual || first == 0 || first >= self.runners.len() || self.remote.0.is_some()
+        // a surge tank couples its runners every sub-step: they stay together
+        if !self.individual
+            || !self.tanks.is_empty()
+            || first == 0
+            || first >= self.runners.len()
+            || self.remote.0.is_some()
         {
             return false;
         }
@@ -567,6 +635,65 @@ impl IntakeFv {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn surge_tanks_round_trip_and_old_files_have_none() {
+        let def = IntakeDef {
+            model: IntakeModel::Fv,
+            individual_throttles: true,
+            surge_tanks: vec![crate::surge_tank::SurgeTankDef {
+                length_m: 0.485,
+                area_m2: 0.01,
+                inlet_diameter_m: 0.07,
+                inlet_loss: 0.0,
+                inlet_at: 0.0,
+                inlet_length_m: 0.2,
+            }],
+            ..IntakeDef::default()
+        };
+        let j: IntakeDef = serde_json::from_str(&serde_json::to_string(&def).unwrap()).unwrap();
+        let y: IntakeDef =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&def).unwrap()).unwrap();
+        assert_eq!(j, def);
+        assert_eq!(y, def);
+        // a file from before the field: open trumpets
+        let old: IntakeDef =
+            serde_yaml_ng::from_str("model: fv\nindividual_throttles: true\n").unwrap();
+        assert!(old.surge_tanks.is_empty());
+    }
+
+    #[test]
+    fn each_bank_breathes_through_its_own_surge_tank() {
+        // ten ITB runners in two tanks (runners 1–5 and 6–10, the LFA's banks): cylinder 1 alone
+        // drawing air pulls it in through the first tank's inlet, none through the second
+        let tank = crate::surge_tank::SurgeTankDef {
+            length_m: 0.485,
+            area_m2: 0.01,
+            inlet_diameter_m: 0.07,
+            inlet_loss: 0.0,
+            inlet_at: 0.0,
+            inlet_length_m: 0.2,
+        };
+        let def = IntakeDef {
+            model: IntakeModel::Fv,
+            individual_throttles: true,
+            surge_tanks: vec![tank.clone(), tank],
+            ..IntakeDef::default()
+        };
+        let dt = 1.0 / 192_000.0;
+        let mut fv = IntakeFv::new(&def, 0.0, 10, dt);
+        let (mut first, mut second) = (0.0, 0.0);
+        for _ in 0..(0.05 / dt) as usize {
+            // 20 g/s into cylinder 1 at ambient enthalpy
+            fv.add_valve_flow(0, 0.02 * dt, crate::gas::CP * AMBIENT_T_K);
+            fv.step(1e-3);
+            let d = fv.tank_drawn();
+            first += d[0];
+            second += d[1];
+        }
+        assert!(first > 0.5 * 0.02 * 0.05, "first tank drew {first} kg");
+        assert!(second.abs() < 0.02 * first, "second tank drew {second} kg");
+    }
 
     #[test]
     fn runners_split_with_substeps_add_up_the_same() {

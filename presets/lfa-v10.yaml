@@ -4,7 +4,7 @@ engine:
   geometry:
     bore_m: 0.088
     stroke_m: 0.079
-    rod_m: 0.14
+    rod_m: 0.14325
     compression_ratio: 12.0
   cylinders: 10
   firing_order:
@@ -84,6 +84,19 @@ engine:
     runner_diameter_m: 0.045
     individual_throttles: true
     trumpet_loss: 0.1
+    surge_tanks:
+    - length_m: 0.485
+      area_m2: 0.010000000000000002
+      inlet_diameter_m: 0.15
+      inlet_length_m: 0.03
+      inlet_at: 0.5
+      inlet_loss: 35.1
+    - length_m: 0.485
+      area_m2: 0.010000000000000002
+      inlet_diameter_m: 0.15
+      inlet_length_m: 0.03
+      inlet_at: 0.5
+      inlet_loss: 35.1
   redline_rpm: 9000.0
   starter_torque_nm: 150.0
   fmep_bar:

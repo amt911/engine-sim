@@ -18,6 +18,7 @@ pub mod lining;
 pub mod listener;
 pub mod sound;
 pub mod structure;
+pub mod surge_tank;
 pub mod units;
 pub mod valve;
 pub mod waveguide;
