@@ -243,9 +243,15 @@ mod tests {
         let (rpm, x) = render_loop(&d, 3000.0, 0.5, 4, 48_000.0, Quality::Medium);
         let n = cycle_samples(rpm, 48_000.0);
         assert_eq!(x.len(), 4 * n);
+        // the pulses' band: a 16-sample running mean (first null at 3 kHz) — the valve jets'
+        // broadband hiss above it is turbulence, as aperiodic as a real engine's
+        let low: Vec<f32> = x
+            .windows(16)
+            .map(|w| w.iter().sum::<f32>() / 16.0)
+            .collect();
         let mismatch = |lag: usize| {
-            let e: f32 = x.windows(lag + 1).map(|w| (w[lag] - w[0]).powi(2)).sum();
-            (e / (x.len() - lag) as f32).sqrt()
+            let e: f32 = low.windows(lag + 1).map(|w| (w[lag] - w[0]).powi(2)).sum();
+            (e / (low.len() - lag) as f32).sqrt()
         };
         let at_cycle = mismatch(n);
         // measured 2026-10-23: 0.0100 at one cycle, 0.0167 sixteen samples off; held 1% fast

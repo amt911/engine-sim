@@ -16,13 +16,18 @@ pub struct SoundDef {
     pub flow_noise: f64,
     /// The intake mouth: a monopole of the air the engine draws (1 = physical, 0 = off).
     pub intake: f64,
+    /// The exhaust valves' jets ([`crate::jet_noise::valve_jet_level`]): the turbulent mixing
+    /// noise of each blowdown through the valve's curtain, sent down the pipes with the pulse.
+    /// 1 = physical, 0 = off.
+    pub valve_jet: f64,
     /// The block's radiated combustion noise ([`crate::structure`]): the cylinder pressure
     /// through the measured structure response of engine blocks, 1 = physical, 0 = off.
     pub block: f64,
     /// Valvetrain noise: each valve striking its seat shakes the block (Zheng et al. 2020),
     /// heard through its structure response. 1 = physical, 0 = none.
     pub mechanical: f64,
-    /// Cycle-to-cycle combustion variability (1 = ±1.5° burn start, ±5 % duration).
+    /// Cycle-to-cycle combustion variability: 1 = the measured spreads of Heywood §9.4.2 (each
+    /// cycle's charge, mixture, residual and turbulence near the plug), 0 = every cycle alike.
     pub combustion_jitter: f64,
     /// Wet level of a room / car-body reverb applied in the voice; 0 (outdoors) by default.
     pub reverb: f64,
@@ -57,6 +62,7 @@ impl Default for SoundDef {
         Self {
             flow_noise: 1.0,
             intake: 1.0,
+            valve_jet: 1.0,
             block: 1.0,
             mechanical: 1.0,
             combustion_jitter: 1.0,
@@ -71,11 +77,6 @@ impl Default for SoundDef {
         }
     }
 }
-
-/// Burn-start jitter (degrees) and duration jitter (fraction) at `combustion_jitter` = 1.
-/// Cyclic variability of SI engines is a few degrees of CA50 (Heywood, ch. 9.4).
-pub const BURN_START_JITTER_DEG: f64 = 1.5;
-pub const BURN_DURATION_JITTER: f64 = 0.05;
 
 #[cfg(test)]
 mod tests {
@@ -98,6 +99,20 @@ mod tests {
         let s = SoundDef {
             listener_distance_m: 7.5,
             listener_angle_deg: -45.0,
+            ..SoundDef::default()
+        };
+        let json: SoundDef = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        let yaml: SoundDef =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&s).unwrap()).unwrap();
+        assert_eq!((json, yaml), (s.clone(), s));
+    }
+
+    #[test]
+    fn the_valve_jets_round_trip_and_old_files_hear_them() {
+        let old: SoundDef = serde_yaml_ng::from_str("reverb: 0.2\n").unwrap();
+        assert_eq!(old.valve_jet, 1.0);
+        let s = SoundDef {
+            valve_jet: 0.5,
             ..SoundDef::default()
         };
         let json: SoundDef = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
