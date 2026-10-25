@@ -135,6 +135,7 @@ impl EngineDef {
                 // one tail: no spread
                 tail_spacing_m: 0.9,
                 after_collector: Vec::new(),
+                collectors_join: false,
             },
             intake: IntakeDef::default(),
             redline_rpm: 7500.0,
@@ -307,6 +308,9 @@ impl EngineDef {
                 // the tips sit together in the centre of the rear diffuser
                 tail_spacing_m: 0.25,
                 after_collector: Vec::new(),
+                // "an equal-length dual exhaust system routed through a multistage titanium main
+                // muffler" (Toyota, LFA press release, 2009-10-21): both banks meet in it
+                collectors_join: true,
             },
             // Ten ITBs (Toyota). Runner length not published: Helmholtz-tuned to the torque peak
             // (Engelman: f = (a/2π)·√(A/(L·V)), V = V_d/2·(r + 1)/(r − 1), tuned at twice the
@@ -388,6 +392,7 @@ impl EngineDef {
                 // the tips sit together in the centre (458 Italia)
                 tail_spacing_m: 0.25,
                 after_collector: Vec::new(),
+                collectors_join: false,
             },
             intake: IntakeDef::default(),
             redline_rpm: 9000.0,
@@ -459,6 +464,7 @@ impl EngineDef {
                 // two tips each side (C6 Corvette)
                 tail_spacing_m: 1.1,
                 after_collector: Vec::new(),
+                collectors_join: false,
             },
             intake: IntakeDef::default(),
             redline_rpm: 6600.0,
@@ -938,7 +944,7 @@ fn crossed(prev: f64, cur: f64, a: f64) -> bool {
 impl Engine {
     pub fn new(def: EngineDef, initial_rpm: f64, seed: u64) -> Self {
         let g = def.geometry;
-        let tail_pipes = def.exhaust.groups(def.cylinders).len();
+        let tail_pipes = def.exhaust.tail_groups(def.cylinders).len();
         let cyl = def
             .phase_offsets_deg()
             .into_iter()
@@ -1533,7 +1539,7 @@ impl Engine {
         // valves' flow averaged over a cycle; the swing is the waveguide's, without its own
         // average (a linear line's DC is no flow: losses and reflections do not conserve it).
         if self.tail_groups.len() != n_tails {
-            let mut groups = self.def.exhaust.groups(self.cyl.len());
+            let mut groups = self.def.exhaust.tail_groups(self.cyl.len());
             groups.resize(n_tails, Vec::new());
             self.tail_groups = groups;
             self.tail_mean_flow = vec![0.0; n_tails];
@@ -3311,8 +3317,9 @@ mod tests {
     #[test]
     fn the_listener_hears_the_tails_through_one_delay_line() {
         // Textures off, the output is the listener's mix of the tail signals. Standing to the
-        // side of the LFA's two tails delays the far one: the line must persist across steps.
-        let mut d = EngineDef::lfa_v10();
+        // side of a flat-plane V8's two tails delays the far one: the line must persist across
+        // steps.
+        let mut d = EngineDef::flatplane_v8();
         d.sound = crate::sound::SoundDef {
             flow_noise: 0.0,
             mechanical: 0.0,
@@ -3388,9 +3395,14 @@ mod tests {
     }
 
     #[test]
-    fn each_collector_is_a_tail_pipe_jet() {
-        // two 5-into-1 banks, two tails; the inline-4's 4-into-1 has one
-        assert_eq!(Engine::new(EngineDef::lfa_v10(), 1000.0, 1).tail_pipes, 2);
+    fn each_open_end_is_a_tail_pipe_jet() {
+        // a flat-plane V8's two 4-into-1 banks, two tails; the LFA's two banks join in one
+        // muffler, one; the inline-4's 4-into-1 has one
+        assert_eq!(
+            Engine::new(EngineDef::flatplane_v8(), 1000.0, 1).tail_pipes,
+            2
+        );
+        assert_eq!(Engine::new(EngineDef::lfa_v10(), 1000.0, 1).tail_pipes, 1);
         assert_eq!(Engine::new(EngineDef::inline4(), 1000.0, 1).tail_pipes, 1);
     }
 

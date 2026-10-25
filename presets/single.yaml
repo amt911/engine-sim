@@ -46,6 +46,7 @@ engine:
       porosity: 0.95
     tail_spacing_m: 0.9
     after_collector: []
+    collectors_join: false
   intake:
     model: zero_d
     runner_length_m: 0.3
