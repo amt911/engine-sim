@@ -114,6 +114,14 @@ pub struct Listener {
     flow_last: f64,
     mean_distance: f64,
     dt: f64,
+    /// The tails' radiation above ka ≈ 2: a one-pole low-pass on dQ/dt at ω_c = 2c/a, and its
+    /// state.
+    radiation_k: f64,
+    radiated: f64,
+    /// The same for the intake mouth ([`Listener::radiate_mouth`]): its area, corner and state.
+    mouth_area: f64,
+    mouth_k: f64,
+    mouth_radiated: f64,
 }
 
 impl Listener {
@@ -223,6 +231,10 @@ impl Listener {
             .unwrap_or(0);
         let len = delay_max + 1;
         let mean_distance = r.iter().sum::<f64>() / r.len() as f64;
+        // the outlets' radiation corner ([`Listener::radiate`]): ka = 2
+        let radius = (tail_area_m2 / std::f64::consts::PI).sqrt().max(1e-3);
+        let omega_c = 2.0 * C_AMBIENT / radius;
+        let radiation_k = 1.0 - (-omega_c * dt).exp();
         Self {
             distance: r,
             delay,
@@ -235,6 +247,11 @@ impl Listener {
             flow_last: 0.0,
             mean_distance,
             dt,
+            radiation_k,
+            radiated: 0.0,
+            mouth_area: 0.0,
+            mouth_k: 1.0,
+            mouth_radiated: 0.0,
         }
     }
 
@@ -266,6 +283,20 @@ impl Listener {
         p
     }
 
+    /// [`Listener::radiate_flow`] from an open mouth of area `mouth_area_m2` (the intake): as a
+    /// tail ([`Listener::radiate`]), it radiates as a monopole only below ka ≈ 2, flat above
+    /// (Levine & Schwinger 1948): H(s) = s/(1 + s/ω_c), ω_c = 2c/a. Pa.
+    pub fn radiate_mouth(&mut self, q: f64, mouth_area_m2: f64) -> f64 {
+        let p = self.radiate_flow(q);
+        if mouth_area_m2 != self.mouth_area {
+            let radius = (mouth_area_m2 / std::f64::consts::PI).sqrt().max(1e-3);
+            self.mouth_k = 1.0 - (-2.0 * C_AMBIENT / radius * self.dt).exp();
+            self.mouth_area = mouth_area_m2;
+        }
+        self.mouth_radiated += self.mouth_k * (p - self.mouth_radiated);
+        self.mouth_radiated
+    }
+
     /// A sound pressure measured 1 m from a compact source (the block) heard at the tails'
     /// mean distance: spherical spreading, p ∝ 1/r (Kinsler §7.2), Pa.
     pub fn spread_from_1m(&self, p_1m: f64) -> f64 {
@@ -289,6 +320,16 @@ impl Listener {
         }
         self.pos = (self.pos + 1) % len;
         y
+    }
+
+    /// [`Listener::process`] with the outlets' own radiation: an unflanged pipe radiates as a
+    /// monopole (p ∝ dQ/dt) only while ka ≪ 1; from ka ≈ 2 all the incident power leaves it
+    /// (Levine & Schwinger, Phys. Rev. 73, 1948: its reflection falls to zero) and the radiation
+    /// stops rising with frequency: H(s) = s/(1 + s/ω_c), ω_c = 2c/a. What the engine plays.
+    pub fn radiate(&mut self, tails: &[f64]) -> f64 {
+        let y = self.process(tails);
+        self.radiated += self.radiation_k * (y - self.radiated);
+        self.radiated
     }
 }
 
@@ -478,5 +519,53 @@ mod tests {
         let mut l = Listener::new(1, 0.9, 3.0, 0.0, A, DT, None);
         l.process(&[5.0]);
         assert_eq!(l.process(&[5.0]), 0.0);
+    }
+
+    #[test]
+    fn a_tail_radiates_like_an_open_pipe_above_ka_of_two() {
+        // A monopole's p ∝ dQ/dt holds while the outlet is small against the wavelength. An
+        // unflanged pipe passes all incident power out once ka ≳ 2 (Levine & Schwinger 1948:
+        // its reflection falls to zero), so the radiation stops rising there: H(s) = s/(1 + s/ω_c),
+        // ω_c = 2c/a. For the 50 mm tail (a = 25 mm): ω_c = 2·343/0.025 = 27 440 rad/s; with a
+        // steady Q, a 16 kHz tone against a 1 kHz one gives |H(16k)|/|H(1k)| =
+        // (100 531/√(1 + 3.6637²))/(6 283.2/√(1 + 0.22898²)) = 26 471/6 124.7 = 4.32
+        // (a pure dQ/dt would give 16).
+        let amp = |f: f64| {
+            let mut l = Listener::new(1, 0.0, 3.0, 0.0, A, DT, None);
+            let n = (0.05 / DT) as usize;
+            let mut sum = 0.0;
+            for i in 0..n {
+                let x = (2.0 * std::f64::consts::PI * f * i as f64 * DT).sin();
+                let p = l.radiate(&[x]);
+                if i > n / 2 {
+                    sum += p * p;
+                }
+            }
+            sum.sqrt()
+        };
+        let ratio = amp(16_000.0) / amp(1_000.0);
+        assert!((ratio / 4.32 - 1.0).abs() < 0.03, "ratio {ratio}");
+    }
+
+    #[test]
+    fn an_intake_mouth_radiates_like_an_open_pipe_above_ka_of_two() {
+        // the tails' rule for the intake: a 50 mm mouth (a = 25 mm), a steady volume flow
+        // amplitude, 16 kHz against 1 kHz: 4.32 (see the tails' test for the hand value), not
+        // the monopole's 16
+        let amp = |f: f64| {
+            let mut l = Listener::new(1, 0.0, 3.0, 0.0, A, DT, None);
+            let n = (0.05 / DT) as usize;
+            let mut sum = 0.0;
+            for i in 0..n {
+                let q = 1e-3 * (2.0 * std::f64::consts::PI * f * i as f64 * DT).sin();
+                let p = l.radiate_mouth(q, A);
+                if i > n / 2 {
+                    sum += p * p;
+                }
+            }
+            sum.sqrt()
+        };
+        let ratio = amp(16_000.0) / amp(1_000.0);
+        assert!((ratio / 4.32 - 1.0).abs() < 0.03, "ratio {ratio}");
     }
 }
