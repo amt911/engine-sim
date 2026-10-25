@@ -1731,7 +1731,7 @@ impl Engine {
     /// adds. `k`: that step's cycle-mean constant.
     fn tails_sound(&mut self, tails: &[f64], u_mean: &[f64], rest: f64, k: f64, dt: f64) -> f64 {
         let heard = match &mut self.listener {
-            Some((_, l)) => l.process(tails),
+            Some((_, l)) => l.radiate(tails),
             None => 0.0,
         };
         let z = crate::exhaust::tail_impedance();
@@ -3453,7 +3453,7 @@ mod tests {
         // it has been filled once
         let warm = 2_000;
         for t in &tails {
-            want.push(l.process(t));
+            want.push(l.radiate(t));
         }
         for k in warm..got.len() {
             assert!(
