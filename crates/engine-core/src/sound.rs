@@ -26,7 +26,8 @@ pub struct SoundDef {
     /// Valvetrain noise. No physical model yet (valve seating radiated by the block): kept so
     /// older files load; it has no effect.
     pub mechanical: f64,
-    /// Cycle-to-cycle combustion variability (1 = ±1.5° burn start, ±5 % duration).
+    /// Cycle-to-cycle combustion variability: 1 = the measured spreads of Heywood §9.4.2 (each
+    /// cycle's charge, mixture, residual and turbulence near the plug), 0 = every cycle alike.
     pub combustion_jitter: f64,
     /// Wet level of a room / car-body reverb applied in the voice; 0 (outdoors) by default.
     pub reverb: f64,
@@ -76,11 +77,6 @@ impl Default for SoundDef {
         }
     }
 }
-
-/// Burn-start jitter (degrees) and duration jitter (fraction) at `combustion_jitter` = 1.
-/// Cyclic variability of SI engines is a few degrees of CA50 (Heywood, ch. 9.4).
-pub const BURN_START_JITTER_DEG: f64 = 1.5;
-pub const BURN_DURATION_JITTER: f64 = 0.05;
 
 #[cfg(test)]
 mod tests {
