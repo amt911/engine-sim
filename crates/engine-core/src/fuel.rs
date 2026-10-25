@@ -1,0 +1,491 @@
+//! Transient fuel: the port wall film (Aquino's x–τ model, SAE 810494; Heywood, *ICE
+//! Fundamentals*, §7.6.3), the share of a charge a flame leaves unburnt, and that mixture
+//! burning again in a hot exhaust (Heywood §11.6.3).
+
+use crate::combustion::{AFR_STOICH, LHV_GASOLINE};
+
+/// Unburnt mixture in hot exhaust gas oxidizes from about 600 °C (HC; CO needs about 700 °C):
+/// Heywood, *ICE Fundamentals*, §11.6.3.
+pub const AFTERBURN_IGNITION_K: f64 = 873.0;
+
+/// Share of the film that evaporates over `period_s` with the film's time constant `tau_s`:
+/// Aquino's dm_f/dt = −m_f/τ over one intake period, exactly, 1 − e^(−T/τ).
+pub fn evaporated_share(period_s: f64, tau_s: f64) -> f64 {
+    1.0 - (-period_s.max(0.0) / tau_s.max(1e-9)).exp()
+}
+
+/// The share X of an injection that lands on the port film, from its value `x_ref` at
+/// 100 kPa and 30 rev/s: Almkvist & Eriksson (SAE 941931, a warm port-injected engine at 90 °C)
+/// measure X rising with the manifold pressure, from about 0.3 of its full-load value at
+/// 20 kPa (Fig. 9: 0.06 against 0.2, linear between), and falling with speed about as n^(−½)
+/// (Fig. 10: halved from 10 to 40 rev/s). Held at the ends of their 10–40 rev/s range. The
+/// speed is the crank's, `omega` rad/s.
+pub fn deposit_fraction(x_ref: f64, p_pa: f64, omega: f64) -> f64 {
+    let load = 0.125 + 0.875 * p_pa.max(0.0) / 100e3;
+    let rev_s = omega.abs() / (2.0 * std::f64::consts::PI);
+    x_ref * load * (30.0 / rev_s.clamp(10.0, 40.0)).sqrt()
+}
+
+/// The liquid fuel on one port's walls, kg.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PortFilm {
+    pub film_kg: f64,
+}
+
+impl PortFilm {
+    /// One intake event: `injected` kg are sprayed, a share `x` of it lands on the film, and the
+    /// film gives back its share `share` (see [`evaporated_share`]). Returns the fuel that enters
+    /// the cylinder, kg.
+    pub fn intake(&mut self, injected: f64, x: f64, share: f64) -> f64 {
+        let back = share * self.film_kg;
+        self.film_kg += x * injected - back;
+        (1.0 - x) * injected + back
+    }
+
+    /// The ECU's compensation: the injection that delivers `want` kg through this film, never
+    /// negative, and the intake event it makes. Returns (injected, delivered), kg.
+    pub fn meter(&mut self, want: f64, x: f64, share: f64) -> (f64, f64) {
+        // (1 − x)·inj + share·film = want
+        let inj = ((want - share * self.film_kg) / (1.0 - x).max(1e-9)).max(0.0);
+        (inj, self.intake(inj, x, share))
+    }
+}
+
+/// The fuel a charge of `fuel` and `air` kg can burn: all of it when lean, what its air can
+/// oxidize when rich.
+pub fn burnable(fuel: f64, air: f64) -> f64 {
+    fuel.min(air / AFR_STOICH).max(0.0)
+}
+
+/// What a flame that released the share `released` of its burnable fuel leaves unburnt:
+/// (fuel, air), kg. A rich charge's excess fuel never burns.
+pub fn unburnt(fuel: f64, air: f64, released: f64) -> (f64, f64) {
+    let burnt = burnable(fuel, air) * released.clamp(0.0, 1.0);
+    (fuel - burnt, (air - burnt * AFR_STOICH).max(0.0))
+}
+
+/// Whether `fuel` and `air` kg mixed through `m` kg of gas at `t_k` and `p_pa` can carry a flame:
+/// a Metghalchi–Keck laminar speed above zero for its equivalence ratio, with the rest of the
+/// gas as diluent within the fit's measured 0–0.4 ([`crate::combustion::laminar_flame_speed`]).
+pub fn flammable(fuel: f64, air: f64, m: f64, t_k: f64, p_pa: f64) -> bool {
+    if fuel <= 0.0 || air <= 0.0 {
+        return false;
+    }
+    let diluent = 1.0 - (fuel + air) / m.max(fuel + air);
+    let phi = fuel * AFR_STOICH / air;
+    diluent <= 0.4 && crate::combustion::laminar_flame_speed(phi, t_k, p_pa, diluent) > 0.0
+}
+
+/// Unburnt fuel and air in one exhaust primary, kg.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ExhaustMixture {
+    pub fuel_kg: f64,
+    pub air_kg: f64,
+}
+
+impl ExhaustMixture {
+    /// Add `other` to this mixture.
+    pub fn add(&mut self, other: ExhaustMixture) {
+        self.fuel_kg += other.fuel_kg;
+        self.air_kg += other.air_kg;
+    }
+
+    /// Take the share `s` (0..=1) of this mixture out.
+    pub fn take_share(&mut self, s: f64) -> ExhaustMixture {
+        let s = s.clamp(0.0, 1.0);
+        let out = ExhaustMixture {
+            fuel_kg: self.fuel_kg * s,
+            air_kg: self.air_kg * s,
+        };
+        self.fuel_kg -= out.fuel_kg;
+        self.air_kg -= out.air_kg;
+        out
+    }
+
+    /// Burn for `dt` in gas at `t_k`: above [`AFTERBURN_IGNITION_K`] the burnable fuel goes with
+    /// time constant `tau_s`. Returns the heat released, J (fuel burnt × LHV).
+    pub fn burn(&mut self, t_k: f64, dt: f64, tau_s: f64) -> f64 {
+        if t_k <= AFTERBURN_IGNITION_K {
+            return 0.0;
+        }
+        let burnt = burnable(self.fuel_kg, self.air_kg) * evaporated_share(dt, tau_s);
+        self.fuel_kg -= burnt;
+        self.air_kg = (self.air_kg - burnt * AFR_STOICH).max(0.0);
+        burnt * LHV_GASOLINE
+    }
+
+    /// `dm` kg enter a primary holding `m` kg, carrying `fuel` and `air` kg of unburnt mixture.
+    /// The primary is well mixed (as [`crate::engine`]'s port temperature is): the gas the
+    /// inflow pushes on downstream, or a reversion (`dm` < 0) takes back, carries its share of
+    /// the mixture. Returns what left, (fuel, air) kg.
+    pub fn flow(&mut self, m: f64, dm: f64, fuel: f64, air: f64) -> (f64, f64) {
+        self.fuel_kg += fuel;
+        self.air_kg += air;
+        let leaves = if dm > 0.0 {
+            dm / (m + dm)
+        } else {
+            (-dm / m.max(1e-12)).min(1.0)
+        };
+        let out = (self.fuel_kg * leaves, self.air_kg * leaves);
+        self.fuel_kg -= out.0;
+        self.air_kg -= out.1;
+        out
+    }
+}
+
+/// The unburnt mixture in one exhaust primary, in two pools: `lit`, carried by blowdown gas above
+/// [`AFTERBURN_IGNITION_K`] and burning in its own slug while that flow lasts, and `stock`, mixed
+/// through the primary's gas, which burns only when the primary itself is that hot (Heywood
+/// §11.6.3) — or all at once when hot gas flows into it and it can carry a flame ([`flammable`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PortMixture {
+    pub lit: ExhaustMixture,
+    pub stock: ExhaustMixture,
+}
+
+/// What one step of a primary's mixture did ([`PortMixture::step`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PortStep {
+    /// Heat released, J.
+    pub heat_j: f64,
+    /// Mixture a reversion took back into the cylinder.
+    pub back: ExhaustMixture,
+    /// Mixture pushed on downstream, out of the primary.
+    pub exit: ExhaustMixture,
+}
+
+impl PortMixture {
+    /// One step of `dt` s: the valve flow `dm` kg (< 0 a reversion) carries `out` from the
+    /// cylinder at `t_in` K into a primary of `m` kg at `port_t` K (`p_pa`); burning goes with
+    /// time constant `tau_s`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn step(
+        &mut self,
+        out: ExhaustMixture,
+        (m, dm): (f64, f64),
+        (t_in, port_t, p_pa): (f64, f64, f64),
+        dt: f64,
+        tau_s: f64,
+    ) -> PortStep {
+        let mut r = PortStep::default();
+        let left = |(fuel_kg, air_kg): (f64, f64)| ExhaustMixture { fuel_kg, air_kg };
+        if dm > 0.0 {
+            if t_in > AFTERBURN_IGNITION_K {
+                self.lit.add(out);
+                r.exit = left(self.stock.flow(m, dm, 0.0, 0.0));
+                let st = self.stock;
+                if flammable(st.fuel_kg, st.air_kg, m, port_t, p_pa) {
+                    self.lit.add(std::mem::take(&mut self.stock));
+                }
+            } else {
+                r.exit = left(self.stock.flow(m, dm, out.fuel_kg, out.air_kg));
+            }
+            r.heat_j += self.lit.burn(t_in, dt, tau_s);
+        } else {
+            self.stock.add(std::mem::take(&mut self.lit));
+            if dm < 0.0 {
+                r.back = left(self.stock.flow(m, dm, 0.0, 0.0));
+            }
+        }
+        r.heat_j += self.stock.burn(port_t, dt, tau_s);
+        r
+    }
+
+    /// All the fuel held, kg.
+    pub fn fuel_kg(&self) -> f64 {
+        self.lit.fuel_kg + self.stock.fuel_kg
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    #[test]
+    fn a_film_evaporates_exponentially_over_a_period() {
+        // 1 − e^(−1) = 0.632121 (hand); none in no time, all of it in a long one
+        assert_relative_eq!(evaporated_share(0.2, 0.2), 0.632_120_6, max_relative = 1e-6);
+        assert_eq!(evaporated_share(0.0, 0.2), 0.0);
+        assert_relative_eq!(evaporated_share(100.0, 0.2), 1.0);
+    }
+
+    #[test]
+    fn the_deposit_follows_load_and_speed() {
+        use std::f64::consts::TAU;
+        // hand: 0.18 at 100 kPa/30 rev/s; × (0.125 + 0.875·0.2) = 0.3 at 20 kPa; × √3 at
+        // 10 rev/s; × √(30/40) = 0.866025 at 120 rev/s (held at 40)
+        assert_relative_eq!(
+            deposit_fraction(0.18, 100e3, 30.0 * TAU),
+            0.18,
+            max_relative = 1e-12
+        );
+        assert_relative_eq!(
+            deposit_fraction(0.18, 20e3, 30.0 * TAU),
+            0.054,
+            max_relative = 1e-12
+        );
+        assert_relative_eq!(
+            deposit_fraction(0.18, 100e3, 10.0 * TAU),
+            0.311_769,
+            max_relative = 1e-6
+        );
+        assert_relative_eq!(
+            deposit_fraction(0.18, 100e3, 120.0 * TAU),
+            0.155_885,
+            max_relative = 1e-5
+        );
+        assert_relative_eq!(
+            deposit_fraction(0.18, 100e3, 2.0 * TAU),
+            0.311_769,
+            max_relative = 1e-6
+        );
+    }
+
+    #[test]
+    fn a_film_in_equilibrium_delivers_what_is_injected() {
+        // steady state of x–τ: film = x·m/e, so the cylinder gets (1 − x)·m + x·m = m
+        let (x, e, m) = (0.25, 0.1, 4e-5);
+        let mut f = PortFilm { film_kg: x * m / e };
+        assert_relative_eq!(f.intake(m, x, e), m, max_relative = 1e-12);
+        assert_relative_eq!(f.film_kg, x * m / e, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn a_cut_leaves_a_geometric_tail() {
+        // after a cut the k-th intake gets e·(1 − e)^k of the film: from equilibrium,
+        // x·m·(1 − e)^k — with x = 0.25, e = 0.1, m = 4e-5: 1e-5, 9e-6, 8.1e-6 (hand)
+        let (x, e, m) = (0.25, 0.1, 4e-5);
+        let mut f = PortFilm { film_kg: x * m / e };
+        for want in [1e-5, 9e-6, 8.1e-6] {
+            assert_relative_eq!(f.intake(0.0, x, e), want, max_relative = 1e-12);
+        }
+    }
+
+    #[test]
+    fn the_ecu_fills_an_empty_film() {
+        // from a dry port the ECU sprays want/(1 − x) and gets want: 4e-5/0.75 = 5.3333e-5 kg
+        // (hand), of which 1.3333e-5 stays on the wall
+        let mut f = PortFilm::default();
+        let (inj, got) = f.meter(4e-5, 0.25, 0.1);
+        assert_relative_eq!(inj, 5.333_333e-5, max_relative = 1e-6);
+        assert_relative_eq!(got, 4e-5, max_relative = 1e-12);
+        assert_relative_eq!(f.film_kg, 1.333_333e-5, max_relative = 1e-6);
+    }
+
+    #[test]
+    fn a_lift_off_cannot_be_compensated() {
+        // the film from 4e-5 kg charges gives back x·m = 1e-5 kg; a charge of a quarter wants
+        // 1e-5 too, so the ECU sprays nothing and the cylinder still gets 1e-5. A tenth wants
+        // 4e-6 and gets 1e-5: 2.5× rich (hand)
+        let (x, e, m) = (0.25, 0.1, 4e-5);
+        let mut f = PortFilm { film_kg: x * m / e };
+        let (inj, got) = f.meter(m / 10.0, x, e);
+        assert_eq!(inj, 0.0);
+        assert_relative_eq!(got, 1e-5, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn a_rich_charge_burns_what_its_air_can_oxidize() {
+        // 14.7 kg of air burn 1 kg of fuel: 2e-5 kg fuel in 1.47e-4 kg air burns 1e-5 (hand)
+        assert_relative_eq!(burnable(2e-5, 1.47e-4), 1e-5, max_relative = 1e-12);
+        assert_relative_eq!(burnable(5e-6, 1.47e-4), 5e-6, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn a_partial_burn_leaves_its_share_unburnt() {
+        // lean (5e-6 fuel, 1.47e-4 air), 90 % released: 5e-7 fuel and 1.47e-4 − 4.5e-6·14.7
+        // = 8.085e-5 air left (hand)
+        let (f, a) = unburnt(5e-6, 1.47e-4, 0.9);
+        assert_relative_eq!(f, 5e-7, max_relative = 1e-9);
+        assert_relative_eq!(a, 8.085e-5, max_relative = 1e-9);
+        // rich (2e-5, 1.47e-4), all released: the extra 1e-5 fuel and no air left
+        let (f, a) = unburnt(2e-5, 1.47e-4, 1.0);
+        assert_relative_eq!(f, 1e-5, max_relative = 1e-9);
+        assert!(a.abs() < 1e-18, "{a}");
+        // a misfire sends the whole charge out
+        assert_eq!(unburnt(5e-6, 1.47e-4, 0.0), (5e-6, 1.47e-4));
+    }
+
+    #[test]
+    fn a_mixture_carries_a_flame_only_rich_enough_and_undiluted() {
+        // φ = 1e-5·14.7/1.47e-4 = 1 in 2e-4 kg: 21.5 % diluent, flammable; φ 0.3 is past the
+        // fit's lean zero (0.537); 84 % diluent is past the fit's range (hand)
+        let (t, p) = (700.0, 101_325.0);
+        assert!(flammable(1e-5, 1.47e-4, 2e-4, t, p));
+        assert!(!flammable(3e-6, 1.47e-4, 2e-4, t, p));
+        assert!(!flammable(1e-5, 1.47e-4, 1e-3, t, p));
+        assert!(!flammable(0.0, 0.0, 1e-3, t, p));
+    }
+
+    #[test]
+    fn cold_exhaust_does_not_burn_the_mixture() {
+        let mut m = ExhaustMixture {
+            fuel_kg: 1e-6,
+            air_kg: 1e-4,
+        };
+        assert_eq!(m.burn(800.0, 1e-3, 2e-3), 0.0);
+        assert_eq!(m.fuel_kg, 1e-6);
+    }
+
+    #[test]
+    fn hot_exhaust_burns_the_mixture_with_its_air() {
+        // dt = τ: 1 − e^(−1) of 1e-6 kg burns, 6.32121e-7 × 44e6 = 27.813 J (hand), and its
+        // air goes with it (×14.7)
+        let mut m = ExhaustMixture {
+            fuel_kg: 1e-6,
+            air_kg: 1e-4,
+        };
+        assert_relative_eq!(m.burn(1000.0, 2e-3, 2e-3), 27.813_3, max_relative = 1e-5);
+        assert_relative_eq!(m.fuel_kg, 3.678_794e-7, max_relative = 1e-6);
+        assert_relative_eq!(m.air_kg, 1e-4 - 6.321_206e-7 * 14.7, max_relative = 1e-6);
+        // fuel without air does not burn
+        let mut rich = ExhaustMixture {
+            fuel_kg: 1e-6,
+            air_kg: 0.0,
+        };
+        assert_eq!(rich.burn(1000.0, 2e-3, 2e-3), 0.0);
+    }
+
+    #[test]
+    fn flow_through_a_primary_displaces_its_mixture() {
+        // 1e-3 kg with 2e-7 fuel enters 4e-3 kg holding 1e-6: mixed, 1.2e-6 in 5e-3 kg, and the
+        // 1e-3 kg pushed on takes a fifth: 9.6e-7 fuel and 8e-5 air stay (hand)
+        let mut m = ExhaustMixture {
+            fuel_kg: 1e-6,
+            air_kg: 1e-4,
+        };
+        let (f, a) = m.flow(4e-3, 1e-3, 2e-7, 0.0);
+        assert_relative_eq!(m.fuel_kg, 9.6e-7, max_relative = 1e-12);
+        assert_relative_eq!(m.air_kg, 8e-5, max_relative = 1e-12);
+        assert_relative_eq!(f, 2.4e-7, max_relative = 1e-12);
+        assert_relative_eq!(a, 2e-5, max_relative = 1e-12);
+        // a reversion of 8e-4 kg takes a fifth of 4e-3 kg back: 1.92e-7 fuel (hand)
+        let (f, _) = m.flow(4e-3, -8e-4, 0.0, 0.0);
+        assert_relative_eq!(m.fuel_kg, 7.68e-7, max_relative = 1e-12);
+        assert_relative_eq!(f, 1.92e-7, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn a_mixture_adds_and_gives_up_shares() {
+        let mut m = ExhaustMixture {
+            fuel_kg: 1e-6,
+            air_kg: 1e-4,
+        };
+        m.add(ExhaustMixture {
+            fuel_kg: 1e-6,
+            air_kg: 1e-4,
+        });
+        assert_eq!(
+            m,
+            ExhaustMixture {
+                fuel_kg: 2e-6,
+                air_kg: 2e-4
+            }
+        );
+        let out = m.take_share(0.25);
+        assert_relative_eq!(out.fuel_kg, 5e-7, max_relative = 1e-12);
+        assert_relative_eq!(out.air_kg, 5e-5, max_relative = 1e-12);
+        assert_relative_eq!(m.fuel_kg, 1.5e-6, max_relative = 1e-12);
+        assert_relative_eq!(m.air_kg, 1.5e-4, max_relative = 1e-12);
+    }
+
+    const ATM: f64 = 101_325.0;
+    const LEAN: ExhaustMixture = ExhaustMixture {
+        fuel_kg: 1e-6,
+        air_kg: 1e-4,
+    };
+
+    #[test]
+    fn mixture_in_hot_blowdown_burns_in_its_slug() {
+        // carried by 1200 K gas into a 600 K primary, dt = τ: 1 − e^(−1) of 1e-6 kg burns,
+        // 27.8133 J (hand); the primary's own gas stays unburnt
+        let mut p = PortMixture::default();
+        let r = p.step(LEAN, (4e-3, 1e-3), (1200.0, 600.0, ATM), 2e-3, 2e-3);
+        assert_relative_eq!(r.heat_j, 27.813_3, max_relative = 1e-5);
+        assert_relative_eq!(p.lit.fuel_kg, 3.678_794e-7, max_relative = 1e-6);
+        assert_eq!(p.stock, ExhaustMixture::default());
+    }
+
+    #[test]
+    fn mixture_in_cold_gas_mixes_into_the_primary() {
+        // 700 K gas: no slug; into 4e-3 kg, 1e-3 kg pushes a fifth of the mix on (hand),
+        // and the 600 K primary does not burn it
+        let mut p = PortMixture::default();
+        let r = p.step(LEAN, (4e-3, 1e-3), (700.0, 600.0, ATM), 2e-3, 2e-3);
+        assert_eq!(r.heat_j, 0.0);
+        assert_relative_eq!(p.stock.fuel_kg, 8e-7, max_relative = 1e-12);
+        assert_relative_eq!(r.exit.fuel_kg, 2e-7, max_relative = 1e-12);
+        assert_relative_eq!(r.exit.air_kg, 2e-5, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn a_hot_primary_burns_its_stock() {
+        // no flow, 1000 K primary, dt = τ: 27.8133 J (hand)
+        let mut p = PortMixture {
+            stock: LEAN,
+            ..Default::default()
+        };
+        let r = p.step(
+            ExhaustMixture::default(),
+            (4e-3, 0.0),
+            (1000.0, 1000.0, ATM),
+            2e-3,
+            2e-3,
+        );
+        assert_relative_eq!(r.heat_j, 27.813_3, max_relative = 1e-5);
+    }
+
+    #[test]
+    fn hot_gas_lights_a_flammable_stock_at_once() {
+        // a stoichiometric stock (1e-5 + 1.47e-4 kg in 2e-4 kg, flammable) joins the slug that
+        // 1200 K gas brings, and burns with it: (1e-6 + 1e-5)·(1 − e^(−1))·44e6 = 305.946 J (hand)
+        let rich = ExhaustMixture {
+            fuel_kg: 1e-5,
+            air_kg: 1.47e-4,
+        };
+        let mut p = PortMixture {
+            stock: rich,
+            ..Default::default()
+        };
+        let r = p.step(LEAN, (2e-4, 1e-12), (1200.0, 600.0, ATM), 2e-3, 2e-3);
+        assert_relative_eq!(r.heat_j, 305.946, max_relative = 1e-4);
+        // a lean stock (φ 0.15) cannot carry a flame: it stays
+        let mut p = PortMixture {
+            stock: LEAN,
+            ..Default::default()
+        };
+        p.step(LEAN, (2e-4, 1e-12), (1200.0, 600.0, ATM), 2e-3, 2e-3);
+        assert_relative_eq!(p.stock.fuel_kg, 1e-6, max_relative = 1e-6);
+    }
+
+    #[test]
+    fn when_the_blowdown_stops_its_slug_mixes_in_and_a_reversion_takes_some_back() {
+        let mut p = PortMixture {
+            lit: LEAN,
+            ..Default::default()
+        };
+        let r = p.step(
+            ExhaustMixture::default(),
+            (4e-3, 0.0),
+            (600.0, 600.0, ATM),
+            2e-3,
+            2e-3,
+        );
+        assert_eq!(
+            (r.heat_j, p.lit, p.stock),
+            (0.0, ExhaustMixture::default(), LEAN)
+        );
+        // a reversion of 8e-4 kg takes a fifth of the 4e-3 kg primary back (hand)
+        let r = p.step(
+            ExhaustMixture::default(),
+            (4e-3, -8e-4),
+            (600.0, 600.0, ATM),
+            2e-3,
+            2e-3,
+        );
+        assert_relative_eq!(r.back.fuel_kg, 2e-7, max_relative = 1e-12);
+        assert_relative_eq!(p.stock.fuel_kg, 8e-7, max_relative = 1e-12);
+        assert_eq!(r.exit, ExhaustMixture::default());
+    }
+}

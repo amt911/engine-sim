@@ -452,3 +452,17 @@ white noise, not pascals (~0.05 Pa ≈ 67 dB), and it re-tuned the filter to 1 k
 the correlation a 20 m/s idle jet is ≈ 18 dB SPL: inaudible.
 **Fix.** No outflow → 0 Pa; the filter runs down on silence. Ablate one source at a time at idle
 and read the contrast column: a source that is "everywhere" at noise-level contrast is a suspect.
+
+## A cut cycle's residual is air, not burnt gas (2026-10-25)
+With fuel cut-offs that leave the cylinder pumping air, the gas left at EVC is unburnt air, and a
+residual after a cut is ~3× a fired one's (no blowdown). `dilution_of` counted all of it as burnt
+diluent (Metghalchi–Keck 1 − 2.1 f), so the first flames after every limiter cut took 200–330°,
+finished after EVO and dumped fuel into the exhaust: a steady false afterburn at the limiter.
+**Fix.** Dilution = residual less its unburnt fuel and air (`residual_unburnt_kg`). Probe the
+charge at IVC (trapped, residual, fresh air, fuel, carried slip) before trusting any new afterburn.
+
+## Separate cargo workspaces sharing one target dir overwrite each other's binary (2026-10-25)
+Two worktrees built with the same `CARGO_TARGET_DIR` uplift to the same `release/engine-sim`;
+a build that cargo finds fresh does not re-uplift, so both "builds" can hand you one binary.
+**Fix.** A/B binaries get their own target dir (`target/tgt-<name>`); check `md5sum` before
+rendering comparisons.

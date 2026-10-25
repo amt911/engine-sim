@@ -8,6 +8,7 @@ pub mod drivetrain;
 pub mod engine;
 pub mod exhaust;
 pub mod exhaust_fv;
+pub mod fuel;
 pub mod fv;
 pub mod gas;
 pub mod geometry;
