@@ -1523,9 +1523,7 @@ impl Engine {
             // Combustion events.
             // a valve closing strikes its seat (both kinds: one valve each, conservative)
             let strike = SEAT_FORCE_N * (rpm_now / SEAT_FORCE_RPM);
-            if self.def.sound.mechanical > 0.0
-                && (crossed(prev, cur, evc) || crossed(prev, cur, ivc))
-            {
+            if crossed(prev, cur, evc) || crossed(prev, cur, ivc) {
                 self.seat_strikes.push((0.0, strike));
             }
             if crossed(prev, cur, evc) {
@@ -1784,7 +1782,8 @@ impl Engine {
             *t += dt;
         }
         self.seat_strikes.retain(|(t, _)| *t <= SEAT_PULSE_S);
-        let block = if snd.block > 0.0 || snd.mechanical > 0.0 {
+        // (always run: a few multiplies a step, and an engine without either is silent here)
+        let block = {
             if self.structure.as_ref().is_none_or(|s| s.0 != dt) {
                 self.structure = Some((dt, StructureResponse::new(dt)));
             }
@@ -1794,8 +1793,6 @@ impl Engine {
                 Some((_, s)) => s.process(snd.block * p + snd.mechanical * seats),
                 None => 0.0,
             }
-        } else {
-            0.0
         };
         // what does not wait for the tails: the intake mouth and the block
         let rest = match &mut self.listener {
@@ -2220,6 +2217,81 @@ mod tests {
         let mut flat = EngineDef::inline4();
         flat.sound.combustion_jitter = 0.0;
         assert!(cov(&cycle_peaks(flat, 2500.0, 1.0, 1.0)) < 1e-4);
+    }
+
+    /// The engine's sound with every source off but the valve seats at `mechanical` and the
+    /// block at `block`, over 0.2 s at 3000 rpm, on `def`.
+    fn seats_only(mut d: EngineDef, mechanical: f64, block: f64) -> Vec<f64> {
+        d.sound = crate::sound::SoundDef {
+            flow_noise: 0.0,
+            intake: 0.0,
+            combustion_jitter: 0.0,
+            valve_jet: 0.0,
+            mechanical,
+            block,
+            ..crate::sound::SoundDef::default()
+        };
+        let mut e = Engine::new(d, 3000.0, 1);
+        let c = Controls {
+            throttle: 0.3,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.2, &c)
+    }
+
+    #[test]
+    fn the_valve_seats_tick_linearly_through_the_head() {
+        // What the seats add (with them on, minus off) is linear in `sound.mechanical`, and a
+        // force acting as F/A_bore on the head: the same strikes on a bore of twice the area
+        // add half. The first strike pushes the structure positive (a compressive force).
+        let d = EngineDef::single();
+        let off = seats_only(d.clone(), 0.0, 0.0);
+        let one: Vec<f64> = seats_only(d.clone(), 1.0, 0.0)
+            .iter()
+            .zip(&off)
+            .map(|(a, b)| a - b)
+            .collect();
+        let two: Vec<f64> = seats_only(d.clone(), 2.0, 0.0)
+            .iter()
+            .zip(&off)
+            .map(|(a, b)| a - b)
+            .collect();
+        let peak = one.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+        assert!(peak > 0.0, "the seats add nothing");
+        for (a, b) in one.iter().zip(&two) {
+            assert!((b - 2.0 * a).abs() <= 1e-9 * peak, "not linear: {a} {b}");
+        }
+        let first = one.iter().find(|x| x.abs() > 1e-6 * peak).copied().unwrap();
+        assert!(first > 0.0, "first tick {first}");
+        // twice the piston area: the bore × √2 (the strikes come at the same crank angles)
+        let mut wide = d.clone();
+        wide.geometry.bore_m *= 2f64.sqrt();
+        let wide_off = seats_only(wide.clone(), 0.0, 0.0);
+        let wide_one: Vec<f64> = seats_only(wide, 1.0, 0.0)
+            .iter()
+            .zip(&wide_off)
+            .map(|(a, b)| a - b)
+            .collect();
+        let wide_peak = wide_one.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+        assert!(
+            (wide_peak / peak - 0.5).abs() < 1e-6,
+            "{} vs {}",
+            wide_peak,
+            peak
+        );
+    }
+
+    #[test]
+    fn the_block_sounds_without_the_seats() {
+        let d = EngineDef::single();
+        let quiet = seats_only(d.clone(), 0.0, 0.0);
+        let block = seats_only(d, 0.0, 1.0);
+        let diff = block
+            .iter()
+            .zip(&quiet)
+            .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()));
+        assert!(diff > 0.0, "the block adds nothing on its own");
     }
 
     #[test]
