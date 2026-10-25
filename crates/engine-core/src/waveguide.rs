@@ -86,6 +86,8 @@ pub struct WarpLine {
     /// Step of the next push (and of the next read: reads come before pushes).
     now: f64,
     pushed: u64,
+    /// Sum of the values in `samples` (for [`WarpLine::mean`]).
+    sum: f64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -134,6 +136,7 @@ impl WarpLine {
             eps,
             now: 0.0,
             pushed: 1,
+            sum: 0.0,
         }
     }
 
@@ -168,12 +171,29 @@ impl WarpLine {
         Some(self.at(self.now + 1.0))
     }
 
+    /// Push a sample of pressure `x`: it travels at c₀(1 + ε·x).
     pub fn push(&mut self, x: f64) {
-        let speed = (1.0 + self.eps * x).clamp(WARP_SLOWEST, WARP_FASTEST);
+        self.push_at(x, 1.0 + self.eps * x);
+    }
+
+    /// The mean of the values still travelling (zero for an empty line).
+    pub fn mean(&self) -> f64 {
+        if self.samples.is_empty() {
+            0.0
+        } else {
+            self.sum / self.samples.len() as f64
+        }
+    }
+
+    /// Push a sample `x` that travels at `speed` times the small-signal speed (a Riemann
+    /// variable's characteristic slope, [`crate::riemann::slopes`]).
+    pub fn push_at(&mut self, x: f64, speed: f64) {
+        let speed = speed.clamp(WARP_SLOWEST, WARP_FASTEST);
         let t0 = self.now + (self.delay / speed).max(1.0);
         let id = self.pushed;
         self.pushed += 1;
         let new = Sample { x, t: t0, t0, id };
+        self.sum += x;
         let Some(&last) = self.samples.back() else {
             self.samples.push_back(new);
             self.now += 1.0;
@@ -190,6 +210,7 @@ impl WarpLine {
                     // the old head is now inside the fold (unless it was also the foot)
                     if s.foot != last.id {
                         self.samples.pop_back();
+                        self.sum -= last.x;
                     }
                     s
                 }
@@ -207,11 +228,20 @@ impl WarpLine {
         self.now += 1.0;
         // drop what has fully arrived: keep one at or before the next read for the interpolation
         while self.samples.len() > 2 && self.samples[1].t <= self.now {
-            self.samples.pop_front();
+            if let Some(gone) = self.samples.pop_front() {
+                self.sum -= gone.x;
+            }
         }
         let front = self.samples.front().map_or(0, |s| s.id);
         while self.shocks.front().is_some_and(|s| s.foot < front) {
             self.shocks.pop_front();
+        }
+    }
+
+    /// Remove the sample at `i`, keeping the running sum.
+    fn drop_at(&mut self, i: usize) {
+        if let Some(gone) = self.samples.remove(i) {
+            self.sum -= gone.x;
         }
     }
 
@@ -243,15 +273,15 @@ impl WarpLine {
                     shock.moment += older.moment + 0.5 * (ahead.t0 + foot.t0) * (foot.x - ahead.x);
                     shock.foot = older.foot;
                     // the older head and this foot are inside the fold now
-                    self.samples.remove(n - 2);
+                    self.drop_at(n - 2);
                     if older.foot != ahead.id {
-                        self.samples.remove(n - 3);
+                        self.drop_at(n - 3);
                     }
                 }
                 _ => {
                     shock.moment += 0.5 * (ahead.t0 + foot.t0) * (foot.x - ahead.x);
                     shock.foot = ahead.id;
-                    self.samples.remove(n - 2);
+                    self.drop_at(n - 2);
                 }
             }
         }
