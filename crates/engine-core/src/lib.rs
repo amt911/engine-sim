@@ -17,6 +17,7 @@ pub mod jet_noise;
 pub mod layout;
 pub mod lining;
 pub mod listener;
+pub mod narrow_tube;
 pub mod sound;
 pub mod structure;
 pub mod units;
