@@ -500,3 +500,23 @@ into a 0.3 bar cylinder is as strong as the WOT blowdown. Exhaust noise is gener
 hand. Suspects, untested: the open end without the jet's vortex-shedding loss at high mean
 outflow (|R| = (1 − M)/(1 + M), which the waveguide has), and no shell or muffler damping at low
 mean flow.
+
+## The Riemann (MOC) exhaust is not periodic even at steady full power (2026-10-26)
+
+**Measured** on this branch after merging main: the LFA at 7650 rpm, held, with every random
+source off, at 192 kHz physics.
+- **WOT.** The port's mean gauge pressure per 0.1 s window jumps between −7 and +36 kPa, and the
+  output rms between 15 and 88 Pa. A deterministic engine should repeat.
+- **Overrun.** The port sits at +45 kPa mean gauge, where physically it should be near 0. In the
+  9000 → 7500 rpm lift-off scene it radiates 17 Pa against the waveguide's 3.4, with a +60 dB
+  rumble below 300 Hz.
+- **At WOT** its waveform does show the shock fronts and harmonics to 20 kHz that neither the
+  waveguide nor FV at 4 cm give.
+
+**Cause** (known from the method). The equal-area shock rule conserves ∫λ dt, not mass; the
+homentropic, fixed-a_ref pipes cannot hold the overrun's cold gas either. Mass drifts in and the
+mean pressure follows. Engine-wave texts note that MOC needs mass corrections, and that is why
+finite volumes replaced it.
+
+**Status.** Parked. A real-time non-linear exhaust needs a mass-conservative scheme. FV at 4 cm
+conserves mass but smears shocks and costs 2–3× the waveguide (FACTS).
