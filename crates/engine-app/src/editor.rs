@@ -744,9 +744,14 @@ fn phaser(ui: &mut egui::Ui, name: &str, phaser: &mut Option<engine_core::valve:
                 .text(format!("{name} phaser rate (°/s)")),
         );
         let range = p.range_deg;
+        // the map is interpolated between neighbours in speed order: each point stays between
+        // its neighbours, so a dragged point never swaps rows under the pointer
+        let rpms: Vec<f64> = p.map.iter().map(|q| q.rpm).collect();
         for (k, pt) in p.map.iter_mut().enumerate() {
+            let lo = if k == 0 { 0.0 } else { rpms[k - 1] };
+            let hi = rpms.get(k + 1).copied().unwrap_or(12000.0);
             ui.add(
-                slider(&mut pt.rpm, 0.0..=12000.0)
+                slider(&mut pt.rpm, lo..=hi)
                     .step_by(100.0)
                     .text(format!("{name} map point {} rpm", k + 1)),
             );
@@ -781,8 +786,6 @@ fn phaser(ui: &mut egui::Ui, name: &str, phaser: &mut Option<engine_core::valve:
                 p.map.pop();
             }
         });
-        // the map's speeds stay in order (it is interpolated between neighbours)
-        p.map.sort_by(|a, b| a.rpm.total_cmp(&b.rpm));
     }
 }
 
@@ -826,6 +829,49 @@ mod tests {
         // and off again
         press(&mut h, "VTEC");
         assert!(h.state().def.vtec.is_none());
+    }
+
+    #[test]
+    fn a_map_point_cannot_be_dragged_past_its_neighbour() {
+        // the map is interpolated between neighbours in speed order; a point dragged past the
+        // next one would swap rows under the pointer, so each point stops at its neighbours
+        let mut d = EngineDef::single();
+        let at = |rpm| engine_core::valve::PhaserPoint {
+            rpm,
+            full_load_deg: 10.0,
+            no_load_deg: 20.0,
+        };
+        d.intake_phaser = Some(engine_core::valve::Phaser {
+            range_deg: 50.0,
+            rate_deg_s: 30.0,
+            map: vec![at(2000.0), at(2000.0)],
+        });
+        let mut h = harness(d);
+        open_valves(&mut h);
+        nudge(&mut h, "Intake map point 1 rpm");
+        let rpms: Vec<f64> = h
+            .state()
+            .def
+            .intake_phaser
+            .as_ref()
+            .unwrap()
+            .map
+            .iter()
+            .map(|p| p.rpm)
+            .collect();
+        assert_eq!(rpms, [2000.0, 2000.0]);
+        nudge(&mut h, "Intake map point 2 rpm");
+        let rpms: Vec<f64> = h
+            .state()
+            .def
+            .intake_phaser
+            .as_ref()
+            .unwrap()
+            .map
+            .iter()
+            .map(|p| p.rpm)
+            .collect();
+        assert_eq!(rpms, [2000.0, 2100.0]);
     }
 
     #[test]
