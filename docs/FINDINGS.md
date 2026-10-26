@@ -466,3 +466,10 @@ Two worktrees built with the same `CARGO_TARGET_DIR` uplift to the same `release
 a build that cargo finds fresh does not re-uplift, so both "builds" can hand you one binary.
 **Fix.** A/B binaries get their own target dir (`target/tgt-<name>`); check `md5sum` before
 rendering comparisons.
+
+## A worktree's `../../scripts/...` is the main checkout's script (2026-10-26)
+
+Worktrees live under `target/wt-*`, so from one of them `../../scripts/mutants.sh` resolves to the
+**main checkout's** `scripts/`. `mutants.sh` starts with `cd "$(dirname "$0")/.."`, so it then
+mutates the main checkout's tree, not the worktree you meant. `heavy.sh` is only a wrapper and
+does no harm. **Fix.** From a worktree, call its own `scripts/…`.
