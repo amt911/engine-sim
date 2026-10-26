@@ -1,17 +1,18 @@
-//! Exhaust system as non-linear 1D finite-volume pipes ([`crate::fv`]): primaries → 0D
-//! junction per collector → collector pipe → muffler expansion chamber (a wide 1D pipe between
-//! two small 0D junctions: reactive muffler with frequency-dependent loss, Munjal) → tail pipe →
-//! atmosphere. Pulses steepen with amplitude, which the linear waveguides cannot do.
+//! Exhaust system with non-linear 1D finite-volume pipes ([`crate::fv`]) where the waves are
+//! strong: primaries → 0D junction per collector → collector pipe. From each collector's far end
+//! the designed path ([`ExhaustDef::path`]: catalysts, silencers, resonators, tail) is the
+//! waveguide's linear duct with its open end, where the waves are an order weaker. Pulses steepen
+//! with amplitude, which the linear waveguides cannot do. Spec:
+//! `docs/superpowers/specs/2026-10-26-fv-designed-path.md`.
 
-use crate::exhaust::{C_TAIL, CHAMBER_LENGTH_M, ExhaustDef, chamber_passage};
+use crate::exhaust::{C_TAIL, ExhaustDef};
 use crate::fv::{Boundary, Pipe1d, Prim, flux_boundary};
 use crate::gas::{GasVolume, ISENTROPIC_P_POW, ISENTROPIC_RHO_POW, R_AIR};
-use crate::lining::Lining;
 use crate::units::ATM_PA;
+use crate::waveguide::{Duct, OpenEnd};
 
 /// Target cell size, m (≈ 7.5 cells per wavelength at 2 kHz in hot gas; cost ∝ 1/dx²).
 pub const CELL_M: f64 = 0.04;
-const AMBIENT_RHO: f64 = 1.18;
 const INIT_T_K: f64 = 600.0;
 /// Upper bound on CFL sub-cycles per FV step (beyond it the state is beyond saving anyway).
 const MAX_SUBCYCLES: usize = 16;
@@ -20,10 +21,17 @@ const MAX_SUBCYCLES: usize = 16;
 struct Branch {
     members: Vec<usize>,
     junction: GasVolume,
-    /// Collector, muffler can and tail pipe as one variable-area quasi-1D pipe.
+    /// The collector pipe (FV).
     out: Pipe1d,
-    /// The can's packing, along its cells of `out`.
-    lining: Option<Lining>,
+    /// The designed path after the collector, linear ([`crate::exhaust::after_collector`]), and
+    /// its open end.
+    duct: Duct,
+    end: OpenEnd,
+    /// The wave the collector sends into the duct at the last two pipe steps: the physics steps
+    /// between get the straight line from the older to the newer, one pipe step late.
+    sent: [f64; 2],
+    /// The wave arriving from the duct, read at each pipe step for the collector's end.
+    arriving: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -40,16 +48,44 @@ pub struct ExhaustFv {
     /// Valve mass and energy accumulated since the last FV step, per cylinder (kg, J).
     acc_mass: Vec<f64>,
     acc_energy: Vec<f64>,
-    /// The radiated source at the last two pipe steps (summed over the outlets, and per
-    /// outlet): between pipe steps the physics steps get the straight line from the older to
-    /// the newer, one pipe step late, not a staircase whose edges the listener's radiation
-    /// filter (∝ s) would turn into spikes at the pipe rate.
-    radiated: [f64; 2],
-    tails_pair: Vec<[f64; 2]>,
-    /// Radiated source at each tail outlet this physics step (`tails_pair` interpolated).
+    /// Radiated source at each tail outlet this physics step.
     tails: Vec<f64>,
-    /// Mass that left through the tail outlets in the last physics step, kg.
+    /// Mass that left the FV pipes for the designed path in the last physics step, kg.
     vented: f64,
+}
+
+/// The node at a collector's far end between the FV collector (its last cell `inner`, area
+/// `a_fv`) and the linear duct of the designed path (area `a_duct`, gas of impedance `rho_c_duct`
+/// and density `rho_duct` at p_atm), with the wave `p_minus` (Pa) arriving from the duct. The
+/// pressure is common and the volume flow passes: along the characteristic reaching the end from
+/// inside, p + Z·v = p_i + Z·v_i (Z = ρc of the cell, as `fv::open_end`); on the duct,
+/// p = p_atm + 2p⁻ + ρc_d·(A_fv/A_d)·v. Returns the ghost state (the interior gas expanded to p on
+/// outflow, the duct's gas on inflow) and the wave p⁺ (Pa) sent into the duct.
+pub(crate) fn duct_node(
+    inner: Prim,
+    a_fv: f64,
+    p_minus: f64,
+    a_duct: f64,
+    (rho_c_duct, rho_duct): (f64, f64),
+) -> (Prim, f64) {
+    let z = inner.rho * inner.sound_speed();
+    let z_duct = rho_c_duct * a_fv / a_duct;
+    let big_p = inner.p + z * inner.u;
+    let u = (big_p - ATM_PA - 2.0 * p_minus) / (z + z_duct);
+    let p = (ATM_PA + 2.0 * p_minus + z_duct * u).max(0.05 * ATM_PA);
+    let k = 1.0 / crate::gas::GAMMA;
+    let rho = if u >= 0.0 {
+        inner.rho * (p / inner.p).powf(k)
+    } else {
+        rho_duct * (p / ATM_PA).powf(k)
+    };
+    (Prim { rho, u, p }, p - ATM_PA - p_minus)
+}
+
+/// The wave a collector sends a share `f` of the way from its last pipe step to the next: on
+/// the line between the two, `[previous, last]`, so the duct gets no staircase.
+fn between(sent: [f64; 2], f: f64) -> f64 {
+    sent[0] + (sent[1] - sent[0]) * f
 }
 
 /// Root of `f`, rising through 0 on [`lo`, `hi`] (f(lo) < 0 < f(hi)), by the Illinois variant
@@ -234,7 +270,14 @@ fn pipe(length: f64, diameter: f64, init: Prim) -> Pipe1d {
     let mut p = Pipe1d::segmented(&[(length, area(diameter))], length / n, init);
     p.floors = (1e-3, 500.0);
     p.friction = PIPE_FRICTION;
+    p.acoustic_loss = acoustic_loss();
     p
+}
+
+/// The waves' wall loss in the FV pipes, Np/m: the waveguide's [`crate::exhaust::LOSS_PER_M`]
+/// (Kirchhoff's boundary layers at the firing orders), so the two models wear a wave alike.
+fn acoustic_loss() -> f64 {
+    -(1.0 - crate::exhaust::LOSS_PER_M).ln()
 }
 
 impl ExhaustFv {
@@ -262,37 +305,24 @@ impl ExhaustFv {
             .groups(cylinders)
             .into_iter()
             .map(|members| {
-                let a_tail = area(def.tail_diameter_m);
-                let (a_can, perimeter, packing) =
-                    chamber_passage(def.muffler_volume_m3, def.muffler_packing, a_tail);
-                let mut out = Pipe1d::segmented(
-                    &[
-                        (def.collector_length_m, a_collector),
-                        (CHAMBER_LENGTH_M, a_can),
-                        (def.tail_length_m, a_tail),
-                    ],
-                    CELL_M,
-                    init,
-                );
-                // the can's cells, as `segmented` counts them
-                let first = ((def.collector_length_m / CELL_M).round() as usize).max(1);
-                let can = first..first + ((CHAMBER_LENGTH_M / CELL_M).round() as usize).max(1);
-                let lining = (packing.thickness_m > 0.0).then(|| {
-                    let packed = def.muffler_volume_m3.max(1e-5) / CHAMBER_LENGTH_M - a_can;
-                    Lining::new(&out, can, perimeter, packed, packing, (ATM_PA, INIT_T_K))
-                });
+                let mut out =
+                    Pipe1d::segmented(&[(def.collector_length_m, a_collector)], CELL_M, init);
                 out.floors = (1e-3, 500.0);
                 out.friction = PIPE_FRICTION;
-                out.right = Boundary::Open {
-                    p: ATM_PA,
-                    rho: AMBIENT_RHO,
-                };
+                out.acoustic_loss = acoustic_loss();
                 Branch {
                     members,
                     // junction: the merge region, about three collector diameters long
                     junction: vol(a_collector * 3.0 * def.collector_diameter_m.max(CELL_M)),
                     out,
-                    lining,
+                    duct: crate::exhaust::after_collector(
+                        def,
+                        dt,
+                        crate::exhaust::LINING_SEGMENT_M,
+                    ),
+                    end: OpenEnd::new(def.outlet_diameter(), dt),
+                    sent: [0.0; 2],
+                    arriving: 0.0,
                 }
             })
             .collect();
@@ -311,8 +341,6 @@ impl ExhaustFv {
             count: 0,
             acc_mass: vec![0.0; cylinders],
             acc_energy: vec![0.0; cylinders],
-            radiated: [0.0; 2],
-            tails_pair: vec![[0.0; 2]; def.groups(cylinders).len()],
             tails: vec![0.0; def.groups(cylinders).len()],
             vented: 0.0,
         }
@@ -358,15 +386,37 @@ impl ExhaustFv {
         self.acc_energy[i] += dm * h;
     }
 
-    /// Advance one physics step; every `substeps` steps the pipes advance by `dt_fv`.
-    /// Returns the radiated source (c·ρu at the tail outlets, summed), held between FV steps.
+    /// Advance one physics step: every `substeps` steps the FV pipes advance by `dt_fv`; the
+    /// designed paths every step. Returns the radiated source summed over the tails.
     pub fn step(&mut self) -> f64 {
         self.count += 1;
         self.vented = 0.0;
-        if self.count < self.substeps {
-            return self.interpolated();
+        if self.count >= self.substeps {
+            self.count = 0;
+            self.pipe_step();
         }
-        self.count = 0;
+        // the designed paths: what each collector sends, on its line between pipe steps
+        let f = self.count as f64 / self.substeps as f64;
+        let mut radiated = 0.0;
+        for (b, tail) in self.branches.iter_mut().zip(self.tails.iter_mut()) {
+            let sent = between(b.sent, f);
+            let (reflected, out) = b.end.process(b.duct.at_far());
+            b.duct.send(sent, reflected);
+            *tail = out;
+            radiated += out;
+        }
+        radiated
+    }
+
+    /// Mean outflow Mach number at each tail's open end ([`OpenEnd::set_outflow_mach`]).
+    pub fn set_outflow_mach(&mut self, mach: &[f64]) {
+        for (b, m) in self.branches.iter_mut().zip(mach) {
+            b.end.set_outflow_mach(*m);
+        }
+    }
+
+    /// One FV step of `dt_fv`, with the valves' accumulated flows.
+    fn pipe_step(&mut self) {
         let dt = self.dt_fv;
         // Valves: the accumulated flow becomes the prescribed flux into each primary's first face.
         for (i, pipe) in self.primaries.iter_mut().enumerate() {
@@ -395,35 +445,22 @@ impl ExhaustFv {
             .fold(f64::INFINITY, f64::min);
         let n = ((dt / limit).ceil() as usize).clamp(1, MAX_SUBCYCLES);
         let h = dt / n as f64;
-        let mut radiated = 0.0;
-        self.tails.iter_mut().for_each(|t| *t = 0.0);
+        for b in &mut self.branches {
+            b.arriving = b.duct.at_near();
+            b.sent[0] = b.sent[1];
+        }
         for _ in 0..n {
-            radiated += self.substep(h, 1.0 / n as f64) / n as f64;
+            self.substep(h);
         }
-        self.radiated = [self.radiated[1], radiated];
-        for (pair, &t) in self.tails_pair.iter_mut().zip(&self.tails) {
-            *pair = [pair[1], t];
-        }
-        self.interpolated()
     }
 
-    /// This physics step's radiated source on the line between the last two pipe steps' values
-    /// (`count` physics steps past the older); writes each tail's into `tails`.
-    fn interpolated(&mut self) -> f64 {
-        let f = self.count as f64 / self.substeps as f64;
-        for (t, pair) in self.tails.iter_mut().zip(&self.tails_pair) {
-            *t = pair[0] + (pair[1] - pair[0]) * f;
-        }
-        self.radiated[0] + (self.radiated[1] - self.radiated[0]) * f
-    }
-
-    /// Radiated source at each tail outlet (held between FV steps); they sum to `step`'s.
+    /// Radiated source at each tail outlet this physics step; they sum to `step`'s.
     pub fn last_tails(&self) -> &[f64] {
         &self.tails
     }
 
     /// One FV sub-step of length `h` with the valve fluxes already set.
-    fn substep(&mut self, h: f64, weight: f64) -> f64 {
+    fn substep(&mut self, h: f64) {
         let state = |v: &GasVolume| Prim {
             rho: v.mass_kg / v.volume_m3,
             u: 0.0,
@@ -438,15 +475,22 @@ impl ExhaustFv {
             }
             let first = b.out.prim(0);
             b.out.left = Boundary::State(junction_ghost(first, j.p, j.rho, -1.0));
+            // the collector's far end against the designed path
+            let last = b.out.prim(b.out.cells.len() - 1);
+            let (_, a_fv) = b.out.end_areas();
+            let duct_gas = (
+                crate::gas::GAMMA * ATM_PA / C_TAIL,
+                crate::exhaust::tail_reference_density(),
+            );
+            let (ghost, sent) = duct_node(last, a_fv, b.arriving, b.duct.end_areas().0, duct_gas);
+            b.out.right = Boundary::State(ghost);
+            b.sent[1] = sent;
         }
         for p in &mut self.primaries {
             p.step(h);
         }
         for b in self.branches.iter_mut() {
             b.out.step(h);
-            if let Some(l) = b.lining.as_mut() {
-                l.step(&mut b.out, h);
-            }
             // the junction takes what the faces carried (total enthalpy flux → internal energy)
             for &m in &b.members {
                 let f = self.primaries[m].end_flux.1;
@@ -459,20 +503,10 @@ impl ExhaustFv {
             b.junction.energy_j -= fc.e * a_in * h;
             guard(&mut b.junction);
         }
-        let mut radiated = 0.0;
-        for (bi, b) in self.branches.iter_mut().enumerate() {
+        for b in &self.branches {
             let (_, a_out) = b.out.end_areas();
-            let o = b.out.end_flux.1;
-            self.vented += o.rho * a_out * h;
-            // The outlet radiates its volume velocity (a monopole: p = ρ₀/4πr · dQ/dt; Kinsler et
-            // al., Fundamentals of Acoustics, §7.4), not its mass flux: u = (ρu)/ρ at the exit,
-            // scaled as ρ_ref·c·u about gas at C_TAIL, the waveguide's tail reference.
-            let rho_exit = b.out.prim(b.out.cells.len() - 1).rho.max(1e-3);
-            let source = C_TAIL * crate::exhaust::tail_reference_density() * o.rho / rho_exit;
-            radiated += source;
-            self.tails[bi] += weight * source;
+            self.vented += b.out.end_flux.1.rho * a_out * h;
         }
-        radiated
     }
 
     /// Mass vented to the atmosphere during the last physics step, kg.
@@ -493,7 +527,6 @@ impl ExhaustFv {
         let mut m: f64 = self.primaries.iter().map(pipe_mass).sum();
         for b in &self.branches {
             m += b.junction.mass_kg + pipe_mass(&b.out);
-            m += b.lining.as_ref().map_or(0.0, Lining::mass_kg);
         }
         m
     }
@@ -503,7 +536,7 @@ impl ExhaustFv {
 mod tests {
     use super::*;
     use crate::exhaust::ExhaustModel;
-    use crate::fv::Cons;
+    use crate::exhaust::chamber_passage;
     use crate::gas::orifice_mass_flow;
     use crate::lining::Packing;
     use approx::assert_relative_eq;
@@ -514,6 +547,116 @@ mod tests {
         ExhaustDef {
             model: ExhaustModel::Fv,
             ..ExhaustDef::default()
+        }
+    }
+
+    #[test]
+    fn the_collector_end_passes_pressure_and_volume_flow_to_the_duct() {
+        // Hot gas at rest at p_atm (ρ 0.4: c = 595.5 m/s, Z = 238.2) meets a 1000 Pa wave from a
+        // duct of ρc 300 and half its area: v = −2000/(238.2 + 600) = −2.386 m/s, p = p_atm +
+        // 568.4 Pa, p⁺ = −431.6 Pa (hand); the duct's gas comes in
+        let inner = Prim {
+            rho: 0.4,
+            u: 0.0,
+            p: ATM_PA,
+        };
+        let (g, p_plus) = duct_node(inner, 2e-3, 1000.0, 1e-3, (300.0, 0.6));
+        assert!((g.u + 2.386).abs() < 0.005, "{g:?}");
+        assert!((g.p - (ATM_PA + 568.4)).abs() < 0.5, "{g:?}");
+        assert!((p_plus + 431.6).abs() < 0.5, "{p_plus}");
+        assert!(
+            (g.rho - 0.6 * (g.p / ATM_PA).powf(1.0 / 1.4)).abs() < 1e-9,
+            "{g:?}"
+        );
+        // outflow carries the cell's own gas, expanded to the node's pressure
+        // a rarefaction deeper than the gas can follow: the node holds 5 % of p_atm (u =
+        // 2e6/838.2 = 2386 m/s gives p = p_atm − 2e6 + 600·2386 < 0)
+        let (g, _) = duct_node(inner, 2e-3, -1e6, 1e-3, (300.0, 0.6));
+        assert!((g.p - 0.05 * ATM_PA).abs() < 1e-6, "{g:?}");
+        let out = Prim { u: 50.0, ..inner };
+        let (g, _) = duct_node(out, 2e-3, 0.0, 1e-3, (300.0, 0.6));
+        assert!(g.u > 0.0 && (g.rho - 0.4 * (g.p / ATM_PA).powf(1.0 / 1.4)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_collector_sends_on_a_line_between_pipe_steps() {
+        assert_eq!(between([1.0, 3.0], 0.0), 1.0);
+        assert_eq!(between([1.0, 3.0], 0.25), 1.5);
+        assert_eq!(between([1.0, 3.0], 1.0), 3.0);
+    }
+
+    #[test]
+    fn a_tails_outflow_mach_reaches_its_open_end() {
+        // Mach 0.5 out of the tail: the end reflects (1 − 0.5)/(1 + 0.5) = 1/3 of what it did
+        // at rest (Munt 1977)
+        let d = ExhaustDef::default();
+        let mut still = ExhaustFv::new(&d, 1, DT);
+        let mut moving = ExhaustFv::new(&d, 1, DT);
+        moving.set_outflow_mach(&[0.5]);
+        let (a, _) = still.branches[0].end.process(1.0);
+        let (b, _) = moving.branches[0].end.process(1.0);
+        assert!((b / a - 1.0 / 3.0).abs() < 1e-12, "{a} {b}");
+    }
+
+    /// Amplitude radiated at `f` Hz from a small sinusoidal flow at the first primary (mean
+    /// `mean`, ripple 0.5 g/s: the linear regime), by the FV net (`fv`) or the waveguide's.
+    fn tone_from(d: &ExhaustDef, cylinders: usize, f: f64, fv: bool, mean: f64) -> f64 {
+        let mut net = ExhaustFv::new(d, cylinders, DT);
+        let mut wg = crate::exhaust::ExhaustNet::with_lining(
+            d,
+            cylinders,
+            DT,
+            crate::exhaust::LINING_SEGMENT_M,
+        );
+        let mut flows = vec![0.0; cylinders];
+        let w = 2.0 * std::f64::consts::PI * f;
+        let n = (0.3 / DT) as usize;
+        let (mut re, mut im, mut count) = (0.0, 0.0, 0.0);
+        for k in 0..n {
+            let t = k as f64 * DT;
+            let mdot = mean + 0.0005 * (w * t).sin();
+            // the waveguide's source is reference-gas mass: at 896 K, the gas's own
+            let r = if fv {
+                net.add_valve_flow(0, mdot * DT, 1004.5 * 896.0);
+                net.step()
+            } else {
+                flows[0] = mdot;
+                wg.step(&flows)
+            };
+            if t > 0.15 {
+                re += r * (w * t).cos();
+                im += r * (w * t).sin();
+                count += 1.0;
+            }
+        }
+        2.0 * (re * re + im * im).sqrt() / count
+    }
+
+    #[test]
+    fn in_the_linear_regime_the_fv_net_sounds_like_the_waveguide() {
+        // Small waves: FV's gas dynamics reduce to linear acoustics, the waveguide's. With the
+        // same designed path after the collectors (the LFA's: catalyst and tail) and the same wall
+        // loss, the two must agree by bands within the gap their gas temperatures leave: FV
+        // computes them (the nine shut primaries stay at 600 K), the waveguide fixes 600 and
+        // 560 m/s. Measured +4.9, +5.9, −3.4 dB (FV's 4 cm cells wear the highs); its own can and
+        // no wall loss left it +6.7 dB at the bottom.
+        let d = crate::engine::EngineDef::lfa_v10().exhaust;
+        let bands: [&[f64]; 3] = [
+            &[60.0, 90.0, 120.0, 150.0, 180.0, 210.0, 240.0, 270.0],
+            &[300.0, 400.0, 500.0, 600.0, 700.0, 800.0],
+            &[900.0, 1000.0, 1100.0, 1200.0, 1300.0, 1400.0, 1500.0],
+        ];
+        for band in bands {
+            let e = |fv: bool| {
+                band.iter()
+                    .map(|&f| tone_from(&d, 10, f, fv, 0.002).powi(2))
+                    .sum::<f64>()
+            };
+            let apart = 10.0 * (e(true) / e(false)).log10();
+            assert!(
+                apart.abs() < 6.0,
+                "{band:?}: FV {apart:+.1} dB from the waveguide"
+            );
         }
     }
 
@@ -654,60 +797,6 @@ mod tests {
         assert!((0.004..0.012).contains(&t), "arrived after {t} s");
     }
 
-    /// Amplitude of the radiated signal at `f` Hz for a sinusoidal mean-plus-ripple valve flow.
-    fn tone_through(d: &ExhaustDef, f: f64) -> f64 {
-        let mut net = ExhaustFv::new(d, 1, DT);
-        let n = (0.25 / DT) as usize;
-        let (mut re, mut im, mut count) = (0.0, 0.0, 0.0);
-        for k in 0..n {
-            let t = k as f64 * DT;
-            let dm = (0.05 + 0.02 * (2.0 * std::f64::consts::PI * f * t).sin()) * DT;
-            net.add_valve_flow(0, dm, 1004.5 * 900.0);
-            let r = net.step();
-            if t > 0.1 {
-                re += r * (2.0 * std::f64::consts::PI * f * t).cos();
-                im += r * (2.0 * std::f64::consts::PI * f * t).sin();
-                count += 1.0;
-            }
-        }
-        2.0 * (re * re + im * im).sqrt() / count
-    }
-
-    #[test]
-    fn the_packing_passes_the_firing_orders_and_soaks_up_the_highs() {
-        // The LFA's 10 L can with 25 mm of σ = 16 kPa·s/m² packing against the same passage
-        // lined with an impervious packing (σ → ∞: the same geometry, no absorption), as band
-        // rms over tones. By hand (lossy transmission line, `lining` docs; passage 0.01295 m²,
-        // perimeter 0.403 m, pores 0.95 × 0.01205 m², gas at 600–1000 K) one pass through the
-        // 0.4 m can keeps
-        // e^(−αL) = 0.91–0.93 at 600 Hz and 0.55–0.63 at 1.5 kHz; the system's standing waves
-        // cross it many times, and the packing also detunes and damps them, so per tone the
-        // ratio scatters (0.14–1.5). Per band: the highs must lose at least one pass's worth,
-        // the firing orders keep most of their level (less than 6 dB lost), well above the highs.
-        let packed = ExhaustDef {
-            muffler_volume_m3: 0.010,
-            ..def()
-        };
-        let rigid = ExhaustDef {
-            muffler_packing: Packing {
-                flow_resistivity: 1e15,
-                ..packed.muffler_packing
-            },
-            ..packed.clone()
-        };
-        let band = |fs: &[f64]| {
-            let e = |d: &ExhaustDef| fs.iter().map(|&f| tone_through(d, f).powi(2)).sum::<f64>();
-            (e(&packed) / e(&rigid)).sqrt()
-        };
-        let low = band(&[300.0, 400.0, 500.0, 600.0, 700.0]);
-        let high = band(&[1000.0, 1200.0, 1400.0, 1600.0, 2000.0]);
-        assert!(high < 0.63, "1–2 kHz keeps {high}");
-        assert!(
-            low > 0.5 && low > 1.5 * high,
-            "300–700 Hz keeps {low}, 1–2 kHz {high}"
-        );
-    }
-
     #[test]
     fn the_packing_leaves_at_least_the_tail_bore_open() {
         // 10 L over 0.4 m: can area 0.025 m², radius 89.2 mm; 25 mm of packing leaves a
@@ -734,73 +823,82 @@ mod tests {
     }
 
     #[test]
-    fn the_muffler_passes_firing_frequencies() {
-        // A "muffler" as wide as the tail (= straight pipe) vs the LFA's 10 L one, at 600 Hz
-        // (V10 firing frequency at 7200 rpm).
-        let d = def();
-        let straight = ExhaustDef {
-            muffler_volume_m3: area(d.tail_diameter_m) * CHAMBER_LENGTH_M,
-            ..d
-        };
-        let muffled = ExhaustDef {
-            muffler_volume_m3: 0.010,
-            ..def()
-        };
-        let (a, b) = (
-            tone_through(&straight, 600.0),
-            tone_through(&muffled, 600.0),
-        );
-        assert!(a > 0.0);
-        assert!(b > 0.1 * a && b < a, "muffled {b} vs straight {a}");
-    }
-
-    #[test]
     fn a_one_to_one_junction_is_transparent() {
-        // One primary into a collector of the same diameter, no muffler, same tail: the junction
-        // must pass a 600 Hz tone like the equivalent straight pipe (stagnation-plenum junctions
-        // low-passed it). Reference: one segmented pipe with the same lengths and flux inlet.
+        // One primary into a collector of the same diameter: FV's 0D junction must pass a tone
+        // as the same exhaust without a junction does — one FV pipe from the valve to the
+        // collector's end, the same node, designed path and open end (stagnation-plenum
+        // junctions low-passed it)
         let d = ExhaustDef {
             primary_diameter_m: 0.05,
             collector_diameter_m: 0.05,
             tail_diameter_m: 0.05,
-            muffler_volume_m3: area(0.05) * CHAMBER_LENGTH_M,
             ..def()
         };
-        let through_net = tone_through(&d, 600.0);
+        let w = 2.0 * std::f64::consts::PI * 600.0;
+        let tone = |radiate: &mut dyn FnMut(f64) -> f64| {
+            let n = (0.3 / DT) as usize;
+            let (mut re, mut im, mut count) = (0.0, 0.0, 0.0);
+            for k in 0..n {
+                let t = k as f64 * DT;
+                let r = radiate(0.05 + 0.02 * (w * t).sin());
+                if t > 0.15 {
+                    re += r * (w * t).cos();
+                    im += r * (w * t).sin();
+                    count += 1.0;
+                }
+            }
+            2.0 * (re * re + im * im).sqrt() / count
+        };
+        let mut net = ExhaustFv::new(&d, 1, DT);
+        let through_net = tone(&mut |mdot| {
+            net.add_valve_flow(0, mdot * DT, 1004.5 * 900.0);
+            net.step()
+        });
+        // the same without the junction
         let a = area(0.05);
         let init = Prim {
             rho: ATM_PA / (R_AIR * INIT_T_K),
             u: 0.0,
             p: ATM_PA,
         };
-        let len = d.primary_length_m + d.collector_length_m + CHAMBER_LENGTH_M + d.tail_length_m;
-        let mut straight = Pipe1d::segmented(&[(len, a)], CELL_M, init);
-        straight.floors = (1e-3, 500.0);
-        straight.right = Boundary::Open {
-            p: ATM_PA,
-            rho: AMBIENT_RHO,
-        };
-        let dt = 5.0 * DT;
-        let (mut re, mut im, mut count) = (0.0, 0.0, 0.0);
-        let mut t = 0.0;
-        while t < 0.25 {
-            let m = (0.05 + 0.02 * (2.0 * std::f64::consts::PI * 600.0 * t).sin()) / a;
-            let cell = straight.prim(0);
-            straight.left = Boundary::Flux(Cons {
-                rho: m,
-                mom: m * m / cell.rho + cell.p,
-                e: m * 1004.5 * 900.0,
-            });
-            straight.step(dt);
-            t += dt;
-            if t > 0.1 {
-                let r = C_TAIL * straight.end_flux.1.rho;
-                re += r * (2.0 * std::f64::consts::PI * 600.0 * t).cos();
-                im += r * (2.0 * std::f64::consts::PI * 600.0 * t).sin();
-                count += 1.0;
+        let mut pipe = super::pipe(d.primary_length_m + d.collector_length_m, 0.05, init);
+        let mut duct = crate::exhaust::after_collector(&d, DT, crate::exhaust::LINING_SEGMENT_M);
+        let mut end = OpenEnd::new(d.outlet_diameter(), DT);
+        let gas = (
+            crate::gas::GAMMA * ATM_PA / C_TAIL,
+            crate::exhaust::tail_reference_density(),
+        );
+        let substeps = net.substeps;
+        let (mut count, mut acc, mut sent) = (0, 0.0, [0.0; 2]);
+        let through_straight = tone(&mut |mdot| {
+            acc += mdot * DT;
+            count += 1;
+            if count >= substeps {
+                count = 0;
+                let h = substeps as f64 * DT;
+                let cell = pipe.prim(0);
+                pipe.left = Boundary::Flux(flux_boundary(
+                    acc / (a * h),
+                    acc * 1004.5 * 900.0 / (a * h),
+                    cell,
+                ));
+                acc = 0.0;
+                let arriving = duct.at_near();
+                sent[0] = sent[1];
+                let n = ((h / pipe.max_dt(0.9)).ceil() as usize).max(1);
+                for _ in 0..n {
+                    let last = pipe.prim(pipe.cells.len() - 1);
+                    let (ghost, s) = duct_node(last, a, arriving, duct.end_areas().0, gas);
+                    pipe.right = Boundary::State(ghost);
+                    sent[1] = s;
+                    pipe.step(h / n as f64);
+                }
             }
-        }
-        let through_straight = 2.0 * (re * re + im * im).sqrt() / count;
+            let f = count as f64 / substeps as f64;
+            let (reflected, out) = end.process(duct.at_far());
+            duct.send(sent[0] + (sent[1] - sent[0]) * f, reflected);
+            out
+        });
         let ratio = through_net / through_straight;
         assert!(
             (0.6..1.6).contains(&ratio),
@@ -1173,16 +1271,14 @@ mod tests {
 
     #[test]
     fn a_fresh_network_holds_its_geometric_volume_of_gas() {
-        // 2 × π/4·0.04²·0.7 primaries + junction + collector + 6 L muffler + 1.5 m tail, at
-        // 1 atm / 600 K (ρ = 0.5884 kg/m³), defaults of `ExhaustDef`, all diameters by hand.
-        // The muffler's packing (3.55 L of its 6 L) is 5 % fibre: 0.18 L less gas, 2 %.
+        // 2 × π/4·0.04²·0.7 primaries + junction + collector at 1 atm / 600 K (ρ = 0.5884
+        // kg/m³), defaults of `ExhaustDef`, diameters by hand: the FV pipes end at the collector,
+        // the designed path after it is the linear duct's (sound, no gas)
         let d = def();
         let disc = |dia: f64| std::f64::consts::PI / 4.0 * dia * dia;
         let v = 2.0 * disc(d.primary_diameter_m) * d.primary_length_m
             + disc(d.collector_diameter_m) * 3.0 * d.collector_diameter_m
-            + disc(d.collector_diameter_m) * d.collector_length_m
-            + d.muffler_volume_m3
-            + disc(d.tail_diameter_m) * d.tail_length_m;
+            + disc(d.collector_diameter_m) * d.collector_length_m;
         let m = ExhaustFv::new(&d, 2, DT).total_mass();
         assert!(
             (m / (0.5884 * v) - 1.0).abs() < 0.03,
@@ -1340,8 +1436,9 @@ mod tests {
 
     #[test]
     fn a_coarse_step_subcycles_without_changing_the_source() {
-        // At 5 kHz one FV step needs several CFL sub-cycles; the steady source (and each tail's
-        // share of it) is a mean over them, so it matches the fine-step network's.
+        // At 12.5 kHz one FV step needs several CFL sub-cycles (and the designed path's duct is
+        // still a pipe); the steady source (and each tail's share of it) matches the fine-step
+        // network's.
         let mean = |dt: f64| {
             let d = ExhaustDef {
                 collectors: vec![vec![1], vec![2]],
@@ -1363,7 +1460,7 @@ mod tests {
             (sum / m, tails / m)
         };
         let (fine, _) = mean(DT);
-        let (coarse, coarse_tails) = mean(2e-4);
+        let (coarse, coarse_tails) = mean(8e-5);
         assert!((coarse / fine - 1.0).abs() < 0.05, "{coarse} vs {fine}");
         assert!(
             (coarse_tails / coarse - 1.0).abs() < 1e-9,

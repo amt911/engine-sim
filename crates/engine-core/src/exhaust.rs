@@ -23,7 +23,10 @@ pub(crate) fn tail_reference_density() -> f64 {
     crate::units::ATM_PA / (crate::gas::R_AIR * t)
 }
 
-/// Amplitude loss per metre (wall friction and heat transfer), estimate.
+/// Amplitude loss per metre (wall friction and heat transfer), frequency-independent. Kirchhoff's
+/// boundary-layer attenuation α = (1/(r·c))·√(ων/2)·(1 + (γ − 1)/√Pr) (Kinsler et al.,
+/// *Fundamentals of Acoustics*, §9.4) gives 0.0295 Np/m in a 42 mm primary of 900 K gas (c 600
+/// m/s, ν 1e-4 m²/s) at 200 Hz, about the firing orders' band: 1 − e^(−0.0295) ≈ 0.03.
 pub const LOSS_PER_M: f64 = 0.03;
 /// Clamp on the waves (Pa): the linear model is meaningless beyond a few bar, and two
 /// superposed rarefactions must never take the absolute pressure below vacuum.
@@ -455,7 +458,7 @@ const TAIL_T: f64 = C_TAIL * C_TAIL / (crate::gas::GAMMA * crate::gas::R_AIR);
 /// (ch. 3); catalysts as their narrow channels ([`catalyst_brick`]); resonators as
 /// side branches between their neighbours. `muffler_transmission` stays an extra lumped loss on
 /// the last pipe (1 = none).
-fn after_collector(def: &ExhaustDef, dt: f64, lining_m: f64) -> Duct {
+pub(crate) fn after_collector(def: &ExhaustDef, dt: f64, lining_m: f64) -> Duct {
     let rho_c = crate::gas::GAMMA * crate::units::ATM_PA / C_TAIL;
     let pipe = |len: f64, d: f64| Pipe::new(len, d, C_TAIL, dt, LOSS_PER_M);
     let mut duct: Option<Duct> = None;
