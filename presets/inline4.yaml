@@ -49,6 +49,11 @@ engine:
       porosity: 0.95
     tail_spacing_m: 0.9
     after_collector:
+    - kind: catalyst
+      length_m: 0.13
+      diameter_m: 0.1399
+      cells_per_in2: 400.0
+      wall_m: 0.000165
     - kind: pipe
       length_m: 1.5
       diameter_m: 0.05
@@ -58,6 +63,8 @@ engine:
     runner_diameter_m: 0.042
     individual_throttles: false
     trumpet_loss: 0.1
+    film_fraction: 0.18
+    film_tau_s: 1.0
   redline_rpm: 7000.0
   starter_torque_nm: 60.0
   fmep_bar:

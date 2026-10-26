@@ -35,6 +35,15 @@ pub struct IntakeDef {
     pub individual_throttles: bool,
     /// Entry loss coefficient of the trumpet (sharp edge ≈ 0.5, bellmouth ≈ 0.05; Blair).
     pub trumpet_loss: f64,
+    /// Share X of each injection that lands on the port walls as liquid film (Aquino's x–τ
+    /// model, SAE 810494) at 100 kPa and 30 rev/s; it follows load and speed as
+    /// [`crate::fuel::deposit_fraction`]. Almkvist & Eriksson (SAE 941931), warm port injection:
+    /// ≈ 0.18 at full load (Fig. 9).
+    pub film_fraction: f64,
+    /// Time constant τ of the film's evaporation, s. Almkvist & Eriksson (SAE 941931) Figs.
+    /// 11–13, warm port injection: ≈ 1 s from 20 to 40 rev/s, a little less at full load
+    /// (Heywood §7.6.3: of order 1 s for a manifold film). 0 disables the film.
+    pub film_tau_s: f64,
 }
 
 impl Default for IntakeDef {
@@ -45,6 +54,8 @@ impl Default for IntakeDef {
             runner_diameter_m: 0.042,
             individual_throttles: false,
             trumpet_loss: 0.1,
+            film_fraction: 0.18,
+            film_tau_s: 1.0,
         }
     }
 }

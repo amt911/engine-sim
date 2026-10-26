@@ -4,7 +4,7 @@
 //! atmosphere. Mechanics: analytic crank-slider with a lumped flywheel inertia.
 //! Model ladder and references: `docs/research/simulador-motor-rust.md`.
 
-use crate::combustion::{AFR_STOICH, charge_energy, flame_angle_scale, laminar_flame_speed, wiebe};
+use crate::combustion::{AFR_STOICH, LHV_GASOLINE, flame_angle_scale, laminar_flame_speed, wiebe};
 use crate::exhaust::{ExhaustDef, ExhaustLink, ExhaustModel, ExhaustNet};
 use crate::exhaust_fv::ExhaustFv;
 use crate::gas::{
@@ -83,6 +83,28 @@ fn default_idle_rpm() -> f64 {
 impl Default for EngineDef {
     fn default() -> Self {
         Self::single()
+    }
+}
+
+/// Peak force of a valve striking its seat at `SEAT_FORCE_RPM`, N: an exhaust valve of a
+/// 4-cylinder petrol engine at 2500 rpm full load, 292 N in the head-coupled model validated
+/// against the running engine (Zheng et al., Appl. Sci. 10(15) 5145, 2020, Fig. 22; 412 N
+/// with a rigid head).
+const SEAT_FORCE_N: f64 = 292.0;
+const SEAT_FORCE_RPM: f64 = 2500.0;
+/// Duration of the strike, s: the impulse m·Δv of the valve's equivalent mass (292 N /
+/// 4474 m/s², Zheng Fig. 21: 0.065 kg) against a closing-ramp speed of ~0.3 m/s at 2500 rpm
+/// (an estimate: ramps of ~0.02 mm/° at 15 000 °/s), as a half-sine of the peak:
+/// τ = πmΔv/2F ≈ 0.1 ms; taken as 0.15 ms.
+pub(crate) const SEAT_PULSE_S: f64 = 1.5e-4;
+
+/// The force of a seat strike of `peak` N, `t` s after it began: a half-sine over
+/// [`SEAT_PULSE_S`].
+pub(crate) fn seat_pulse(peak: f64, t: f64) -> f64 {
+    if (0.0..=SEAT_PULSE_S).contains(&t) {
+        peak * (std::f64::consts::PI * t / SEAT_PULSE_S).sin()
+    } else {
+        0.0
     }
 }
 
@@ -168,6 +190,7 @@ impl EngineDef {
             ..Self::single()
         }
         .with_tail_pipe()
+        .with_catalyst()
     }
 
     /// Honda K20A (Integra Type R, DC5): the published engine, its unpublished geometry sized
@@ -228,6 +251,7 @@ impl EngineDef {
             ..Self::single()
         }
         .with_tail_pipe()
+        .with_catalyst()
     }
 
     /// Lexus LFA, Toyota 1LR-GUE: 4.8 L 72° V10, 88 × 79 mm, CR 12.0, even firing,
@@ -328,6 +352,7 @@ impl EngineDef {
             vehicle: crate::drivetrain::VehicleDef::lfa_v10(),
         }
         .with_tail_pipe()
+        .with_catalyst()
     }
 
     /// Flat-plane V8 after the Ferrari F136 F (458 Italia): 4,497 cc from 94 × 81 mm,
@@ -399,6 +424,7 @@ impl EngineDef {
             vehicle: crate::drivetrain::VehicleDef::flatplane_v8(),
         }
         .with_tail_pipe()
+        .with_catalyst()
     }
 
     /// Cross-plane V8 after the GM LS3 (C6 Corvette): 6,162 cc from 103.25 × 92 mm, 10.7:1,
@@ -470,6 +496,7 @@ impl EngineDef {
             vehicle: crate::drivetrain::VehicleDef::crossplane_v8(),
         }
         .with_tail_pipe()
+        .with_catalyst()
     }
 
     /// The ECU's spark advance (° BTDC) for a flame `flame_ratio` times as long in crank angle as
@@ -492,6 +519,19 @@ impl EngineDef {
             length_m: self.exhaust.tail_length_m,
             diameter_m: self.exhaust.tail_diameter_m,
         }];
+        self
+    }
+
+    /// A road car's catalyst first after each collector
+    /// ([`crate::exhaust::close_coupled_catalyst`]): every one since the 1990s carries them,
+    /// and they shape the sound that reaches the tail (Elnemr, KTH 2011).
+    fn with_catalyst(mut self) -> Self {
+        let branches = self.exhaust.collectors.len().max(1);
+        let cat = crate::exhaust::close_coupled_catalyst(
+            self.displacement_m3() / branches as f64,
+            self.exhaust.tail_diameter_m,
+        );
+        self.exhaust.after_collector.insert(0, cat);
         self
     }
 
@@ -665,6 +705,9 @@ const IAC_RATE_TAU_S: f64 = 0.15;
 /// How far ahead the air path looks before holding its integral on a fall, s: the delay it
 /// acts through, the manifold's filling plus the loop's own response, about a second.
 const IAC_LOOKAHEAD_S: f64 = 1.0;
+/// Time constant of unburnt mixture burning in a hot primary, s: a deflagration of a few
+/// milliseconds. Estimate (no measurement at hand; see PAPERS.md, afterfire).
+const AFTERBURN_TAU_S: f64 = 2e-3;
 /// Fraction of the equalising mass a valve may move per substep (see `step`).
 const VALVE_RELAX: f64 = 0.5;
 
@@ -674,6 +717,18 @@ struct Burn {
     duration_deg: f64,
     energy_j: f64,
     released: f64,
+    /// The charge the flame burns through, fuel and air, kg: what it has not released when it
+    /// ends leaves unburnt.
+    fuel_kg: f64,
+    air_kg: f64,
+}
+
+impl Burn {
+    /// What the flame leaves unburnt if it ends now.
+    fn unburnt(&self) -> crate::fuel::ExhaustMixture {
+        let (fuel_kg, air_kg) = crate::fuel::unburnt(self.fuel_kg, self.air_kg, self.released);
+        crate::fuel::ExhaustMixture { fuel_kg, air_kg }
+    }
 }
 
 /// Stagnation temperature of the gas leaving the tail, K: the waveguide's tail sound speed,
@@ -730,10 +785,10 @@ fn cycle_flame(
     (p, t): (f64, f64),
     rho: f64,
     v: f64,
-    dilution: f64,
+    (phi_mean, dilution): (f64, f64),
     (n_phi, n_res, n_u): (f64, f64, f64),
 ) -> Option<f64> {
-    let phi = 1.0 + PHI_DISPERSION * n_phi;
+    let phi = phi_mean * (1.0 + PHI_DISPERSION * n_phi);
     let f_local = (dilution * (1.0 + RESIDUAL_DISPERSION * n_res)).max(0.0);
     let u_turb = (1.0 + TURBULENCE_DISPERSION * n_u).max(0.3);
     let local = flame_ratio(g, piston_speed, (p, t), rho, v, (phi, f_local));
@@ -741,10 +796,11 @@ fn cycle_flame(
     ratio.is_finite().then_some(ratio)
 }
 
-/// The burned share of a trapped charge: residual / trapped mass.
+/// The burned share of a trapped charge: the residual less its unburnt fuel and air, over the
+/// trapped mass.
 fn dilution_of(cs: &CylinderState) -> f64 {
     if cs.trapped_kg > 0.0 {
-        cs.residual_kg / cs.trapped_kg
+        (cs.residual_kg - cs.residual_unburnt_kg).max(0.0) / cs.trapped_kg
     } else {
         0.0
     }
@@ -780,11 +836,16 @@ fn flame_ratio(
     let r = (v / g.clearance_volume()).max(1.0);
     let gamma = crate::gas::GAMMA;
     let (p, t, rho) = (p * r.powf(gamma), t * r.powf(gamma - 1.0), rho * r);
+    let s_l = laminar_flame_speed(phi, t, p, dilution);
+    if s_l <= 0.0 {
+        // past the fit's zero the flame does not propagate: a misfire
+        return f64::INFINITY;
+    }
     let here = flame_angle_scale(
         piston_speed.max(0.1),
         nu(t, rho),
         g.clearance_volume() / g.piston_area(),
-        laminar_flame_speed(phi, t, p, dilution),
+        s_l,
     );
     here / reference
 }
@@ -821,6 +882,9 @@ struct CylinderState {
     /// Gas left in the cylinder when the exhaust valve closed: burnt, no fuel or oxygen to
     /// give (the residual; Heywood, *ICE Fundamentals*, §6.4).
     residual_kg: f64,
+    /// The part of the residual that is unburnt fuel and air (a cut or misfired cycle's), not
+    /// burnt diluent, kg.
+    residual_unburnt_kg: f64,
     /// The trapped charge's flame, crank-angle ratio to the reference ([`flame_ratio`]): sets
     /// its spark (the ECU's MBT timing) and its burn.
     flame: f64,
@@ -842,6 +906,16 @@ struct CylinderState {
     ref_t: f64,
     burn: Option<Burn>,
     cycle_deg: f64,
+    /// The liquid fuel on this cylinder's port walls ([`crate::fuel::PortFilm`]).
+    film: crate::fuel::PortFilm,
+    /// The charge trapped at intake closing that awaits its spark: fuel and air, kg.
+    fuel_kg: f64,
+    air_kg: f64,
+    /// Unburnt fuel and air in the cylinder's gas once its flame is over (a partial burn, a
+    /// misfire, a lean charge's spare air), leaving with the gas through the exhaust valve.
+    slip: crate::fuel::ExhaustMixture,
+    /// Unburnt mixture in this cylinder's exhaust primary.
+    port_mix: crate::fuel::PortMixture,
 }
 
 /// How finely an engine is simulated (not part of its definition: the same engine at
@@ -933,6 +1007,11 @@ pub struct Engine {
     /// Running totals for energy balances: heat lost to the walls, and fuel energy released, J.
     wall_heat_j: f64,
     fuel_energy_j: f64,
+    /// Heat released by unburnt mixture burning in the exhaust primaries, J.
+    afterburn_j: f64,
+    /// Fuel ledger, kg: into the cylinders, burnt there, burnt in the primaries, and out of the
+    /// primaries unburnt (the balance a test closes).
+    fuel_ledger: FuelLedger,
     rng: u64,
     /// Exhaust waveguide network, built for the current step size.
     net: Option<ExhaustNet>,
@@ -950,6 +1029,8 @@ pub struct Engine {
     listener: Option<(f64, Listener)>,
     /// The block's structure response at the step it was built for ([`crate::structure`]).
     structure: Option<(f64, StructureResponse)>,
+    /// Valve strikes still ringing: (time since the strike, s; its peak force, N).
+    seat_strikes: Vec<(f64, f64)>,
     /// The texture layers' signal this step, in the tails' units, before it is radiated.
     texture_signal: f64,
     /// The turbulent jet at each tail pipe.
@@ -1030,6 +1111,30 @@ fn exhaust_source_flow(dm_dt: f64, h: f64) -> f64 {
     dm_dt * (h / crate::gas::CP).max(1.0) / t_ref
 }
 
+/// Where an engine's fuel went, kg.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct FuelLedger {
+    into_cylinders: f64,
+    burnt: f64,
+    afterburnt: f64,
+    exited: f64,
+}
+
+/// What heat `q` (J) released over `dt` in a primary's `m` kg of gas does: it warms that gas by
+/// q/(m·c_p), and it expands it at constant pressure, Q = (γ − 1)/γ·q̇/p — in the waveguide's
+/// reference-gas units q̇/(c_p·T_ref), the weight an enthalpy flux of q̇ has in
+/// [`exhaust_source_flow`]. Returns (temperature rise, K; source).
+fn primary_heat(q: f64, m: f64, dt: f64) -> (f64, f64) {
+    let t_ref = crate::exhaust::C_PRIMARY.powi(2) / (crate::gas::GAMMA * crate::gas::R_AIR);
+    (q / (m * crate::gas::CP), q / dt / (crate::gas::CP * t_ref))
+}
+
+/// Heat a flame releases burning all it can of `fuel` and `air` kg, J: LHV × the combustion
+/// efficiency × the cylinder's breathing `bias` ([`CYLINDER_IMBALANCE`]).
+fn burn_energy(fuel: f64, air: f64, bias: f64) -> f64 {
+    crate::fuel::burnable(fuel, air) * LHV_GASOLINE * COMBUSTION_EFFICIENCY * bias
+}
+
 /// Fraction of the plate's area a pedal position opens: 1 − cos(t·π/2), progressive at the
 /// bottom as a throttle cam is.
 fn pedal_opening(t: f64) -> f64 {
@@ -1057,6 +1162,7 @@ impl Engine {
                     gas: GasVolume::at(ATM_PA, AMBIENT_K, g.volume(deg_to_rad(cycle_deg))),
                     trapped_kg: 0.0,
                     residual_kg: 0.0,
+                    residual_unburnt_kg: 0.0,
                     flame: 1.0,
                     charge_bias: 1.0,
                     armed: false,
@@ -1068,6 +1174,11 @@ impl Engine {
                     ref_t: AMBIENT_K,
                     burn: None,
                     cycle_deg,
+                    film: crate::fuel::PortFilm::default(),
+                    fuel_kg: 0.0,
+                    air_kg: 0.0,
+                    slip: crate::fuel::ExhaustMixture::default(),
+                    port_mix: crate::fuel::PortMixture::default(),
                 }
             })
             .collect();
@@ -1094,6 +1205,8 @@ impl Engine {
             combustions: 0,
             wall_heat_j: 0.0,
             fuel_energy_j: 0.0,
+            afterburn_j: 0.0,
+            fuel_ledger: FuelLedger::default(),
             rng: seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1,
             net: None,
             fv: None,
@@ -1103,6 +1216,7 @@ impl Engine {
             tail_pipes,
             listener: None,
             structure: None,
+            seat_strikes: Vec::new(),
             texture_signal: 0.0,
             jets: Vec::new(),
             valve_jets: Vec::new(),
@@ -1294,6 +1408,7 @@ impl Engine {
     pub fn step(&mut self, dt: f64, c: &Controls) -> f64 {
         let g = self.def.geometry;
         let crank_deg = self.theta.to_degrees();
+        let rpm_now = self.rpm();
         // the ECU first decides whether it injects, then trims the idle accordingly
         self.fuel_cutoffs(c.throttle);
         self.idle_control(dt, c);
@@ -1303,7 +1418,13 @@ impl Engine {
             (self.def.intake_valve.open_deg + self.def.intake_valve.duration_deg).rem_euclid(720.0);
         let evc = (self.def.exhaust_valve.open_deg + self.def.exhaust_valve.duration_deg)
             .rem_euclid(720.0);
-        let fire_ok = c.ignition && !self.overrun_cut && !self.limiter_cut;
+        // the cut-offs stop the injection; the port film still feeds the cylinders
+        let inject = !self.overrun_cut && !self.limiter_cut;
+        let (film_x, film_tau) = (self.def.intake.film_fraction, self.def.intake.film_tau_s);
+        let film_x = if film_tau > 0.0 { film_x } else { 0.0 };
+        // one intake event per cycle per port: the film evaporates over the cycle's period
+        let film_share =
+            crate::fuel::evaporated_share(4.0 * PI / self.omega.abs().max(1e-3), film_tau);
         let wall_area = 2.0 * g.piston_area();
         let mean_piston_speed = mean_piston_speed(g.stroke_m, self.omega);
         match self.def.intake.model {
@@ -1525,8 +1646,27 @@ impl Engine {
                 let ex = &self.def.exhaust;
                 let m = primary_gas_mass(ex, cs.port_t);
                 let (dm, t_in) = f_ex.map_or((0.0, cs.port_t), |f| (f.dm, f.h / crate::gas::CP));
+                // The unburnt mixture rides with the gas out of the cylinder into the primary
+                // (see `fuel::PortMixture`), and a reversion brings some back.
+                let out = if dm > 0.0 {
+                    cs.slip.take_share(dm / (cs.gas.mass_kg + dm))
+                } else {
+                    crate::fuel::ExhaustMixture::default()
+                };
                 let a_wall = PI * ex.primary_diameter_m * ex.primary_length_m;
                 cs.port_t = port_gas_temperature(cs.port_t, m, dm, t_in, cs.wall_t, a_wall, dt);
+                let r =
+                    cs.port_mix
+                        .step(out, (m, dm), (t_in, cs.port_t, ATM_PA), dt, AFTERBURN_TAU_S);
+                cs.slip.add(r.back);
+                self.fuel_ledger.exited += r.exit.fuel_kg;
+                if r.heat_j > 0.0 {
+                    let (rise, source) = primary_heat(r.heat_j, m, dt);
+                    cs.port_t += rise;
+                    self.flows[i] += source;
+                    self.afterburn_j += r.heat_j;
+                    self.fuel_ledger.afterburnt += r.heat_j / LHV_GASOLINE;
+                }
                 cs.wall_t += (cs.port_t - cs.wall_t) * (dt / PIPE_WALL_TAU_S);
             }
             if let (Some(fv), Some(f)) = (&mut self.fv, f_ex) {
@@ -1554,12 +1694,34 @@ impl Engine {
             exchange_with_reservoir(&mut cs.gas, &self.atm, blowby_area, dt);
 
             // Combustion events.
+            // a valve closing strikes its seat (both kinds: one valve each, conservative)
+            let strike = SEAT_FORCE_N * (rpm_now / SEAT_FORCE_RPM);
+            if crossed(prev, cur, evc) || crossed(prev, cur, ivc) {
+                self.seat_strikes.push((0.0, strike));
+            }
             if crossed(prev, cur, evc) {
                 cs.residual_kg = cs.gas.mass_kg;
             }
             if crossed(prev, cur, ivc) {
                 cs.trapped_kg = cs.gas.mass_kg;
                 cs.armed = true;
+                // The ECU meters the fuel for a stoichiometric charge of the fresh air it
+                // finds, compensating the port film (Aquino); a cut injects nothing and the film
+                // still gives back its share. What the last cycle left unburnt stays in.
+                let fresh = (cs.trapped_kg - cs.residual_kg).max(0.0);
+                let air = fresh * AFR_STOICH / (1.0 + AFR_STOICH);
+                let film_x =
+                    crate::fuel::deposit_fraction(film_x, cs.gas.pressure(), self.omega.abs());
+                let fuel = if inject {
+                    cs.film.meter(air / AFR_STOICH, film_x, film_share).1
+                } else {
+                    cs.film.intake(0.0, film_x, film_share)
+                };
+                cs.residual_unburnt_kg = cs.slip.fuel_kg + cs.slip.air_kg;
+                self.fuel_ledger.into_cylinders += fuel;
+                cs.fuel_kg = fuel + cs.slip.fuel_kg;
+                cs.air_kg = air + cs.slip.air_kg;
+                cs.slip = crate::fuel::ExhaustMixture::default();
                 cs.ref_p = cs.gas.pressure();
                 cs.ref_v = cs.gas.volume_m3;
                 cs.ref_t = cs.gas.temperature();
@@ -1585,7 +1747,22 @@ impl Engine {
             // and one that moved later cannot fire it again. A cut cylinder's charge passes.
             if cs.armed && (cur - spark_deg).rem_euclid(720.0) < 360.0 {
                 cs.armed = false;
-                new_burn = fire_ok && cs.trapped_kg > 0.0;
+                // an empty or fuelless charge has no flame (`cycle_flame`)
+                new_burn = c.ignition;
+            }
+            // The exhaust valve opens on whatever the flame has not burnt yet: it leaves
+            // unburnt with the gas (a partial burn), as does a charge that never lit.
+            if crossed(prev, cur, self.def.exhaust_valve.open_deg) {
+                if let Some(b) = cs.burn.take() {
+                    cs.slip.add(b.unburnt());
+                }
+                if !cs.armed {
+                    cs.slip.add(crate::fuel::ExhaustMixture {
+                        fuel_kg: cs.fuel_kg,
+                        air_kg: cs.air_kg,
+                    });
+                    (cs.fuel_kg, cs.air_kg) = (0.0, 0.0);
+                }
             }
             if let Some(b) = &mut cs.burn {
                 // Signed angle since the burn start, in (−360, 360]: the burn is created at
@@ -1597,8 +1774,11 @@ impl Engine {
                 let x = wiebe(since, b.duration_deg);
                 cs.gas.energy_j += b.energy_j * (x - b.released);
                 self.fuel_energy_j += b.energy_j * (x - b.released);
+                self.fuel_ledger.burnt +=
+                    crate::fuel::burnable(b.fuel_kg, b.air_kg) * (x - b.released);
                 b.released = x;
                 if since > 2.0 * b.duration_deg {
+                    cs.slip.add(b.unburnt());
                     cs.burn = None;
                 }
             }
@@ -1626,8 +1806,6 @@ impl Engine {
             cs.cycle_deg = cur;
 
             if new_burn {
-                // only the fresh charge carries fuel: what was trapped less the residual
-                let trapped = (cs.trapped_kg - cs.residual_kg).max(0.0);
                 // the flame this charge lights: its delay, burn and their dispersion scale
                 // from the preset's values at the reference state (see `flame_ratio`)
                 // This cycle's charge as the spark finds it (Heywood §9.4.2): the mixture near
@@ -1635,43 +1813,51 @@ impl Engine {
                 // (CO₂ scatter ±9 %, Fig. 9-34b) — and the turbulence there, of comparable
                 // weight: a 3 % σ in u′, which moves the flame's angles as u′^(−2/3) (Hires
                 // eqs. 6–7) as much as the A/F's 4 % moves them through S_L^(−2/3). The flame
-                // the ECU timed (`cs.flame`) is the mean one.
-                let (dilution, ref_p, ref_t, ref_v, mean_flame, bias) = (
+                // the ECU timed (`cs.flame`) is the mean one. The mean A/F is the charge's
+                // own: the injection and what the port film gave back.
+                let (dilution, ref_p, ref_t, ref_v, bias) = (
                     dilution_of(cs),
                     cs.ref_p,
                     cs.ref_t,
                     cs.ref_v,
-                    cs.flame,
                     cs.charge_bias,
                 );
+                let (fuel, air) = (cs.fuel_kg, cs.air_kg);
+                let phi = fuel * AFR_STOICH / air.max(1e-12);
                 let rho_ivc = cs.trapped_kg / cs.ref_v;
                 let j = self.def.sound.combustion_jitter;
                 // three near-Gaussian draws of unit σ (each a sum of three uniforms of ±1)
                 let mut draw = || -> f64 { (0..3).map(|_| self.noise()).sum() };
                 let draws = (j * draw(), j * draw(), j * draw());
-                let ratio = cycle_flame(
+                let flame = cycle_flame(
                     &g,
                     mean_piston_speed,
                     (ref_p, ref_t),
                     rho_ivc,
                     ref_v,
-                    dilution,
+                    (phi, dilution),
                     draws,
-                )
-                .unwrap_or(mean_flame);
+                );
                 // the charge itself: each cylinder breathes a fixed few percent apart from the
                 // others. Heywood's "±5 percent" cycle-to-cycle is the mixture composition
                 // within the cylinder — the A/F spread above, not a second draw on the fuel
                 let var = bias;
-                let duration = self.def.burn_duration_deg * ratio;
                 let cs = &mut self.cyl[i];
-                cs.burn = Some(Burn {
-                    start_deg: (spark_deg + IGNITION_DELAY_DEG * ratio).rem_euclid(720.0),
-                    duration_deg: duration,
-                    energy_j: charge_energy(trapped, AFR_STOICH, COMBUSTION_EFFICIENCY * var),
-                    released: 0.0,
-                });
-                self.combustions += 1;
+                // a mixture whose flame cannot propagate does not light: it waits for the
+                // exhaust valve, unburnt
+                if let Some(ratio) = flame {
+                    let duration = self.def.burn_duration_deg * ratio;
+                    cs.burn = Some(Burn {
+                        start_deg: (spark_deg + IGNITION_DELAY_DEG * ratio).rem_euclid(720.0),
+                        duration_deg: duration,
+                        energy_j: burn_energy(fuel, air, var),
+                        released: 0.0,
+                        fuel_kg: fuel,
+                        air_kg: air,
+                    });
+                    (cs.fuel_kg, cs.air_kg) = (0.0, 0.0);
+                    self.combustions += 1;
+                }
             }
         }
         // Acoustic source: what the tail pipes radiate.
@@ -1809,21 +1995,38 @@ impl Engine {
         }
         // The block: every cylinder's pressure shakes the same structure, which radiates it as
         // combustion noise, heard from the tails' mean distance like the intake mouth.
-        let block = if snd.block > 0.0 {
+        // The valves striking their seats shake the same structure through the head, a force
+        // F standing for a pressure F/A_bore on it (the path the gas force takes): the
+        // valvetrain's ticking (`sound.mechanical`, 1 = physical).
+        let mut seat_force = 0.0;
+        for (t, peak) in self.seat_strikes.iter_mut() {
+            seat_force += seat_pulse(*peak, *t);
+            *t += dt;
+        }
+        self.seat_strikes.retain(|(t, _)| *t <= SEAT_PULSE_S);
+        // (always run: a few multiplies a step, and an engine without either is silent here)
+        let block = {
             if self.structure.as_ref().is_none_or(|s| s.0 != dt) {
                 self.structure = Some((dt, StructureResponse::new(dt)));
             }
             let p: f64 = self.cyl.iter().map(|cs| cs.gas.pressure()).sum();
+            let seats = seat_force / g.piston_area();
             match &mut self.structure {
-                Some((_, s)) => snd.block * s.process(p),
+                Some((_, s)) => s.process(snd.block * p + snd.mechanical * seats),
                 None => 0.0,
             }
-        } else {
-            0.0
         };
-        // what does not wait for the tails: the intake mouth and the block
+        // what does not wait for the tails: the intake mouth and the block. The mouth is a
+        // runner's trumpet with individual throttles, else the throttle bore (the air box's
+        // own inlet is not in the definition: an estimate).
+        let mouth_d = if self.def.intake.individual_throttles {
+            self.def.intake.runner_diameter_m
+        } else {
+            self.def.throttle_diameter_m
+        };
+        let mouth_area = PI * 0.25 * mouth_d * mouth_d;
         let rest = match &mut self.listener {
-            Some((_, l)) => l.radiate_flow(intake_flow) + l.spread_from_1m(block),
+            Some((_, l)) => l.radiate_mouth(intake_flow, mouth_area) + l.spread_from_1m(block),
             None => 0.0,
         };
         let audio = if let Some(r) = self.remote.0.as_mut() {
@@ -2082,6 +2285,11 @@ impl Engine {
     pub fn combustions(&self) -> u64 {
         self.combustions
     }
+
+    /// Heat released by unburnt mixture burning in the exhaust primaries so far, J.
+    pub fn afterburn_j(&self) -> f64 {
+        self.afterburn_j
+    }
     pub fn cylinder(&self, i: usize) -> CylinderView {
         let cs = &self.cyl[i];
         let g = self.def.geometry;
@@ -2103,6 +2311,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::combustion::charge_energy;
     use approx::assert_relative_eq;
 
     const DT: f64 = 1.0 / 48_000.0 / 4.0;
@@ -2220,7 +2429,7 @@ mod tests {
         // diluted burns slower, more turbulence shortens the angles (u′^(−2/3)): one σ each
         let g = EngineDef::inline4().geometry;
         let at = |n: (f64, f64, f64)| {
-            cycle_flame(&g, 10.0, (0.9e5, 330.0), 0.95, 5.5e-4, 0.07, n).unwrap()
+            cycle_flame(&g, 10.0, (0.9e5, 330.0), 0.95, 5.5e-4, (1.0, 0.07), n).unwrap()
         };
         let mean = at((0.0, 0.0, 0.0));
         assert!(at((1.0, 0.0, 0.0)) < mean, "richer burns faster");
@@ -2242,6 +2451,17 @@ mod tests {
     }
 
     #[test]
+    fn unburnt_residual_does_not_dilute_the_flame() {
+        // after a cut cycle the gas left in the cylinder is pumped air, not burnt gas: of a
+        // 1e-5 kg residual holding 6e-6 kg of unburnt air, 4e-6 kg dilute a 4e-5 kg charge, 0.1
+        let mut e = Engine::new(EngineDef::single(), 1000.0, 1);
+        e.cyl[0].trapped_kg = 4e-5;
+        e.cyl[0].residual_kg = 1e-5;
+        e.cyl[0].residual_unburnt_kg = 6e-6;
+        assert!((dilution_of(&e.cyl[0]) - 0.1).abs() < 1e-12);
+    }
+
+    #[test]
     fn cycles_vary_as_measured_engines_do() {
         // Singotia & Saraswati (IOP Conf. Ser. 691, 012061, 2019), a gasoline engine at
         // 2500 rpm: COV of peak pressure 1.6 % at high load, 5.0 % at a medium one, 13.2 % at a
@@ -2256,6 +2476,81 @@ mod tests {
         let mut flat = EngineDef::inline4();
         flat.sound.combustion_jitter = 0.0;
         assert!(cov(&cycle_peaks(flat, 2500.0, 1.0, 1.0)) < 1e-4);
+    }
+
+    /// The engine's sound with every source off but the valve seats at `mechanical` and the
+    /// block at `block`, over 0.2 s at 3000 rpm, on `def`.
+    fn seats_only(mut d: EngineDef, mechanical: f64, block: f64) -> Vec<f64> {
+        d.sound = crate::sound::SoundDef {
+            flow_noise: 0.0,
+            intake: 0.0,
+            combustion_jitter: 0.0,
+            valve_jet: 0.0,
+            mechanical,
+            block,
+            ..crate::sound::SoundDef::default()
+        };
+        let mut e = Engine::new(d, 3000.0, 1);
+        let c = Controls {
+            throttle: 0.3,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.2, &c)
+    }
+
+    #[test]
+    fn the_valve_seats_tick_linearly_through_the_head() {
+        // What the seats add (with them on, minus off) is linear in `sound.mechanical`, and a
+        // force acting as F/A_bore on the head: the same strikes on a bore of twice the area
+        // add half. The first strike pushes the structure positive (a compressive force).
+        let d = EngineDef::single();
+        let off = seats_only(d.clone(), 0.0, 0.0);
+        let one: Vec<f64> = seats_only(d.clone(), 1.0, 0.0)
+            .iter()
+            .zip(&off)
+            .map(|(a, b)| a - b)
+            .collect();
+        let two: Vec<f64> = seats_only(d.clone(), 2.0, 0.0)
+            .iter()
+            .zip(&off)
+            .map(|(a, b)| a - b)
+            .collect();
+        let peak = one.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+        assert!(peak > 0.0, "the seats add nothing");
+        for (a, b) in one.iter().zip(&two) {
+            assert!((b - 2.0 * a).abs() <= 1e-9 * peak, "not linear: {a} {b}");
+        }
+        let first = one.iter().find(|x| x.abs() > 1e-6 * peak).copied().unwrap();
+        assert!(first > 0.0, "first tick {first}");
+        // twice the piston area: the bore × √2 (the strikes come at the same crank angles)
+        let mut wide = d.clone();
+        wide.geometry.bore_m *= 2f64.sqrt();
+        let wide_off = seats_only(wide.clone(), 0.0, 0.0);
+        let wide_one: Vec<f64> = seats_only(wide, 1.0, 0.0)
+            .iter()
+            .zip(&wide_off)
+            .map(|(a, b)| a - b)
+            .collect();
+        let wide_peak = wide_one.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+        assert!(
+            (wide_peak / peak - 0.5).abs() < 1e-6,
+            "{} vs {}",
+            wide_peak,
+            peak
+        );
+    }
+
+    #[test]
+    fn the_block_sounds_without_the_seats() {
+        let d = EngineDef::single();
+        let quiet = seats_only(d.clone(), 0.0, 0.0);
+        let block = seats_only(d, 0.0, 1.0);
+        let diff = block
+            .iter()
+            .zip(&quiet)
+            .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()));
+        assert!(diff > 0.0, "the block adds nothing on its own");
     }
 
     #[test]
@@ -2323,6 +2618,52 @@ mod tests {
                 e.def.name
             );
         }
+    }
+
+    #[test]
+    fn a_seating_pulse_carries_its_impulse() {
+        // a half-sine of peak F over τ carries ∫ = 2Fτ/π: 292 N over 0.15 ms is 27.885 mN·s
+        let dt = 1e-6;
+        let j: f64 = (0..200)
+            .map(|k| seat_pulse(292.0, k as f64 * dt) * dt)
+            .sum();
+        assert!((j / 0.027885 - 1.0).abs() < 0.01, "{j}");
+        assert_eq!(seat_pulse(292.0, -1e-6), 0.0);
+        assert_eq!(seat_pulse(292.0, SEAT_PULSE_S + 1e-9), 0.0);
+    }
+
+    #[test]
+    fn the_valves_tick_harder_as_the_engine_turns_faster() {
+        // valve seating heard through the block alone (no combustion noise, no exhaust): each
+        // seat strikes with a force ∝ its closing speed ∝ rpm, twice as often at twice the
+        // speed, so the ticking's energy grows ~ rpm³: ×8 from 2000 to 4000 rpm
+        let ticks = |rpm: f64| {
+            let tick = |mech: f64| {
+                let mut d = EngineDef::inline4();
+                d.sound.block = 0.0;
+                d.sound.mechanical = mech;
+                let mut e = Engine::new(d, rpm, 1);
+                let c = Controls {
+                    throttle: 0.5,
+                    hold_rpm: Some(rpm),
+                    ..Controls::default()
+                };
+                run(&mut e, 0.3, &c);
+                run(&mut e, 0.3, &c)
+            };
+            let (with, without) = (tick(1.0), tick(0.0));
+            with.iter()
+                .zip(&without)
+                .map(|(a, b)| (a - b).powi(2))
+                .sum::<f64>()
+        };
+        let (slow, fast) = (ticks(2000.0), ticks(4000.0));
+        assert!(slow > 0.0, "no ticking at all");
+        let r = fast / slow;
+        assert!(
+            (4.0..16.0).contains(&r),
+            "energy ×{r} from 2000 to 4000 rpm"
+        );
     }
 
     #[test]
@@ -4169,6 +4510,184 @@ mod tests {
         assert_relative_eq!(e.throttle_area(1.0), full, max_relative = 1e-9);
     }
 
+    /// The LFA held at 8000 rpm, at full throttle for a second and then lifted off for
+    /// `lift_s`: (combustions, afterburn heat J) over the last 0.5 s at WOT, then over each
+    /// 0.25 s of the lift-off.
+    fn lift_off(lift_s: f64) -> ((u64, f64), Vec<(u64, f64)>) {
+        let mut e = Engine::new(EngineDef::lfa_v10(), 8000.0, 1);
+        let hold = |throttle| Controls {
+            throttle,
+            hold_rpm: Some(8000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 1.0, &hold(1.0));
+        let window = |e: &mut Engine, s: f64, t: f64| {
+            let (n, q) = (e.combustions(), e.afterburn_j());
+            run(e, s, &hold(t));
+            (e.combustions() - n, e.afterburn_j() - q)
+        };
+        let wot = window(&mut e, 0.5, 1.0);
+        let lift = (0..(lift_s / 0.25) as usize)
+            .map(|_| window(&mut e, 0.25, 0.0))
+            .collect();
+        (wot, lift)
+    }
+
+    #[test]
+    fn a_lift_off_fires_on_the_port_film_for_a_while() {
+        // Aquino's x–τ (Heywood §7.6.3): the fuel cut stops the injection, not the fuel. The film
+        // the port walls hold gives back e·film each intake, so the cylinders keep firing for a
+        // while, leaner and leaner, and then stop. A cut that stopped the fuel at once fired none.
+        let (_, lift) = lift_off(3.0);
+        assert!(
+            lift[0].0 > 20,
+            "the film fires nothing after the lift-off: {lift:?}"
+        );
+        assert!(
+            lift[lift.len() - 1].0 < lift[0].0 / 4,
+            "the film never runs dry: {lift:?}"
+        );
+    }
+
+    #[test]
+    fn a_lift_off_afterburns_in_the_exhaust_and_steady_wot_does_not() {
+        // A flame too slow to finish before the exhaust valve opens, or a charge too lean to
+        // take, sends unburnt mixture into a primary still above 873 K, where it burns (Heywood
+        // §11.6.3): the pops of a lift-off. At steady full throttle every flame finishes.
+        let (wot, lift) = lift_off(1.0);
+        assert!(wot.1 < 1.0, "afterburn at steady WOT: {} J", wot.1);
+        let total: f64 = lift.iter().map(|w| w.1).sum();
+        assert!(total > 10.0, "no afterburn on the lift-off: {lift:?}");
+    }
+
+    #[test]
+    fn heat_in_a_primary_warms_and_expands_its_gas() {
+        // 100 J in 1e-3 kg over 1e-4 s: 100/(1e-3·1004.5) = 99.552 K; c_p·T_ref = c²/(γ − 1)
+        // = 600²/0.4 = 9e5, so the source is 1e6/9e5 = 1.11111 (hand)
+        let (rise, source) = primary_heat(100.0, 1e-3, 1e-4);
+        assert!((rise - 99.552).abs() < 1e-3, "{rise}");
+        assert!((source - 1.111_111).abs() < 1e-6, "{source}");
+    }
+
+    #[test]
+    fn a_flame_releases_the_fuel_its_air_can_burn() {
+        // lean 1e-5 kg × 44e6 × 0.96 × 1.02 = 430.848 J; rich 2e-5 kg in 1.47e-4 kg air burns
+        // 1e-5: 422.4 J (hand)
+        assert!((burn_energy(1e-5, 3e-4, 1.02) - 430.848).abs() < 1e-9);
+        assert!((burn_energy(2e-5, 1.47e-4, 1.0) - 422.4).abs() < 1e-9);
+    }
+
+    /// Fuel still held anywhere in `e`, kg: the charges awaiting their spark, the flames'
+    /// unreleased share, the gas leaving the cylinders and the primaries.
+    fn fuel_held(e: &Engine) -> f64 {
+        e.cyl
+            .iter()
+            .map(|c| {
+                let flame = c.burn.as_ref().map_or(0.0, |b| b.unburnt().fuel_kg);
+                c.fuel_kg + flame + c.slip.fuel_kg + c.port_mix.fuel_kg()
+            })
+            .sum()
+    }
+
+    #[test]
+    fn every_kilogram_of_fuel_is_accounted_for() {
+        // Mass balance through a pull, a lift-off and the limiter: what the ports delivered
+        // is burnt in the cylinders, burnt in the primaries, out of the primaries, or still held
+        for d in [EngineDef::lfa_v10(), EngineDef::inline4()] {
+            let top = d.redline_rpm;
+            let mut e = Engine::new(d, 3000.0, 1);
+            for (t, s) in [(1.0, 1.5), (0.0, 1.5), (1.0, 1.0)] {
+                let c = Controls {
+                    throttle: t,
+                    ..Controls::default()
+                };
+                run(&mut e, s, &c);
+            }
+            assert!(
+                e.rpm() > 0.9 * top,
+                "never reached the limiter: {}",
+                e.rpm()
+            );
+            let l = e.fuel_ledger;
+            let out = l.burnt + l.afterburnt + l.exited + fuel_held(&e);
+            assert!(
+                l.into_cylinders > 0.0 && l.afterburnt > 0.0 && l.exited > 0.0,
+                "{l:?}"
+            );
+            assert!(
+                (out / l.into_cylinders - 1.0).abs() < 1e-9,
+                "{}: {l:?}, held {}",
+                e.def.name,
+                fuel_held(&e)
+            );
+        }
+    }
+
+    #[test]
+    fn a_film_of_no_time_constant_holds_no_fuel() {
+        // τ = 0 disables the film: a cut delivers nothing at all
+        let mut d = EngineDef::lfa_v10();
+        d.intake.film_tau_s = 0.0;
+        let mut e = Engine::new(d, 8000.0, 1);
+        let hold = |throttle| Controls {
+            throttle,
+            hold_rpm: Some(8000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.5, &hold(1.0));
+        run(&mut e, 0.05, &hold(0.0));
+        let fed = e.fuel_ledger.into_cylinders;
+        run(&mut e, 0.25, &hold(0.0));
+        assert_eq!(e.fuel_ledger.into_cylinders, fed);
+        assert!(e.cyl.iter().all(|c| c.film.film_kg == 0.0));
+    }
+
+    #[test]
+    fn road_presets_carry_close_coupled_catalysts() {
+        // every road car has catalysts: one per branch right after its collector, of about the
+        // branch's swept volume (the sizing rule of `exhaust::road_exhaust`), 0.13 m long. The
+        // LFA: 4.805 L over two banks, Ø = √(4·2.4025e-3/(π·0.13)) = 0.1534 m (hand)
+        let lfa = EngineDef::lfa_v10();
+        match lfa.exhaust.after_collector.first() {
+            Some(crate::exhaust::Segment::Catalyst {
+                length_m,
+                diameter_m,
+                ..
+            }) => {
+                assert_eq!(*length_m, 0.13);
+                assert!((diameter_m - 0.1534).abs() < 5e-4, "{diameter_m}");
+            }
+            other => panic!("the LFA has no catalyst first: {other:?}"),
+        }
+        for d in [
+            EngineDef::inline4(),
+            EngineDef::honda_k20a(),
+            EngineDef::flatplane_v8(),
+            EngineDef::crossplane_v8(),
+        ] {
+            assert!(
+                matches!(
+                    d.exhaust.after_collector.first(),
+                    Some(crate::exhaust::Segment::Catalyst { .. })
+                ),
+                "{}",
+                d.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_mixture_whose_flame_cannot_propagate_misfires() {
+        // Metghalchi–Keck's S_L0 = 0.2758 − 0.7834(φ − 1.13)² falls to zero at φ = 0.537 and
+        // 1.723 (hand): there the flame has no speed and its angles no finite ratio
+        let g = EngineDef::lfa_v10().geometry;
+        let at = |phi: f64| flame_ratio(&g, 15.0, (1e5, 350.0), 1.0, 4e-4, (phi, 0.08));
+        assert!(at(1.0).is_finite());
+        assert!(at(0.6).is_finite());
+        assert!(!at(0.5).is_finite(), "{}", at(0.5));
+        assert!(!at(1.8).is_finite(), "{}", at(1.8));
+    }
+
     #[test]
     fn overrun_cuts_fuel_above_the_threshold_only() {
         // Deceleration fuel cut-off: closed throttle above `overrun_fuel_cut_rpm` → no combustion;
@@ -4197,6 +4716,46 @@ mod tests {
         };
         run(&mut e, 0.3, &c);
         assert!(e.combustions() > 20, "0 disables the cut");
+    }
+
+    #[test]
+    fn a_motored_fv_exhaust_repeats_every_cycle() {
+        // Held speed, fuel cut, no random source: the engine is a periodic system, so what it
+        // radiates must repeat from one cycle to the next. Before the open end's inflow was
+        // isentropic from the atmosphere, the tail's flow reversals (~600 a second on the LFA's
+        // overrun) left it 0.49–0.81 correlated and 10 dB over full power.
+        for d in [EngineDef::inline4(), EngineDef::lfa_v10()] {
+            let mut d = fv(d);
+            let s = &mut d.sound;
+            (s.flow_noise, s.block, s.mechanical, s.intake) = (0.0, 0.0, 0.0, 0.0);
+            (s.valve_jet, s.combustion_jitter) = (0.0, 0.0);
+            let rpm = 0.85 * d.redline_rpm;
+            let mut e = Engine::new(d, rpm, 1);
+            let c = Controls {
+                throttle: 0.0,
+                hold_rpm: Some(rpm),
+                ..Controls::default()
+            };
+            run(&mut e, 1.0, &c);
+            let x = run(&mut e, 0.4, &c);
+            let cycle = 120.0 / rpm / DT;
+            let at = |k: usize| &x[(k as f64 * cycle) as usize..][..cycle as usize];
+            let n = (x.len() as f64 / cycle) as usize - 1;
+            let corr = |a: &[f64], b: &[f64]| {
+                let m = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
+                let (ma, mb) = (m(a), m(b));
+                let cov: f64 = a.iter().zip(b).map(|(x, y)| (x - ma) * (y - mb)).sum();
+                let va: f64 = a.iter().map(|x| (x - ma).powi(2)).sum();
+                let vb: f64 = b.iter().map(|y| (y - mb).powi(2)).sum();
+                cov / (va * vb).sqrt()
+            };
+            let mean = (0..n - 1).map(|k| corr(at(k), at(k + 1))).sum::<f64>() / (n - 1) as f64;
+            assert!(
+                mean > 0.95,
+                "{}: cycle-to-cycle correlation {mean:.3}",
+                e.def.name
+            );
+        }
     }
 
     #[test]
@@ -4853,20 +5412,24 @@ mod tests {
 
     #[test]
     fn each_preset_carries_only_the_exhaust_it_has_data_for() {
-        // after each collector, the tail pipe of the preset's own length and bore — no silencer
-        // sized by rule
+        // after each collector, the catalyst every road car carries (sized by its rule) and the
+        // tail pipe of the preset's own length and bore — no silencer sized by rule
         for d in [
             EngineDef::inline4(),
             EngineDef::lfa_v10(),
             EngineDef::flatplane_v8(),
             EngineDef::crossplane_v8(),
         ] {
+            let branch = d.displacement_m3() / d.exhaust.collectors.len().max(1) as f64;
             assert_eq!(
                 d.exhaust.after_collector,
-                [crate::exhaust::Segment::Pipe {
-                    length_m: d.exhaust.tail_length_m,
-                    diameter_m: d.exhaust.tail_diameter_m,
-                }],
+                [
+                    crate::exhaust::close_coupled_catalyst(branch, d.exhaust.tail_diameter_m),
+                    crate::exhaust::Segment::Pipe {
+                        length_m: d.exhaust.tail_length_m,
+                        diameter_m: d.exhaust.tail_diameter_m,
+                    }
+                ],
                 "{}",
                 d.name
             );

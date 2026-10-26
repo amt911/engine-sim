@@ -40,8 +40,13 @@ pub struct ExhaustFv {
     /// Valve mass and energy accumulated since the last FV step, per cylinder (kg, J).
     acc_mass: Vec<f64>,
     acc_energy: Vec<f64>,
-    radiated: f64,
-    /// Radiated source at each tail outlet, held between FV steps like `radiated`.
+    /// The radiated source at the last two pipe steps (summed over the outlets, and per
+    /// outlet): between pipe steps the physics steps get the straight line from the older to
+    /// the newer, one pipe step late, not a staircase whose edges the listener's radiation
+    /// filter (∝ s) would turn into spikes at the pipe rate.
+    radiated: [f64; 2],
+    tails_pair: Vec<[f64; 2]>,
+    /// Radiated source at each tail outlet this physics step (`tails_pair` interpolated).
     tails: Vec<f64>,
     /// Mass that left through the tail outlets in the last physics step, kg.
     vented: f64,
@@ -306,7 +311,8 @@ impl ExhaustFv {
             count: 0,
             acc_mass: vec![0.0; cylinders],
             acc_energy: vec![0.0; cylinders],
-            radiated: 0.0,
+            radiated: [0.0; 2],
+            tails_pair: vec![[0.0; 2]; def.groups(cylinders).len()],
             tails: vec![0.0; def.groups(cylinders).len()],
             vented: 0.0,
         }
@@ -358,7 +364,7 @@ impl ExhaustFv {
         self.count += 1;
         self.vented = 0.0;
         if self.count < self.substeps {
-            return self.radiated;
+            return self.interpolated();
         }
         self.count = 0;
         let dt = self.dt_fv;
@@ -394,8 +400,21 @@ impl ExhaustFv {
         for _ in 0..n {
             radiated += self.substep(h, 1.0 / n as f64) / n as f64;
         }
-        self.radiated = radiated;
-        radiated
+        self.radiated = [self.radiated[1], radiated];
+        for (pair, &t) in self.tails_pair.iter_mut().zip(&self.tails) {
+            *pair = [pair[1], t];
+        }
+        self.interpolated()
+    }
+
+    /// This physics step's radiated source on the line between the last two pipe steps' values
+    /// (`count` physics steps past the older); writes each tail's into `tails`.
+    fn interpolated(&mut self) -> f64 {
+        let f = self.count as f64 / self.substeps as f64;
+        for (t, pair) in self.tails.iter_mut().zip(&self.tails_pair) {
+            *t = pair[0] + (pair[1] - pair[0]) * f;
+        }
+        self.radiated[0] + (self.radiated[1] - self.radiated[0]) * f
     }
 
     /// Radiated source at each tail outlet (held between FV steps); they sum to `step`'s.
@@ -898,6 +917,33 @@ mod tests {
     }
 
     #[test]
+    fn the_radiated_signal_moves_between_pipe_steps() {
+        // A pipe step spans several physics steps; held between them, the radiated source is a
+        // staircase whose edges the listener's radiation filter (∝ s) turns into spikes at the
+        // pipe rate. Interpolated, it moves every physics step, landing on each pipe step's
+        // value one pipe step late.
+        let dt = 1.0 / 192_000.0;
+        let mut net = ExhaustFv::new(&def(), 1, dt);
+        assert!(net.substeps >= 4, "{}", net.substeps);
+        let mut x = Vec::new();
+        for k in 0..20_000 {
+            if k % 4000 < 400 {
+                net.add_valve_flow(0, 0.05 * dt, 1004.5 * 900.0);
+            }
+            x.push(net.step());
+        }
+        let busy = &x[1000..4000];
+        let held = busy.windows(2).filter(|w| w[0] == w[1]).count();
+        assert!(
+            held < busy.len() / 20,
+            "{held} of {} steps held",
+            busy.len()
+        );
+        // the tails follow the same line and sum to it
+        assert!((net.last_tails().iter().sum::<f64>() - x[x.len() - 1]).abs() < 1e-9);
+    }
+
+    #[test]
     fn rising_root_finds_the_root_in_few_evaluations() {
         // x³ − 2 on [0, 2]: the cube root of 2 (1.259921049894873); bisection would need 40+.
         let points = std::cell::RefCell::new(Vec::new());
@@ -1147,8 +1193,9 @@ mod tests {
 
     #[test]
     fn the_pipes_advance_once_per_fv_step() {
-        // Physics time and pipe time stay in step: dt_fv = substeps · dt, and the radiated value
-        // changes exactly once per FV step under a steady flow.
+        // Physics time and pipe time stay in step: dt_fv = substeps · dt, and the line the
+        // radiated value follows gets a new end once per FV step under a steady flow (the value
+        // at each pipe step's boundary changes every pipe step).
         let mut net = ExhaustFv::new(&def(), 1, DT);
         assert!((net.dt_fv - net.substeps as f64 * DT).abs() < 1e-18);
         assert!(net.substeps > 1);
@@ -1160,13 +1207,15 @@ mod tests {
         let mut updates = 0;
         let mut last = net.step();
         let steps = 70 * net.substeps;
-        for _ in 1..steps {
+        for k in 1..steps {
             net.add_valve_flow(0, 0.05 * DT, 1004.5 * 900.0);
             let r = net.step();
-            if r != last {
-                updates += 1;
+            if k % net.substeps == 0 {
+                if r != last {
+                    updates += 1;
+                }
+                last = r;
             }
-            last = r;
         }
         assert!(
             (68..=70).contains(&updates),
