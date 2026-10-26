@@ -154,6 +154,106 @@ pub struct Shunt {
     inv: f64,
 }
 
+/// First-order branches k·sT/(1 + sT) driven by one signal, by the bilinear transform: their
+/// summed output is `inst`·x[n] + `hist` (the past), so a node can solve for x[n] implicitly.
+#[derive(Debug, Clone)]
+struct Branches {
+    /// per branch (b₀, a₁), y[n] = b₀(x[n] − x[n−1]) − a₁y[n−1]
+    coef: Vec<(f64, f64)>,
+    y: Vec<f64>,
+    x_prev: f64,
+    inst: f64,
+}
+
+impl Branches {
+    fn new(branches: &[crate::narrow_tube::Branch], scale: f64, dt: f64) -> Self {
+        let coef: Vec<(f64, f64)> = branches
+            .iter()
+            .map(|b| {
+                let at = 2.0 * b.t_s / dt;
+                (scale * b.k * at / (1.0 + at), (1.0 - at) / (1.0 + at))
+            })
+            .collect();
+        let inst = coef.iter().map(|c| c.0).sum();
+        Self {
+            y: vec![0.0; coef.len()],
+            coef,
+            x_prev: 0.0,
+            inst,
+        }
+    }
+
+    /// The summed output's part already fixed by the past.
+    fn hist(&self) -> f64 {
+        self.coef
+            .iter()
+            .zip(&self.y)
+            .map(|(&(b0, a1), &y)| -b0 * self.x_prev - a1 * y)
+            .sum()
+    }
+
+    /// Take this step's input.
+    fn advance(&mut self, x: f64) {
+        for (&(b0, a1), y) in self.coef.iter().zip(&mut self.y) {
+            *y = b0 * (x - self.x_prev) - a1 * *y;
+        }
+        self.x_prev = x;
+    }
+}
+
+/// A series impedance R₀ + Σ k·sT/(1 + sT) in the flow's way (Pa·s/m³): a narrow-channel
+/// brick's viscous losses ([`crate::narrow_tube::viscous`]).
+#[derive(Debug, Clone)]
+pub struct SeriesNet {
+    r0: f64,
+    rho_c: f64,
+    b: Branches,
+}
+
+impl SeriesNet {
+    /// In gas of impedance `rho_c`.
+    pub fn new(r0: f64, branches: &[crate::narrow_tube::Branch], rho_c: f64, dt: f64) -> Self {
+        Self {
+            r0,
+            rho_c,
+            b: Branches::new(branches, 1.0, dt),
+        }
+    }
+
+    /// The flow through it between pipes of impedances `z` with waves `incoming`, writing the
+    /// outgoing waves: 2(p₁ − p₂) − (z₁ + z₂)Q = Z·Q (see [`Duct::send`]).
+    fn node(&mut self, areas: &[f64; 2], incoming: &[f64; 2], out: &mut [f64; 2]) {
+        let z = [self.rho_c / areas[0], self.rho_c / areas[1]];
+        let q = (2.0 * (incoming[0] - incoming[1]) - self.b.hist())
+            / (z[0] + z[1] + self.r0 + self.b.inst);
+        self.b.advance(q);
+        *out = [incoming[0] - z[0] * q, incoming[1] + z[1] * q];
+    }
+}
+
+/// A shunt admittance Σ k·sT/(1 + sT) off the duct (m³/(Pa·s)) in gas of impedance `rho_c`: a
+/// narrow-channel brick's thermal losses ([`crate::narrow_tube::thermal`]).
+#[derive(Debug, Clone)]
+pub struct ShuntNet {
+    b: Branches,
+}
+
+impl ShuntNet {
+    pub fn new(branches: &[crate::narrow_tube::Branch], rho_c: f64, dt: f64) -> Self {
+        // ×ρc: the junction speaks in areas, Σ Aᵢ(2pᵢ − p) = ρc·Y·p
+        Self {
+            b: Branches::new(branches, rho_c, dt),
+        }
+    }
+
+    fn node(&mut self, areas: &[f64; 2], incoming: &[f64; 2], out: &mut [f64; 2]) {
+        let pj = (2.0 * (areas[0] * incoming[0] + areas[1] * incoming[1]) - self.b.hist())
+            / (areas[0] + areas[1] + self.b.inst);
+        self.b.advance(pj);
+        *out = [pj - incoming[0], pj - incoming[1]];
+    }
+}
+
 /// What happens where two pipes of a [`Duct`] meet.
 #[derive(Debug, Clone)]
 pub enum Node {
@@ -164,6 +264,10 @@ pub enum Node {
     /// A resistance in the flow's way: `R` (Pa·s/m³, pressure drop over volume flow) in gas
     /// of impedance `rho_c` — a catalyst's monolith.
     Series(f64, f64),
+    /// A frequency-dependent impedance in the flow's way.
+    SeriesNet(SeriesNet),
+    /// A frequency-dependent admittance off the duct.
+    ShuntNet(ShuntNet),
 }
 
 impl Shunt {
@@ -315,6 +419,8 @@ impl Duct {
                 let mut out = [0.0; 2];
                 match self.nodes.get_mut(k) {
                     Some(Node::Shunt(s)) => s.node(&areas, &incoming, &mut out),
+                    Some(Node::SeriesNet(n)) => n.node(&areas, &incoming, &mut out),
+                    Some(Node::ShuntNet(n)) => n.node(&areas, &incoming, &mut out),
                     Some(Node::Series(r, rho_c)) => {
                         // Q = 2(p₁ − p₂)/(z₁ + z₂ + R), z = ρc/A: each side loses z·Q
                         let (z1, z2) = (*rho_c / areas[0], *rho_c / areas[1]);
@@ -551,6 +657,61 @@ mod tests {
         for f in [200.0, 1500.0] {
             let tl = -20.0 * transmission(duct(), f, dt).log10();
             assert!((tl - 3.522).abs() < 0.05, "{f} Hz: {tl:.3} dB");
+        }
+    }
+
+    #[test]
+    fn a_series_network_has_its_transmission_loss() {
+        // A parallel RL in series, Z = R·iωT/(1 + iωT), R = 2ρc/S: at ωT = 1 Z·S/2ρc = (1 + i)/2,
+        // TL = 20·log|1.5 + 0.5i| = 3.979 dB; far above, Z → R: 20·log 2 = 6.021 dB (Kinsler
+        // et al., ch. 10)
+        let dt = 1.0 / 192_000.0;
+        let rho_c = 283.71;
+        let s_area = std::f64::consts::PI * 0.25 * 0.05 * 0.05;
+        let f1 = 300.0;
+        let branch = crate::narrow_tube::Branch {
+            k: 2.0 * rho_c / s_area,
+            t_s: 1.0 / (2.0 * std::f64::consts::PI * f1),
+        };
+        let duct = || {
+            Duct::with_nodes(
+                vec![
+                    Pipe::new(1.0, 0.05, 500.0, dt, 0.0),
+                    Pipe::new(1.0, 0.05, 500.0, dt, 0.0),
+                ],
+                vec![Node::SeriesNet(SeriesNet::new(0.0, &[branch], rho_c, dt))],
+            )
+        };
+        for (f, want) in [(f1, 3.979), (30.0 * f1, 6.021)] {
+            let tl = -20.0 * transmission(duct(), f, dt).log10();
+            assert!((tl - want).abs() < 0.1, "{f} Hz: {tl:.3} dB, want {want}");
+        }
+    }
+
+    #[test]
+    fn a_shunt_network_has_its_transmission_loss() {
+        // A series RC to the side, Y = G·iωT/(1 + iωT), G = 2S/ρc: TL = 20·log|1 + Y·ρc/2S|,
+        // 3.979 dB at ωT = 1 and 6.021 dB far above (Kinsler et al., ch. 10)
+        let dt = 1.0 / 192_000.0;
+        let rho_c = 283.71;
+        let s_area = std::f64::consts::PI * 0.25 * 0.05 * 0.05;
+        let f1 = 300.0;
+        let branch = crate::narrow_tube::Branch {
+            k: 2.0 * s_area / rho_c,
+            t_s: 1.0 / (2.0 * std::f64::consts::PI * f1),
+        };
+        let duct = || {
+            Duct::with_nodes(
+                vec![
+                    Pipe::new(1.0, 0.05, 500.0, dt, 0.0),
+                    Pipe::new(1.0, 0.05, 500.0, dt, 0.0),
+                ],
+                vec![Node::ShuntNet(ShuntNet::new(&[branch], rho_c, dt))],
+            )
+        };
+        for (f, want) in [(f1, 3.979), (30.0 * f1, 6.021)] {
+            let tl = -20.0 * transmission(duct(), f, dt).log10();
+            assert!((tl - want).abs() < 0.1, "{f} Hz: {tl:.3} dB, want {want}");
         }
     }
 

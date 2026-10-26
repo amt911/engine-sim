@@ -473,3 +473,37 @@ Worktrees live under `target/wt-*`, so from one of them `../../scripts/mutants.s
 **main checkout's** `scripts/`. `mutants.sh` starts with `cd "$(dirname "$0")/.."`, so it then
 mutates the main checkout's tree, not the worktree you meant. `heavy.sh` is only a wrapper and
 does no harm. **Fix.** From a worktree, call its own `scripts/…`.
+
+## FV overrun: two numerical sources, and the open question left (2026-10-25)
+
+**Symptom.** Held at constant speed with the fuel cut and every random source off, a fully
+deterministic engine, the FV exhaust's sound did not repeat from cycle to cycle. Cycle-to-cycle
+correlation was 0.49 on the inline-4 and 0.81 on the LFA. It also came out 9–10 dB over full
+power.
+
+**Measured stage by stage** (LFA and inline-4 at 0.85 × redline):
+- Valve flow, cylinder pressure and primary pressures repeat exactly.
+- On overrun the tail's outlet flow reverses 120–300 times in half a second; at WOT it never does.
+- At 192 kHz physics the output broke even at WOT (0.80). Below 5 kHz it repeated.
+
+**Causes.**
+- **The open end's inflow.** It imposed the atmosphere's *static* pressure and density on gas
+  entering the pipe. The ghost jumped at every reversal: hot gas at p₀ one step, cold air at p₀
+  the next. Fix: `fv::open_end`. Along the characteristic from inside, p + Z·v is the interior's.
+  Outflow takes p₀. Inflow is the atmosphere's Bernoulli, p = p₀ − ½ρ₀v². Pressure and velocity
+  are continuous through a reversal; only the density jumps (a contact surface).
+- **A staircase.** FV held its radiated value between pipe steps (7 physics steps at 192 kHz).
+  The listener's radiation filter (∝ s) turned every stair edge into a spike at the pipe rate.
+  Fix: the value is interpolated on the line between the last two pipe steps, one pipe step
+  late.
+
+**Tests:** `a_motored_fv_exhaust_repeats_every_cycle`, `the_radiated_signal_moves_between_pipe_steps`,
+`an_open_end_draws_the_atmosphere_in_by_bernoulli`, `an_open_end_passes_outflow_at_the_outside_pressure`.
+
+**Still open.** Periodic now, FV still radiates about 9 dB more on overrun than at full power in
+the audible band. It has the same pulse at the valve in both states: the overrun EVO back-flow
+into a 0.3 bar cylinder is as strong as the WOT blowdown. Exhaust noise is generally quoted as
+≈ 10 dB *below* full load at no load, a generic figure. No measured overrun-vs-WOT tail data is in
+hand. Suspects, untested: the open end without the jet's vortex-shedding loss at high mean
+outflow (|R| = (1 − M)/(1 + M), which the waveguide has), and no shell or muffler damping at low
+mean flow.

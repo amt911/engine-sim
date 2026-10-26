@@ -190,6 +190,7 @@ impl EngineDef {
             ..Self::single()
         }
         .with_tail_pipe()
+        .with_catalyst()
     }
 
     /// Honda K20A (Integra Type R, DC5): the published engine, its unpublished geometry sized
@@ -250,6 +251,7 @@ impl EngineDef {
             ..Self::single()
         }
         .with_tail_pipe()
+        .with_catalyst()
     }
 
     /// Lexus LFA, Toyota 1LR-GUE: 4.8 L 72° V10, 88 × 79 mm, CR 12.0, even firing,
@@ -350,6 +352,7 @@ impl EngineDef {
             vehicle: crate::drivetrain::VehicleDef::lfa_v10(),
         }
         .with_tail_pipe()
+        .with_catalyst()
     }
 
     /// Flat-plane V8 after the Ferrari F136 F (458 Italia): 4,497 cc from 94 × 81 mm,
@@ -421,6 +424,7 @@ impl EngineDef {
             vehicle: crate::drivetrain::VehicleDef::flatplane_v8(),
         }
         .with_tail_pipe()
+        .with_catalyst()
     }
 
     /// Cross-plane V8 after the GM LS3 (C6 Corvette): 6,162 cc from 103.25 × 92 mm, 10.7:1,
@@ -492,6 +496,7 @@ impl EngineDef {
             vehicle: crate::drivetrain::VehicleDef::crossplane_v8(),
         }
         .with_tail_pipe()
+        .with_catalyst()
     }
 
     /// The ECU's spark advance (° BTDC) for a flame `flame_ratio` times as long in crank angle as
@@ -514,6 +519,19 @@ impl EngineDef {
             length_m: self.exhaust.tail_length_m,
             diameter_m: self.exhaust.tail_diameter_m,
         }];
+        self
+    }
+
+    /// A road car's catalyst first after each collector
+    /// ([`crate::exhaust::close_coupled_catalyst`]): every one since the 1990s carries them,
+    /// and they shape the sound that reaches the tail (Elnemr, KTH 2011).
+    fn with_catalyst(mut self) -> Self {
+        let branches = self.exhaust.collectors.len().max(1);
+        let cat = crate::exhaust::close_coupled_catalyst(
+            self.displacement_m3() / branches as f64,
+            self.exhaust.tail_diameter_m,
+        );
+        self.exhaust.after_collector.insert(0, cat);
         self
     }
 
@@ -4564,6 +4582,40 @@ mod tests {
     }
 
     #[test]
+    fn road_presets_carry_close_coupled_catalysts() {
+        // every road car has catalysts: one per branch right after its collector, of about the
+        // branch's swept volume (the sizing rule of `exhaust::road_exhaust`), 0.13 m long. The
+        // LFA: 4.805 L over two banks, Ø = √(4·2.4025e-3/(π·0.13)) = 0.1534 m (hand)
+        let lfa = EngineDef::lfa_v10();
+        match lfa.exhaust.after_collector.first() {
+            Some(crate::exhaust::Segment::Catalyst {
+                length_m,
+                diameter_m,
+                ..
+            }) => {
+                assert_eq!(*length_m, 0.13);
+                assert!((diameter_m - 0.1534).abs() < 5e-4, "{diameter_m}");
+            }
+            other => panic!("the LFA has no catalyst first: {other:?}"),
+        }
+        for d in [
+            EngineDef::inline4(),
+            EngineDef::honda_k20a(),
+            EngineDef::flatplane_v8(),
+            EngineDef::crossplane_v8(),
+        ] {
+            assert!(
+                matches!(
+                    d.exhaust.after_collector.first(),
+                    Some(crate::exhaust::Segment::Catalyst { .. })
+                ),
+                "{}",
+                d.name
+            );
+        }
+    }
+
+    #[test]
     fn a_mixture_whose_flame_cannot_propagate_misfires() {
         // Metghalchi–Keck's S_L0 = 0.2758 − 0.7834(φ − 1.13)² falls to zero at φ = 0.537 and
         // 1.723 (hand): there the flame has no speed and its angles no finite ratio
@@ -4639,6 +4691,46 @@ mod tests {
             assert!(
                 gain > 6.0,
                 "{model:?}: the valve jets add {gain:.1} dB of hiss"
+            );
+        }
+    }
+
+    #[test]
+    fn a_motored_fv_exhaust_repeats_every_cycle() {
+        // Held speed, fuel cut, no random source: the engine is a periodic system, so what it
+        // radiates must repeat from one cycle to the next. Before the open end's inflow was
+        // isentropic from the atmosphere, the tail's flow reversals (~600 a second on the LFA's
+        // overrun) left it 0.49–0.81 correlated and 10 dB over full power.
+        for d in [EngineDef::inline4(), EngineDef::lfa_v10()] {
+            let mut d = fv(d);
+            let s = &mut d.sound;
+            (s.flow_noise, s.block, s.mechanical, s.intake) = (0.0, 0.0, 0.0, 0.0);
+            (s.valve_jet, s.combustion_jitter) = (0.0, 0.0);
+            let rpm = 0.85 * d.redline_rpm;
+            let mut e = Engine::new(d, rpm, 1);
+            let c = Controls {
+                throttle: 0.0,
+                hold_rpm: Some(rpm),
+                ..Controls::default()
+            };
+            run(&mut e, 1.0, &c);
+            let x = run(&mut e, 0.4, &c);
+            let cycle = 120.0 / rpm / DT;
+            let at = |k: usize| &x[(k as f64 * cycle) as usize..][..cycle as usize];
+            let n = (x.len() as f64 / cycle) as usize - 1;
+            let corr = |a: &[f64], b: &[f64]| {
+                let m = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
+                let (ma, mb) = (m(a), m(b));
+                let cov: f64 = a.iter().zip(b).map(|(x, y)| (x - ma) * (y - mb)).sum();
+                let va: f64 = a.iter().map(|x| (x - ma).powi(2)).sum();
+                let vb: f64 = b.iter().map(|y| (y - mb).powi(2)).sum();
+                cov / (va * vb).sqrt()
+            };
+            let mean = (0..n - 1).map(|k| corr(at(k), at(k + 1))).sum::<f64>() / (n - 1) as f64;
+            assert!(
+                mean > 0.95,
+                "{}: cycle-to-cycle correlation {mean:.3}",
+                e.def.name
             );
         }
     }
@@ -5297,20 +5389,24 @@ mod tests {
 
     #[test]
     fn each_preset_carries_only_the_exhaust_it_has_data_for() {
-        // after each collector, the tail pipe of the preset's own length and bore — no silencer
-        // sized by rule
+        // after each collector, the catalyst every road car carries (sized by its rule) and the
+        // tail pipe of the preset's own length and bore — no silencer sized by rule
         for d in [
             EngineDef::inline4(),
             EngineDef::lfa_v10(),
             EngineDef::flatplane_v8(),
             EngineDef::crossplane_v8(),
         ] {
+            let branch = d.displacement_m3() / d.exhaust.collectors.len().max(1) as f64;
             assert_eq!(
                 d.exhaust.after_collector,
-                [crate::exhaust::Segment::Pipe {
-                    length_m: d.exhaust.tail_length_m,
-                    diameter_m: d.exhaust.tail_diameter_m,
-                }],
+                [
+                    crate::exhaust::close_coupled_catalyst(branch, d.exhaust.tail_diameter_m),
+                    crate::exhaust::Segment::Pipe {
+                        length_m: d.exhaust.tail_length_m,
+                        diameter_m: d.exhaust.tail_diameter_m,
+                    }
+                ],
                 "{}",
                 d.name
             );
