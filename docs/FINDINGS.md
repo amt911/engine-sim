@@ -540,3 +540,34 @@ only: inline-4 overrun +11.0 dB against WOT +9.3 dB; flat-plane V8 +19.7 against
 **Tests:** `the_collector_end_passes_pressure_and_volume_flow_to_the_duct`,
 `in_the_linear_regime_the_fv_net_sounds_like_the_waveguide`,
 `the_acoustic_wall_loss_wears_a_wave_by_its_rate_per_metre`, `a_one_to_one_junction_is_transparent`.
+
+## Reference renders with the FV exhaust stuttered at idle (2026-10-26)
+
+**Symptom.** The user heard v0.22.0's offline renders cut in and out and stutter. The audio has no
+dropouts (no silent or repeated blocks, no jumps). The engine itself hunted.
+
+**Measured.** At idle with FV (384 kHz physics, held 3 s first), the K20A ranged 559–1118 rpm
+(σ 179); the waveguide holds 815–920 (σ 22). The flat-plane V8 ranged 869–1181 (σ 91). There
+were no misfires: firings matched the speed.
+
+**Cause.**
+- With FV the K20A makes less torque at idle and sits at ~650 rpm against an 800 target, with the
+  spark at full advance. The exhaust's mean backpressure and scavenging differ between the
+  models; not yet explained.
+- The idle air integral was pinned at its floor (bypass 95 % closed). With the waveguide that
+  engine has torque to spare at idle (spark retarded the full 20°), and climbing out of that floor
+  takes tens of seconds.
+
+**Fix / workaround.** Reference no longer switches to FV. FV stays a choice in the editor, to
+come back once it holds an idle. **Open:** FV's idle torque deficit, and the idle air integral's
+slow recovery from its floor.
+
+## Per-step helper threads collapse when cores are shared (2026-10-26)
+
+The exhaust net and the ITB runners on their own threads trade messages every physics step
+(spin, then `sched_yield`). On an idle desktop that saved ~24 % (v0.16.1). On cores shared with
+anything else the partner thread loses its slot and every step waits: LFA Medium, 4 s of sound
+on six shared cores took 19 s threaded vs 4.2 s on one thread (and 34 CPU-s vs 3.8). A 15 W
+laptop is always in the shared case (UI, audio, browser, one power budget), which is where the
+user heard underruns. They are now opt-in (`--threads`, `exhaust_thread::STEP_THREADS`). Any
+future parallelism must hand off per block of steps, never per step.
