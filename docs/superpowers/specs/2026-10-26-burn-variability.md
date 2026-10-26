@@ -26,17 +26,17 @@ flow, dominating cyclic variability.
 
 - **Turbulence at the plug:** σ 0.175 of u′, set where the burn angles' σ/mean comes out at
   Heywood's 0.12 (with the A/F and residual draws already there).
-- **Charge per cycle:** σ 1.2 % of the energy a cylinder burns. Soltau (1960, reviewed by Ozdor et
-  al.) measured 1.0–1.5 % cycle-to-cycle variation of indicated work at WOT; near MBT the burn's
-  timing moves the work little (Heywood §9.4.1, Matekunas 1983; the model: 0.3 %), so the charge
-  carries the rest.
+- **Charge per cycle:** σ 1.7 % of the energy a cylinder burns. Soltau (*Proc. IMechE (AD)*
+  1960–61 no. 2, Table 4) measured at WOT, A/F 14, i.m.e.p. mean deviations of 1.18–1.53 %. For a
+  normal spread σ = 1.2533 × that, 1.48–1.92 %. Near MBT the burn's timing moves the work little
+  (Heywood §9.4.1, Matekunas 1983; the model: 0.3 %), so the charge carries the rest.
 
 ## Tests (values from outside the code)
 
 - Burn angles: σ/mean of the development and rapid-burning angles within 0.09–0.15 at WOT and at
   light load (Heywood Fig. 9-35).
-- WOT, inline-4 at 2500 rpm: COV of peak pressure 4–10 % (Soltau 5.5 %; Heywood Fig. 9-31's
-  factor-of-two burn rates), COV of indicated work 0.8–2 % (Soltau 1.0–1.5 %).
+- WOT, inline-4 at 2500 rpm: COV of peak pressure 5–12 % and of indicated work 1.2–2.4 %
+  (Soltau Table 4: σ 6.9–9.9 % and 1.48–1.92 %).
 - The single flame-ratio unit test: u′ × 1.175 → angles × 1.175^(−2/3) = 0.89807.
 
 ## Result

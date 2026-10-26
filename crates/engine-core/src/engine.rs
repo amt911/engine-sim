@@ -650,11 +650,12 @@ const TURBULENCE_DISPERSION: f64 = 0.175;
 /// percent" (Heywood §9.4.2, §7.6).
 const CYLINDER_IMBALANCE: f64 = 0.02;
 /// σ of the charge a cylinder burns each cycle, relative: the "cyclic cylinder fuel and air
-/// charging variations" of Heywood §9.4.1–9.4.2. At wide-open throttle Soltau (1960; reviewed by
-/// Ozdor, Dulger & Sher, SAE 940987) measured the indicated work varying 1.0–1.5 % from cycle to
-/// cycle; near MBT the burn's timing moves the work little (the model: 0.3 %), so the charge
-/// carries the rest, √(1.25² − 0.3²) ≈ 1.2 %.
-const CHARGE_DISPERSION: f64 = 0.012;
+/// charging variations" of Heywood §9.4.1–9.4.2. Soltau (*Proc. IMechE (AD)* 1960–61 no. 2,
+/// Table 4: wide-open throttle, 2000 rev/min, A/F 14, ten consecutive cycles) measured the
+/// i.m.e.p. varying by a mean deviation of 1.18–1.53 %, σ = 1.2533 × that = 1.48–1.92 % for a
+/// normal spread. Near MBT the burn's timing moves the work little (the model: 0.3 %), so the
+/// charge carries the rest, √(1.7² − 0.3²) ≈ 1.7 %.
+const CHARGE_DISPERSION: f64 = 0.017;
 const WALL_TEMP_K: f64 = 400.0;
 const AMBIENT_K: f64 = 300.0;
 const DISCHARGE_CD: f64 = 0.8;
@@ -2485,22 +2486,20 @@ mod tests {
 
     #[test]
     fn cycles_vary_as_measured_engines_do() {
-        // Soltau (1960), at wide-open throttle on 9:1 and 10:1 engines, as reviewed by Ozdor,
-        // Dulger & Sher (SAE 940987, §3): the cycle-to-cycle variation of the peak pressure was
-        // about 5.5 %, that of the indicated work 1.0–1.5 %. Near MBT the burn's timing barely
-        // moves the work (Heywood §9.4.1: the torque curve is flat there; Matekunas 1983), so
-        // the work's share is the charge each cycle gets (Heywood §9.4.2). The peak pressure
-        // follows the burn rate, which Heywood's mid-load cycles (Fig. 9-31) show varying by a
-        // factor of two from the slowest to the fastest: a band, not one figure.
+        // Soltau (Proc. IMechE (AD) 1960–61 no. 2, Table 4), wide-open throttle, 2000 rev/min,
+        // A/F 14, two compression ratios: mean deviations of the peak pressure 5.54–7.90 % and
+        // of the i.m.e.p. 1.18–1.53 % — σ = 1.2533 × those for a normal spread: 6.9–9.9 % and
+        // 1.48–1.92 %. Bands around those (ten cycles each in the paper). Near MBT the burn's
+        // timing barely moves the work (Heywood §9.4.1), so the work's share is the charge.
         // Every cycle alike (combustion_jitter 0) is 0.
         let peaks = cov(&cycle_peaks(EngineDef::inline4(), 2500.0, 1.0, 4.0));
         assert!(
-            (0.04..0.10).contains(&peaks),
+            (0.05..0.12).contains(&peaks),
             "full load COV of pmax {peaks}"
         );
         let work = cov(&cycle_works(EngineDef::inline4(), 2500.0, 1.0, 4.0));
         assert!(
-            (0.008..0.02).contains(&work),
+            (0.012..0.024).contains(&work),
             "full load COV of the work {work}"
         );
         let mut flat = EngineDef::inline4();
