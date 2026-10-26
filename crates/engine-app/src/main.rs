@@ -62,10 +62,15 @@ struct Cli {
     /// Close the window after this many seconds (smoke tests).
     #[arg(long)]
     quit_after: Option<f64>,
+    /// Run the exhaust net and the intake runners on their own threads. Faster only on an idle
+    /// machine with cores to spare; slower anywhere the cores are shared (laptops).
+    #[arg(long)]
+    threads: bool,
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    exhaust_thread::STEP_THREADS.store(cli.threads, std::sync::atomic::Ordering::Relaxed);
     let preset = Preset::from_slug(&cli.preset).unwrap_or(Preset::Single);
     let def = match &cli.engine {
         Some(path) => match files::load_engine(path) {

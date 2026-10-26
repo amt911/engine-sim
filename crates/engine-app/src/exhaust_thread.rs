@@ -6,8 +6,25 @@
 
 use engine_core::exhaust::{ExhaustLink, ExhaustNet};
 use rtrb::{Consumer, Producer, RingBuffer};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
+
+/// Whether the sim may hand its exhaust and intake runners to their own threads (`--threads`).
+/// Off by default: every physics step trades messages with them, and when a core is shared (a
+/// laptop running the UI, audio and a browser, or any busy machine) the waiting thread loses its
+/// slot and the sim stalls. Measured 2026-10-26 on the LFA at Medium, six cores shared with other
+/// work: 7.8 s for 4 s of sound threaded, 3.2 s on one thread (and 16 CPU-s against 2.9). On an
+/// idle desktop they save about a quarter (v0.16.1).
+pub static STEP_THREADS: AtomicBool = AtomicBool::new(false);
+
+fn asked() -> bool {
+    STEP_THREADS.load(Ordering::Relaxed)
+}
+
+fn cores() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get())
+}
 
 /// Job header values.
 const STEP: f64 = 0.0;
@@ -78,10 +95,14 @@ pub struct ExhaustThread {
 }
 
 impl ExhaustThread {
-    /// Worth it only with cores to spare: the UI, the audio callback and the sim thread already
-    /// take three.
+    /// Asked for (`--threads`) and with cores to spare: the UI, the audio callback and the sim
+    /// thread already take three.
     pub fn worthwhile() -> bool {
-        std::thread::available_parallelism().is_ok_and(|n| n.get() >= 4)
+        Self::worth(asked(), cores())
+    }
+
+    fn worth(asked: bool, cores: usize) -> bool {
+        asked && cores >= 4
     }
 
     pub fn spawn() -> std::io::Result<Self> {
@@ -224,7 +245,11 @@ impl RunnerThread {
     /// A second worker: worth it with the exhaust's thread, the sim's, the UI's and the audio
     /// callback's cores already taken.
     pub fn worthwhile() -> bool {
-        std::thread::available_parallelism().is_ok_and(|n| n.get() >= 6)
+        Self::worth(asked(), cores())
+    }
+
+    fn worth(asked: bool, cores: usize) -> bool {
+        asked && cores >= 6
     }
 
     pub fn spawn() -> std::io::Result<Self> {
@@ -351,5 +376,22 @@ impl RunnerLink for RunnerThreadLink {
         self.job.fill(0.0);
         self.job[0] = -1.0;
         send(&mut self.jobs, &self.job);
+    }
+}
+
+#[cfg(test)]
+mod opt_in_tests {
+    use super::*;
+
+    #[test]
+    fn step_threads_stay_off_unless_asked() {
+        // measured 2026-10-26: on six cores shared with other work the per-step hand-off made
+        // the LFA 2.5× slower than one thread, so only `--threads` turns them on
+        assert!(!ExhaustThread::worth(false, 24));
+        assert!(ExhaustThread::worth(true, 4));
+        assert!(!ExhaustThread::worth(true, 3));
+        assert!(!RunnerThread::worth(false, 24));
+        assert!(RunnerThread::worth(true, 6));
+        assert!(!RunnerThread::worth(true, 5));
     }
 }
