@@ -7,9 +7,7 @@
 use crate::combustion::{AFR_STOICH, LHV_GASOLINE, flame_angle_scale, laminar_flame_speed, wiebe};
 use crate::exhaust::{ExhaustDef, ExhaustLink, ExhaustModel, ExhaustNet};
 use crate::exhaust_fv::ExhaustFv;
-use crate::gas::{
-    GasVolume, Reservoir, exchange_with_reservoir, exhaust_valve_flow, plan_exchange,
-};
+use crate::gas::{GasVolume, Reservoir, exchange_with_reservoir, plan_exchange};
 use crate::geometry::CylinderGeometry;
 use crate::intake_fv::{IntakeDef, IntakeFv, IntakeModel};
 use crate::jet_noise::JetNoise;
@@ -954,7 +952,6 @@ impl Default for Fidelity {
 struct Remote {
     link: Box<dyn ExhaustLink>,
     arriving: Vec<f64>,
-    z_port: f64,
     /// The primaries' area, m².
     a_pipe: f64,
     tails: Vec<f64>,
@@ -1494,11 +1491,6 @@ impl Engine {
         let blowby_area = BLOWBY_AREA_FRACTION * g.piston_area();
 
         let mut gas_torque = 0.0;
-        let z_port = match (&self.net, &self.remote.0) {
-            (Some(n), _) => n.port_impedance(),
-            (None, Some(r)) => r.z_port,
-            (None, None) => 1.0,
-        };
         let reserve = idle_reserve(self.rpm());
         let n_cyl = self.cyl.len();
         for i in 0..n_cyl {
@@ -1536,41 +1528,39 @@ impl Engine {
                 Some(net) => plan_exchange(&net.port_volume(i), &cs.gas, a_in, dt, VALVE_RELAX),
                 None => plan_exchange(&self.plenum, &cs.gas, a_in, dt, VALVE_RELAX),
             });
-            // The exhaust port and its primary pipe are solved together: the flow raises the
-            // pipe pressure at the port by z·ṁ (see `gas::port_flow`).
-            let plan_ex = |area: f64| match &self.fv {
-                // FV: the first pipe cell is a real volume — a planned two-volume exchange.
-                // FV: on the short time scale between pipe steps the primary is its
-                // characteristic impedance to the valve, driven by the wave its first cell sends
-                // back (the waveguide's implicit port, so the flow does not step at the FV rate).
-                Some(fv) => {
-                    let (arriving_fv, z_fv, t_fv) = fv.port_wave(i);
-                    exhaust_valve_flow(
-                        &cs.gas,
-                        area,
-                        crate::gas::Port {
-                            arriving: arriving_fv,
-                            z: z_fv,
-                            t_back: t_fv,
-                        },
-                        dt,
-                        VALVE_RELAX,
-                        cs.port_flow,
-                    )
-                }
-                None => exhaust_valve_flow(
+            // The exhaust valve is its primary's boundary, solved by characteristics (Benson;
+            // `valve_boundary`): the wave the pipe sends to the valve — the FV's first cell, or the
+            // waveguide's arriving wave on its quiet gas — meets the cylinder through the valve.
+            let pipe_area = match (&self.fv, &self.net, &self.remote.0) {
+                (Some(fv), _, _) => fv.primary_area(),
+                (None, Some(n), _) => n.primary_area(),
+                (None, None, Some(r)) => r.a_pipe,
+                _ => PI * 0.25 * self.def.exhaust.primary_diameter_m.powi(2),
+            };
+            let (lambda, t_back) = match &self.fv {
+                Some(fv) => fv.port_lambda(i, cs.gas.pressure()),
+                None => (
+                    // the arriving wave on the primary's gas at rest at the atmosphere's pressure
+                    // plus the tail's mean backpressure
+                    crate::valve_boundary::lambda_of_wave(
+                        cs.gas.pressure(),
+                        arriving,
+                        cs.port_t,
+                        ATM_PA + back_at_port,
+                    ),
+                    cs.port_t,
+                ),
+            };
+            let plan_ex = |area: f64| {
+                crate::valve_boundary::valve_flow(
                     &cs.gas,
                     area,
-                    crate::gas::Port {
-                        // the tail's mean backpressure adds to the port's base p_atm + 2p⁻
-                        arriving: arriving + 0.5 * back_at_port,
-                        z: z_port,
-                        t_back: cs.port_t,
-                    },
+                    pipe_area,
+                    lambda,
+                    t_back,
                     dt,
                     VALVE_RELAX,
-                    cs.port_flow,
-                ),
+                )
             };
             // Reverse flow (pipe → cylinder) passes the valve against the port's curve with a lower
             // discharge coefficient than forward flow (Blair measures separate in/out maps).
@@ -2122,7 +2112,6 @@ impl Engine {
             return false;
         }
         let arriving = (0..n).map(|i| net.arriving(i)).collect();
-        let z_port = net.port_impedance();
         let a_pipe = net.primary_area();
         let tails = vec![0.0; net.last_tails().len()];
         let Some(net) = self.net.take() else {
@@ -2131,7 +2120,6 @@ impl Engine {
         self.remote = RemoteSlot(Some(Box::new(Remote {
             link: link(net),
             arriving,
-            z_port,
             a_pipe,
             tails,
             pending: None,

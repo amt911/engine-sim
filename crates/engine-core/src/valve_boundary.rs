@@ -23,6 +23,12 @@ const KM: f64 = (KAPPA - 1.0) / 2.0;
 const P_EXP: i32 = 7;
 /// S = √(2/(κ+1)): π (and the area-ratio variable) at the sonic boundary (6.48), (6.53).
 const S: f64 = 0.912_870_929_175_276_9;
+/// The largest B = C(π − π_α) a root can have, a hair under √((κ−1)/2) (−U_B = 1/√((κ−1)/2) is
+/// all the enthalpy turned into speed).
+const B_MAX: f64 = 0.999_999 * 0.447_213_595_499_958;
+/// Below this valve-to-pipe area ratio the valve is closed: a lift that small passes under
+/// 1e-10 kg/s, and the sonic root's distance from π_α falls below f64's resolution.
+const PSI_MIN: f64 = 1e-9;
 /// (2/(κ+1))^((κ+1)/(2(κ−1))) for κ = 1.4: 5/6 cubed, 0.578 703…
 const SONIC_FLOW: f64 = 0.578_703_703_703_703_7;
 
@@ -57,7 +63,7 @@ pub fn lambda_in(p_cyl: f64, p: f64, u: f64, a: f64) -> f64 {
 /// `a_pipe_at_pc` (its entropy level, what flows back in).
 pub fn solve(p_cyl: f64, a_cyl: f64, psi: f64, lambda: f64, a_pipe_at_pc: f64) -> Boundary {
     let psi = psi.clamp(0.0, 1.0);
-    if psi <= 0.0 {
+    if psi < PSI_MIN {
         // a closed valve reflects: u = 0, A = λ_in
         return Boundary {
             p: p_cyl * lambda.powi(P_EXP),
@@ -88,6 +94,53 @@ pub fn solve(p_cyl: f64, a_cyl: f64, psi: f64, lambda: f64, a_pipe_at_pc: f64) -
     }
 }
 
+/// The incoming Riemann variable of a linear wave `arriving` (gauge Pa, travelling towards the
+/// valve) on a pipe of gas at rest at `t_pipe` K and pressure `p0` (the atmosphere plus the
+/// tail's mean backpressure), as a simple wave: p = p₀ + p⁻, u = −p⁻/(ρc) (towards the valve).
+pub fn lambda_of_wave(p_cyl: f64, arriving: f64, t_pipe: f64, p0: f64) -> f64 {
+    let a = (KAPPA * crate::gas::R_AIR * t_pipe).sqrt();
+    let rho = p0 / (crate::gas::R_AIR * t_pipe);
+    let p = (p0 + arriving).max(0.05 * p0);
+    lambda_in(p_cyl, p, -arriving / (rho * a), a)
+}
+
+/// One step of flow through an exhaust valve of effective area `cd_area` into a pipe of
+/// cross-section `pipe_area`, by the characteristic boundary: the pipe's incoming `lambda`
+/// ([`lambda_in`] or [`lambda_of_wave`]) and its gas at `t_back` K (what flows back). The step
+/// is limited, as [`crate::gas::exhaust_valve_flow`]'s, to `relax` of the mass that would
+/// equalise the cylinder with the boundary and to half the cylinder's mass. + = out.
+pub fn valve_flow(
+    gas: &crate::gas::GasVolume,
+    cd_area: f64,
+    pipe_area: f64,
+    lambda: f64,
+    t_back: f64,
+    dt: f64,
+    relax: f64,
+) -> crate::gas::Flow {
+    use crate::gas::{CP, GAMMA, R_AIR};
+    let (p_c, t_c) = (gas.pressure(), gas.temperature());
+    if cd_area <= 0.0 || pipe_area <= 0.0 {
+        return crate::gas::Flow {
+            dm: 0.0,
+            h: CP * t_c,
+        };
+    }
+    let a_c = (KAPPA * R_AIR * t_c).sqrt();
+    // the pipe gas's speed of sound brought isentropically to the cylinder's pressure, from
+    // its state on the arriving characteristic (λ is (p/p_c)^(1/7) at rest)
+    let a_back = (KAPPA * R_AIR * t_back).sqrt() / lambda.max(1e-3);
+    let b = solve(p_c, a_c, cd_area / pipe_area, lambda, a_back);
+    let mdot = b.mass_flow(pipe_area);
+    let h = if mdot >= 0.0 { CP * t_c } else { CP * t_back };
+    let limit = relax * (p_c - b.p).abs() * gas.volume_m3 / ((GAMMA - 1.0) * h);
+    let mut dm = (mdot * dt).clamp(-limit, limit);
+    if dm > 0.0 {
+        dm = dm.min(0.5 * gas.mass_kg);
+    }
+    crate::gas::Flow { dm, h }
+}
+
 /// Root of `f` in [lo, hi] where f(lo) and f(hi) have opposite signs: Illinois regula falsi.
 fn root(f: impl Fn(f64) -> f64, mut lo: f64, mut hi: f64) -> f64 {
     let (mut flo, mut fhi) = (f(lo), f(hi));
@@ -96,6 +149,10 @@ fn root(f: impl Fn(f64) -> f64, mut lo: f64, mut hi: f64) -> f64 {
     }
     if fhi == 0.0 {
         return hi;
+    }
+    if (flo > 0.0) == (fhi > 0.0) {
+        // no sign change (a root at an end, met in round-off): the nearer end
+        return if flo.abs() < fhi.abs() { lo } else { hi };
     }
     let mut side = 0;
     for _ in 0..100 {
@@ -135,8 +192,9 @@ fn outflow(psi: f64, pi_a: f64) -> (f64, f64, f64) {
     let mut pi = pi_a;
     for _ in 0..50 {
         // sonic boundary π_cr (6.55); above it the throat is subsonic
-        let pi_cr = S / (2.0 * psi)
-            * (2.0 * psi + (1.0 - (1.0 + (KAPPA * KAPPA - 1.0) * psi * psi).sqrt()) / c);
+        // 1 − √(1 + x) written as −x/(1 + √(1 + x)): no cancellation at small ψ
+        let x = (KAPPA * KAPPA - 1.0) * psi * psi;
+        let pi_cr = S / (2.0 * psi) * (2.0 * psi - x / (1.0 + (1.0 + x).sqrt()) / c);
         let b = |p: f64| c * (p - pi_a);
         pi = if pi_a >= pi_cr {
             // (6.47): ψ/π·{2/(κ−1)(1/π² − 1)}^½ − (2B/(κ−1))/(1 − 2B²/(κ−1)) = 0
@@ -145,14 +203,21 @@ fn outflow(psi: f64, pi_a: f64) -> (f64, f64, f64) {
                 psi / p * ((1.0 / (p * p) - 1.0) / KM).max(0.0).sqrt()
                     - (bb / KM) / (1.0 - bb * bb / KM)
             };
-            root(f1, pi_a.max(S), 1.0)
+            // B stays below √((κ−1)/2), where the flow speed would use up all the enthalpy:
+            // (6.47) has its pole there
+            let hi = (pi_a + B_MAX / c).min(1.0);
+            root(f1, pi_a.max(S).min(hi), hi)
         } else {
             // (6.51): π^(2κ/(κ−1)) − E·(1 − 2B²/(κ−1))/(2B/(κ−1)) = 0
             let f2 = |p: f64| {
                 let bb = b(p);
                 p.powi(P_EXP) - e * (1.0 - bb * bb / KM) / (bb / KM)
             };
-            root(f2, pi_a + 1e-15, S)
+            // f₂ → −∞ as π → π_α: f₂ < 0 while B < E·(κ−1)/2/π^7, and π ≤ S, so B at half of
+            // E·(κ−1)/2/S^7 is a lower bound where f₂ < 0 for any ψ
+            let hi = (pi_a + B_MAX / c).min(S);
+            let lo = (pi_a + 0.5 * e * KM / (S.powi(P_EXP) * c)).min(hi);
+            root(f2, lo, hi)
         };
         let bb = c * (pi - pi_a);
         // (6.56): C = (1 − 2B²/(κ−1))^½ / π
@@ -307,6 +372,41 @@ mod tests {
     }
 
     #[test]
+    fn a_valve_just_cracking_open_is_finite() {
+        // the sin² lift starts from nothing: ψ of 1e-26 at the first step of the opening (a
+        // 5.4-bar blowdown, seen in the engine) must give a finite, near-closed boundary
+        for psi in [4.4e-26, 1e-12, 1e-8, 1e-6] {
+            let b = solve(5.4e5, 790.0, psi, 0.786, 456.0);
+            assert!(
+                b.p.is_finite() && b.u.is_finite() && b.a.is_finite(),
+                "{psi}: {b:?}"
+            );
+            assert!(b.u >= 0.0 && b.u < 1.0, "{psi}: {b:?}");
+        }
+    }
+
+    #[test]
+    fn real_blowdowns_from_the_engine_solve() {
+        // states met in the engine (p_c, a_c from t_c, ψ, λ_in, a_back): (6.47)'s second term has
+        // a pole at B = √((κ−1)/2), the flow's limit, which a bracket up to π = 1 can straddle
+        for (p_c, t_c, psi, lam, a_back) in [
+            (192_370.0, 1027.6, 0.426_057, 0.825_318, 662.27),
+            (234_722.0, 1108.1, 0.514_417, 0.824_566, 642.28),
+            (173_541.0, 968.3, 0.544_547, 0.820_900, 741.15),
+        ] {
+            let b = solve(p_c, sound(t_c), psi, lam, a_back);
+            assert!(b.p.is_finite() && b.u > 0.0, "{b:?}");
+            // and it keeps the outflow's laws
+            assert_relative_eq!(
+                b.a * b.a + KM * b.u * b.u,
+                sound(t_c).powi(2),
+                max_relative = 1e-9
+            );
+            assert_relative_eq!(lambda_in(p_c, b.p, b.u, b.a), lam, max_relative = 1e-9);
+        }
+    }
+
+    #[test]
     fn equal_states_do_not_flow_and_a_closed_valve_reflects() {
         let a = sound(900.0);
         let b = solve(1.0e5, a, 0.5, 1.0, a);
@@ -316,6 +416,51 @@ mod tests {
         let b = solve(1.0e5, a, 0.0, 1.05, a);
         assert_eq!(b.u, 0.0);
         assert_relative_eq!(b.p, 1.0e5 * 1.05f64.powi(7), max_relative = 1e-12);
+    }
+
+    #[test]
+    fn a_wave_arriving_on_a_quiet_pipe_is_its_simple_wave() {
+        // no wave: the pipe at atmospheric pressure and rest, λ = (p₀/p_c)^(1/7)
+        let p0 = crate::units::ATM_PA;
+        assert_relative_eq!(
+            lambda_of_wave(2.0e5, 0.0, 600.0, p0),
+            (p0 / 2.0e5).powf(1.0 / 7.0),
+            max_relative = 1e-12
+        );
+        // a compression arriving raises it: at rest a reflecting wall would see p₀ + 2p⁻,
+        // λ ≈ ((p₀ + 2p⁻)/p_c)^(1/7) to first order in p⁻
+        let small = 200.0;
+        assert_relative_eq!(
+            lambda_of_wave(p0, small, 600.0, p0),
+            ((p0 + 2.0 * small) / p0).powf(1.0 / 7.0),
+            max_relative = 1e-6
+        );
+    }
+
+    #[test]
+    fn the_valve_step_passes_the_boundarys_flow_within_its_limits() {
+        use crate::gas::GasVolume;
+        // a 3-bar, 1300 K cylinder of 0.5 L blowing into a quiet 40 mm primary through 3 cm²
+        let gas = GasVolume::at(3.0e5, 1300.0, 5.0e-4);
+        let pipe = std::f64::consts::PI * 0.02 * 0.02;
+        let lam = lambda_of_wave(gas.pressure(), 0.0, 700.0, crate::units::ATM_PA);
+        let dt = 1.0 / 192_000.0;
+        let f = valve_flow(&gas, 3.0e-4, pipe, lam, 700.0, dt, 1.0);
+        let a_back = (KAPPA * 287.0 * 700.0).sqrt() / lam;
+        let b = solve(
+            3.0e5,
+            (KAPPA * 287.0 * 1300.0).sqrt(),
+            3.0e-4 / pipe,
+            lam,
+            a_back,
+        );
+        assert_relative_eq!(f.dm, b.mass_flow(pipe) * dt, max_relative = 1e-12);
+        assert_relative_eq!(f.h, crate::gas::CP * 1300.0, max_relative = 1e-12);
+        // a step long enough to empty it stops at half the mass or at equal pressures
+        let f = valve_flow(&gas, 3.0e-4, pipe, lam, 700.0, 1.0, 1.0);
+        assert!(f.dm <= 0.5 * gas.mass_kg + 1e-15);
+        // a closed valve passes nothing
+        assert_eq!(valve_flow(&gas, 0.0, pipe, lam, 700.0, dt, 1.0).dm, 0.0);
     }
 
     #[test]
@@ -332,5 +477,30 @@ mod tests {
             b.a * b.mass_flow(f_pipe) / f_pipe,
             max_relative = 0.01
         );
+    }
+
+    proptest::proptest! {
+        /// Any state the engine can meet solves to a finite boundary that keeps the incoming
+        /// characteristic; outflow keeps the stagnation enthalpy.
+        #[test]
+        fn every_state_solves_and_keeps_its_laws(
+            lam in 0.4f64..1.6,
+            psi in 0.0f64..1.2,
+            t_c in 300.0f64..2500.0,
+            t_back in 280.0f64..1300.0,
+        ) {
+            let (p_c, a_c, a_back) = (2.0e5, sound(t_c), sound(t_back));
+            let b = solve(p_c, a_c, psi, lam, a_back);
+            proptest::prop_assert!(b.p.is_finite() && b.u.is_finite() && b.a.is_finite());
+            proptest::prop_assert!(b.p > 0.0 && b.a > 0.0);
+            if psi >= PSI_MIN && lam < 1.0 {
+                proptest::prop_assert!(
+                    ((b.a * b.a + KM * b.u * b.u) / (a_c * a_c) - 1.0).abs() < 1e-8
+                );
+            }
+            if psi >= PSI_MIN {
+                proptest::prop_assert!((lambda_in(p_c, b.p, b.u, b.a) / lam - 1.0).abs() < 1e-8);
+            }
+        }
     }
 }

@@ -352,6 +352,20 @@ impl ExhaustFv {
         (p.p, p.p / (p.rho * R_AIR))
     }
 
+    /// The primaries' cross-section, m².
+    pub fn primary_area(&self) -> f64 {
+        self.a_primary
+    }
+
+    /// The incoming Riemann variable at cylinder `i`'s valve from the first primary cell, referred
+    /// to the cylinder's pressure `p_cyl` ([`crate::valve_boundary::lambda_in`]), and that cell's
+    /// temperature, K.
+    pub fn port_lambda(&self, i: usize, p_cyl: f64) -> (f64, f64) {
+        let c = self.primaries[i].prim(0);
+        let lambda = crate::valve_boundary::lambda_in(p_cyl, c.p, c.u, c.sound_speed());
+        (lambda, c.p / (c.rho * R_AIR))
+    }
+
     /// The first primary cell as a 0D volume, for the valve flow limiter.
     pub fn port_volume(&self, i: usize) -> GasVolume {
         let pipe = &self.primaries[i];
@@ -366,17 +380,6 @@ impl ExhaustFv {
             energy_j: (prim.p / (crate::gas::GAMMA - 1.0) * v + self.acc_energy[i]).max(1e-9),
             volume_m3: v,
         }
-    }
-
-    /// The primary as the valve sees it between pipe steps: the wave its first cell sends back
-    /// towards the valve (gauge Pa, the linear left-running part (p′ − ρc·u)/2), its impedance
-    /// to a mass flow c/A (Pa per kg/s), and the gas temperature there (K) for reversion.
-    pub fn port_wave(&self, i: usize) -> (f64, f64, f64) {
-        let c = self.primaries[i].prim(0);
-        let a = c.sound_speed();
-        let arriving = 0.5 * ((c.p - ATM_PA) - c.rho * a * c.u);
-        let t = c.p / (c.rho * R_AIR);
-        (arriving, a / self.a_primary, t)
     }
 
     /// Register this physics step's valve flow: `dm` kg into the pipe (negative = back into
@@ -1480,10 +1483,10 @@ mod tests {
     }
 
     #[test]
-    fn the_port_sees_the_wave_arriving_from_its_first_cell() {
-        // ρ = 0.5 kg/m³, u = 30 m/s, p = 1.5 bar: c = √(1.4·1.5e5/0.5) = 648.07 m/s; the wave
-        // towards the valve (p′ − ρc·u)/2 = (48 675 − 9 721.1)/2 = 19 476.9 Pa; impedance c/A
-        // over a 40 mm primary (A = 1.2566e-3 m²) = 515 721; T = p/(ρR) = 1 045.3 K
+    fn the_valve_sees_the_characteristic_arriving_from_its_first_cell() {
+        // ρ = 0.5 kg/m³, u = 30 m/s away from the valve, p = 1.5 bar: c = √(1.4·1.5e5/0.5) =
+        // 648.074 m/s. Against a 2-bar cylinder λ_in = (0.75)^(1/7)·(1 − 0.2·30/648.074) =
+        // 0.950 850; T = p/(ρR) = 1 045.30 K
         let mut net = ExhaustFv::new(&def(), 1, DT);
         net.primaries[0].cells[0] = Prim {
             rho: 0.5,
@@ -1491,9 +1494,8 @@ mod tests {
             p: 1.5e5,
         }
         .to_cons();
-        let (arriving, z, t) = net.port_wave(0);
-        approx::assert_relative_eq!(arriving, 19_476.9, max_relative = 1e-5);
-        approx::assert_relative_eq!(z, 515_721.0, max_relative = 1e-5);
+        let (lambda, t) = net.port_lambda(0, 2.0e5);
+        approx::assert_relative_eq!(lambda, 0.950_850_2, max_relative = 1e-6);
         approx::assert_relative_eq!(t, 1_045.30, max_relative = 1e-5);
     }
 
