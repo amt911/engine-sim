@@ -571,3 +571,71 @@ on six shared cores took 19 s threaded vs 4.2 s on one thread (and 34 CPU-s vs 3
 laptop is always in the shared case (UI, audio, browser, one power budget), which is where the
 user heard underruns. They are now opt-in (`--threads`, `exhaust_thread::STEP_THREADS`). Any
 future parallelism must hand off per block of steps, never per step.
+
+## The torque was right for the wrong reasons: friction ×2, cold-air cycle (2026-10-27)
+
+**Symptom.** Above ~7000 rpm the K20A made far less than Honda's figures (158 N·m at 8000 rpm
+against ~193). Its friction was 5.4 bar there.
+
+**Two errors that hid each other.**
+
+- *Friction.* `fmep_bar` was Barnes-Moss's whole-engine fit, 0.97 + 0.15·N + 0.05·N² bar
+  (N in krpm; Heywood). That is *motored* friction, so it already holds pumping, which the model
+  also simulates in the p–V loop. Its N² term was fit on 1970s engines below ~6000 rpm.
+- *Cycle.* With γ = 1.4 for the cylinder's gas, the cycle was an air-standard Otto cycle. Net
+  indicated efficiency came out at 45–48 % at WOT; real engines run 35–40 % (Heywood ch. 5).
+- *Masking.* The doubled friction had been eating the excess work.
+
+**Fixes.**
+
+- Friction by components: Patton–Nitschke–Heywood as improved by Sandoval (`friction.rs`; MIT
+  thesis Appendix A-2; it reproduces Fig. 3-3's components within 1 kPa).
+- Real gas properties: NASA polynomials for air, the stoichiometric charge and frozen products
+  (`thermo.rs`; Heywood Tables 4.7, 4.10, 4.11; Fig. 4.13's γ within 0.005).
+- Result: η_net 0.36–0.41. Peak torque within ±5 % of the published value for the K20A, the LFA
+  and the LS3, with no per-engine number. The equations are images in the PDFs: read the
+  rendered pages, not `pdftotext`.
+
+## A reversion of air labelled as burned gas made the valve chatter (2026-10-27)
+
+**Symptom.** With real gas properties the FV exhaust valve flipped direction in 1–5-step bursts
+on overrun: 43 reversals in 7 cycles; the bursts reached 3.6 % of the peak flow.
+
+**Cause.** Reversion gas came back labelled as products (x_b = 1). On a fuel cut the primary
+holds air. Each reversion stepped the gas constant and the internal-energy curve, and with them
+the pressure.
+
+**Fix.** The primary's gas carries its composition (`port_xb`, set by what leaves the cylinder,
+like `port_t`). The fresh charge carries fuel only when the ECU injects (`Composition`). With
+that, overrun reverses as it did before the change.
+
+## High-speed power is lost at the exhaust valve's linear port (2026-10-27)
+
+**Symptom.** At 8000–8500 rpm, WOT, pumping reached 1.7–1.8 bar (0.3–0.5 at mid speed). Mid
+exhaust stroke, the cylinder sits at +1.6–1.8 bar gauge, and its port at almost the same.
+
+**What it is not.** It is not the pipe bores: 42/63/60 mm instead of 40/55/50 changed nothing.
+It is not the waveguide's linearity alone either: the FV exhaust shows 1.23 bar against 1.36.
+
+**Cause.** Both models couple the valve to its pipe as p = p_atm + 2p⁻ + (c/A)·ṁ, a linear
+impedance. A blowdown at Mach ≈ 0.7 and 2–3 bar is far outside it. By hand, the piston-driven
+flow at 240–260° should raise the port about 0.64 bar; the model shows ≈ 1.1.
+
+**Next.** Benson's valve boundary by characteristics. Until then the LFA's torque peak may sit
+at 5500 rather than 6800 rpm (the dyno test allows it), and the top end runs ≈ 12–15 % short.
+
+## Real gas properties cost ≈ 10 % of a step (2026-10-27)
+
+**Measured** under `scripts/cpu-lock.sh`, 4 s headless renders: inline4 1.79 → 2.00 s, single
+0.88 → 0.94 s, LFA 5.61 → 6.12 s.
+
+**What helps.**
+
+- One mixture per cylinder, recomputed only when its composition changes.
+- One fused c_v/u evaluation.
+- A Newton stop at 0.1 % of T: quadratic convergence leaves under 0.01 K.
+- Three settles a step.
+- The friction's speed terms cached per 1 rpm.
+
+**What does not.** `temperature()` alone is ≈ 12 ns a call (microbenchmark). `perf record` hangs
+on this machine; use valgrind when it is installed.
