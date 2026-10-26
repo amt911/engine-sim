@@ -4617,6 +4617,46 @@ mod tests {
     }
 
     #[test]
+    fn a_motored_fv_exhaust_repeats_every_cycle() {
+        // Held speed, fuel cut, no random source: the engine is a periodic system, so what it
+        // radiates must repeat from one cycle to the next. Before the open end's inflow was
+        // isentropic from the atmosphere, the tail's flow reversals (~600 a second on the LFA's
+        // overrun) left it 0.49–0.81 correlated and 10 dB over full power.
+        for d in [EngineDef::inline4(), EngineDef::lfa_v10()] {
+            let mut d = fv(d);
+            let s = &mut d.sound;
+            (s.flow_noise, s.block, s.mechanical, s.intake) = (0.0, 0.0, 0.0, 0.0);
+            (s.valve_jet, s.combustion_jitter) = (0.0, 0.0);
+            let rpm = 0.85 * d.redline_rpm;
+            let mut e = Engine::new(d, rpm, 1);
+            let c = Controls {
+                throttle: 0.0,
+                hold_rpm: Some(rpm),
+                ..Controls::default()
+            };
+            run(&mut e, 1.0, &c);
+            let x = run(&mut e, 0.4, &c);
+            let cycle = 120.0 / rpm / DT;
+            let at = |k: usize| &x[(k as f64 * cycle) as usize..][..cycle as usize];
+            let n = (x.len() as f64 / cycle) as usize - 1;
+            let corr = |a: &[f64], b: &[f64]| {
+                let m = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
+                let (ma, mb) = (m(a), m(b));
+                let cov: f64 = a.iter().zip(b).map(|(x, y)| (x - ma) * (y - mb)).sum();
+                let va: f64 = a.iter().map(|x| (x - ma).powi(2)).sum();
+                let vb: f64 = b.iter().map(|y| (y - mb).powi(2)).sum();
+                cov / (va * vb).sqrt()
+            };
+            let mean = (0..n - 1).map(|k| corr(at(k), at(k + 1))).sum::<f64>() / (n - 1) as f64;
+            assert!(
+                mean > 0.95,
+                "{}: cycle-to-cycle correlation {mean:.3}",
+                e.def.name
+            );
+        }
+    }
+
+    #[test]
     fn fv_exhaust_survives_sustained_overrun_at_high_rpm() {
         // Regression: closed throttle at 7000 rpm drove FV cells into near-vacuum with
         // |u| + c beyond the fixed step's CFL limit; a primary reached 1000 bar after 0.4 s.
