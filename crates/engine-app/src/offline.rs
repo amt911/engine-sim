@@ -67,6 +67,7 @@ pub fn render_loop(
     let rpm = seamless_rpm(rpm, sample_rate);
     let mut sim =
         Simulation::with_quality(def.clone(), VehicleDef::default(), sample_rate, 1, quality);
+    sim.set_limiter(false);
     sim.controls = Controls {
         throttle,
         hold_rpm: Some(rpm),
@@ -126,6 +127,7 @@ const PREROLL_S: f64 = 8.0;
 fn running(def: &EngineDef, sample_rate: f64, quality: Quality) -> Simulation {
     let mut sim =
         Simulation::with_quality(def.clone(), VehicleDef::default(), sample_rate, 1, quality);
+    sim.set_limiter(false);
     let mut idle = vec![0.0f32; (PREROLL_S * sample_rate) as usize];
     sim.render(&mut idle);
     sim
@@ -146,6 +148,23 @@ pub fn loop_grid(def: &EngineDef) -> Vec<(f64, f64)> {
         .collect()
 }
 
+/// Scale every buffer by one factor so the loudest sample of them all sits at `ceiling`; buffers
+/// already under it are left alone. An offline render's output stage does not limit (it would
+/// squeeze the loud passages a live device needs squeezed): the scene is scaled once instead, and
+/// its loud and quiet moments keep the ratio the physics gave them.
+pub fn normalize<B: AsMut<[f32]>>(bufs: &mut [B], ceiling: f32) {
+    let peak = bufs
+        .iter_mut()
+        .flat_map(|b| b.as_mut().iter().map(|x| x.abs()))
+        .fold(0.0f32, f32::max);
+    if peak > ceiling {
+        let k = ceiling / peak;
+        for b in bufs.iter_mut() {
+            b.as_mut().iter_mut().for_each(|x| *x *= k);
+        }
+    }
+}
+
 /// Render `scene` of `def` at `quality` into `out`; the files written.
 pub fn render_scene(
     def: &EngineDef,
@@ -159,23 +178,37 @@ pub fn render_scene(
     };
     match scene {
         Scene::Drive => {
-            wav(out, &render_drive(def, RATE, quality))?;
+            let mut x = [render_drive(def, RATE, quality)];
+            normalize(&mut x, engine_audio::dsp::LIMITER_THRESHOLD as f32);
+            wav(out, &x[0])?;
             Ok(vec![out.to_path_buf()])
         }
         Scene::Sweep => {
-            wav(out, &render_sweep(def, RATE, quality, 12.0))?;
+            let mut x = [render_sweep(def, RATE, quality, 12.0)];
+            normalize(&mut x, engine_audio::dsp::LIMITER_THRESHOLD as f32);
+            wav(out, &x[0])?;
             Ok(vec![out.to_path_buf()])
         }
         Scene::Loops => {
             std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
             let mut files = Vec::new();
             let mut index = String::from("rpm,load,samples,file\n");
-            for (target, load) in loop_grid(def) {
-                let cycles = (LOOP_S * target / 120.0).ceil().max(1.0) as usize;
-                let (rpm, x) = render_loop(def, target, load, cycles, RATE, quality);
+            // every loop first, then one scale for all: their levels stay comparable
+            let grid = loop_grid(def);
+            let mut loops: Vec<(f64, Vec<f32>)> = grid
+                .iter()
+                .map(|&(target, load)| {
+                    let cycles = (LOOP_S * target / 120.0).ceil().max(1.0) as usize;
+                    render_loop(def, target, load, cycles, RATE, quality)
+                })
+                .collect();
+            let mut bufs: Vec<Vec<f32>> =
+                loops.iter_mut().map(|(_, x)| std::mem::take(x)).collect();
+            normalize(&mut bufs, engine_audio::dsp::LIMITER_THRESHOLD as f32);
+            for ((&(target, load), (rpm, _)), x) in grid.iter().zip(&loops).zip(&bufs) {
                 let name = format!("rpm{target:05.0}_load{:03.0}.wav", load * 100.0);
                 let path = out.join(&name);
-                wav(&path, &x)?;
+                wav(&path, x)?;
                 index.push_str(&format!("{rpm:.4},{load},{},{name}\n", x.len()));
                 files.push(path);
             }
@@ -202,6 +235,20 @@ mod tests {
         };
         let (start, idle) = (rms(0.0, 0.3), rms(1.0, 1.9));
         assert!(start < 1.3 * idle, "start {start} vs idle {idle}");
+    }
+
+    #[test]
+    fn a_scene_is_scaled_once_so_its_loudest_moment_just_fits() {
+        // one factor for every buffer: their levels keep their ratios, the loudest peak lands on
+        // the ceiling, and a scene already under it is left alone
+        let mut bufs = vec![vec![0.5f32, -2.0, 1.0], vec![0.25f32, 0.1]];
+        normalize(&mut bufs, 0.8);
+        let close = |a: &[f32], b: &[f32]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6);
+        assert!(close(&bufs[0], &[0.2, -0.8, 0.4]), "{bufs:?}");
+        assert!(close(&bufs[1], &[0.1, 0.04]), "{bufs:?}");
+        let mut quiet = vec![vec![0.3f32, -0.5]];
+        normalize(&mut quiet, 0.8);
+        assert_eq!(quiet[0], vec![0.3f32, -0.5]);
     }
 
     #[test]

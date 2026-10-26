@@ -323,6 +323,10 @@ pub struct Voice {
     pub full_scale_pa: f64,
     /// Lifts idle toward the full-load level (reference: a full-load engine, ≈ −15 dBFS RMS).
     pub leveler: Leveler,
+    /// Whether the look-ahead limiter holds the output under its threshold. Live audio needs it
+    /// (a device clips); an offline render turns it off and scales the whole scene once, so its
+    /// loud passages keep their peaks.
+    pub limit: bool,
 }
 
 /// Output level (sine amplitude, of full scale) the leveler treats as full load.
@@ -338,6 +342,7 @@ impl Voice {
             sample_rate,
             full_scale_pa: FULL_SCALE_PA,
             leveler: Leveler::new(LEVELER_REFERENCE, sample_rate),
+            limit: true,
         }
     }
     pub fn process(&mut self, pressure_pa: f64) -> f32 {
@@ -353,12 +358,17 @@ impl Voice {
             let amount = self.leveler.amount;
             *self = Voice {
                 full_scale_pa: self.full_scale_pa,
+                limit: self.limit,
                 ..Voice::new(self.sample_rate)
             };
             self.leveler.amount = amount;
             return 0.0;
         }
-        self.limiter.process(y) as f32
+        if self.limit {
+            self.limiter.process(y) as f32
+        } else {
+            y as f32
+        }
     }
 }
 
@@ -369,6 +379,26 @@ mod tests {
     use proptest::prelude::*;
 
     const FS: f64 = 48_000.0;
+
+    #[test]
+    fn a_voice_without_its_limiter_passes_loud_passages_untouched() {
+        // offline, nothing is squeezed: twice the pressure is twice the output, even far past
+        // full scale (the limiter would have held it at its threshold)
+        let mut a = Voice::new(FS);
+        let mut b = Voice::new(FS);
+        a.limit = false;
+        b.limit = false;
+        let mut worst: f64 = 0.0;
+        let mut peak: f64 = 0.0;
+        for i in 0..4800 {
+            let x = 60.0 * (2.0 * PI * 200.0 * i as f64 / FS).sin();
+            let (ya, yb) = (a.process(x) as f64, b.process(2.0 * x) as f64);
+            worst = worst.max((yb - 2.0 * ya).abs());
+            peak = peak.max(ya.abs());
+        }
+        assert!(peak > 2.0, "{peak}");
+        assert!(worst < 1e-5, "{worst}");
+    }
 
     /// Peak output amplitude after settling, for a unit sine at `f`.
     fn sine_gain(mut f_proc: impl FnMut(f64) -> f64, f: f64) -> f64 {

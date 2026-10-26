@@ -132,6 +132,10 @@ impl Simulation {
             steps: Vec::new(),
         }
     }
+    /// Turn the output limiter on (live audio) or off (an offline render, scaled afterwards).
+    pub fn set_limiter(&mut self, on: bool) {
+        self.voice.limit = on;
+    }
     #[cfg(test)]
     pub fn vehicle(&self) -> &Vehicle {
         &self.vehicle
