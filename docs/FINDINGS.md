@@ -528,3 +528,13 @@ were no misfires: firings matched the speed.
 **Fix / workaround.** Reference no longer switches to FV. FV stays a choice in the editor, to
 come back once it holds an idle. **Open:** FV's idle torque deficit, and the idle air integral's
 slow recovery from its floor.
+
+## Per-step helper threads collapse when cores are shared (2026-10-26)
+
+The exhaust net and the ITB runners on their own threads trade messages every physics step
+(spin, then `sched_yield`). On an idle desktop that saved ~24 % (v0.16.1). On cores shared with
+anything else the partner thread loses its slot and every step waits: LFA Medium, 4 s of sound
+on six shared cores took 19 s threaded vs 4.2 s on one thread (and 34 CPU-s vs 3.8). A 15 W
+laptop is always in the shared case (UI, audio, browser, one power budget), which is where the
+user heard underruns. They are now opt-in (`--threads`, `exhaust_thread::STEP_THREADS`). Any
+future parallelism must hand off per block of steps, never per step.
