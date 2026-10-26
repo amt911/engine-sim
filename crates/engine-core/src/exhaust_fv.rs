@@ -82,6 +82,12 @@ pub(crate) fn duct_node(
     (Prim { rho, u, p }, p - ATM_PA - p_minus)
 }
 
+/// The wave a collector sends a share `f` of the way from its last pipe step to the next: on
+/// the line between the two, `[previous, last]`, so the duct gets no staircase.
+fn between(sent: [f64; 2], f: f64) -> f64 {
+    sent[0] + (sent[1] - sent[0]) * f
+}
+
 /// Root of `f`, rising through 0 on [`lo`, `hi`] (f(lo) < 0 < f(hi)), by the Illinois variant
 /// of regula falsi (Dowell & Jarratt 1971): bracketing like bisection, superlinear like the
 /// secant; a dozen evaluations reach 1e-12 where bisection takes forty. Returns the bracket's
@@ -393,7 +399,7 @@ impl ExhaustFv {
         let f = self.count as f64 / self.substeps as f64;
         let mut radiated = 0.0;
         for (b, tail) in self.branches.iter_mut().zip(self.tails.iter_mut()) {
-            let sent = b.sent[0] + (b.sent[1] - b.sent[0]) * f;
+            let sent = between(b.sent, f);
             let (reflected, out) = b.end.process(b.duct.at_far());
             b.duct.send(sent, reflected);
             *tail = out;
@@ -563,9 +569,33 @@ mod tests {
             "{g:?}"
         );
         // outflow carries the cell's own gas, expanded to the node's pressure
+        // a rarefaction deeper than the gas can follow: the node holds 5 % of p_atm (u =
+        // 2e6/838.2 = 2386 m/s gives p = p_atm − 2e6 + 600·2386 < 0)
+        let (g, _) = duct_node(inner, 2e-3, -1e6, 1e-3, (300.0, 0.6));
+        assert!((g.p - 0.05 * ATM_PA).abs() < 1e-6, "{g:?}");
         let out = Prim { u: 50.0, ..inner };
         let (g, _) = duct_node(out, 2e-3, 0.0, 1e-3, (300.0, 0.6));
         assert!(g.u > 0.0 && (g.rho - 0.4 * (g.p / ATM_PA).powf(1.0 / 1.4)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_collector_sends_on_a_line_between_pipe_steps() {
+        assert_eq!(between([1.0, 3.0], 0.0), 1.0);
+        assert_eq!(between([1.0, 3.0], 0.25), 1.5);
+        assert_eq!(between([1.0, 3.0], 1.0), 3.0);
+    }
+
+    #[test]
+    fn a_tails_outflow_mach_reaches_its_open_end() {
+        // Mach 0.5 out of the tail: the end reflects (1 − 0.5)/(1 + 0.5) = 1/3 of what it did
+        // at rest (Munt 1977)
+        let d = ExhaustDef::default();
+        let mut still = ExhaustFv::new(&d, 1, DT);
+        let mut moving = ExhaustFv::new(&d, 1, DT);
+        moving.set_outflow_mach(&[0.5]);
+        let (a, _) = still.branches[0].end.process(1.0);
+        let (b, _) = moving.branches[0].end.process(1.0);
+        assert!((b / a - 1.0 / 3.0).abs() < 1e-12, "{a} {b}");
     }
 
     /// Amplitude radiated at `f` Hz from a small sinusoidal flow at the first primary (mean

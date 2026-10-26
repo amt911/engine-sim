@@ -969,6 +969,52 @@ mod tests {
     }
 
     #[test]
+    fn the_acoustic_loss_follows_the_mean_flow_and_leaves_it_alone() {
+        // The loss acts on u − ū, ū an exponential mean of time constant τ = 0.2 s. Still air
+        // (ū = 0) suddenly moving at 20 m/s, at the pipe's middle where the ends' waves have
+        // not arrived (3 m at c + u): du/dt = −a(u − ū), dū/dt = (u − ū)/τ with a = 2αc =
+        // 2·0.03·343.8 = 20.63 /s, so u + aτ·ū stays 20 and u − ū = 20·e^(−(a + 1/τ)t).
+        // After 6 ms: u − ū = 17.15, ū = (20 − 17.15)/(1 + 4.126) = 0.556 m/s (hand).
+        let air = Prim {
+            rho: 1.2,
+            u: 0.0,
+            p: 101_325.0,
+        };
+        let moving = Prim { u: 20.0, ..air }.to_cons();
+        let run = |mean: Option<f64>| {
+            let mut p = Pipe1d::new(6.0, 600, air);
+            p.acoustic_loss = 0.03;
+            p.step(1e-7);
+            if let Some(m) = mean {
+                p.u_mean.iter_mut().for_each(|u| *u = m);
+            }
+            p.cells.iter_mut().for_each(|c| *c = moving);
+            let mut t = 0.0;
+            while t < 0.006 {
+                let dt = p.max_dt(0.5).min(0.006 - t);
+                p.step(dt);
+                t += dt;
+            }
+            (p.u_mean[300], p.prim(300).u)
+        };
+        let (u_mean, _) = run(None);
+        assert!((u_mean - 0.556).abs() < 0.005, "{u_mean}");
+        // a flow already at its mean is not braked: no loss on a steady stream
+        let (_, u) = run(Some(20.0));
+        assert!((u - 20.0).abs() < 0.01, "{u}");
+        // and a pipe that starts out flowing takes that flow as its mean
+        let mut p = Pipe1d::new(6.0, 600, Prim { u: 20.0, ..air });
+        p.acoustic_loss = 0.03;
+        let mut t = 0.0;
+        while t < 0.006 {
+            let dt = p.max_dt(0.5).min(0.006 - t);
+            p.step(dt);
+            t += dt;
+        }
+        assert!((p.prim(300).u - 20.0).abs() < 0.01, "{}", p.prim(300).u);
+    }
+
+    #[test]
     fn wall_friction_damps_a_ringing_pipe() {
         let ring = |f: f64| {
             let air = Prim {
