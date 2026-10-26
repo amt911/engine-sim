@@ -639,3 +639,18 @@ at 5500 rather than 6800 rpm (the dyno test allows it), and the top end runs ≈
 
 **What does not.** `temperature()` alone is ≈ 12 ns a call (microbenchmark). `perf record` hangs
 on this machine; use valgrind when it is installed.
+
+## Profiling without perf or valgrind: eu-stack plus a preloaded PR_SET_PTRACER (2026-10-27)
+
+`perf record` hangs on this machine and valgrind is not installed. `eu-stack -p` fails with
+"Operation not permitted": Yama's `ptrace_scope = 1` lets a process trace only its descendants.
+gdb as the parent cannot sample from Python either: the stop is never processed while the
+script sleeps.
+
+**What works.** A three-line shared library whose constructor calls `prctl(PR_SET_PTRACER,
+PR_SET_PTRACER_ANY)`, preloaded into the binary. Then `eu-stack -s` can sample it.
+`scripts/profile.sh [preset] [samples]` does it all: line-table build, preload, about 300
+samples, a count by source line.
+
+**Limit.** eu-stack does not show inlined frames: most samples land on the caller of
+`Engine::step`. Its innermost-frame counts still compare two builds fairly.
