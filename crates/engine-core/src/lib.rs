@@ -22,4 +22,5 @@ pub mod sound;
 pub mod structure;
 pub mod units;
 pub mod valve;
+pub mod valve_boundary;
 pub mod waveguide;
