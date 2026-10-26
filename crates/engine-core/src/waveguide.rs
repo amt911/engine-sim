@@ -452,6 +452,54 @@ pub fn junction(areas: &[f64], incoming: &[f64], outgoing: &mut [f64]) -> f64 {
     pj
 }
 
+/// [`junction`] where the flow loses pressure entering and leaving through it: branch `i`'s end
+/// pressure is the junction's plus `s·u|u|`, `s` = `losses[i].0` while its gas flows into the
+/// junction (u > 0) and `losses[i].1` while it flows out (each ½ρK: Borda–Carnot for a sudden
+/// expansion, a contraction coefficient the other way; Benson, *Thermodynamics and Gas Dynamics
+/// of IC Engines* vol. 1, ch. 8, "pressure loss" junctions). The quasi-steady loss acts on the
+/// instantaneous velocity of the waves, u = (incoming − outgoing)/`z`, with mass conserved,
+/// ΣAᵢuᵢ = 0. Each branch's end gives P = 2pᵢ − z·uᵢ, so every uᵢ is a monotone function of
+/// the junction pressure; Newton's method finds it. Returns p_J; writes outgoing waves.
+pub fn lossy_junction(
+    areas: &[f64],
+    incoming: &[f64],
+    losses: &[(f64, f64)],
+    z: f64,
+    outgoing: &mut [f64],
+) -> f64 {
+    // the velocity into the junction of branch i when its pressure is p_J (and its slope)
+    let velocity = |i: usize, pj: f64| -> (f64, f64) {
+        let r = 2.0 * incoming[i] - pj;
+        let s = if r >= 0.0 { losses[i].0 } else { losses[i].1 };
+        if s <= 0.0 {
+            return (r / z, -1.0 / z);
+        }
+        // s·u|u| + z·u = r, the root with the sign of r
+        let root = (z * z + 4.0 * s * r.abs()).sqrt();
+        let u = r.signum() * (root - z) / (2.0 * s);
+        (u, -1.0 / root)
+    };
+    let total: f64 = areas.iter().sum();
+    let mut pj = 2.0 * areas.iter().zip(incoming).map(|(a, p)| a * p).sum::<f64>() / total;
+    for _ in 0..30 {
+        let (mut f, mut df) = (0.0, 0.0);
+        for (i, a) in areas.iter().enumerate() {
+            let (u, du) = velocity(i, pj);
+            f += a * u;
+            df += a * du;
+        }
+        let step = f / df;
+        pj -= step;
+        if step.abs() < 1e-9 * (1.0 + pj.abs()) {
+            break;
+        }
+    }
+    for (i, o) in outgoing.iter_mut().enumerate() {
+        *o = incoming[i] - z * velocity(i, pj).0;
+    }
+    pj
+}
+
 /// Open pipe end radiating into air: reflection −r·LP(p) with a one-pole low-pass at the
 /// frequency where ka = 1 (|R| ≈ 1 below it, falling above; Levine & Schwinger 1948).
 #[derive(Debug, Clone)]
@@ -496,6 +544,42 @@ impl OpenEnd {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_junction_loses_pressure_as_flow_expands_or_contracts_through_it() {
+        // A pipe of area 1 into one of area 4 (σ = 0.25), gas of ρ = 0.4, ρc = 240. A 10 kPa wave
+        // arriving down the small pipe: the flow into the big one expands, losing
+        // ½ρ·(1 − σ)²·u² (Borda–Carnot; White, *Fluid Mechanics*, §6.9): with mass conserved,
+        // p_J = 3904.71 Pa (lossless 4000), u = 65.078 m/s, 476.46 Pa lost, the small pipe's
+        // reflection −5618.83 Pa (hand, the quadratic solved)
+        let expansion = 0.5 * 0.4 * 0.75f64.powi(2);
+        let contraction = 0.5 * 0.4 * 0.42 * 0.75;
+        let losses = [(expansion, contraction), (0.0, 0.0)];
+        let mut out = [0.0; 2];
+        let pj = lossy_junction(&[1.0, 4.0], &[10_000.0, 0.0], &losses, 240.0, &mut out);
+        assert!((pj - 3904.71).abs() < 0.01, "{pj}");
+        assert!((out[0] + 5618.83).abs() < 0.01, "{out:?}");
+        assert!((out[1] - 3904.71).abs() < 0.01, "{out:?}");
+        // the other way, a sudden contraction (K = 0.42·(1 − σ)): a 10 kPa wave down the big pipe
+        // drives 65.759 m/s into the small one and holds p_J at 16054.48 Pa (lossless 16000)
+        let pj = lossy_junction(&[1.0, 4.0], &[0.0, 10_000.0], &losses, 240.0, &mut out);
+        assert!((pj - 16_054.48).abs() < 0.01, "{pj}");
+        assert!((out[0] - 15_782.06).abs() < 0.01, "{out:?}");
+        // without losses it is the lossless junction
+        let mut plain = [0.0; 3];
+        let mut lossy = [0.0; 3];
+        let p = junction(&[1.0, 1.0, 3.0], &[500.0, -200.0, 50.0], &mut plain);
+        let q = lossy_junction(
+            &[1.0, 1.0, 3.0],
+            &[500.0, -200.0, 50.0],
+            &[(0.0, 0.0); 3],
+            240.0,
+            &mut lossy,
+        );
+        assert!(
+            (p - q).abs() < 1e-9 && plain.iter().zip(&lossy).all(|(a, b)| (a - b).abs() < 1e-9)
+        );
+    }
 
     /// Steady transmitted amplitude (re a unit incident sine at `f`) through `duct` with an
     /// anechoic source and termination.

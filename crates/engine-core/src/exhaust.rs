@@ -414,9 +414,30 @@ impl ExhaustDef {
 struct Branch {
     members: Vec<usize>,
     collector: Pipe,
+    /// ½ρK of each member's flow into and out of the collector, then the collector's own (none)
+    /// ([`waveguide::lossy_junction`]).
+    losses: Vec<(f64, f64)>,
     /// Muffler can and tail pipe.
     tail: Duct,
     end: OpenEnd,
+}
+
+/// The losses of a collector's junction: each primary's flow expands into the collector,
+/// losing ½ρ(1 − σ)²u² (Borda–Carnot), and contracts back into its primary losing ½ρ·0.42(1 − σ)u²
+/// (sudden contraction; White, *Fluid Mechanics*, §6.9), σ = A_primary/A_collector, ρ the primary
+/// gas's. The joining jets expand into the collector each on its own — the constant-pressure
+/// junction of Benson (vol. 1, ch. 8) with a loss on each branch. The collector's own flow passes
+/// without one.
+fn collector_losses(def: &ExhaustDef, members: usize) -> Vec<(f64, f64)> {
+    let sigma = (def.primary_diameter_m / def.collector_diameter_m)
+        .powi(2)
+        .min(1.0);
+    let rho = crate::gas::GAMMA * crate::units::ATM_PA / (C_PRIMARY * C_PRIMARY);
+    let expansion = 0.5 * rho * (1.0 - sigma).powi(2);
+    let contraction = 0.5 * rho * 0.42 * (1.0 - sigma);
+    let mut l = vec![(expansion, contraction); members];
+    l.push((0.0, 0.0));
+    l
 }
 
 /// Length of the muffler can, m (a typical silencer; its area follows from the volume).
@@ -643,6 +664,7 @@ impl ExhaustNet {
             .groups(cylinders)
             .into_iter()
             .map(|members| Branch {
+                losses: collector_losses(def, members.len()),
                 members,
                 collector: Pipe::new(
                     def.collector_length_m,
@@ -771,7 +793,8 @@ impl ExhaustNet {
             areas.push(b.collector.area_m2);
             incoming.push(b.collector.at_near());
             outgoing.resize(incoming.len(), 0.0);
-            junction(areas, incoming, outgoing);
+            let z = crate::gas::GAMMA * crate::units::ATM_PA / C_PRIMARY;
+            crate::waveguide::lossy_junction(areas, incoming, &b.losses, z, outgoing);
             for (k, &m) in b.members.iter().enumerate() {
                 from_far[m] = clamp_wave(outgoing[k]);
             }
@@ -1257,6 +1280,33 @@ mod tests {
             vec![vec![0, 1]],
             "nothing valid → one collector for all"
         );
+    }
+
+    #[test]
+    fn a_collector_loses_the_head_of_the_flow_entering_and_leaving_it() {
+        // 40 mm primaries into a 55 mm collector: σ = (40/55)² = 0.52893; gas at c = 600 m/s,
+        // ρ = 1.4·101325/600² = 0.39404. ½ρ(1 − σ)² = 0.043721 (Borda–Carnot) and
+        // ½ρ·0.42·(1 − σ) = 0.038981 (sudden contraction) (hand)
+        let l = collector_losses(&ExhaustDef::default(), 2);
+        assert_eq!(l.len(), 3);
+        assert!(
+            (l[0].0 - 0.043_721).abs() < 1e-6 && (l[1].1 - 0.038_981).abs() < 1e-6,
+            "{l:?}"
+        );
+        assert_eq!(l[2], (0.0, 0.0));
+        // in the net: the loss grows as u², so a loud pulse comes back from the junction
+        // relatively weaker than a faint one (a lossless junction reflects both alike)
+        let reflected = |flow: f64| {
+            let mut net = ExhaustNet::new(&ExhaustDef::default(), 2, DT);
+            let mut peak: f64 = 0.0;
+            for k in 0..600usize {
+                peak = peak.max(net.arriving(0).abs());
+                net.step(&[if k < 20 { flow } else { 0.0 }, 0.0]);
+            }
+            peak / flow
+        };
+        let (faint, loud) = (reflected(1e-4), reflected(0.2));
+        assert!(loud < 0.9 * faint, "faint {faint} loud {loud}");
     }
 
     #[test]
