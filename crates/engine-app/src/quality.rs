@@ -61,9 +61,15 @@ impl Quality {
     /// The definition as this level simulates it.
     pub fn apply(self, def: &EngineDef) -> EngineDef {
         let mut d = def.clone();
-        if self == Quality::Low {
-            d.intake.model = IntakeModel::ZeroD;
-            d.exhaust.model = ExhaustModel::Waveguide;
+        match self {
+            Quality::Low => {
+                d.intake.model = IntakeModel::ZeroD;
+                d.exhaust.model = ExhaustModel::Waveguide;
+            }
+            // offline there is time for the exhaust's gas dynamics: the FV pipes form the shocks
+            // the waveguide's linear waves cannot (2–3× its cost; no real-time level affords it)
+            Quality::Reference => d.exhaust.model = ExhaustModel::Fv,
+            _ => {}
         }
         d
     }
@@ -229,6 +235,19 @@ mod tests {
         for q in [Quality::Medium, Quality::High, Quality::Ultra] {
             assert_eq!(q.apply(&def), def, "{q:?}");
         }
+    }
+
+    #[test]
+    fn reference_renders_the_exhaust_non_linear() {
+        // Offline there is time for the FV exhaust's gas dynamics (shocks steepen in the
+        // primaries at high load), which no real-time level affords (2–3× the waveguide's cost)
+        let def = EngineDef::lfa_v10();
+        assert_eq!(def.exhaust.model, ExhaustModel::Waveguide);
+        let reference = Quality::Reference.apply(&def);
+        assert_eq!(reference.exhaust.model, ExhaustModel::Fv);
+        let mut back = reference.clone();
+        back.exhaust.model = ExhaustModel::Waveguide;
+        assert_eq!(back, def, "nothing else changes");
     }
 
     #[test]
