@@ -159,7 +159,18 @@ pub struct Pipe1d {
     /// D the hydraulic diameter √(4A/π); the dissipated work stays in the gas as heat (Winterbone &
     /// Pearson; the standard 1D engine-code wall term). Without it pipe resonances never decay.
     pub friction: f64,
+    /// Amplitude loss of the waves per metre (Np/m) at the wall, from its viscous and thermal
+    /// boundary layers: a momentum sink −2αc·ρ(u − ū) on the motion about the cell's slow mean
+    /// ū (Darcy's term above takes the mean flow). 0 = none.
+    pub acoustic_loss: f64,
+    /// Each cell's slow mean velocity ū (time constant [`MEAN_FLOW_TAU_S`]), for the acoustic
+    /// loss.
+    u_mean: Vec<f64>,
 }
+
+/// Time constant of the cells' mean velocity ū under the acoustic wall loss, s: slower than any
+/// engine order (an idling four-cylinder fires at ~27 Hz), so the loss acts on the waves only.
+const MEAN_FLOW_TAU_S: f64 = 0.2;
 
 impl Pipe1d {
     pub fn new(length: f64, n: usize, init: Prim) -> Self {
@@ -186,6 +197,8 @@ impl Pipe1d {
             area: vec![1.0; n],
             face_area: vec![1.0; n + 1],
             friction: 0.0,
+            acoustic_loss: 0.0,
+            u_mean: Vec::new(),
         }
     }
     /// Largest stable step for Courant number `cfl`.
@@ -232,6 +245,9 @@ impl Pipe1d {
     /// Uⁿ⁺¹ = ⅓Uⁿ + ⅔(U² + Δt·L(U²)); the end fluxes are weighted (1, 1, 4)/6 like the stages.
     pub fn step(&mut self, dt: f64) {
         let n = self.cells.len();
+        if self.acoustic_loss > 0.0 && self.u_mean.len() != n {
+            self.u_mean = self.cells.iter().map(|c| c.mom / c.rho).collect();
+        }
         self.u0.copy_from_slice(&self.cells);
         let mut ends = (Cons::default(), Cons::default());
         // (share of Uⁿ kept, weight of the stage's end flux)
@@ -251,6 +267,12 @@ impl Pipe1d {
             }
         }
         self.end_flux = ends;
+        if self.acoustic_loss > 0.0 {
+            let k = (dt / MEAN_FLOW_TAU_S).min(1.0);
+            for (m, c) in self.u_mean.iter_mut().zip(&self.cells) {
+                *m += k * (c.mom / c.rho - *m);
+            }
+        }
     }
 
     /// Mass flow per unit area through the right end during the last step (ρu at the face).
@@ -576,11 +598,15 @@ impl Pipe1d {
             let area = self.area[j];
             let ps = self.edge_r[j + 3].p * (fb - area) + self.edge_l[j + 3].p * (area - fa);
             let cell = self.w[j + 3];
-            let wall = if self.friction > 0.0 {
+            let mut wall = if self.friction > 0.0 {
                 self.friction * self.wall_coef[j] * cell.rho * cell.u * cell.u.abs()
             } else {
                 0.0
             };
+            if self.acoustic_loss > 0.0 {
+                let c = (crate::gas::GAMMA * cell.p / cell.rho).sqrt();
+                wall -= 2.0 * self.acoustic_loss * c * cell.rho * (cell.u - self.u_mean[j]);
+            }
             *r = Cons {
                 rho: -(fb * b.rho - fa * a.rho) * inv,
                 mom: -(fb * b.mom - fa * a.mom - ps) * inv + wall,
@@ -901,6 +927,45 @@ mod tests {
         let dp = p.prim(2).p - p.prim(n - 3).p;
         let span = (n - 5) as f64 / n as f64;
         assert!((dp / (540.0 * span) - 1.0).abs() < 0.15, "Δp {dp:.0} Pa");
+    }
+
+    #[test]
+    fn the_acoustic_wall_loss_wears_a_wave_by_its_rate_per_metre() {
+        // A small Gaussian pressure pulse in still air splits into two halves that each travel
+        // c·t; with an amplitude loss α (Np/m) each keeps e^(−α·d) of the inviscid peak. α =
+        // −ln 0.97 = 0.030459 over d = 343·0.006 = 2.06 m: 0.93922 (hand)
+        let alpha = -(0.97f64).ln();
+        let peak = |loss: f64| {
+            let air = Prim {
+                rho: 1.2,
+                u: 0.0,
+                p: 101_325.0,
+            };
+            let mut p = Pipe1d::new(6.0, 600, air);
+            p.acoustic_loss = loss;
+            for (i, c) in p.cells.iter_mut().enumerate() {
+                let x = (i as f64 + 0.5) * 0.01 - 3.0;
+                let dp = 100.0 * (-(x / 0.05).powi(2)).exp();
+                *c = Prim {
+                    rho: 1.2 * (1.0 + dp / (1.4 * 101_325.0)),
+                    u: 0.0,
+                    p: 101_325.0 + dp,
+                }
+                .to_cons();
+            }
+            let mut t = 0.0;
+            while t < 0.006 {
+                let dt = p.max_dt(0.5).min(0.006 - t);
+                p.step(dt);
+                t += dt;
+            }
+            // the right-running half
+            (300..600)
+                .map(|i| p.prim(i).p - 101_325.0)
+                .fold(f64::MIN, f64::max)
+        };
+        let ratio = peak(alpha) / peak(0.0);
+        assert!((ratio - 0.939_22).abs() < 0.006, "{ratio}");
     }
 
     #[test]

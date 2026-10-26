@@ -507,3 +507,36 @@ into a 0.3 bar cylinder is as strong as the WOT blowdown. Exhaust noise is gener
 hand. Suspects, untested: the open end without the jet's vortex-shedding loss at high mean
 outflow (|R| = (1 − M)/(1 + M), which the waveguide has), and no shell or muffler damping at low
 mean flow.
+
+## The FV exhaust had its own geometry and no acoustic wall loss (2026-10-26)
+
+**Symptom.** In offline Reference renders (FV exhaust), idle and the tail after a lift-off came
+out 8–12 dB louder than the waveguide's. The idle-to-WOT range was 15 dB against the
+waveguide's 23 dB; at a car's tailpipe it is typically 25–30 dB.
+
+**Measured.**
+- Jets: no part of the gap.
+- Valve flows: the same in both models.
+- Propagation: with one exhaust geometry and a small valve flow (the linear regime, where the two
+  must agree), the default system matched.
+
+**Causes.**
+- **Its own geometry.** FV built its own can and tail from the old fields, ignoring the designed
+  path, catalysts included. The catalysts alone explain half of the inline-4's gap.
+- **No wall loss on the waves.** FV's only wall friction is Darcy's u|u|, which vanishes for small
+  oscillations. Without a mean flow (idle, overrun) its resonances were nearly undamped. The
+  waveguide's 0.03/m matches Kirchhoff's boundary-layer loss in a primary at the firing orders.
+
+**Fix.**
+- FV ends at the collector. A characteristic node (`duct_node`) hands on to the designed path's
+  linear duct and open end.
+- `Pipe1d::acoustic_loss` adds the same per-metre loss as a momentum sink on u − ū.
+- Gaps now: inline-4 idle 3.9 dB, flat-plane V8 3.6 dB, LFA 8.9 dB (open).
+
+**Also found.** Overrun as loud as WOT is not an FV defect. The waveguide does it too, exhaust
+only: inline-4 overrun +11.0 dB against WOT +9.3 dB; flat-plane V8 +19.7 against +14.7. See
+"Overrun ≈ full power at the tail" above.
+
+**Tests:** `the_collector_end_passes_pressure_and_volume_flow_to_the_duct`,
+`in_the_linear_regime_the_fv_net_sounds_like_the_waveguide`,
+`the_acoustic_wall_loss_wears_a_wave_by_its_rate_per_metre`, `a_one_to_one_junction_is_transparent`.
