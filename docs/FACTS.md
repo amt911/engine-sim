@@ -101,5 +101,5 @@ Synchronous average over 4–8 cycles, each cycle found by cross-correlation and
 median length (job script `periodic2.py`; a fixed-period fold reads ≈ 0 because idle rpm drifts).
 Real LFA idle (recording wR8FwJVFXOQ, 6–14 s, 1155 rpm): 125 Hz 0.52, 250 Hz 0.50, 500 Hz 0.19,
 1 kHz and up ≈ 0. Model v0.22.1: 0.99 / 0.98 / 0.90 / 0.70 (1 kHz) / 0.45 (2 kHz). With the
-burn-variability branch: 0.98 / 0.77 / 0.67 / −0.01 / 0.05. Autocorrelation picks the wrong
+burn-variability branch: 0.97 / 0.79 / 0.72 / 0.05 / 0.09. Autocorrelation picks the wrong
 period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130 rpm in renders).

@@ -41,8 +41,8 @@ flow, dominating cyclic variability.
 
 ## Result
 
-The model's 1 kHz+ bands now repeat as little as the real engine's (1 kHz −0.01, 2 kHz 0.05). The
-125–500 Hz bands still repeat more than the recording (0.98 / 0.77 / 0.67); part of the
+The model's 1 kHz+ bands now repeat as little as the real engine's (1 kHz 0.05, 2 kHz 0.09). The
+125–500 Hz bands still repeat more than the recording (0.97 / 0.79 / 0.72); part of the
 recording's loss is the environment (wind, a moving camera), so that gap is not a target yet.
 
 ## Out of scope
