@@ -20,11 +20,53 @@ engine:
     duration_deg: 265.0
     max_lift_m: 0.0124
     diameter_m: 0.0495
+    high:
+      open_deg: 322.0
+      duration_deg: 301.0
+      max_lift_m: 0.01774
   exhaust_valve:
     open_deg: 130.0
     duration_deg: 260.0
     max_lift_m: 0.0106
     diameter_m: 0.0424
+  vtec:
+    engage_rpm: 6000.0
+    hysteresis_rpm: 300.0
+    min_throttle: 0.3
+  intake_phaser:
+    range_deg: 50.0
+    rate_deg_s: 30.0
+    map:
+    - rpm: 1000.0
+      full_load_deg: 10.0
+      no_load_deg: 0.0
+    - rpm: 1500.0
+      full_load_deg: 30.0
+      no_load_deg: 9.0
+    - rpm: 2000.0
+      full_load_deg: 20.0
+      no_load_deg: 18.0
+    - rpm: 3000.0
+      full_load_deg: 30.0
+      no_load_deg: 35.0
+    - rpm: 4000.0
+      full_load_deg: 20.0
+      no_load_deg: 31.0
+    - rpm: 5000.0
+      full_load_deg: 10.0
+      no_load_deg: 28.0
+    - rpm: 5500.0
+      full_load_deg: 5.0
+      no_load_deg: 26.0
+    - rpm: 6000.0
+      full_load_deg: 25.0
+      no_load_deg: 24.0
+    - rpm: 7000.0
+      full_load_deg: 15.0
+      no_load_deg: 20.0
+    - rpm: 8000.0
+      full_load_deg: 10.0
+      no_load_deg: 20.0
   spark_advance_deg: 25.0
   burn_duration_deg: 55.0
   flywheel_inertia_kgm2: 0.15

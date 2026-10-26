@@ -39,6 +39,14 @@ pub struct EngineDef {
     pub layout: Layout,
     pub intake_valve: ValveTiming,
     pub exhaust_valve: ValveTiming,
+    /// Honda VTEC: when the valves' high lobes engage ([`ValveTiming::high`]); none: fixed lobes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vtec: Option<crate::valve::Vtec>,
+    /// Cam phasers (Toyota VVT-i, Honda VTC) on the intake and exhaust camshafts; none: fixed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intake_phaser: Option<crate::valve::Phaser>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exhaust_phaser: Option<crate::valve::Phaser>,
     pub spark_advance_deg: f64,
     pub burn_duration_deg: f64,
     /// Everything that turns with the crank, referred to it: crank, the rods' rotating share,
@@ -127,13 +135,18 @@ impl EngineDef {
                 duration_deg: 250.0,
                 max_lift_m: 0.009,
                 diameter_m: 0.034,
+                high: None,
             },
             exhaust_valve: ValveTiming {
                 open_deg: 135.0,
                 duration_deg: 245.0,
                 max_lift_m: 0.008,
                 diameter_m: 0.029,
+                high: None,
             },
+            vtec: None,
+            intake_phaser: None,
+            exhaust_phaser: None,
             spark_advance_deg: 25.0,
             burn_duration_deg: 55.0,
             flywheel_inertia_kgm2: 0.12,
@@ -213,18 +226,29 @@ impl EngineDef {
             firing_order: vec![1, 3, 4, 2],
             layout: Layout::default(),
             // two 35 mm intake and two 30 mm exhaust valves as one equivalent each (√2·D);
-            // lift a quarter of each valve's diameter, kept as the pair's curtain area
+            // lift a quarter of each valve's diameter, kept as the pair's curtain area. The
+            // intake's VTEC lobe opens 36° longer and lifts 12.65/8.84 as far (K20A: low 244°,
+            // 8.84 mm; VTEC 280°, 12.65 mm — motorreviewer, a secondary source), opening 18°
+            // earlier. The real engine switches its exhaust lobes too; here they lost torque at
+            // every speed (6000/7000/8000 rpm: 177/167/139 N·m against 194/183/148), so until a
+            // primary source gives their timing the exhaust keeps one lobe (spec 2026-10-26).
             intake_valve: ValveTiming {
                 open_deg: 340.0,
                 duration_deg: 265.0,
                 max_lift_m: 0.0124,
                 diameter_m: 0.0495,
+                high: Some(crate::valve::CamLobe {
+                    open_deg: 322.0,
+                    duration_deg: 301.0,
+                    max_lift_m: 0.017_74,
+                }),
             },
             exhaust_valve: ValveTiming {
                 open_deg: 130.0,
                 duration_deg: 260.0,
                 max_lift_m: 0.0106,
                 diameter_m: 0.0424,
+                high: None,
             },
             flywheel_inertia_kgm2: 0.15,
             plenum_volume_m3: 4.0e-3,
@@ -248,6 +272,76 @@ impl EngineDef {
             redline_rpm: 8400.0,
             starter_torque_nm: 60.0,
             vehicle: crate::drivetrain::VehicleDef::inline4(),
+            // engages at 6000 rpm (Integra Type R DC5; Wikipedia, Honda K engine); its
+            // hysteresis and the pedal it waits for are estimates (no factory figure found)
+            vtec: Some(crate::valve::Vtec {
+                engage_rpm: 6000.0,
+                hysteresis_rpm: 300.0,
+                min_throttle: 0.3,
+            }),
+            // VTC on the intake camshaft (Honda R&D Technical Review 12-2, 2000, Niizato &
+            // Hayashi): VTEC by speed, VTC by load. Its range spans intake openings over ~60°
+            // (Fig. 8): 50° here; the 30 °/s rate is a control limit (US 7,467,611). At full load
+            // "VTC establishes the valve timing which will optimize the torque in response to
+            // engine speed" (§6.1, p. 51): the full-load advances are this model's own torque optimum,
+            // swept in 10° steps on the dyno (low lobe below 6000 rpm, VTEC lobe above). At light
+            // load the cam advances for internal EGR (Fig. 4); those degrees are estimates.
+            intake_phaser: Some(crate::valve::Phaser {
+                range_deg: 50.0,
+                rate_deg_s: 30.0,
+                map: vec![
+                    crate::valve::PhaserPoint {
+                        rpm: 1000.0,
+                        full_load_deg: 10.0,
+                        no_load_deg: 0.0,
+                    },
+                    crate::valve::PhaserPoint {
+                        rpm: 1500.0,
+                        full_load_deg: 30.0,
+                        no_load_deg: 9.0,
+                    },
+                    crate::valve::PhaserPoint {
+                        rpm: 2000.0,
+                        full_load_deg: 20.0,
+                        no_load_deg: 18.0,
+                    },
+                    crate::valve::PhaserPoint {
+                        rpm: 3000.0,
+                        full_load_deg: 30.0,
+                        no_load_deg: 35.0,
+                    },
+                    crate::valve::PhaserPoint {
+                        rpm: 4000.0,
+                        full_load_deg: 20.0,
+                        no_load_deg: 31.0,
+                    },
+                    crate::valve::PhaserPoint {
+                        rpm: 5000.0,
+                        full_load_deg: 10.0,
+                        no_load_deg: 28.0,
+                    },
+                    crate::valve::PhaserPoint {
+                        rpm: 5500.0,
+                        full_load_deg: 5.0,
+                        no_load_deg: 26.0,
+                    },
+                    crate::valve::PhaserPoint {
+                        rpm: 6000.0,
+                        full_load_deg: 25.0,
+                        no_load_deg: 24.0,
+                    },
+                    crate::valve::PhaserPoint {
+                        rpm: 7000.0,
+                        full_load_deg: 15.0,
+                        no_load_deg: 20.0,
+                    },
+                    crate::valve::PhaserPoint {
+                        rpm: 8000.0,
+                        full_load_deg: 10.0,
+                        no_load_deg: 20.0,
+                    },
+                ],
+            }),
             ..Self::single()
         }
         .with_tail_pipe()
@@ -291,13 +385,18 @@ impl EngineDef {
                 duration_deg: 270.0,
                 max_lift_m: 0.0124,
                 diameter_m: 0.0496,
+                high: None,
             },
             exhaust_valve: ValveTiming {
                 open_deg: 125.0,
                 duration_deg: 265.0,
                 max_lift_m: 0.0103,
                 diameter_m: 0.0412,
+                high: None,
             },
+            vtec: None,
+            intake_phaser: None,
+            exhaust_phaser: None,
             spark_advance_deg: 28.0,
             burn_duration_deg: 45.0,
             // from the measured unloaded snap, idle to 9000 rpm in 0.6 s (see the test)
@@ -381,13 +480,18 @@ impl EngineDef {
                 duration_deg: 270.0,
                 max_lift_m: 0.0115,
                 diameter_m: 0.050,
+                high: None,
             },
             exhaust_valve: ValveTiming {
                 open_deg: 125.0,
                 duration_deg: 265.0,
                 max_lift_m: 0.0105,
                 diameter_m: 0.043,
+                high: None,
             },
+            vtec: None,
+            intake_phaser: None,
+            exhaust_phaser: None,
             spark_advance_deg: 28.0,
             burn_duration_deg: 45.0,
             // a light, high-revving car engine: the LFA's class
@@ -452,13 +556,18 @@ impl EngineDef {
                 duration_deg: 250.0,
                 max_lift_m: 0.014,
                 diameter_m: 0.055,
+                high: None,
             },
             exhaust_valve: ValveTiming {
                 open_deg: 130.0,
                 duration_deg: 250.0,
                 max_lift_m: 0.0138,
                 diameter_m: 0.0404,
+                high: None,
             },
+            vtec: None,
+            intake_phaser: None,
+            exhaust_phaser: None,
             spark_advance_deg: 26.0,
             burn_duration_deg: 50.0,
             // heavy cross-plane counterweights and a street clutch: the top of the range
@@ -1000,6 +1109,10 @@ pub struct Engine {
     /// area; negative closes the bypass), and its integral term (per idle-air scale).
     iac: f64,
     iac_integral: f64,
+    /// Whether VTEC has the high lobes engaged ([`EngineDef::vtec`]).
+    vtec_engaged: bool,
+    /// The cam phasers' advance now, crank degrees (intake, exhaust).
+    cam_advance: (f64, f64),
     /// Filtered d(rpm)/dt for the derivative action, rpm/s, and the rpm it was last taken at.
     iac_rate: f64,
     iac_last_rpm: f64,
@@ -1207,6 +1320,8 @@ impl Engine {
             torque_avg: 0.0,
             iac: 0.0,
             iac_integral: 0.0,
+            vtec_engaged: false,
+            cam_advance: (0.0, 0.0),
             iac_rate: 0.0,
             idle_spark_deg: 0.0,
             dashpot: 0.0,
@@ -1300,6 +1415,35 @@ impl Engine {
     /// Trim the idle air towards `idle_rpm` while the pedal is released and the engine runs
     /// on its own; hold the trim otherwise (pedal pressed, cranking, overrun above the dashpot,
     /// ignition off), so the loop does not wind up while it cannot act.
+    /// The ECU's valve timing: VTEC engages or drops its high lobes ([`crate::valve::Vtec`]) and
+    /// each cam phaser turns towards its map's advance at its rate ([`crate::valve::Phaser`]).
+    fn valve_control(&mut self, rpm: f64, throttle: f64, dt: f64) {
+        if let Some(v) = &self.def.vtec {
+            self.vtec_engaged = v.next(self.vtec_engaged, rpm, throttle);
+        }
+        let turn = |p: &Option<crate::valve::Phaser>, now: f64| match p {
+            Some(p) => p.step(now, p.target(rpm, throttle), dt),
+            None => 0.0,
+        };
+        self.cam_advance = (
+            turn(&self.def.intake_phaser, self.cam_advance.0),
+            turn(&self.def.exhaust_phaser, self.cam_advance.1),
+        );
+    }
+
+    /// The valves' timing now: their lobes (high while VTEC is engaged), each camshaft advanced
+    /// by its phaser.
+    pub fn valves(&self) -> (ValveTiming, ValveTiming) {
+        (
+            self.def
+                .intake_valve
+                .effective(self.vtec_engaged, self.cam_advance.0),
+            self.def
+                .exhaust_valve
+                .effective(self.vtec_engaged, self.cam_advance.1),
+        )
+    }
+
     fn idle_control(&mut self, dt: f64, c: &Controls) {
         let rpm = self.rpm();
         let target = self.def.idle_rpm;
@@ -1426,10 +1570,10 @@ impl Engine {
         self.idle_control(dt, c);
         self.plate_step(c.throttle, dt);
         self.dashpot_step(self.plate, dt);
-        let ivc =
-            (self.def.intake_valve.open_deg + self.def.intake_valve.duration_deg).rem_euclid(720.0);
-        let evc = (self.def.exhaust_valve.open_deg + self.def.exhaust_valve.duration_deg)
-            .rem_euclid(720.0);
+        self.valve_control(rpm_now, c.throttle, dt);
+        let (intake_valve, exhaust_valve) = self.valves();
+        let ivc = (intake_valve.open_deg + intake_valve.duration_deg).rem_euclid(720.0);
+        let evc = (exhaust_valve.open_deg + exhaust_valve.duration_deg).rem_euclid(720.0);
         // the cut-offs stop the injection; the port film still feeds the cylinders
         let inject = !self.overrun_cut && !self.limiter_cut;
         let (film_x, film_tau) = (self.def.intake.film_fraction, self.def.intake.film_tau_s);
@@ -1529,8 +1673,8 @@ impl Engine {
             // Both valve flows are planned from the same state (Jacobi) and each may close
             // at most half the pressure gap: during overlap, sequential full equalisation
             // with plenum then runner ping-pongs every substep (loud numerical chatter).
-            let a_in = self.def.intake_valve.flow_area(cur);
-            let a_ex = self.def.exhaust_valve.flow_area(cur);
+            let a_in = intake_valve.flow_area(cur);
+            let a_ex = exhaust_valve.flow_area(cur);
             // The intake valve draws from the 0D plenum, or from its runner's last cell (1D).
             let f_in = (a_in > 0.0).then(|| match &self.intake_net {
                 Some(net) => plan_exchange(&net.port_volume(i), &cs.gas, a_in, dt, VALVE_RELAX),
@@ -1735,7 +1879,7 @@ impl Engine {
             }
             // The exhaust valve opens on whatever the flame has not burnt yet: it leaves
             // unburnt with the gas (a partial burn), as does a charge that never lit.
-            if crossed(prev, cur, self.def.exhaust_valve.open_deg) {
+            if crossed(prev, cur, exhaust_valve.open_deg) {
                 if let Some(b) = cs.burn.take() {
                     cs.slip.add(b.unburnt());
                 }
@@ -2272,8 +2416,8 @@ impl Engine {
             piston_m: g.piston_position(deg_to_rad(cs.cycle_deg)),
             pressure_pa: cs.gas.pressure(),
             temperature_k: cs.gas.temperature(),
-            intake_lift_m: self.def.intake_valve.lift(cs.cycle_deg),
-            exhaust_lift_m: self.def.exhaust_valve.lift(cs.cycle_deg),
+            intake_lift_m: self.valves().0.lift(cs.cycle_deg),
+            exhaust_lift_m: self.valves().1.lift(cs.cycle_deg),
             burning: cs
                 .burn
                 .as_ref()
@@ -2483,6 +2627,100 @@ mod tests {
         }
         works.remove(0);
         works
+    }
+
+    /// The K20A's cams with VTEC's lobes (motorreviewer, K20A: low 244°/240° and 8.84/8.59 mm,
+    /// VTEC 280°/278° and 12.65/12.14 mm, intake/exhaust), each lobe centred where the preset's
+    /// single lobe is, VTEC engaging at `engage_rpm`.
+    fn k20a_vtec(engage_rpm: f64) -> EngineDef {
+        let mut d = EngineDef::honda_k20a();
+        let centre = |v: &ValveTiming| v.open_deg + 0.5 * v.duration_deg;
+        let (ci, ce) = (centre(&d.intake_valve), centre(&d.exhaust_valve));
+        d.intake_valve = ValveTiming {
+            open_deg: ci - 122.0,
+            duration_deg: 244.0,
+            max_lift_m: 0.008_84,
+            diameter_m: d.intake_valve.diameter_m,
+            high: Some(crate::valve::CamLobe {
+                open_deg: ci - 140.0,
+                duration_deg: 280.0,
+                max_lift_m: 0.012_65,
+            }),
+        };
+        d.exhaust_valve = ValveTiming {
+            open_deg: ce - 120.0,
+            duration_deg: 240.0,
+            max_lift_m: 0.008_59,
+            diameter_m: d.exhaust_valve.diameter_m,
+            high: Some(crate::valve::CamLobe {
+                open_deg: ce - 139.0,
+                duration_deg: 278.0,
+                max_lift_m: 0.012_14,
+            }),
+        };
+        d.vtec = Some(crate::valve::Vtec {
+            engage_rpm,
+            hysteresis_rpm: 300.0,
+            min_throttle: 0.5,
+        });
+        d
+    }
+
+    #[test]
+    fn vtec_trades_low_speed_torque_for_high_speed_breathing() {
+        // why VTEC exists: the long, high lobe breathes more at speed and less down low
+        // (Heywood §6.3: longer opening and later intake closing move the volumetric
+        // efficiency's peak to higher speed). Forced on (engages at 0 rpm) against never
+        // (engages beyond any speed)
+        let torque = |d: EngineDef, rpm: f64| {
+            let mut e = Engine::new(d, rpm, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(rpm),
+                ..Controls::default()
+            };
+            run(&mut e, 1.0, &c);
+            e.torque_nm()
+        };
+        let (high, low) = (k20a_vtec(0.0), k20a_vtec(1e9));
+        let (h7, l7) = (torque(high.clone(), 7500.0), torque(low.clone(), 7500.0));
+        let (h3, l3) = (torque(high, 2500.0), torque(low, 2500.0));
+        assert!(h7 > l7 * 1.05, "7500 rpm: high {h7} low {l7}");
+        assert!(h3 < l3, "2500 rpm: high {h3} low {l3}");
+    }
+
+    #[test]
+    fn the_engine_rides_its_high_lobes_once_vtec_engages() {
+        let mut e = Engine::new(k20a_vtec(6000.0), 5000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(5000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.05, &c);
+        assert_eq!(e.valves().0.max_lift_m, 0.008_84);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(6500.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.05, &c);
+        assert_eq!(e.valves().0.max_lift_m, 0.012_65);
+        // a phaser advances the effective intake timing
+        let mut d = k20a_vtec(1e9);
+        d.intake_phaser = Some(crate::valve::Phaser {
+            range_deg: 50.0,
+            rate_deg_s: 1e6,
+            map: vec![crate::valve::PhaserPoint {
+                rpm: 0.0,
+                full_load_deg: 20.0,
+                no_load_deg: 20.0,
+            }],
+        });
+        let base = d.intake_valve.open_deg;
+        let mut e = Engine::new(d, 3000.0, 1);
+        run(&mut e, 0.01, &c);
+        assert!((e.valves().0.open_deg - (base - 20.0)).abs() < 1e-9);
     }
 
     #[test]

@@ -20,6 +20,117 @@ pub struct ValveTiming {
     pub duration_deg: f64,
     pub max_lift_m: f64,
     pub diameter_m: f64,
+    /// A second lobe the valve rides while VTEC is engaged ([`Vtec`]); none: one lobe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub high: Option<CamLobe>,
+}
+
+/// A cam lobe: where it starts opening its valve, for how long and how far.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CamLobe {
+    pub open_deg: f64,
+    pub duration_deg: f64,
+    pub max_lift_m: f64,
+}
+
+/// Honda's VTEC: a pin locks the valve's rocker onto its high lobe above a speed, with the pedal
+/// down (the real solenoid also waits for oil pressure and coolant temperature, not modelled),
+/// and lets it go below the speed less a hysteresis (Honda, Integra Type R DC5: 6000 rpm).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Vtec {
+    pub engage_rpm: f64,
+    pub hysteresis_rpm: f64,
+    /// Pedal it needs, 0–1.
+    pub min_throttle: f64,
+}
+
+impl Vtec {
+    /// Whether the high lobes are engaged after this step, from whether they were.
+    pub fn next(&self, engaged: bool, rpm: f64, throttle: f64) -> bool {
+        if throttle < self.min_throttle {
+            return false;
+        }
+        if engaged {
+            rpm >= self.engage_rpm - self.hysteresis_rpm
+        } else {
+            rpm >= self.engage_rpm
+        }
+    }
+}
+
+/// One point of a cam phaser's map: the advance the ECU asks for at `rpm` with the pedal down
+/// and with it released, crank degrees.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PhaserPoint {
+    pub rpm: f64,
+    pub full_load_deg: f64,
+    pub no_load_deg: f64,
+}
+
+/// A hydraulic cam phaser (Toyota VVT-i, Honda VTC): it turns its camshaft up to `range_deg`
+/// crank degrees earlier, at most `rate_deg_s` (VVT-i: up to 60° CA, Toyota SAE 960579; control
+/// rate limits of 25–40 °/s, US 7,467,611), towards its ECU map's advance.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Phaser {
+    pub range_deg: f64,
+    pub rate_deg_s: f64,
+    pub map: Vec<PhaserPoint>,
+}
+
+impl Phaser {
+    /// The advance the map asks for: interpolated in speed between its points (held beyond them)
+    /// and linearly in pedal between no load and full load, clamped to the range.
+    pub fn target(&self, rpm: f64, throttle: f64) -> f64 {
+        let Some(first) = self.map.first() else {
+            return 0.0;
+        };
+        let t = throttle.clamp(0.0, 1.0);
+        let at = |p: &PhaserPoint| p.no_load_deg + (p.full_load_deg - p.no_load_deg) * t;
+        let mut deg = at(first);
+        for w in self.map.windows(2) {
+            let (a, b) = (&w[0], &w[1]);
+            if rpm >= b.rpm {
+                deg = at(b);
+            } else {
+                if rpm > a.rpm {
+                    deg = at(a) + (at(b) - at(a)) * (rpm - a.rpm) / (b.rpm - a.rpm);
+                }
+                break;
+            }
+        }
+        deg.clamp(0.0, self.range_deg)
+    }
+    /// The cam's angle after `dt` moving from `current` towards `target` at its rate.
+    pub fn step(&self, current: f64, target: f64, dt: f64) -> f64 {
+        let d = self.rate_deg_s * dt;
+        current + (target - current).clamp(-d, d)
+    }
+}
+
+impl ValveTiming {
+    /// The timing the valve has now: its high lobe if `high` (and it has one), its whole lift
+    /// curve moved `advance_deg` crank degrees earlier.
+    pub fn effective(&self, high: bool, advance_deg: f64) -> ValveTiming {
+        let lobe = match (high, self.high) {
+            (true, Some(l)) => l,
+            _ => CamLobe {
+                open_deg: self.open_deg,
+                duration_deg: self.duration_deg,
+                max_lift_m: self.max_lift_m,
+            },
+        };
+        ValveTiming {
+            open_deg: (lobe.open_deg - advance_deg).rem_euclid(720.0),
+            duration_deg: lobe.duration_deg,
+            max_lift_m: lobe.max_lift_m,
+            diameter_m: self.diameter_m,
+            high: self.high,
+        }
+    }
 }
 
 impl ValveTiming {
@@ -56,6 +167,147 @@ mod tests {
     use approx::assert_relative_eq;
     use std::f64::consts::PI;
 
+    fn vtec_intake() -> ValveTiming {
+        ValveTiming {
+            open_deg: 350.0,
+            duration_deg: 244.0,
+            max_lift_m: 0.0088,
+            diameter_m: 0.035,
+            high: Some(CamLobe {
+                open_deg: 340.0,
+                duration_deg: 280.0,
+                max_lift_m: 0.01265,
+            }),
+        }
+    }
+
+    #[test]
+    fn vtec_opens_the_valve_on_its_high_lobe() {
+        // mid-opening of each lobe (sin² peak): low 350 + 122 = 472°, 8.8 mm; high 340 + 140 =
+        // 480°, 12.65 mm
+        let v = vtec_intake();
+        assert_relative_eq!(
+            v.effective(false, 0.0).lift(472.0),
+            0.0088,
+            max_relative = 1e-12
+        );
+        assert_relative_eq!(
+            v.effective(true, 0.0).lift(480.0),
+            0.012_65,
+            max_relative = 1e-12
+        );
+        // a valve with one lobe keeps it either way
+        let one = ValveTiming { high: None, ..v };
+        assert_eq!(one.effective(true, 0.0), one.effective(false, 0.0));
+    }
+
+    #[test]
+    fn a_phaser_moves_the_whole_lift_curve_earlier() {
+        // advanced by 30°: what the cam lifted at θ + 30 it now lifts at θ
+        let v = vtec_intake();
+        let a = v.effective(false, 30.0);
+        for theta in [300.0, 350.0, 400.0, 470.0, 560.0] {
+            assert_relative_eq!(
+                a.lift(theta),
+                v.effective(false, 0.0).lift(theta + 30.0),
+                epsilon = 1e-15
+            );
+        }
+    }
+
+    #[test]
+    fn vtec_engages_at_its_speed_and_holds_through_its_hysteresis() {
+        let s = Vtec {
+            engage_rpm: 6000.0,
+            hysteresis_rpm: 300.0,
+            min_throttle: 0.5,
+        };
+        assert!(!s.next(false, 5999.0, 1.0));
+        assert!(s.next(false, 6000.0, 1.0));
+        assert!(s.next(true, 5701.0, 1.0), "held above 5700");
+        assert!(!s.next(true, 5699.0, 1.0), "released below 5700");
+        assert!(!s.next(false, 7000.0, 0.4), "not without the pedal");
+        assert!(
+            !s.next(true, 7000.0, 0.4),
+            "and dropped when the pedal lifts"
+        );
+    }
+
+    #[test]
+    fn a_phaser_follows_its_map_at_its_rate() {
+        // map: 1000 rpm 0°/0°, 5000 rpm 40° at full load and 10° at none (hand: at 3000 rpm and
+        // half pedal, 20° full and 5° none → 12.5°)
+        let p = Phaser {
+            range_deg: 50.0,
+            rate_deg_s: 30.0,
+            map: vec![
+                PhaserPoint {
+                    rpm: 1000.0,
+                    full_load_deg: 0.0,
+                    no_load_deg: 0.0,
+                },
+                PhaserPoint {
+                    rpm: 5000.0,
+                    full_load_deg: 40.0,
+                    no_load_deg: 10.0,
+                },
+            ],
+        };
+        assert_relative_eq!(p.target(3000.0, 0.5), 12.5, max_relative = 1e-12);
+        assert_relative_eq!(p.target(500.0, 1.0), 0.0);
+        assert_relative_eq!(p.target(9000.0, 1.0), 40.0);
+        // clamped to its range
+        let wide = Phaser {
+            range_deg: 30.0,
+            ..p.clone()
+        };
+        assert_relative_eq!(wide.target(9000.0, 1.0), 30.0);
+        // 30 °/s: half a second covers 15°, a second the whole 30°
+        let mut a = 0.0;
+        for _ in 0..500 {
+            a = p.step(a, 30.0, 0.001);
+        }
+        assert_relative_eq!(a, 15.0, max_relative = 1e-9);
+        for _ in 0..1000 {
+            a = p.step(a, 30.0, 0.001);
+        }
+        assert_relative_eq!(a, 30.0, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn variable_timing_round_trips_and_old_valves_load_without_it() {
+        let v = vtec_intake();
+        let json = serde_json::to_string(&v).unwrap();
+        assert_eq!(serde_json::from_str::<ValveTiming>(&json).unwrap(), v);
+        let yaml = serde_yaml_ng::to_string(&v).unwrap();
+        assert_eq!(serde_yaml_ng::from_str::<ValveTiming>(&yaml).unwrap(), v);
+        let old: ValveTiming = serde_yaml_ng::from_str(
+            "open_deg: 340.0\nduration_deg: 265.0\nmax_lift_m: 0.0124\ndiameter_m: 0.0495\n",
+        )
+        .unwrap();
+        assert_eq!(old.high, None);
+        let p = Phaser {
+            range_deg: 50.0,
+            rate_deg_s: 30.0,
+            map: vec![PhaserPoint {
+                rpm: 1000.0,
+                full_load_deg: 5.0,
+                no_load_deg: 0.0,
+            }],
+        };
+        let y = serde_yaml_ng::to_string(&p).unwrap();
+        assert_eq!(serde_yaml_ng::from_str::<Phaser>(&y).unwrap(), p);
+        let s = Vtec {
+            engage_rpm: 6000.0,
+            hysteresis_rpm: 300.0,
+            min_throttle: 0.5,
+        };
+        assert_eq!(
+            serde_json::from_str::<Vtec>(&serde_json::to_string(&s).unwrap()).unwrap(),
+            s
+        );
+    }
+
     fn exhaust() -> ValveTiming {
         // opens 40° before BDC of power stroke, closes 15° after exhaust TDC
         ValveTiming {
@@ -63,6 +315,7 @@ mod tests {
             duration_deg: 235.0,
             max_lift_m: 0.009,
             diameter_m: 0.030,
+            high: None,
         }
     }
 
@@ -114,6 +367,7 @@ mod tests {
             duration_deg: 40.0,
             max_lift_m: 0.01,
             diameter_m: 0.03,
+            high: None,
         };
         assert_relative_eq!(v.lift(0.0), 0.01, max_relative = 1e-12); // 20° into the window = middle
         assert_relative_eq!(v.lift(720.0), v.lift(0.0));
