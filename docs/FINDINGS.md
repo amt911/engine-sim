@@ -609,20 +609,35 @@ the pressure.
 like `port_t`). The fresh charge carries fuel only when the ECU injects (`Composition`). With
 that, overrun reverses as it did before the change.
 
-## High-speed power is lost at the exhaust valve's linear port (2026-10-27)
+## High-speed power is lost in breathing, not at the valve's port model (2026-10-27)
 
-**Symptom.** At 8000–8500 rpm, WOT, pumping reached 1.7–1.8 bar (0.3–0.5 at mid speed). Mid
-exhaust stroke, the cylinder sits at +1.6–1.8 bar gauge, and its port at almost the same.
+**Symptom.** At 8000–8500 rpm, WOT, pumping reaches 1.7–1.8 bar (0.3–0.5 at mid speed). The
+K20A's torque at 8000 rpm is 160 N·m against Honda's ≈ 193. At bottom dead centre, 8000 rpm, the
+cylinder is still at +3.5 bar: the blowdown has not finished when the piston starts to push.
 
-**What it is not.** It is not the pipe bores: 42/63/60 mm instead of 40/55/50 changed nothing.
-It is not the waveguide's linearity alone either: the FV exhaust shows 1.23 bar against 1.36.
+**What it is not.**
 
-**Cause.** Both models couple the valve to its pipe as p = p_atm + 2p⁻ + (c/A)·ṁ, a linear
-impedance. A blowdown at Mach ≈ 0.7 and 2–3 bar is far outside it. By hand, the piston-driven
-flow at 240–260° should raise the port about 0.64 bar; the model shows ≈ 1.1.
+- *The linear valve port* (p = p₀ + 2p⁻ + (c/A)·ṁ). Benson's characteristic boundary
+  (`feat/benson-valve`) puts a 3-bar, 1300 K blowdown into a quiet pipe at 2.38 bar where the
+  linear port says 2.48: 4 %. A first diagnosis blamed the port; the decomposition behind it
+  mixed the waveguide's volume-equivalent source with the valve's mass flow.
+- *The exhaust bores.* A 65 mm tail adds 5 N·m at 8000 rpm; no catalyst, 2 N·m; all open, 6 N·m.
+  An earlier ablation changed `tail_diameter_m`, which `after_collector` overrides, so it
+  measured nothing.
 
-**Next.** Benson's valve boundary by characteristics. Until then the LFA's torque peak may sit
-at 5500 rather than 6800 rpm (the dyno test allows it), and the top end runs ≈ 12–15 % short.
+**What moves it** (K20A, 8000 rpm, one change at a time):
+
+| Change | Torque at 8000 rpm |
+|---|---|
+| none | 160 N·m |
+| exhaust opening 20° earlier | 168 N·m |
+| exhaust valve 50 mm equivalent | 167 N·m |
+| intake valve 58 mm equivalent | 177 N·m |
+
+The valve events pass too little gas at speed. The lift curve is a sin² over the duration: its
+time-area is lower than a real cam's, which dwells near full lift. And the presets cap lift at
+L/D 0.25, where the K20A runs ≈ 0.33. Next: a cam profile from a cam-design source. The LFA's
+torque peak may sit at 5500 rather than 6800 rpm until then (the dyno test allows it).
 
 ## Real gas properties cost ≈ 10 % of a step (2026-10-27)
 
