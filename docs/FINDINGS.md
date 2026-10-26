@@ -571,3 +571,20 @@ on six shared cores took 19 s threaded vs 4.2 s on one thread (and 34 CPU-s vs 3
 laptop is always in the shared case (UI, audio, browser, one power budget), which is where the
 user heard underruns. They are now opt-in (`--threads`, `exhaust_thread::STEP_THREADS`). Any
 future parallelism must hand off per block of steps, never per step.
+
+## Overrun is a perfect tone: ~100 % of it repeats cycle to cycle (2026-10-26)
+
+Share of each band that repeats from cycle to cycle (`periodic2.py`-style synchronous average over
+4 cycles, tracked cycle by cycle): the LFA lifting off at 5000–6000 rpm, model v0.23.0, repeats
+1.00 / 1.00 / 0.99 / 0.91 at 250 Hz / 500 Hz / 1 kHz / 2 kHz (4 kHz 0.64–0.78). Real LFA lift-offs
+at ~4900–5400 rpm (recording yY0Fx8Thyx4, 0.8 s after the lift): 0.11–0.24 / 0.13–0.39 /
+0.00–0.05 / ~0. That is the user's overrun "fly": with no combustion the pumping is identical
+every cycle. Caveat: the real clips are from a moving car (road and wind noise are aperiodic too).
+Candidates checked and why they do not supply it:
+- **Throttle-gap jet:** the gap is choked on overrun, so its noise cannot travel upstream to the
+  trumpet (sound does not cross a sonic throat against the flow).
+- **Reverse valve jets:** `valve_jet_level` is silent when the port is above the cylinder. At EVO
+  on overrun the backflow into a 0.13 bar cylinder is choked too: its noise is in the cylinder,
+  reaching us only through the block, whose model takes the 0D cylinder pressure (no turbulence).
+Open: what aperiodic source a real overrun has at 250 Hz–2 kHz (cycle-to-cycle gas exchange,
+turbulence in the cylinder through the structure, pipe-flow noise).
