@@ -654,3 +654,40 @@ samples, a count by source line.
 
 **Limit.** eu-stack does not show inlined frames: most samples land on the caller of
 `Engine::step`. Its innermost-frame counts still compare two builds fairly.
+
+## Overrun is a perfect tone: ~100 % of it repeats cycle to cycle (2026-10-26)
+
+Share of each band that repeats from cycle to cycle (`periodic2.py`-style synchronous average over
+4 cycles, tracked cycle by cycle): the LFA lifting off at 5000–6000 rpm, model v0.23.0, repeats
+1.00 / 1.00 / 0.99 / 0.91 at 250 Hz / 500 Hz / 1 kHz / 2 kHz (4 kHz 0.64–0.78). Real LFA lift-offs
+at ~4900–5400 rpm (recording yY0Fx8Thyx4, 0.8 s after the lift): 0.11–0.24 / 0.13–0.39 /
+0.00–0.05 / ~0. That is the user's overrun "fly": with no combustion the pumping is identical
+every cycle. Caveat: the real clips are from a moving car (road and wind noise are aperiodic too).
+Candidates checked and why they do not supply it:
+- **Throttle-gap jet:** the gap is choked on overrun, so its noise cannot travel upstream to the
+  trumpet (sound does not cross a sonic throat against the flow).
+- **Reverse valve jets:** `valve_jet_level` is silent when the port is above the cylinder. At EVO
+  on overrun the backflow into a 0.13 bar cylinder is choked too: its noise is in the cylinder,
+  reaching us only through the block, whose model takes the 0D cylinder pressure (no turbulence).
+Open: what aperiodic source a real overrun has at 250 Hz–2 kHz (cycle-to-cycle gas exchange,
+turbulence in the cylinder through the structure, pipe-flow noise).
+
+## FV exhaust at idle, after the designed path (2026-10-26)
+
+Measured with `ExhaustModel::Fv`, 3 s settled then 3 s held at idle (core, 192 kHz): the **LFA is
+now steady** (900–966 rpm vs the waveguide's 905–982); the **K20A still hunts** (593–1065 vs
+807–904). Not misfires (firings match the speed). Not the idle loop either: with the loop frozen
+(pedal a hair open) the waveguide K20A settles near 860 rpm while the FV one drifts 1091 → 592 →
+1062 on its own. Per cycle the FV engine scavenges better (residual 7–12 % vs 17–19 %) and does
+about the same work for the same fresh charge; its residual follows the speed over ~1.5 s, a lag
+in a quantity that slows the flame. A faster idle integral makes it worse (KI 2 → stalls both
+engines), so the cure is not in the controller. Torque at a held speed, fixed idle air: FV 4–7
+N·m below the waveguide from 550 to 1150 rpm, both falling with speed. Open: what in the FV
+coupling removes the open-loop damping.
+- **All presets, FV vs waveguide idle (3 s held after 3 s settled, rpm range):** single 654–1371
+  vs 765–1291; inline-4 756–945 vs 768–872; K20A 593–1065 vs 807–904; flat-plane V8 859–1142 vs
+  985–1040; cross-plane V8 580–760 vs 690–766; LFA 900–966 vs 905–982. FV idles worse on five
+  of six. Per cycle (K20A, 800 rpm held, same idle air) pumping work is identical (−31 J) and the
+  exhaust-stroke pressure the same; FV's gross work is 8 % lower (152.6 vs 166.5 J) as it traps
+  ~5 % less fresh charge. Freezing the residual's effect on the flame halves the open-loop swing;
+  retuning the idle spark (reserve 10–15°, KD 10–60) does not help (more KD is worse).
