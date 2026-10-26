@@ -601,3 +601,10 @@ in a quantity that slows the flame. A faster idle integral makes it worse (KI 2 
 engines), so the cure is not in the controller. Torque at a held speed, fixed idle air: FV 4–7
 N·m below the waveguide from 550 to 1150 rpm, both falling with speed. Open: what in the FV
 coupling removes the open-loop damping.
+- **All presets, FV vs waveguide idle (3 s held after 3 s settled, rpm range):** single 654–1371
+  vs 765–1291; inline-4 756–945 vs 768–872; K20A 593–1065 vs 807–904; flat-plane V8 859–1142 vs
+  985–1040; cross-plane V8 580–760 vs 690–766; LFA 900–966 vs 905–982. FV idles worse on five
+  of six. Per cycle (K20A, 800 rpm held, same idle air) pumping work is identical (−31 J) and the
+  exhaust-stroke pressure the same; FV's gross work is 8 % lower (152.6 vs 166.5 J) as it traps
+  ~5 % less fresh charge. Freezing the residual's effect on the flame halves the open-loop swing;
+  retuning the idle spark (reserve 10–15°, KD 10–60) does not help (more KD is worse).
