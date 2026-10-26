@@ -588,3 +588,16 @@ Candidates checked and why they do not supply it:
   reaching us only through the block, whose model takes the 0D cylinder pressure (no turbulence).
 Open: what aperiodic source a real overrun has at 250 Hz–2 kHz (cycle-to-cycle gas exchange,
 turbulence in the cylinder through the structure, pipe-flow noise).
+
+## FV exhaust at idle, after the designed path (2026-10-26)
+
+Measured with `ExhaustModel::Fv`, 3 s settled then 3 s held at idle (core, 192 kHz): the **LFA is
+now steady** (900–966 rpm vs the waveguide's 905–982); the **K20A still hunts** (593–1065 vs
+807–904). Not misfires (firings match the speed). Not the idle loop either: with the loop frozen
+(pedal a hair open) the waveguide K20A settles near 860 rpm while the FV one drifts 1091 → 592 →
+1062 on its own. Per cycle the FV engine scavenges better (residual 7–12 % vs 17–19 %) and does
+about the same work for the same fresh charge; its residual follows the speed over ~1.5 s, a lag
+in a quantity that slows the flame. A faster idle integral makes it worse (KI 2 → stalls both
+engines), so the cure is not in the controller. Torque at a held speed, fixed idle air: FV 4–7
+N·m below the waveguide from 550 to 1150 rpm, both falling with speed. Open: what in the FV
+coupling removes the open-loop damping.

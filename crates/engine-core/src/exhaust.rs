@@ -422,6 +422,12 @@ struct Branch {
     end: OpenEnd,
 }
 
+/// ρc of the primaries' gas, Pa·s/m: an ideal gas at an atmosphere whose speed of sound is
+/// [`C_PRIMARY`], ρc = γp/c.
+fn primary_impedance() -> f64 {
+    crate::gas::GAMMA * crate::units::ATM_PA / C_PRIMARY
+}
+
 /// The losses of a collector's junction: each primary's flow expands into the collector,
 /// losing ½ρ(1 − σ)²u² (Borda–Carnot), and contracts back into its primary losing ½ρ·0.42(1 − σ)u²
 /// (sudden contraction; White, *Fluid Mechanics*, §6.9), σ = A_primary/A_collector, ρ the primary
@@ -793,8 +799,13 @@ impl ExhaustNet {
             areas.push(b.collector.area_m2);
             incoming.push(b.collector.at_near());
             outgoing.resize(incoming.len(), 0.0);
-            let z = crate::gas::GAMMA * crate::units::ATM_PA / C_PRIMARY;
-            crate::waveguide::lossy_junction(areas, incoming, &b.losses, z, outgoing);
+            crate::waveguide::lossy_junction(
+                areas,
+                incoming,
+                &b.losses,
+                primary_impedance(),
+                outgoing,
+            );
             for (k, &m) in b.members.iter().enumerate() {
                 from_far[m] = clamp_wave(outgoing[k]);
             }
@@ -1294,6 +1305,8 @@ mod tests {
             "{l:?}"
         );
         assert_eq!(l[2], (0.0, 0.0));
+        // and the gas they flow in: ρc = 1.4·101325/600 = 236.425 Pa·s/m (hand)
+        assert!((primary_impedance() - 236.425).abs() < 1e-3);
         // in the net: the loss grows as u², so a loud pulse comes back from the junction
         // relatively weaker than a faint one (a lossless junction reflects both alike)
         let reflected = |flow: f64| {

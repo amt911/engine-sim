@@ -452,6 +452,9 @@ pub fn junction(areas: &[f64], incoming: &[f64], outgoing: &mut [f64]) -> f64 {
     pj
 }
 
+/// Newton iterations of [`lossy_junction`].
+const NEWTON_STEPS: usize = 6;
+
 /// [`junction`] where the flow loses pressure entering and leaving through it: branch `i`'s end
 /// pressure is the junction's plus `s·u|u|`, `s` = `losses[i].0` while its gas flows into the
 /// junction (u > 0) and `losses[i].1` while it flows out (each ½ρK: Borda–Carnot for a sudden
@@ -481,18 +484,16 @@ pub fn lossy_junction(
     };
     let total: f64 = areas.iter().sum();
     let mut pj = 2.0 * areas.iter().zip(incoming).map(|(a, p)| a * p).sum::<f64>() / total;
-    for _ in 0..30 {
+    // the mass balance is monotone and smooth in p_J: Newton from the lossless junction converges
+    // quadratically, well inside NEWTON_STEPS iterations for waves of a few bar
+    for _ in 0..NEWTON_STEPS {
         let (mut f, mut df) = (0.0, 0.0);
         for (i, a) in areas.iter().enumerate() {
             let (u, du) = velocity(i, pj);
             f += a * u;
             df += a * du;
         }
-        let step = f / df;
-        pj -= step;
-        if step.abs() < 1e-9 * (1.0 + pj.abs()) {
-            break;
-        }
+        pj -= f / df;
     }
     for (i, o) in outgoing.iter_mut().enumerate() {
         *o = incoming[i] - z * velocity(i, pj).0;
