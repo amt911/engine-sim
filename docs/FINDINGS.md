@@ -507,3 +507,24 @@ into a 0.3 bar cylinder is as strong as the WOT blowdown. Exhaust noise is gener
 hand. Suspects, untested: the open end without the jet's vortex-shedding loss at high mean
 outflow (|R| = (1 − M)/(1 + M), which the waveguide has), and no shell or muffler damping at low
 mean flow.
+
+## Reference renders with the FV exhaust stuttered at idle (2026-10-26)
+
+**Symptom.** The user heard v0.22.0's offline renders cut in and out and stutter. The audio has no
+dropouts (no silent or repeated blocks, no jumps). The engine itself hunted.
+
+**Measured.** At idle with FV (384 kHz physics, held 3 s first), the K20A ranged 559–1118 rpm
+(σ 179); the waveguide holds 815–920 (σ 22). The flat-plane V8 ranged 869–1181 (σ 91). There
+were no misfires: firings matched the speed.
+
+**Cause.**
+- With FV the K20A makes less torque at idle and sits at ~650 rpm against an 800 target, with the
+  spark at full advance. The exhaust's mean backpressure and scavenging differ between the
+  models; not yet explained.
+- The idle air integral was pinned at its floor (bypass 95 % closed). With the waveguide that
+  engine has torque to spare at idle (spark retarded the full 20°), and climbing out of that floor
+  takes tens of seconds.
+
+**Fix / workaround.** Reference no longer switches to FV. FV stays a choice in the editor, to
+come back once it holds an idle. **Open:** FV's idle torque deficit, and the idle air integral's
+slow recovery from its floor.
