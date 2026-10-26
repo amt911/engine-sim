@@ -4679,13 +4679,21 @@ mod tests {
             run(&mut e, 0.3, &c);
             let x = run(&mut e, 0.2, &c);
             let cycle = (120.0 / rpm / DT).round() as usize;
-            let diff: f64 = x
-                .windows(cycle + 1)
+            x.windows(cycle + 1)
                 .map(|w| (w[cycle] - w[0]).powi(2))
-                .sum();
-            let total: f64 = x.iter().map(|v| v * v).sum();
-            diff / total
+                .sum::<f64>()
         };
+        // and at the same level: the same jets through the same pipes (±3 dB, the ports' gas
+        // states differ between the models)
+        let (wg, fv) = (
+            aperiodic(ExhaustModel::Waveguide, 1.0),
+            aperiodic(ExhaustModel::Fv, 1.0),
+        );
+        let apart = 10.0 * (fv / wg).log10();
+        assert!(
+            apart.abs() < 3.0,
+            "FV hiss {apart:+.1} dB from the waveguide's"
+        );
         for model in [ExhaustModel::Waveguide, ExhaustModel::Fv] {
             let gain = 10.0 * (aperiodic(model, 1.0) / aperiodic(model, 0.0)).log10();
             assert!(
