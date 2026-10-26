@@ -668,9 +668,8 @@ fn segments_duct(
 ) -> Duct {
     let rho_c = crate::gas::GAMMA * crate::units::ATM_PA / C_TAIL;
     let plain = |len: f64, d: f64| Pipe::new(len, d, C_TAIL, dt, LOSS_PER_M);
-    // a smooth-walled pipe: its waves steepen and its walls take the highs (Kirchhoff). Past the
-    // collector the waves are weaker and run out to the open end: one segment each
-    let pipe = |len: f64, d: f64| plain(len, d).nonlinear().viscothermal();
+    // a smooth-walled pipe: its waves steepen and its walls take the highs (Kirchhoff)
+    let pipe = |len: f64, d: f64| plain(len, d).steepening();
     let mut duct: Option<Duct> = None;
     let mut pending = Node::Plain;
     let last_pipe = path

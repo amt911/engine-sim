@@ -289,7 +289,7 @@ struct Stage {
 /// formation distances. Measured on the LFA's exhaust driven periodically (2026-10-26): cycle to
 /// cycle it settles within 3.9 % unsegmented, 0.34 % at 0.2 m, under 1 % at 0.4 m, at half the
 /// cost of 0.2 m.
-const STEEPENING_SEGMENT_M: f64 = 0.4;
+const STEEPENING_SEGMENT_M: f64 = 0.2;
 
 /// Kirchhoff's wall loss, Np/m, of a plane wave at `f` Hz in a pipe of `radius_m` holding gas at
 /// an atmosphere whose speed of sound is `c`: α = √(πfν)·(1 + (γ−1)/√Pr)/(a·c) (Kinsler, Frey,
@@ -446,20 +446,9 @@ impl Pipe {
                 })
                 .collect()
         };
-        // The waves coming back towards the near end are the far end's reflections — at a
-        // collector, where the pipe opens into its neighbours, rarefactions, which spread
-        // instead of forming shocks: that direction stays linear (and costs half as much)
-        let back = || -> Vec<Stage> {
-            (1..n)
-                .map(|_| Stage {
-                    wall: wall(),
-                    line: DelayLine::new(seg),
-                })
-                .collect()
-        };
-        let chain = Box::new([stages(), back()]);
+        let chain = Box::new([stages(), stages()]);
         pipe.fwd = DelayLine::nonlinear(seg, k);
-        pipe.bwd = DelayLine::new(seg);
+        pipe.bwd = DelayLine::nonlinear(seg, k);
         pipe.walls = wall().zip(wall()).map(|(a, b)| Box::new([a, b]));
         pipe.chain = Some(chain);
         pipe
@@ -479,9 +468,8 @@ impl Pipe {
         let rho_c = gamma * crate::units::ATM_PA / self.sound_speed;
         let k = (gamma + 1.0) / (2.0 * rho_c * self.sound_speed);
         let delay = self.fwd.delay();
-        // only the waves away from the near end: those coming back are reflections from an open
-        // end or a widening junction, rarefactions, which spread instead of forming shocks
         self.fwd = DelayLine::nonlinear(delay, k);
+        self.bwd = DelayLine::nonlinear(delay, k);
         self
     }
     /// Extra per-trip amplitude factor (e.g. a muffler in this pipe).
