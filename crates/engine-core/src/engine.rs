@@ -5690,9 +5690,11 @@ mod tests {
                 .map(|w| (w[cycle] - w[0]).powi(2))
                 .sum::<f64>()
         };
-        // and at the same level: the same jets through the same pipes, within what the ports'
-        // gas states leave apart (FV computes them, the waveguide estimates a 0D primary
-        // temperature; measured −3.6 dB)
+        // and at about the same level: the same jets through the same pipes. ±6 dB: the ports'
+        // gas states differ between the models, and in the waveguide the hiss rides on pulses
+        // that steepen (`waveguide::DelayLine::nonlinear`), which squeeze it, while the FV
+        // exhaust carries its jets through a parallel linear net — measured 3.6 dB apart
+        // (2026-10-26; the waveguide without jets repeats to 5e-6 of that)
         let (wg, fv) = (
             aperiodic(ExhaustModel::Waveguide, 1.0),
             aperiodic(ExhaustModel::Fv, 1.0),
