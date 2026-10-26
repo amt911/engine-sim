@@ -77,3 +77,20 @@ Semlyen 1999) — a few biquads per silencer.
   recordings — that band must come mostly from sources we lack (valvetrain/mechanical radiation, flow noise
   regenerated after the silencers).
 - `pkill -f <pattern>` kills the shell running it when the pattern is in that command line: use `pgrep -x <process-name>`.
+
+## Real-time factors, waveguide against FV exhaust (2026-10-26, Ryzen 9 5900X, CPU lock held)
+
+`runner::measure` at full throttle and 0.8 × redline, 48 kHz audio. Values are audio s per
+compute s; the laptop target (5850U) is about 0.6–0.8× of these.
+
+| Preset | WG Medium | WG High | WG Ultra | FV Medium | FV High | FV Ultra |
+|---|---|---|---|---|---|---|
+| Single 500 | 9.74 | 6.76 | 5.16 | 4.52 | 2.73 | 2.54 |
+| Inline-4 2.0 | 4.06 | 3.05 | 3.03 | 2.19 | 1.18 | 1.02 |
+| Honda K20A | 4.18 | 2.68 | 1.57 | 1.90 | 0.97 | 0.88 |
+| Lexus LFA V10 | 1.91 | 1.22 | 1.03 | 0.88 | 0.44 | 0.36 |
+| Flat-plane V8 | 2.75 | 2.05 | 1.56 | 1.30 | 0.69 | 0.58 |
+| Cross-plane V8 | 3.16 | 2.11 | 1.56 | 1.01 | 0.43 | 0.36 |
+
+FV costs 2–3× the waveguide: no real-time level affords it on a multi-cylinder engine. Only the
+offline Reference level uses it.
