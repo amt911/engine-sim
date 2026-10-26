@@ -457,7 +457,10 @@ const TAIL_T: f64 = C_TAIL * C_TAIL / (crate::gas::GAMMA * crate::gas::R_AIR);
 /// the last pipe (1 = none).
 fn after_collector(def: &ExhaustDef, dt: f64, lining_m: f64) -> Duct {
     let rho_c = crate::gas::GAMMA * crate::units::ATM_PA / C_TAIL;
-    let pipe = |len: f64, d: f64| Pipe::new(len, d, C_TAIL, dt, LOSS_PER_M);
+    let plain = |len: f64, d: f64| Pipe::new(len, d, C_TAIL, dt, LOSS_PER_M);
+    // a smooth-walled pipe: its waves steepen and its walls take the highs (Kirchhoff). Past the
+    // collector the waves are weaker and run out to the open end: one segment each
+    let pipe = |len: f64, d: f64| plain(len, d).nonlinear().viscothermal();
     let mut duct: Option<Duct> = None;
     let mut pending = Node::Plain;
     let path = def.path();
@@ -486,7 +489,9 @@ fn after_collector(def: &ExhaustDef, dt: f64, lining_m: f64) -> Duct {
                 if tube_diameter_m > 0.0 && tube_diameter_m < diameter_m {
                     let n = (length_m / lining_m).round().max(2.0) as usize;
                     let pipes = (0..n)
-                        .map(|_| pipe(length_m / n as f64, tube_diameter_m))
+                        // the perforated tube's loss is its packing's (`Shunt::lining`), not
+                        // a smooth wall's
+                        .map(|_| plain(length_m / n as f64, tube_diameter_m))
                         .collect();
                     let packing = crate::lining::Packing {
                         thickness_m: 0.5 * (diameter_m - tube_diameter_m),
@@ -634,6 +639,7 @@ impl ExhaustNet {
                     dt,
                     LOSS_PER_M,
                 )
+                .steepening()
             })
             .collect();
         let branches = def
@@ -647,7 +653,8 @@ impl ExhaustNet {
                     C_COLLECTOR,
                     dt,
                     LOSS_PER_M,
-                ),
+                )
+                .steepening(),
                 tail: after_collector(def, dt, lining_m),
                 end: OpenEnd::new(def.tail_diameter_m, dt),
             })
@@ -1082,11 +1089,13 @@ mod tests {
     const DT: f64 = 1.0 / 192_000.0;
 
     fn first_arrival(def: &ExhaustDef, n: usize) -> usize {
+        // a faint pulse (0.2 g/s, a few hundred pascals): it travels at c, where a loud one
+        // steepens and arrives sooner (`waveguide::DelayLine::nonlinear`)
         let mut net = ExhaustNet::new(def, n, DT);
         let mut flows = vec![0.0; n];
         for k in 0..20_000 {
-            flows[0] = if k < 20 { 0.2 } else { 0.0 };
-            if net.step(&flows).abs() > 1.0 {
+            flows[0] = if k < 20 { 2e-4 } else { 0.0 };
+            if net.step(&flows).abs() > 1e-3 {
                 return k;
             }
         }
@@ -1193,6 +1202,41 @@ mod tests {
     }
 
     #[test]
+    fn a_loud_periodic_drive_gives_a_periodic_exhaust() {
+        // The LFA's exhaust driven by the same blowdown every cycle (0.15 kg/s peaks, 8000 rpm:
+        // 2880 steps a cycle) must answer with the same sound every cycle. Its waves steepen
+        // into shocks in the primaries. Shocks read with no width made the sound jump whenever a
+        // sample more or less joined one, and the echoes between valve and junction never
+        // settled (15 % from cycle to cycle). The finite-volume exhaust, driven the same way,
+        // settles within 0.15 %; this within 0.34 % (both measured 2026-10-26)
+        let def = crate::engine::EngineDef::lfa_v10().exhaust;
+        let dt = 1.0 / 192_000.0;
+        let mut net = ExhaustNet::new(&def, 10, dt);
+        let period = 2880;
+        let mut prev = vec![0.0; period];
+        let (mut diff, mut peak) = (0.0f64, 0.0f64);
+        let mut flows = [0.0; 10];
+        for n in 0..period * 60 {
+            for (c, f) in flows.iter_mut().enumerate() {
+                let ph = ((n + c * period / 10) % period) as f64 / period as f64;
+                *f = if ph < 0.25 {
+                    0.15 * (std::f64::consts::PI * ph / 0.25).sin().powi(2)
+                } else {
+                    0.0
+                };
+            }
+            let r = net.step(&flows);
+            let k = n % period;
+            if n >= period * 59 {
+                diff = diff.max((r - prev[k]).abs());
+                peak = peak.max(r.abs());
+            }
+            prev[k] = r;
+        }
+        assert!(diff < 0.01 * peak, "cycle to cycle {diff} of {peak}");
+    }
+
+    #[test]
     fn each_tail_reports_its_own_signal_and_they_sum_to_the_radiated() {
         let def = ExhaustDef {
             collectors: vec![vec![1, 3], vec![2, 4]],
@@ -1264,11 +1308,12 @@ mod tests {
         let mut net = ExhaustNet::new(&d, 2, DT);
         let round_trip = (2.0 * d.primary_length_m / C_PRIMARY / DT) as usize; // 0.7·2/600 s = 448 steps
         let mut first = None;
+        // faint, so it travels at c (a loud pulse steepens and comes back sooner)
         for k in 0..2000usize {
-            if net.arriving(0).abs() > 1.0 && first.is_none() {
+            if net.arriving(0).abs() > 1e-3 && first.is_none() {
                 first = Some((k, net.arriving(0)));
             }
-            net.step(&[if k < 5 { 0.1 } else { 0.0 }, 0.0]);
+            net.step(&[if k < 5 { 1e-4 } else { 0.0 }, 0.0]);
         }
         let (k, p) = first.expect("reflection never arrived");
         assert!(
