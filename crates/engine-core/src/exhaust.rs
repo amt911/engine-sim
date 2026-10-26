@@ -116,10 +116,6 @@ pub enum Segment {
 /// US patent 3,318,412), a fifth in a centre resonator and the rest in the rear box, both
 /// straight-through and packed, joined by `pipe_d` pipes. `swept_m3` is this branch's share.
 pub fn road_exhaust(swept_m3: f64, pipe_d: f64) -> Vec<Segment> {
-    // to a tenth of a millimetre: what a drawing would give (and a file keeps exactly)
-    let shell = |volume: f64, length: f64| {
-        ((4.0 * volume / (std::f64::consts::PI * length)).sqrt() * 1e4).round() / 1e4
-    };
     let pipe = |length_m: f64| Segment::Pipe {
         length_m,
         diameter_m: pipe_d,
@@ -133,18 +129,31 @@ pub fn road_exhaust(swept_m3: f64, pipe_d: f64) -> Vec<Segment> {
     };
     vec![
         pipe(0.4),
-        Segment::Catalyst {
-            length_m: 0.13,
-            diameter_m: shell(swept_m3, 0.13).max(1.5 * pipe_d),
-            cells_per_in2: 400.0,
-            wall_m: 0.000_165,
-        },
+        close_coupled_catalyst(swept_m3, pipe_d),
         pipe(1.0),
         silencer(2.0 * swept_m3, 0.35),
         pipe(0.8),
         silencer(8.0 * swept_m3, 0.45),
         pipe(0.3),
     ]
+}
+
+/// A shell of `volume` and `length`, its diameter to a tenth of a millimetre: what a drawing
+/// would give (and a file keeps exactly).
+fn shell(volume: f64, length: f64) -> f64 {
+    ((4.0 * volume / (std::f64::consts::PI * length)).sqrt() * 1e4).round() / 1e4
+}
+
+/// The catalyst right after a collector whose branch sweeps `swept_m3`, between `pipe_d` pipes:
+/// a brick of about the swept volume (a common sizing; estimate, no car's drawing), 0.13 m of the
+/// standard 400 cpsi / 6.5 mil (0.165 mm) substrate, never narrower than 1.5 pipes.
+pub fn close_coupled_catalyst(swept_m3: f64, pipe_d: f64) -> Segment {
+    Segment::Catalyst {
+        length_m: 0.13,
+        diameter_m: shell(swept_m3, 0.13).max(1.5 * pipe_d),
+        cells_per_in2: 400.0,
+        wall_m: 0.000_165,
+    }
 }
 
 /// Viscosity of exhaust gas at `t` K: Sutherland's law for air (μ₀ = 1.716e-5 Pa·s at 273 K,
@@ -172,6 +181,72 @@ pub(crate) fn catalyst_resistance(
         28.45 * gas_viscosity(t) * length_m / (dh * dh) / (ofa * area),
         ofa,
     )
+}
+
+/// The gas a duct carries: sound speed (m/s), density (kg/m³), viscosity (Pa·s), pressure (Pa).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DuctGas {
+    pub c: f64,
+    pub rho: f64,
+    pub mu: f64,
+    pub p: f64,
+}
+
+/// A catalyst monolith as a ladder of its open channels: lossless pipes of the open area,
+/// joined by the channels' viscous series impedance and thermal shunt admittance
+/// ([`crate::narrow_tube`], square channels taken as circular of their hydraulic radius), each
+/// node carrying a section's worth. Sections are as short as the pipes allow at `dt` (a pipe
+/// half a section long must hold a step's travel). The DC resistance is the square channels'
+/// laminar one, f·Re = 56.91 (Shah & London 1978) against the circular tube's 64.
+pub(crate) fn catalyst_brick(
+    length_m: f64,
+    diameter_m: f64,
+    cells_per_in2: f64,
+    wall_m: f64,
+    gas: DuctGas,
+    dt: f64,
+) -> Duct {
+    use crate::waveguide::{Node, Pipe, SeriesNet, ShuntNet};
+    let pitch = 0.0254 / cells_per_in2.max(1.0).sqrt();
+    let dh = (pitch - wall_m).max(1e-5);
+    let ofa = (dh / pitch).powi(2);
+    let open = std::f64::consts::PI * 0.25 * diameter_m * diameter_m * ofa;
+    let d_open = diameter_m * ofa.sqrt();
+    let (r0, viscous) = crate::narrow_tube::viscous(0.5 * dh, open, gas.rho, gas.mu);
+    let thermal = crate::narrow_tube::thermal(0.5 * dh, open, gas.rho, gas.mu, gas.p);
+    let n = ((length_m / (2.0 * gas.c * dt)).floor() as usize).max(2);
+    let section = length_m / n as f64;
+    let scaled = |bs: &[crate::narrow_tube::Branch], by: f64| {
+        bs.iter()
+            .map(|b| crate::narrow_tube::Branch {
+                k: b.k * by,
+                t_s: b.t_s,
+            })
+            .collect::<Vec<_>>()
+    };
+    let rho_c = gas.rho * gas.c;
+    // n sections of two half pipes: a series node in each, a shunt between them (the n − 1
+    // shunts carry the whole brick's thermal admittance)
+    let series = SeriesNet::new(
+        r0 * (56.91 / 64.0) * section,
+        &scaled(&viscous, section),
+        rho_c,
+        dt,
+    );
+    let shunt = ShuntNet::new(&scaled(&thermal, length_m / (n - 1) as f64), rho_c, dt);
+    let pipes = (0..2 * n)
+        .map(|_| Pipe::new(0.5 * section, d_open, gas.c, dt, 0.0))
+        .collect();
+    let nodes = (0..2 * n - 1)
+        .map(|k| {
+            if k % 2 == 0 {
+                Node::SeriesNet(series.clone())
+            } else {
+                Node::ShuntNet(shunt.clone())
+            }
+        })
+        .collect();
+    Duct::with_nodes(pipes, nodes)
 }
 
 fn default_resistivity() -> f64 {
@@ -377,7 +452,7 @@ const TAIL_T: f64 = C_TAIL * C_TAIL / (crate::gas::GAMMA * crate::gas::R_AIR);
 /// What follows a collector, built from [`ExhaustDef::path`]: pipes; silencers whose packing
 /// breathes through their perforated tube, cut into 1 cm segments (a lumped lossy line,
 /// Munjal ch. 6) or empty shells that reflect at their ends like expansion chambers
-/// (ch. 3); catalysts as their open channels plus their laminar resistance; resonators as
+/// (ch. 3); catalysts as their narrow channels ([`catalyst_brick`]); resonators as
 /// side branches between their neighbours. `muffler_transmission` stays an extra lumped loss on
 /// the last pipe (1 = none).
 fn after_collector(def: &ExhaustDef, dt: f64, lining_m: f64) -> Duct {
@@ -434,16 +509,15 @@ fn after_collector(def: &ExhaustDef, dt: f64, lining_m: f64) -> Duct {
                 cells_per_in2,
                 wall_m,
             } => {
-                let (r, ofa) =
-                    catalyst_resistance(length_m, diameter_m, cells_per_in2, wall_m, TAIL_T);
-                // the channels carry the waves; the walls' friction is the resistance at its end
-                let brick = Duct::new(vec![pipe(length_m, diameter_m * ofa.sqrt())]);
-                pending = Node::Series(r, rho_c);
-                duct = Some(match duct.take() {
-                    Some(d) => d.then(brick),
-                    None => brick,
-                });
-                continue;
+                // the channels carry the waves, with their walls' viscous and thermal losses
+                let p = crate::units::ATM_PA;
+                let gas = DuctGas {
+                    c: C_TAIL,
+                    rho: p / (crate::gas::R_AIR * TAIL_T),
+                    mu: gas_viscosity(TAIL_T),
+                    p,
+                };
+                catalyst_brick(length_m, diameter_m, cells_per_in2, wall_m, gas, dt)
             }
             Segment::Resonator {
                 neck_diameter_m,
@@ -723,6 +797,84 @@ impl ExhaustNet {
 
 #[cfg(test)]
 mod tests {
+    /// Steady transmitted amplitude (re a unit incident sine at `f`) through `duct` with an
+    /// anechoic source and termination.
+    fn transmission(mut duct: crate::waveguide::Duct, f: f64, dt: f64) -> f64 {
+        let n = (0.3 / dt) as usize;
+        let mut peak: f64 = 0.0;
+        for k in 0..n {
+            let x = (2.0 * std::f64::consts::PI * f * k as f64 * dt).sin();
+            if k > n / 2 {
+                peak = peak.max(duct.at_far().abs());
+            }
+            duct.send(x, 0.0);
+        }
+        peak
+    }
+
+    #[test]
+    fn a_catalyst_has_the_measured_transmission_loss() {
+        // Elnemr (KTH licentiate thesis, 2011, §4.3.1, Figs. 95 and 100): a production catalyst
+        // on a cold zero-flow rig — Ø81 mm in, a 50 mm cone, 12 mm gap, an oval monolith
+        // 133 × 116 mm (as a circle of its area, Ø124.2 mm) 130 mm long, 13 mm gap, a 44 mm
+        // cone, Ø62 mm out. Its cells, measured on the photograph of its face (Fig. 94b, the
+        // 133 mm line as scale; a 2D FFT of the grid): 1.43 mm pitch, ≈ 310 cpsi — the common
+        // 300 cpsi / 8 mil substrate. Measured TL: 1.3 dB at 50 Hz, 5.0 at 260, 5.5 at 600, 8.0 at
+        // 1000, 9.5 at 1200 (read from Fig. 100); TL = 20·log|p_i/p_t| + 10·log(S_i/S_t).
+        // The narrow-tube theory of rigid channels is a lower bound: the part's porous ceramic
+        // walls, its mounting mat and bends lose more (≈ 1–2 dB of channel loss in theory at
+        // 1 kHz over 13 cm). The model must rise with frequency as the part does, never pass it
+        // and stay within 5 dB of it; the old model (channels as a lossless pipe and a fixed
+        // resistance) fell to 0.9 dB at 1200 Hz.
+        use crate::waveguide::{Duct, Pipe};
+        let dt = 1.0 / 192_000.0;
+        let air = super::DuctGas {
+            c: 343.0,
+            rho: 1.204,
+            mu: 1.81e-5,
+            p: 101_325.0,
+        };
+        let shell = (0.133f64 * 0.116).sqrt();
+        let pipe = |l: f64, d: f64| Pipe::new(l, d, air.c, dt, 0.0);
+        let cone = |l: f64, d0: f64, d1: f64| {
+            (0..4)
+                .map(|k| pipe(l / 4.0, d0 + (d1 - d0) * (k as f64 + 0.5) / 4.0))
+                .collect::<Vec<_>>()
+        };
+        let build = || {
+            let mut inlet = vec![pipe(1.0, 0.081)];
+            inlet.extend(cone(0.05, 0.081, shell));
+            inlet.push(pipe(0.012, shell));
+            let mut outlet = vec![pipe(0.013, shell)];
+            outlet.extend(cone(0.044, shell, 0.062));
+            outlet.push(pipe(1.0, 0.062));
+            Duct::new(inlet)
+                .then(super::catalyst_brick(
+                    0.13, shell, 300.0, 0.000_203, air, dt,
+                ))
+                .then(Duct::new(outlet))
+        };
+        let area = 20.0 * (0.081f64 / 0.062).log10();
+        let mut got = Vec::new();
+        for (f, want) in [
+            (50.0, 1.3),
+            (260.0, 5.0),
+            (600.0, 5.5),
+            (1000.0, 8.0),
+            (1200.0, 9.5),
+        ] {
+            let tl = -20.0 * transmission(build(), f, dt).log10() + area;
+            got.push((f, tl, want));
+        }
+        let ok = got
+            .iter()
+            .all(|&(_, tl, want)| tl <= want + 0.5 && want - tl < 5.0);
+        assert!(
+            ok && got[4].1 > got[2].1 + 1.5,
+            "(f, model, measured): {got:.1?}"
+        );
+    }
+
     use super::*;
 
     #[test]
