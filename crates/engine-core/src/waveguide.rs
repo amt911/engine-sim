@@ -566,6 +566,10 @@ mod tests {
         let pj = lossy_junction(&[1.0, 4.0], &[0.0, 10_000.0], &losses, 240.0, &mut out);
         assert!((pj - 16_054.48).abs() < 0.01, "{pj}");
         assert!((out[0] - 15_782.06).abs() < 0.01, "{out:?}");
+        // a 200 kPa wave, where the loss is a third of the junction's pressure: the quadratic
+        // 400000 = 5·p_J + 0.1125·(4·p_J/240)²·… gives p_J = 58564.06 Pa (lossless 80000) (hand)
+        let pj = lossy_junction(&[1.0, 4.0], &[200_000.0, 0.0], &losses, 240.0, &mut out);
+        assert!((pj - 58_564.06).abs() < 0.01, "{pj}");
         // without losses it is the lossless junction
         let mut plain = [0.0; 3];
         let mut lossy = [0.0; 3];
