@@ -1,6 +1,6 @@
 # Exhaust waves steepen, and the walls round them off
 
-Date: 2026-10-26. Status: design. Roadmap: sound realism ("too synthetic"), the real-time
+Date: 2026-10-26. Status: on hold — overrun too loud (see FINDINGS, "Wave steepening"). Roadmap: sound realism ("too synthetic"), the real-time
 non-linear exhaust (task #20) without the finite-volume cost.
 
 ## Why

@@ -528,3 +528,18 @@ were no misfires: firings matched the speed.
 **Fix / workaround.** Reference no longer switches to FV. FV stays a choice in the editor, to
 come back once it holds an idle. **Open:** FV's idle torque deficit, and the idle air integral's
 slow recovery from its floor.
+
+## Wave steepening: right at full load, too loud on overrun (2026-10-26, branch feat/nonlinear-delay)
+
+The Msallam variable-delay lines with sticky shocks (see the spec 2026-10-26-wave-steepening) bring
+the LFA's 3–6 kHz bands at 7500 rpm WOT within a few dB of the real car — but only with the
+primaries non-linear in both directions and 0.2 m segments (2.1× CPU). The cheap variant
+(forward only, 0.4 m) loses that gain. And every non-linear variant makes **overrun** far louder:
+held at 7000 rpm with the throttle shut, linear primaries radiate −4.4 dB, non-linear ones 12.7 dB
+(full load: 18.2 / 20.0). Real LFA recordings drop 8–19 dB when lifting at the same rpm. The
+finite-volume exhaust shows the same (task #19), so it is something the non-linear models share,
+not this implementation. With prescribed suction flows (no engine) the network is NOT louder: the
+difference comes through the valve coupling (the cylinder at a few tenths of a bar sucks the
+exhaust back at EVO; the recovery steepens into a shock the tail radiates). Do not ship steepening
+until overrun is understood. Probe recipe: `ExhaustNet::linearize` on primaries only, engine held
+at 7000 rpm, throttle 0 vs 1.
