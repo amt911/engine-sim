@@ -638,13 +638,24 @@ const PHI_DISPERSION: f64 = 0.04;
 /// σ of the residual fraction near the plug each cycle, relative: the CO₂ scatter of Heywood
 /// Fig. 9-34b (≈ ±0.35 in ≈ 4 % CO₂).
 const RESIDUAL_DISPERSION: f64 = 0.09;
-/// σ of the turbulence intensity at the plug each cycle, relative: "of comparable importance" to
-/// the A/F and residual variations (Heywood §9.4.2) — the size that moves the flame's angles
-/// as much as the A/F's σ does.
-const TURBULENCE_DISPERSION: f64 = 0.03;
+/// σ of the turbulence intensity at the plug each cycle, relative. During compression the
+/// cycle-by-cycle variation of the mean flow at a point is comparable in magnitude to the
+/// turbulence intensity itself (Heywood §8.2, Fig. 8-9), and it carries the early flame kernel
+/// (Ozdor, Dulger & Sher 1994: the kernel's development dominates cyclic variability). Its size is
+/// set where the burn angles' σ comes out at Heywood's measured share of their mean, about 0.12 for
+/// both the flame-development and the rapid-burning angle over many chambers and conditions
+/// (Fig. 9-35), with the A/F and residual draws above.
+const TURBULENCE_DISPERSION: f64 = 0.175;
 /// σ of how much each cylinder breathes apart from the others, fixed: "typically a few
 /// percent" (Heywood §9.4.2, §7.6).
 const CYLINDER_IMBALANCE: f64 = 0.02;
+/// σ of the charge a cylinder burns each cycle, relative: the "cyclic cylinder fuel and air
+/// charging variations" of Heywood §9.4.1–9.4.2. Soltau (*Proc. IMechE (AD)* 1960–61 no. 2,
+/// Table 4: wide-open throttle, 2000 rev/min, A/F 14, ten consecutive cycles) measured the
+/// i.m.e.p. varying by a mean deviation of 1.18–1.53 %, σ = 1.2533 × that = 1.48–1.92 % for a
+/// normal spread. Near MBT the burn's timing moves the work little (the model: 0.3 %), so the
+/// charge carries the rest, √(1.7² − 0.3²) ≈ 1.7 %.
+const CHARGE_DISPERSION: f64 = 0.017;
 const WALL_TEMP_K: f64 = 400.0;
 const AMBIENT_K: f64 = 300.0;
 const DISCHARGE_CD: f64 = 0.8;
@@ -1782,11 +1793,10 @@ impl Engine {
                 // from the preset's values at the reference state (see `flame_ratio`)
                 // This cycle's charge as the spark finds it (Heywood §9.4.2): the mixture near
                 // the plug — its A/F (σ 2–6 % of the mean, Fig. 9-34a: 4 %) and its residual
-                // (CO₂ scatter ±9 %, Fig. 9-34b) — and the turbulence there, of comparable
-                // weight: a 3 % σ in u′, which moves the flame's angles as u′^(−2/3) (Hires
-                // eqs. 6–7) as much as the A/F's 4 % moves them through S_L^(−2/3). The flame
-                // the ECU timed (`cs.flame`) is the mean one. The mean A/F is the charge's
-                // own: the injection and what the port film gave back.
+                // (CO₂ scatter ±9 %, Fig. 9-34b) — and the turbulence there
+                // ([`TURBULENCE_DISPERSION`]), which moves the flame's angles as u′^(−2/3)
+                // (Hires eqs. 6–7). The flame the ECU timed (`cs.flame`) is the mean one. The
+                // mean A/F is the charge's own: the injection and what the port film gave back.
                 let (dilution, ref_p, ref_t, ref_v, bias) = (
                     dilution_of(cs),
                     cs.ref_p,
@@ -1801,6 +1811,7 @@ impl Engine {
                 // three near-Gaussian draws of unit σ (each a sum of three uniforms of ±1)
                 let mut draw = || -> f64 { (0..3).map(|_| self.noise()).sum() };
                 let draws = (j * draw(), j * draw(), j * draw());
+                let charge = 1.0 + CHARGE_DISPERSION * j * draw();
                 let flame = cycle_flame(
                     &g,
                     mean_piston_speed,
@@ -1811,9 +1822,8 @@ impl Engine {
                     draws,
                 );
                 // the charge itself: each cylinder breathes a fixed few percent apart from the
-                // others. Heywood's "±5 percent" cycle-to-cycle is the mixture composition
-                // within the cylinder — the A/F spread above, not a second draw on the fuel
-                let var = bias;
+                // others, and each cycle a little more or less ([`CHARGE_DISPERSION`])
+                let var = bias * charge;
                 let cs = &mut self.cyl[i];
                 // a mixture whose flame cannot propagate does not light: it waits for the
                 // exhaust valve, unburnt
@@ -2312,6 +2322,29 @@ mod tests {
     }
 
     #[test]
+    fn burn_angles_vary_cycle_to_cycle_as_measured_engines_do() {
+        // Heywood §9.4.2, Fig. 9-35 (many chambers and operating conditions): the standard
+        // deviations of the flame-development and rapid-burning angles stay a near-constant
+        // share of their means, about 0.12 (read: 1.5/15, 3/27, 5.5/40 for the development
+        // angle; 3/30, 7/60, 13/100 for the burn), at fast and slow burns alike
+        for (throttle, rpm) in [(1.0, 3000.0), (0.15, 2000.0)] {
+            let b = burns(throttle, rpm, 2.0);
+            let rel = |v: &[f64]| {
+                let m = v.iter().sum::<f64>() / v.len() as f64;
+                (v.iter().map(|x| (x - m).powi(2)).sum::<f64>() / v.len() as f64).sqrt() / m
+            };
+            let dev: Vec<f64> = b.iter().map(|x| x.0).collect();
+            let burn: Vec<f64> = b.iter().map(|x| x.1).collect();
+            let (d, r) = (rel(&dev), rel(&burn));
+            assert!(
+                (0.09..0.15).contains(&d) && (0.09..0.15).contains(&r),
+                "throttle {throttle}: σ/mean development {d:.3}, burn {r:.3} over {} cycles",
+                b.len()
+            );
+        }
+    }
+
+    #[test]
     fn a_light_load_burns_slower_and_less_repeatably_than_full_throttle() {
         // Hires et al. (SAE 780232) eqs. 13/32 with Metghalchi & Keck's flame speed: at the same
         // speed a part-throttle charge is thinner (lower p) and more diluted by residual gas, so
@@ -2399,8 +2432,8 @@ mod tests {
         assert!(at((1.0, 0.0, 0.0)) < mean, "richer burns faster");
         assert!(at((-1.0, 0.0, 0.0)) > mean, "leaner burns slower");
         assert!(at((0.0, 1.0, 0.0)) > mean, "more residual burns slower");
-        // u′ × 1.03: the angles × 1.03^(−2/3) = 0.98049
-        assert!((at((0.0, 0.0, 1.0)) / mean - 0.980_49).abs() < 1e-4);
+        // u′ × 1.175: the angles × 1.175^(−2/3) = 0.89807
+        assert!((at((0.0, 0.0, 1.0)) / mean - 0.898_07).abs() < 1e-4);
         assert!(at((0.0, 0.0, -1.0)) > mean);
     }
 
@@ -2425,18 +2458,51 @@ mod tests {
         assert!((dilution_of(&e.cyl[0]) - 0.1).abs() < 1e-12);
     }
 
+    /// Indicated work ∮p dV of each cycle of cylinder 1, held at `rpm` with `throttle`, over
+    /// `secs`, J.
+    fn cycle_works(d: EngineDef, rpm: f64, throttle: f64, secs: f64) -> Vec<f64> {
+        let mut e = Engine::new(d, rpm, 1);
+        let c = Controls {
+            throttle,
+            hold_rpm: Some(rpm),
+            ..Controls::default()
+        };
+        run(&mut e, 1.0, &c);
+        let (mut works, mut w) = (Vec::new(), 0.0);
+        let (mut prev, mut v_prev) = (e.cyl[0].cycle_deg, e.cyl[0].gas.volume_m3);
+        for _ in 0..(secs / DT) as usize {
+            e.step(DT, &c);
+            let cs = &e.cyl[0];
+            w += cs.gas.pressure() * (cs.gas.volume_m3 - v_prev);
+            v_prev = cs.gas.volume_m3;
+            if cs.cycle_deg < prev {
+                works.push(w);
+                w = 0.0;
+            }
+            prev = cs.cycle_deg;
+        }
+        works.remove(0);
+        works
+    }
+
     #[test]
     fn cycles_vary_as_measured_engines_do() {
-        // Singotia & Saraswati (IOP Conf. Ser. 691, 012061, 2019), a gasoline engine at
-        // 2500 rpm: COV of peak pressure 1.6 % at high load, 5.0 % at a medium one, 13.2 % at a
-        // low one — the residual gas slowing a lean-of-air charge's flame. From Heywood §9.4's
-        // sources (charge ±5 %, A/F σ 2–6 %, residual and turbulence of comparable weight) the
-        // model must sit near the high-load figure
-        // Known gap: the measured growth at light load (to 13 %) comes from partial burns near
-        // the flammability limit, which the model lacks; it stays near its full-load figure
-        // (2.6 % at both, 2026-10-24). Every cycle alike (combustion_jitter 0) is 0.
-        let full = cov(&cycle_peaks(EngineDef::inline4(), 2500.0, 1.0, 4.0));
-        assert!((0.01..0.03).contains(&full), "full load COV {full}");
+        // Soltau (Proc. IMechE (AD) 1960–61 no. 2, Table 4), wide-open throttle, 2000 rev/min,
+        // A/F 14, two compression ratios: mean deviations of the peak pressure 5.54–7.90 % and
+        // of the i.m.e.p. 1.18–1.53 % — σ = 1.2533 × those for a normal spread: 6.9–9.9 % and
+        // 1.48–1.92 %. Bands around those (ten cycles each in the paper). Near MBT the burn's
+        // timing barely moves the work (Heywood §9.4.1), so the work's share is the charge.
+        // Every cycle alike (combustion_jitter 0) is 0.
+        let peaks = cov(&cycle_peaks(EngineDef::inline4(), 2500.0, 1.0, 4.0));
+        assert!(
+            (0.05..0.12).contains(&peaks),
+            "full load COV of pmax {peaks}"
+        );
+        let work = cov(&cycle_works(EngineDef::inline4(), 2500.0, 1.0, 4.0));
+        assert!(
+            (0.012..0.024).contains(&work),
+            "full load COV of the work {work}"
+        );
         let mut flat = EngineDef::inline4();
         flat.sound.combustion_jitter = 0.0;
         assert!(cov(&cycle_peaks(flat, 2500.0, 1.0, 1.0)) < 1e-4);
@@ -5554,24 +5620,16 @@ mod tests {
 
     #[test]
     fn burns_complete_with_jitter_on() {
-        // The burn must run to the end (Wiebe ≥ 99 %) every cycle with jitter enabled: peak
-        // pressure with and without jitter within 15 % (a burn dropped early would collapse it).
+        // The burn must run to the end (Wiebe ≥ 99 %) every cycle with jitter enabled: the
+        // mean of the cycles' peak pressures with and without jitter within 15 % (a burn dropped
+        // early would collapse it). The mean, not the highest: with a peak pressure varying
+        // ~8 % per cycle (`cycles_vary_as_measured_engines_do`) the highest of a dozen cycles
+        // sits ~1.6σ, 13 %, above it.
         let peak = |jitter: f64| {
             let mut d = EngineDef::single();
             d.sound.combustion_jitter = jitter;
-            let mut e = Engine::new(d, 3000.0, 1);
-            let c = Controls {
-                throttle: 1.0,
-                hold_rpm: Some(3000.0),
-                ..Controls::default()
-            };
-            run(&mut e, 0.3, &c);
-            let mut p: f64 = 0.0;
-            for _ in 0..(0.2 / DT) as usize {
-                e.step(DT, &c);
-                p = p.max(e.cylinder(0).pressure_pa);
-            }
-            p
+            let p = cycle_peaks(d, 3000.0, 1.0, 0.5);
+            p.iter().sum::<f64>() / p.len() as f64
         };
         let (a, b) = (peak(0.0), peak(1.0));
         assert!((b / a - 1.0).abs() < 0.15, "peak without {a} with {b}");
