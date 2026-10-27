@@ -38,15 +38,21 @@ pub fn m3_to_cc(m3: f64) -> f64 {
 /// software `fmod` costing ~5 % of a step.
 #[inline]
 pub fn wrap(x: f64, period: f64) -> f64 {
+    fast_wrap(x, period).unwrap_or_else(|| x.rem_euclid(period))
+}
+
+/// [`wrap`]'s one-step path: `Some` for −p < x < 2p, the range an angle moves within between
+/// steps (−p itself is left to `rem_euclid`: fmod gives −0.0 there, not p − p = +0.0).
+#[inline]
+fn fast_wrap(x: f64, period: f64) -> Option<f64> {
     if (0.0..period).contains(&x) {
-        x
+        Some(x)
     } else if (period..2.0 * period).contains(&x) {
-        x - period
+        Some(x - period)
     } else if x > -period && x < 0.0 {
-        // (−p itself is left to `rem_euclid`: fmod gives −0.0 there, not p − p = +0.0)
-        x + period
+        Some(x + period)
     } else {
-        x.rem_euclid(period)
+        None
     }
 }
 
@@ -86,6 +92,28 @@ mod tests {
                     "{x} mod {p}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn angles_within_a_period_take_the_one_step_path() {
+        // the speed of `wrap` is its fast path: every x in (−p, 2p) must take it, and only
+        // those (the rest goes to `rem_euclid`)
+        for p in [720.0, 4.0 * std::f64::consts::PI] {
+            let mut x = -p;
+            while x < 2.0 * p {
+                let fast = fast_wrap(x, p);
+                if x > -p {
+                    assert!(fast.is_some(), "{x} mod {p} missed the fast path");
+                } else {
+                    assert_eq!(fast, None);
+                }
+                x += p / 977.0;
+            }
+            assert!(fast_wrap(2.0 * p - 1e-9, p).is_some());
+            assert!(fast_wrap(-p + 1e-9, p).is_some());
+            assert_eq!(fast_wrap(2.0 * p, p), None);
+            assert_eq!(fast_wrap(-2.0 * p, p), None);
         }
     }
 
