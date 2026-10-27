@@ -908,6 +908,8 @@ struct CylinderState {
     port_t: f64,
     /// The exhaust port's last mass flow, kg/s: where the next step's port solve starts.
     port_flow: f64,
+    /// The exhaust valve boundary's last root, where the next step's solve starts.
+    valve_hint: f64,
     wall_t: f64,
     /// State at intake closing (p_r, V_r, T_r): Woschni's reference for the motored pressure.
     ref_p: f64,
@@ -1177,6 +1179,7 @@ impl Engine {
                     armed: false,
                     port_t: PIPE_COLD_K,
                     port_flow: 0.0,
+                    valve_hint: f64::NAN,
                     wall_t: PIPE_COLD_K,
                     ref_p: ATM_PA,
                     ref_v: 1.0,
@@ -1551,16 +1554,19 @@ impl Engine {
                     cs.port_t,
                 ),
             };
+            // the boundary starts from this valve's last root (`valve_hint`)
+            let hint = std::cell::Cell::new(cs.valve_hint);
             let plan_ex = |area: f64| {
-                crate::valve_boundary::valve_flow(
-                    &cs.gas,
-                    area,
-                    pipe_area,
+                let mut h = hint.get();
+                let pipe = crate::valve_boundary::Pipe {
+                    area: pipe_area,
                     lambda,
                     t_back,
-                    dt,
-                    VALVE_RELAX,
-                )
+                };
+                let f =
+                    crate::valve_boundary::valve_flow(&cs.gas, area, pipe, dt, VALVE_RELAX, &mut h);
+                hint.set(h);
+                f
             };
             // Reverse flow (pipe → cylinder) passes the valve against the port's curve with a lower
             // discharge coefficient than forward flow (Blair measures separate in/out maps).
@@ -1572,6 +1578,7 @@ impl Engine {
                     f
                 }
             });
+            cs.valve_hint = hint.get();
             if let Some(f) = f_ex
                 && f.dm < 0.0
             {

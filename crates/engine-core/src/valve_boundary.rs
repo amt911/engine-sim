@@ -23,9 +23,6 @@ const KM: f64 = (KAPPA - 1.0) / 2.0;
 const P_EXP: i32 = 7;
 /// S = √(2/(κ+1)): π (and the area-ratio variable) at the sonic boundary (6.48), (6.53).
 const S: f64 = 0.912_870_929_175_276_9;
-/// The largest B = C(π − π_α) a root can have, a hair under √((κ−1)/2) (−U_B = 1/√((κ−1)/2) is
-/// all the enthalpy turned into speed).
-const B_MAX: f64 = 0.999_999 * 0.447_213_595_499_958;
 /// Below this valve-to-pipe area ratio the valve is closed: a lift that small passes under
 /// 1e-10 kg/s, and the sonic root's distance from π_α falls below f64's resolution.
 const PSI_MIN: f64 = 1e-9;
@@ -62,6 +59,21 @@ pub fn lambda_in(p_cyl: f64, p: f64, u: f64, a: f64) -> f64 {
 /// and the speed of sound of the pipe's own gas brought to the cylinder's pressure,
 /// `a_pipe_at_pc` (its entropy level, what flows back in).
 pub fn solve(p_cyl: f64, a_cyl: f64, psi: f64, lambda: f64, a_pipe_at_pc: f64) -> Boundary {
+    let mut none = f64::NAN;
+    solve_with(p_cyl, a_cyl, psi, lambda, a_pipe_at_pc, &mut none)
+}
+
+/// [`solve`] started from `hint`, the last step's root (π on outflow, A on inflow; NaN for
+/// none), which it updates: between two physics steps the boundary barely moves, so a secant
+/// from there converges in two or three evaluations instead of a dozen.
+pub fn solve_with(
+    p_cyl: f64,
+    a_cyl: f64,
+    psi: f64,
+    lambda: f64,
+    a_pipe_at_pc: f64,
+    hint: &mut f64,
+) -> Boundary {
     let psi = psi.clamp(0.0, 1.0);
     if psi < PSI_MIN {
         // a closed valve reflects: u = 0, A = λ_in
@@ -72,14 +84,14 @@ pub fn solve(p_cyl: f64, a_cyl: f64, psi: f64, lambda: f64, a_pipe_at_pc: f64) -
         };
     }
     if lambda < 1.0 {
-        let (pi, minus_ub, c) = outflow(psi, lambda);
+        let (pi, minus_ub, c) = outflow(psi, lambda, hint);
         Boundary {
             p: p_cyl * pi.powi(P_EXP),
             u: minus_ub * a_cyl,
             a: c * a_cyl * pi,
         }
     } else if lambda > 1.0 {
-        let (a, u) = inflow(psi, lambda);
+        let (a, u) = inflow(psi, lambda, hint);
         Boundary {
             p: p_cyl * a.powi(P_EXP),
             u: -u * a_pipe_at_pc,
@@ -104,6 +116,17 @@ pub fn lambda_of_wave(p_cyl: f64, arriving: f64, t_pipe: f64, p0: f64) -> f64 {
     lambda_in(p_cyl, p, -arriving / (rho * a), a)
 }
 
+/// The pipe at the valve, as the boundary needs it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pipe {
+    /// Cross-section, m².
+    pub area: f64,
+    /// Incoming Riemann variable ([`lambda_in`] or [`lambda_of_wave`]).
+    pub lambda: f64,
+    /// Temperature of its gas at the valve, K (what flows back).
+    pub t_back: f64,
+}
+
 /// One step of flow through an exhaust valve of effective area `cd_area` into a pipe of
 /// cross-section `pipe_area`, by the characteristic boundary: the pipe's incoming `lambda`
 /// ([`lambda_in`] or [`lambda_of_wave`]) and its gas at `t_back` K (what flows back). The step
@@ -112,13 +135,17 @@ pub fn lambda_of_wave(p_cyl: f64, arriving: f64, t_pipe: f64, p0: f64) -> f64 {
 pub fn valve_flow(
     gas: &crate::gas::GasVolume,
     cd_area: f64,
-    pipe_area: f64,
-    lambda: f64,
-    t_back: f64,
+    pipe: Pipe,
     dt: f64,
     relax: f64,
+    hint: &mut f64,
 ) -> crate::gas::Flow {
     use crate::gas::{CP, GAMMA, R_AIR};
+    let Pipe {
+        area: pipe_area,
+        lambda,
+        t_back,
+    } = pipe;
     let (p_c, t_c) = (gas.pressure(), gas.temperature());
     if cd_area <= 0.0 || pipe_area <= 0.0 {
         return crate::gas::Flow {
@@ -130,7 +157,7 @@ pub fn valve_flow(
     // the pipe gas's speed of sound brought isentropically to the cylinder's pressure, from
     // its state on the arriving characteristic (λ is (p/p_c)^(1/7) at rest)
     let a_back = (KAPPA * R_AIR * t_back).sqrt() / lambda.max(1e-3);
-    let b = solve(p_c, a_c, cd_area / pipe_area, lambda, a_back);
+    let b = solve_with(p_c, a_c, cd_area / pipe_area, lambda, a_back, hint);
     let mdot = b.mass_flow(pipe_area);
     let h = if mdot >= 0.0 { CP * t_c } else { CP * t_back };
     let limit = relax * (p_c - b.p).abs() * gas.volume_m3 / ((GAMMA - 1.0) * h);
@@ -139,6 +166,38 @@ pub fn valve_flow(
         dm = dm.min(0.5 * gas.mass_kg);
     }
     crate::gas::Flow { dm, h }
+}
+
+/// Bracket width the roots stop at, relative: π^7 is the pressure, so 1e-10 in π is 7e-10 in p.
+const ROOT_TOL: f64 = 1e-10;
+
+/// Root of `f` in [lo, hi] by secant from `guess` (the last step's root); [`root`] if the guess
+/// is outside the bracket or the secant leaves it.
+fn root_from(f: impl Fn(f64) -> f64, lo: f64, hi: f64, guess: f64) -> f64 {
+    if !(guess > lo && guess < hi) {
+        return root(f, lo, hi);
+    }
+    let mut x0 = guess;
+    let mut f0 = f(x0);
+    // the second point a hair inside the bracket from the guess
+    let mut x1 = (guess + 1e-7 * (hi - lo)).min(hi);
+    let mut f1 = f(x1);
+    for _ in 0..8 {
+        if f1 == f0 {
+            break;
+        }
+        let x2 = x1 - f1 * (x1 - x0) / (f1 - f0);
+        if !(x2 >= lo && x2 <= hi) {
+            break;
+        }
+        if (x2 - x1).abs() < ROOT_TOL * x2.abs().max(1.0) {
+            return x2;
+        }
+        (x0, f0) = (x1, f1);
+        x1 = x2;
+        f1 = f(x1);
+    }
+    root(f, lo, hi)
 }
 
 /// Root of `f` in [lo, hi] where f(lo) and f(hi) have opposite signs: Illinois regula falsi.
@@ -155,10 +214,17 @@ fn root(f: impl Fn(f64) -> f64, mut lo: f64, mut hi: f64) -> f64 {
         return if flo.abs() < fhi.abs() { lo } else { hi };
     }
     let mut side = 0;
+    let mut last = f64::NAN;
     for _ in 0..100 {
         let x = (lo * fhi - hi * flo) / (fhi - flo);
+        // converged when the estimate stops moving (Illinois keeps one end fixed for a while,
+        // so the bracket itself need not shrink)
+        if (x - last).abs() < ROOT_TOL * x.abs().max(1.0) {
+            return x;
+        }
+        last = x;
         let fx = f(x);
-        if fx == 0.0 || (hi - lo).abs() < 1e-14 {
+        if fx == 0.0 {
             return x;
         }
         if (fx > 0.0) == (flo > 0.0) {
@@ -176,71 +242,63 @@ fn root(f: impl Fn(f64) -> f64, mut lo: f64, mut hi: f64) -> f64 {
             }
             side = 1;
         }
-        if (hi - lo).abs() < 1e-13 * hi.abs().max(1.0) {
-            break;
-        }
     }
     0.5 * (lo + hi)
 }
 
 /// Outflow through the valve (λ_in = π_α < 1): returns (π, −U_B, C), with π = (p/p_c)^(1/7),
 /// −U_B = u/a_c into the pipe and C = a_A2/a_A1 the entropy rise across the valve.
-fn outflow(psi: f64, pi_a: f64) -> (f64, f64, f64) {
-    let e = psi * SONIC_FLOW;
-    // C by successive substitution from 1/π_α (6.61), π from (6.47) or (6.51) each time
-    let mut c = 1.0 / pi_a;
-    let mut pi = pi_a;
-    for _ in 0..50 {
-        // sonic boundary π_cr (6.55); above it the throat is subsonic
-        // 1 − √(1 + x) written as −x/(1 + √(1 + x)): no cancellation at small ψ
-        let x = (KAPPA * KAPPA - 1.0) * psi * psi;
-        let pi_cr = S / (2.0 * psi) * (2.0 * psi - x / (1.0 + (1.0 + x).sqrt()) / c);
-        let b = |p: f64| c * (p - pi_a);
-        pi = if pi_a >= pi_cr {
-            // (6.47): ψ/π·{2/(κ−1)(1/π² − 1)}^½ − (2B/(κ−1))/(1 − 2B²/(κ−1)) = 0
-            let f1 = |p: f64| {
-                let bb = b(p);
-                psi / p * ((1.0 / (p * p) - 1.0) / KM).max(0.0).sqrt()
-                    - (bb / KM) / (1.0 - bb * bb / KM)
-            };
-            // B stays below √((κ−1)/2), where the flow speed would use up all the enthalpy:
-            // (6.47) has its pole there
-            let hi = (pi_a + B_MAX / c).min(1.0);
-            root(f1, pi_a.max(S).min(hi), hi)
-        } else {
-            // (6.51): π^(2κ/(κ−1)) − E·(1 − 2B²/(κ−1))/(2B/(κ−1)) = 0
-            let f2 = |p: f64| {
-                let bb = b(p);
-                p.powi(P_EXP) - e * (1.0 - bb * bb / KM) / (bb / KM)
-            };
-            // f₂ → −∞ as π → π_α: f₂ < 0 while B < E·(κ−1)/2/π^7, and π ≤ S, so B at half of
-            // E·(κ−1)/2/S^7 is a lower bound where f₂ < 0 for any ψ
-            let hi = (pi_a + B_MAX / c).min(S);
-            let lo = (pi_a + 0.5 * e * KM / (S.powi(P_EXP) * c)).min(hi);
-            root(f2, lo, hi)
+fn outflow(psi: f64, pi_a: f64, hint: &mut f64) -> (f64, f64, f64) {
+    // Benson finds C by successive substitution (6.61), solving (6.47) or (6.51) each time. It
+    // has a closed form in π: with d = π − π_α, B = C·d and −U_B = B/KM, (6.56) reads
+    // C²π² = 1 − C²d²/KM, so C = 1/√(π² + d²/KM), and 1 − B²/KM = C²π² (never negative: no
+    // pole). One equation in π remains:
+    let c_of = |p: f64| {
+        let d = p - pi_a;
+        1.0 / (p * p + d * d / KM).sqrt()
+    };
+    // (6.47), subsonic throat: ψ/π·{(1/π² − 1)/KM}^½ − (B/KM)/(1 − B²/KM) = 0
+    let f1 = |p: f64| {
+        let c = c_of(p);
+        psi / p * ((1.0 / (p * p) - 1.0) / KM).max(0.0).sqrt() - (p - pi_a) / (KM * c * p * p)
+    };
+    // f₁ falls with π; the throat is subsonic when its root lies at or above the sonic π = S
+    let pi = if pi_a >= S || f1(S) > 0.0 {
+        root_from(f1, pi_a.max(S), 1.0, *hint)
+    } else {
+        // (6.51), choked throat: π^(2κ/(κ−1)) − E·(1 − B²/KM)/(B/KM) = 0, i.e.
+        // π⁷ − E·KM·C·π²/d = 0, which falls to −∞ as π → π_α
+        let e = psi * SONIC_FLOW;
+        let f2 = |p: f64| {
+            let d = p - pi_a;
+            p.powi(P_EXP) - e * KM * c_of(p) * p * p / d
         };
-        let bb = c * (pi - pi_a);
-        // (6.56): C = (1 − 2B²/(κ−1))^½ / π
-        let c_new = (1.0 - bb * bb / KM).max(0.0).sqrt() / pi;
-        if (c_new - c).abs() < 1e-13 {
-            c = c_new;
-            break;
+        let mut lo = pi_a + e * KM;
+        while lo > pi_a && lo < S && f2(lo) >= 0.0 {
+            lo = pi_a + 0.5 * (lo - pi_a);
         }
-        c = c_new;
-    }
+        if lo <= pi_a {
+            // ψ so small the root is within round-off of π_α: no flow worth the name
+            return (pi_a, 0.0, 1.0 / pi_a);
+        }
+        root_from(f2, lo.min(S), S, *hint)
+    };
+    *hint = pi;
+    let c = c_of(pi);
     (pi, c * (pi - pi_a) / KM, c)
 }
 
 /// Inflow from the pipe (λ_in > 1): the partially open end with the cylinder as its receiver.
 /// Returns (A, U): A = (p/p_c)^(1/7) and U the velocity toward the cylinder over the pipe gas's
 /// speed of sound at p_c.
-fn inflow(phi: f64, lambda: f64) -> (f64, f64) {
+fn inflow(phi: f64, lambda: f64, hint: &mut f64) -> (f64, f64) {
     // subsonic (6.35): (A^(4/(κ−1)) − φ²)(λ − A)² − (κ−1)/2·(A² − 1)φ² = 0, A in [1, λ]
     let f = |a: f64| {
         let a10 = a.powi(2 * P_EXP - 4);
         (a10 - phi * phi) * (lambda - a) * (lambda - a) - KM * (a * a - 1.0) * phi * phi
     };
-    let a = root(f, 1.0, lambda);
+    let a = root_from(f, 1.0, lambda, *hint);
+    *hint = a;
     let u = (lambda - a) / KM;
     // sonic throat test (6.37): U_t = A^(2/(κ−1))·U/φ
     if a.powi(P_EXP - 2) * u / phi <= 1.0 {
@@ -407,6 +465,26 @@ mod tests {
     }
 
     #[test]
+    fn a_warm_start_lands_on_the_same_boundary() {
+        // from a good hint, a stale one or none, the root is the same within the tolerance
+        for (lam, psi) in [
+            (0.83, 0.5),
+            (0.95, 0.2),
+            (0.7, 0.9),
+            (1.04, 0.6),
+            (1.2, 0.1),
+        ] {
+            let cold = solve(2.0e5, 700.0, psi, lam, 600.0);
+            for start in [f64::NAN, 0.5, 0.9, 0.999, 1.02, 3.0] {
+                let mut hint = start;
+                let warm = solve_with(2.0e5, 700.0, psi, lam, 600.0, &mut hint);
+                assert_relative_eq!(warm.p, cold.p, max_relative = 1e-8);
+                assert_relative_eq!(warm.u, cold.u, max_relative = 1e-6, epsilon = 1e-9);
+            }
+        }
+    }
+
+    #[test]
     fn equal_states_do_not_flow_and_a_closed_valve_reflects() {
         let a = sound(900.0);
         let b = solve(1.0e5, a, 0.5, 1.0, a);
@@ -444,8 +522,13 @@ mod tests {
         let gas = GasVolume::at(3.0e5, 1300.0, 5.0e-4);
         let pipe = std::f64::consts::PI * 0.02 * 0.02;
         let lam = lambda_of_wave(gas.pressure(), 0.0, 700.0, crate::units::ATM_PA);
+        let at = |area, lambda| Pipe {
+            area,
+            lambda,
+            t_back: 700.0,
+        };
         let dt = 1.0 / 192_000.0;
-        let f = valve_flow(&gas, 3.0e-4, pipe, lam, 700.0, dt, 1.0);
+        let f = valve_flow(&gas, 3.0e-4, at(pipe, lam), dt, 1.0, &mut { f64::NAN });
         let a_back = (KAPPA * 287.0 * 700.0).sqrt() / lam;
         let b = solve(
             3.0e5,
@@ -457,10 +540,13 @@ mod tests {
         assert_relative_eq!(f.dm, b.mass_flow(pipe) * dt, max_relative = 1e-12);
         assert_relative_eq!(f.h, crate::gas::CP * 1300.0, max_relative = 1e-12);
         // a step long enough to empty it stops at half the mass or at equal pressures
-        let f = valve_flow(&gas, 3.0e-4, pipe, lam, 700.0, 1.0, 1.0);
+        let f = valve_flow(&gas, 3.0e-4, at(pipe, lam), 1.0, 1.0, &mut { f64::NAN });
         assert!(f.dm <= 0.5 * gas.mass_kg + 1e-15);
         // a closed valve passes nothing
-        assert_eq!(valve_flow(&gas, 0.0, pipe, lam, 700.0, dt, 1.0).dm, 0.0);
+        assert_eq!(
+            valve_flow(&gas, 0.0, at(pipe, lam), dt, 1.0, &mut { f64::NAN }).dm,
+            0.0
+        );
     }
 
     #[test]
