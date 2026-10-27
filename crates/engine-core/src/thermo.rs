@@ -135,28 +135,6 @@ impl Mixture {
         m
     }
 
-    /// The mixture of `parts` (mixture, mass share): every property here is linear in the
-    /// mass shares, so the mixture's coefficients are the weighted sums.
-    pub fn mix(parts: &[(Mixture, f64)]) -> Self {
-        let mut m = Self {
-            hi: [0.0; 6],
-            lo: [0.0; 6],
-            r: 0.0,
-            h_lo: 0.0,
-            h_hi: 0.0,
-        };
-        for (p, w) in parts {
-            for k in 0..6 {
-                m.hi[k] += w * p.hi[k];
-                m.lo[k] += w * p.lo[k];
-            }
-            m.r += w * p.r;
-            m.h_lo += w * p.h_lo;
-            m.h_hi += w * p.h_hi;
-        }
-        m
-    }
-
     /// (c_v, u) at `t`: one evaluation for Newton.
     #[inline]
     pub fn cv_u(&self, t: f64) -> (f64, f64) {
@@ -422,14 +400,28 @@ mod tests {
 
     #[test]
     fn a_mixture_is_the_mass_weighted_sum_of_its_parts() {
-        // Mixing is linear in mass: c_p, u, h and R of a 30/70 blend are the weighted means
-        let (a, b) = (air(), burned());
-        let m = Mixture::mix(&[(a, 0.3), (b, 0.7)]);
+        // Mixing is linear in mass: c_p, u, h and R of a 20/30/50 blend of air, charge and
+        // products are the weighted means of the three, in both temperature ranges
+        let g = CylinderGas::default();
+        let c = Composition {
+            burned: 0.5,
+            fuelled: 0.6,
+        };
+        let (wa, wu, wb) = (0.2, 0.3, 0.5);
+        let m = g.mixture(c);
         for t in [400.0, 1500.0] {
-            assert_abs_diff_eq!(m.cp(t), 0.3 * a.cp(t) + 0.7 * b.cp(t), epsilon = 1e-9);
-            assert_abs_diff_eq!(m.u(t), 0.3 * a.u(t) + 0.7 * b.u(t), epsilon = 1e-6);
+            let sum = |f: &dyn Fn(&Mixture) -> f64| {
+                wa * f(&g.air) + wu * f(&g.unburned) + wb * f(&g.burned)
+            };
+            assert_abs_diff_eq!(m.cp(t), sum(&|x| x.cp(t)), epsilon = 1e-9);
+            assert_abs_diff_eq!(m.u(t), sum(&|x| x.u(t)), epsilon = 1e-6);
+            assert_abs_diff_eq!(m.h(t), sum(&|x| x.h(t)), epsilon = 1e-6);
         }
-        assert_abs_diff_eq!(m.r, 0.3 * a.r + 0.7 * b.r, epsilon = 1e-12);
+        assert_abs_diff_eq!(
+            m.r,
+            wa * g.air.r + wu * g.unburned.r + wb * g.burned.r,
+            epsilon = 1e-12
+        );
     }
 
     #[test]
