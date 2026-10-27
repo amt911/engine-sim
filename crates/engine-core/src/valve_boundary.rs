@@ -616,6 +616,59 @@ mod tests {
     }
 
     #[test]
+    fn illinois_does_not_stall_where_regula_falsi_does() {
+        // x¹⁰ − 1 on [0, 1.3]: plain regula falsi keeps the low end and creeps from it
+        // (hundreds of steps); Illinois halves the stale end's value and lands in 16
+        let n = std::cell::Cell::new(0);
+        let f = |x: f64| {
+            n.set(n.get() + 1);
+            x.powi(10) - 1.0
+        };
+        let x = root(f, 0.0, 1.3);
+        assert_relative_eq!(x, 1.0, max_relative = 1e-9);
+        assert!(n.get() <= 20, "{} evaluations", n.get());
+    }
+
+    #[test]
+    fn the_closed_valve_ends_exactly_at_the_minimum_area_ratio() {
+        // below PSI_MIN the valve reflects exactly; at it, the boundary already passes flow
+        let a = sound(1000.0);
+        let b = solve(4.0e5, a, 0.5 * PSI_MIN, 0.9, a);
+        assert_eq!(b.u, 0.0);
+        let b = solve(4.0e5, a, PSI_MIN, 0.9, a);
+        assert!(b.u > 0.0, "{b:?}");
+    }
+
+    #[test]
+    fn at_lambda_one_the_boundary_is_the_pipe_gas_at_rest() {
+        // λ = 1 with an open valve: no flow, the cylinder's pressure, and the pipe gas's speed
+        // of sound — not the cylinder's
+        let b = solve(2.0e5, sound(1200.0), 0.3, 1.0, sound(600.0));
+        assert_eq!(b.u, 0.0);
+        assert_eq!(b.p, 2.0e5);
+        assert_eq!(b.a, sound(600.0));
+    }
+
+    #[test]
+    fn a_wave_arriving_on_the_quiet_pipe_raises_lambda_by_hand() {
+        // 600 K pipe at 1 bar, +0.1 bar arriving, cylinder at 1 bar: a = √(1.4·287·600) =
+        // 491.00 m/s, ρ = 1e5/(287·600) = 0.580 72 kg/m³, u = −1e4/(ρa) = −35.071 m/s, so
+        // λ = 1.1^(1/7)·(1 + 0.2·35.071/491.00) = 1.028 190
+        let lam = lambda_of_wave(1.0e5, 1.0e4, 600.0, 1.0e5);
+        assert_relative_eq!(lam, 1.028_190, max_relative = 1e-6);
+    }
+
+    #[test]
+    fn inflow_just_short_of_choking_stays_on_the_subsonic_root() {
+        // λ = 1.1, φ = 0.2: (6.35) by bisection gives A = 1.075 171, U = (λ − A)/KM = 0.124 145,
+        // and the throat test (6.37) A⁵·U/φ = 0.892 ≤ 1: subsonic (A⁹·U/φ would be 1.19)
+        let a_pipe = sound(700.0);
+        let b = solve(1.0e5, sound(1000.0), 0.2, 1.1, a_pipe);
+        assert_relative_eq!(b.p, 1.0e5 * 1.075_171f64.powi(7), max_relative = 1e-5);
+        assert_relative_eq!(b.u, -0.124_145 * a_pipe, max_relative = 1e-4);
+    }
+
+    #[test]
     fn equal_states_do_not_flow_and_a_closed_valve_reflects() {
         let a = sound(900.0);
         let b = solve(1.0e5, a, 0.5, 1.0, a);
