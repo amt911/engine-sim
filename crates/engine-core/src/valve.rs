@@ -226,6 +226,7 @@ mod tests {
         assert!(s.next(false, 6000.0, 1.0));
         assert!(s.next(true, 5701.0, 1.0), "held above 5700");
         assert!(!s.next(true, 5699.0, 1.0), "released below 5700");
+        assert!(s.next(false, 7000.0, 0.5), "at its pedal it engages");
         assert!(!s.next(false, 7000.0, 0.4), "not without the pedal");
         assert!(
             !s.next(true, 7000.0, 0.4),
@@ -262,6 +263,23 @@ mod tests {
             ..p.clone()
         };
         assert_relative_eq!(wide.target(9000.0, 1.0), 30.0);
+        // between two advanced points: 2000 rpm 10°, 4000 rpm 30° (full load) → 20° at 3000
+        let raised = Phaser {
+            map: vec![
+                PhaserPoint {
+                    rpm: 2000.0,
+                    full_load_deg: 10.0,
+                    no_load_deg: 10.0,
+                },
+                PhaserPoint {
+                    rpm: 4000.0,
+                    full_load_deg: 30.0,
+                    no_load_deg: 10.0,
+                },
+            ],
+            ..p.clone()
+        };
+        assert_relative_eq!(raised.target(3000.0, 1.0), 20.0, max_relative = 1e-12);
         // 30 °/s: half a second covers 15°, a second the whole 30°
         let mut a = 0.0;
         for _ in 0..500 {
