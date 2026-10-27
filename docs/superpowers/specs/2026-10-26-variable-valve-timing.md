@@ -77,9 +77,12 @@ follows once the events move.
   - The K20A at full load makes more torque at 7000 rpm on the high lobe than forced onto the low
     lobe, and less at 3000 rpm: the trade VTEC exists for.
   - Its dyno peak stays within 10 % of the published 206 N·m, and holds within 10 % of that peak
-    into VTEC's range at 6500 rpm. The torque peak lands at 4000 rpm, not Honda's 7000: VTC lifts
-    the mid-range, and above 7000 rpm the model breathes less than the engine (power ~16 % short
-    at 8000, as before VVT).
+    into VTEC's range at 6500 rpm.
+  - With friction by components and real gas properties (v0.24.0) and the map re-swept: 198 N·m
+    at 6500 rpm, 197 hp at 8000, still rising there as Honda's does (206 N·m / 217 hp).
+  - The remaining ≈ 9 % at the top is the presets' cams passing too little gas at speed (FINDINGS).
+  - With the VTEC lobe and the cam advanced, ≈ 7 % of the air blows through the overlap at
+    6500 rpm (scavenging).
 
 ## Out of scope (later)
 
