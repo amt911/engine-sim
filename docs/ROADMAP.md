@@ -7,7 +7,7 @@ is set by ear. Updated as work lands. Details live in the specs (`docs/superpowe
 ## 1. Performance: the LFA V10 at High on a Ryzen 7 PRO 5850U laptop
 
 - ✅ v0.26.1, v0.26.3: −19 % CPU at Low, byte-identical sound (closed-form tail exit, angle wrap).
-- 🔧 Valve chatter at 96 kHz. At Low and Medium the valves' explicit exchange went on/off from step
+- ✅ v0.26.5: valve chatter at 96 kHz. At Low and Medium the valves' explicit exchange went on/off from step
   to step at idle (+45 dB of 5–10 kHz hiss that Ultra lacks). Fix: backward-Euler valve flow,
   stable at any step.
 - Next, measured with callgrind on the LFA at High:
@@ -26,7 +26,7 @@ Measured against real LFA recordings: a missing stationary broadband floor at 2.
 - Stronger sources:
   - jet and valve quadrupole noise above Mach 0.3 (Gordon, U⁸);
   - flow-excited chamber and tailpipe resonance (Davies & Holland 2001).
-- Gear-change "bubbling" on the throttle cut (`--render gears`).
+- Gear-change "bubbling" on the throttle cut (`--render gears`, v0.26.4).
 - Ange's list:
   - #1 FV exhaust at idle;
   - #2 heat transfer along the exhaust pipes (branch `feat/pipe-heat`);
@@ -44,7 +44,6 @@ level. The idle chatter above is the first gap.
 - **Potato mode**: our own `--render loops` grid (rpm × load, rendered once at Reference quality)
   played back crossfaded by rpm and load, as markeasting/engine-audio does with recordings. Near-zero
   CPU, for very slow machines; transients become blends, not physics.
-- `--render gears`: a full-throttle pull through every gear (PR #62).
 - F1 presets: V12 3.5 L, V10 3.0 L, V8 2.4 L; turbocharger plus MGU-H, and the V6 1.6 L hybrid.
 - Transmission noise: gear whine, straight-cut race gears vs helical road gears (once the engine
   sound is right).
