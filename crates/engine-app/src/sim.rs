@@ -136,6 +136,10 @@ impl Simulation {
     pub fn set_limiter(&mut self, on: bool) {
         self.voice.limit = on;
     }
+    /// The clutch is locked: engine and wheels turn together (a scripted driver waits for it).
+    pub fn clutch_locked(&self) -> bool {
+        self.vehicle.locked()
+    }
     #[cfg(test)]
     pub fn vehicle(&self) -> &Vehicle {
         &self.vehicle
