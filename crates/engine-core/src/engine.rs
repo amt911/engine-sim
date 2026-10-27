@@ -3899,6 +3899,32 @@ mod tests {
     }
 
     #[test]
+    fn gas_coming_in_mixes_its_composition_by_mass() {
+        // a cylinder holding 1 kg, half of it products and all its fresh part fuelled, takes
+        // 0.6 kg of products-free gas that is ⅓ fuelled: burned (0.5·1 + 0)/(1.6) = 0.3125;
+        // fresh 0.5 kg (fuelled 1) + 0.6 kg (fuelled ⅓): fuelled (0.5 + 0.2)/1.1 = 0.636 36
+        // (hand); the mass and the energy carried add
+        let mut e = Engine::new(EngineDef::inline4(), 1000.0, 1);
+        let cs = &mut e.cyl[0];
+        cs.gas.mass_kg = 1.0;
+        cs.u_j = 5.0e5;
+        cs.comp = Composition {
+            burned: 0.5,
+            fuelled: 1.0,
+        };
+        let c_in = Composition {
+            burned: 0.0,
+            fuelled: 1.0 / 3.0,
+        };
+        cylinder_in(cs, 0.6, 3.0e5, c_in);
+        assert_relative_eq!(cs.comp.burned, 0.3125, max_relative = 1e-12);
+        assert_relative_eq!(cs.comp.fuelled, 0.7 / 1.1, max_relative = 1e-12);
+        assert_relative_eq!(cs.gas.mass_kg, 1.6, max_relative = 1e-12);
+        assert_relative_eq!(cs.u_j, 5.0e5 + 0.6 * 3.0e5, max_relative = 1e-12);
+        assert!(cs.mix_stale);
+    }
+
+    #[test]
     fn throttle_area_spans_idle_to_full_bore() {
         let e = Engine::new(EngineDef::single(), 900.0, 1);
         // full: 0.8 · π/4 · 0.04² = 1.00531e-3 m²; idle = 0.0015 of that
