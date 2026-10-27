@@ -337,6 +337,25 @@ mod tests {
     }
 
     #[test]
+    fn species_match_the_janaf_tables_in_both_ranges() {
+        // c_p in J/(mol·K), JANAF (NIST-JANAF Thermochemical Tables, 4th ed.): CO₂ 60.350 at
+        // 2000 K; H₂O 51.180 at 2000 K and 35.226 at 500 K; O₂ 37.788 at 2000 K and 39.878 at
+        // 3000 K; N₂ 32.697 at 1000 K (just below the range switch). The NASA fits hold them
+        // within 0.3 %
+        let mol = |n: Nasa| Mixture::new(&[(n, 1.0)], 0.0, 1.0);
+        for (m, t, janaf) in [
+            (mol(CO2), 2000.0, 60.350),
+            (mol(H2O), 2000.0, 51.180),
+            (mol(H2O), 500.0, 35.226),
+            (mol(O2), 2000.0, 37.788),
+            (mol(O2), 3000.0, 39.878),
+            (mol(N2), 999.0, 32.697),
+        ] {
+            approx::assert_relative_eq!(m.cp(t), janaf, max_relative = 0.005);
+        }
+    }
+
+    #[test]
     fn gammas_follow_heywoods_figure_4_13() {
         // Heywood Fig. 4.13, x_b = 0: air (φ = 0) 1.40 at 300 K and 1.335 at 1000 K; gasoline
         // and air at φ = 1, 1.355 at 300 K and 1.267 at 1000 K (read off the chart, ±0.005)

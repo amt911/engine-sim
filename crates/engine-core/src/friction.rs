@@ -251,6 +251,9 @@ mod tests {
         // the lift is a guess, so a wider band
         assert_abs_diff_eq!(f.valvetrain / 1e3, 9.0, epsilon = 1.5);
         assert_abs_diff_eq!(f.auxiliary / 1e3, 19.0, epsilon = 1.0);
+        // and exactly, by hand: mains 55.92 × 22.37 mm, five of them (one more than half the
+        // cylinders on a vee): seals 0.80245 + journals 1.43838 + turbulence 2.55107 kPa
+        assert_abs_diff_eq!(f.crankshaft / 1e3, 4.791_90, epsilon = 1e-4);
     }
 
     /// Honda K20A: 86 × 86 mm, 11.5:1, DOHC roller rocker arms (finger followers), 4 valves of
@@ -285,6 +288,51 @@ mod tests {
         assert_abs_diff_eq!(f.auxiliary / 1e3, 36.53, epsilon = 0.05);
         // 2.14 bar in all, against 5.37 from the old whole-engine fit (which held pumping too)
         assert_abs_diff_eq!(f.total() / 1e5, 2.144, epsilon = 0.002);
+    }
+
+    #[test]
+    fn oil_rings_and_liner_scale_their_own_terms() {
+        // K20A geometry at 3000 rpm and 1 atm, bucket tappets with flat followers, oil at
+        // μ/μ0 = 2.25 (√ = 1.5), rings at 0.8 of the reference tension, liner 1.2 × as rough.
+        // Every component by hand from Appendix A-2 (each viscosity, tension and roughness
+        // factor where Sandoval puts it):
+        let (_, e) = k20a();
+        let def = FrictionDef {
+            valvetrain: Valvetrain::DohcDirectActing,
+            roller_followers: false,
+            oil_viscosity_ratio: 2.25,
+            ring_tension_ratio: 0.8,
+            liner_roughness: 1.2,
+            ..FrictionDef::default()
+        };
+        let f = def.fmep(&e, 3000.0, ATM_PA);
+        assert_abs_diff_eq!(f.crankshaft / 1e3, 13.5467, epsilon = 1e-3);
+        assert_abs_diff_eq!(f.reciprocating / 1e3, 55.3232, epsilon = 1e-3);
+        assert_abs_diff_eq!(f.piston_gas / 1e3, 19.9629, epsilon = 1e-3);
+        assert_abs_diff_eq!(f.valvetrain / 1e3, 21.3205, epsilon = 1e-3);
+    }
+
+    #[test]
+    fn a_vee_with_one_rod_a_crankpin_has_bigger_bearings() {
+        // V6 3.0 L, 89 × 80 mm, split crankpins: Patton Table 1–2 (vee, 1 rod/pin) mains 62.3 mm
+        // × 21.8 mm, four of them (1 + 6/2); rods 53.4 × 19.2 mm. By hand at 3000 rpm, 10:1,
+        // 9 mm lift, bucket tappets: crankshaft 10.1851, reciprocating 36.6060 kPa
+        let def = FrictionDef {
+            rods_per_crankpin: 1,
+            ..FrictionDef::default()
+        };
+        let e = FrictionEngine {
+            bore_m: 0.089,
+            stroke_m: 0.080,
+            cylinders: 6,
+            vee: true,
+            compression_ratio: 10.0,
+            valve_lift_m: 0.009,
+        };
+        let f = def.fmep(&e, 3000.0, ATM_PA);
+        assert_abs_diff_eq!(f.crankshaft / 1e3, 10.1851, epsilon = 1e-3);
+        assert_abs_diff_eq!(f.reciprocating / 1e3, 36.6060, epsilon = 1e-3);
+        assert_abs_diff_eq!(f.valvetrain / 1e3, 20.9917, epsilon = 1e-3);
     }
 
     #[test]
