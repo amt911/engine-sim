@@ -281,14 +281,10 @@ fn outflow(psi: f64, pi_a: f64, hint: &mut f64) -> (f64, f64, f64) {
             let d = p - pi_a;
             p.powi(P_EXP) - e * KM * c_of(p) * p * p / d
         };
-        let mut lo = pi_a + e * KM;
-        while lo > pi_a && lo < S && f2(lo) >= 0.0 {
-            lo = pi_a + 0.5 * (lo - pi_a);
-        }
-        if lo <= pi_a {
-            // ψ so small the root is within round-off of π_α: no flow worth the name
-            return (pi_a, 0.0, 1.0 / pi_a);
-        }
+        // d = E·KM is a lower bound: there f₂ = π⁷ − C·π² < 0, since f₂ ≥ 0 would need
+        // d²/KM ≥ π⁻¹⁰ − π² ≥ 1.66 for π < S while d²/KM = E²·KM ≤ 0.067 (ψ ≤ 1); and ψ ≥
+        // PSI_MIN keeps d above π_α's round-off
+        let lo = pi_a + e * KM;
         root_from(f2, lo.min(S), S, *hint)
     };
     *hint = pi;
@@ -666,6 +662,16 @@ mod tests {
         let b = solve(1.0e5, sound(1000.0), 0.2, 1.1, a_pipe);
         assert_relative_eq!(b.p, 1.0e5 * 1.075_171f64.powi(7), max_relative = 1e-5);
         assert_relative_eq!(b.u, -0.124_145 * a_pipe, max_relative = 1e-4);
+    }
+
+    #[test]
+    fn a_deep_rarefaction_is_floored_at_a_twentieth_of_the_base_pressure() {
+        // −0.99 bar arriving on 1 bar: the pressure is held at 0.05 bar (a linear wave can't
+        // take the gas below vacuum), while the velocity is the wave's: u = 0.99e5/(ρa) =
+        // 0.99e5/(0.580 72·491.00) = 347.21 m/s away from the valve, so with the cylinder at
+        // 1 bar λ = 0.05^(1/7)·(1 − 0.2·347.21/491.00) = 0.651 836·0.858 57 = 0.559 648
+        let lam = lambda_of_wave(1.0e5, -0.99e5, 600.0, 1.0e5);
+        assert_relative_eq!(lam, 0.559_648, max_relative = 1e-6);
     }
 
     #[test]
