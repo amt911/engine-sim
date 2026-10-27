@@ -31,9 +31,70 @@ pub fn m3_to_cc(m3: f64) -> f64 {
     m3 * 1e6
 }
 
+/// `x.rem_euclid(period)` (period > 0), with one add or subtract where `x` is within one period
+/// of [0, period), which is how angles move between steps. The result is the same bits:
+/// x − p is exact for p ≤ x ≤ 2p (Sterbenz), as `fmod` is, and x + p is the very addition
+/// `rem_euclid` makes for −p < x < 0. Elsewhere it is `rem_euclid` itself, which goes through a
+/// software `fmod` costing ~5 % of a step.
+#[inline]
+pub fn wrap(x: f64, period: f64) -> f64 {
+    if (0.0..period).contains(&x) || x == 0.0 {
+        x
+    } else if (period..2.0 * period).contains(&x) {
+        x - period
+    } else if x > -period && x < 0.0 {
+        // (−p itself is left to `rem_euclid`: fmod gives −0.0 there, not p − p = +0.0)
+        x + period
+    } else {
+        x.rem_euclid(period)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrap_is_rem_euclid_bit_for_bit() {
+        // the one-step wrap gives exactly what `rem_euclid` gives, inside its fast range
+        // [−p, 2p), at its edges, and outside it (where it falls back)
+        let four_pi = 4.0 * std::f64::consts::PI;
+        for p in [720.0, four_pi] {
+            let mut xs = vec![
+                0.0,
+                -0.0,
+                p,
+                -p,
+                2.0 * p,
+                -1e-300,
+                -1e-12,
+                p - 1e-12,
+                2.0 * p - 1e-9,
+                3.5 * p,
+                -2.5 * p,
+                f64::MIN_POSITIVE,
+            ];
+            let mut x = -1.3 * p;
+            while x < 2.6 * p {
+                xs.push(x);
+                x += p / 977.0;
+            }
+            for x in xs {
+                assert_eq!(
+                    wrap(x, p).to_bits(),
+                    x.rem_euclid(p).to_bits(),
+                    "{x} mod {p}"
+                );
+            }
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn wrap_matches_rem_euclid(x in -5000.0f64..5000.0) {
+            proptest::prop_assert_eq!(wrap(x, 720.0).to_bits(), x.rem_euclid(720.0).to_bits());
+        }
+    }
     use approx::assert_relative_eq;
 
     #[test]

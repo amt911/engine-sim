@@ -124,7 +124,7 @@ impl ValveTiming {
             },
         };
         ValveTiming {
-            open_deg: (lobe.open_deg - advance_deg).rem_euclid(720.0),
+            open_deg: crate::units::wrap(lobe.open_deg - advance_deg, 720.0),
             duration_deg: lobe.duration_deg,
             max_lift_m: lobe.max_lift_m,
             diameter_m: self.diameter_m,
@@ -136,7 +136,7 @@ impl ValveTiming {
 impl ValveTiming {
     /// Lift at a cycle angle in degrees (any value; wrapped to 720).
     pub fn lift(&self, cycle_deg: f64) -> f64 {
-        let x = (cycle_deg - self.open_deg).rem_euclid(720.0) / self.duration_deg;
+        let x = crate::units::wrap(cycle_deg - self.open_deg, 720.0) / self.duration_deg;
         if x >= 1.0 {
             return 0.0;
         }

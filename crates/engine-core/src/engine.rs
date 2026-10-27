@@ -1413,8 +1413,8 @@ fn pedal_opening(t: f64) -> f64 {
 
 /// Crank angle `a` (deg) crossed in the step (prev, cur], on the 720° circle.
 fn crossed(prev: f64, cur: f64, a: f64) -> bool {
-    let span = (cur - prev).rem_euclid(720.0);
-    let to_a = (a - prev).rem_euclid(720.0);
+    let span = crate::units::wrap(cur - prev, 720.0);
+    let to_a = crate::units::wrap(a - prev, 720.0);
     to_a > 0.0 && to_a <= span
 }
 
@@ -1746,8 +1746,8 @@ impl Engine {
         self.dashpot_step(self.plate, dt);
         self.valve_control(rpm_now, c.throttle, dt);
         let (intake_valve, exhaust_valve) = self.valves();
-        let ivc = (intake_valve.open_deg + intake_valve.duration_deg).rem_euclid(720.0);
-        let evc = (exhaust_valve.open_deg + exhaust_valve.duration_deg).rem_euclid(720.0);
+        let ivc = crate::units::wrap(intake_valve.open_deg + intake_valve.duration_deg, 720.0);
+        let evc = crate::units::wrap(exhaust_valve.open_deg + exhaust_valve.duration_deg, 720.0);
         // the cut-offs stop the injection; the port film still feeds the cylinders
         let inject = !self.overrun_cut && !self.limiter_cut;
         let (film_x, film_tau) = (self.def.intake.film_fraction, self.def.intake.film_tau_s);
@@ -1828,7 +1828,7 @@ impl Engine {
                 .copied()
                 .unwrap_or(0.0);
             let prev = self.cyl[i].cycle_deg;
-            let cur = (crank_deg - self.cyl[i].offset_deg).rem_euclid(720.0);
+            let cur = crate::units::wrap(crank_deg - self.cyl[i].offset_deg, 720.0);
             let theta_c = deg_to_rad(cur);
 
             // Piston motion: adiabatic work p·dV.
@@ -2073,7 +2073,7 @@ impl Engine {
             // The spark fires on the first step at or past its angle (within the half cycle
             // after it), so a timing that moved earlier past the crank still fires this charge,
             // and one that moved later cannot fire it again. A cut cylinder's charge passes.
-            if cs.armed && (cur - spark_deg).rem_euclid(720.0) < 360.0 {
+            if cs.armed && crate::units::wrap(cur - spark_deg, 720.0) < 360.0 {
                 cs.armed = false;
                 // an empty or fuelless charge has no flame (`cycle_flame`)
                 new_burn = c.ignition;
@@ -2095,7 +2095,7 @@ impl Engine {
             if let Some(b) = &mut cs.burn {
                 // Signed angle since the burn start, in (−360, 360]: the burn is created at
                 // the spark, a few degrees *before* it starts, and must not wrap to "done".
-                let mut since = (cur - b.start_deg).rem_euclid(720.0);
+                let mut since = crate::units::wrap(cur - b.start_deg, 720.0);
                 if since > 360.0 {
                     since -= 720.0;
                 }
@@ -2182,7 +2182,10 @@ impl Engine {
                 if let Some(ratio) = flame {
                     let duration = self.def.burn_duration_deg * ratio;
                     cs.burn = Some(Burn {
-                        start_deg: (spark_deg + IGNITION_DELAY_DEG * ratio).rem_euclid(720.0),
+                        start_deg: crate::units::wrap(
+                            spark_deg + IGNITION_DELAY_DEG * ratio,
+                            720.0,
+                        ),
                         duration_deg: duration,
                         energy_j: burn_energy(fuel, air, var),
                         released: 0.0,
@@ -2423,7 +2426,7 @@ impl Engine {
                 self.omega = (self.omega + net / j * dt).max(0.0);
             }
         }
-        self.theta = (self.theta + self.omega * dt).rem_euclid(4.0 * PI);
+        self.theta = crate::units::wrap(self.theta + self.omega * dt, 4.0 * PI);
         audio
     }
 
