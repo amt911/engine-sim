@@ -165,15 +165,66 @@ pub fn valve_flow(
     // the pipe gas's speed of sound brought isentropically to the cylinder's pressure, from
     // its state on the arriving characteristic (λ is (p/p_c)^(1/7) at rest)
     let a_back = (KAPPA * R_AIR * t_back).sqrt() / lambda.max(1e-3);
-    let b = solve_with(p_c, a_c, cd_area / pipe_area, lambda, a_back, hint);
+    let psi = cd_area / pipe_area;
+    let b = solve_with(p_c, a_c, psi, lambda, a_back, hint);
     let mdot = b.mass_flow(pipe_area);
     let h = if mdot >= 0.0 { CP * t_c } else { CP * t_back };
     let limit = relax * (p_c - b.p).abs() * gas.volume_m3 / ((GAMMA - 1.0) * h);
-    let mut dm = (mdot * dt).clamp(-limit, limit);
-    if dm > 0.0 {
-        dm = dm.min(0.5 * gas.mass_kg);
+    if (mdot * dt).abs() <= limit {
+        return (crate::gas::Flow { dm: mdot * dt, h }, b);
     }
-    (crate::gas::Flow { dm, h }, b)
+    // Stiff: in this step the flow would move more than `relax` of the mass that balances the
+    // pressures, and an explicit step would overshoot and chatter on and off from one step to
+    // the next (at idle, near the balance, with a coarse step). Backward Euler instead: the
+    // mass dm whose flow, computed from the cylinder already holding m − dm (energy E − dm·h),
+    // is dm/dt. The arriving characteristic λ is referred to the cylinder's pressure, so it is
+    // carried to the new one, λ' = λ·(p_c/p')^(1/7). The flow falls as the cylinder empties
+    // (fills), so g(dm) = dm − ṁ(dm)·dt changes sign between 0 and the explicit ṁ·dt.
+    let a_pipe = a_back * lambda.max(1e-3);
+    let mut h_last = *hint;
+    let flow_after = |dm: f64, hint: &mut f64| {
+        let after = crate::gas::GasVolume {
+            mass_kg: gas.mass_kg - dm,
+            energy_j: gas.energy_j - dm * h,
+            volume_m3: gas.volume_m3,
+        };
+        let (p, t) = (after.pressure(), after.temperature());
+        if p <= 0.0 || t <= 0.0 {
+            return None;
+        }
+        let lam = lambda * (p_c / p).powf(1.0 / f64::from(P_EXP));
+        let b = solve_with(
+            p,
+            (KAPPA * R_AIR * t).sqrt(),
+            psi,
+            lam,
+            a_pipe / lam.max(1e-3),
+            hint,
+        );
+        Some(b)
+    };
+    let cap = if mdot > 0.0 {
+        0.5 * gas.mass_kg
+    } else {
+        f64::INFINITY
+    };
+    let end = (mdot * dt).clamp(-cap, cap);
+    let g = |x: f64| {
+        let mut hh = h_last;
+        match flow_after(x, &mut hh) {
+            Some(b) => x - b.mass_flow(pipe_area) * dt,
+            // past the gas there is (no flow can take that much): the root lies before
+            None => x,
+        }
+    };
+    let dm = if g(end).signum() == g(0.0).signum() {
+        end
+    } else {
+        root(g, end.min(0.0), end.max(0.0))
+    };
+    let b_new = flow_after(dm, &mut h_last).unwrap_or(b);
+    *hint = h_last;
+    (crate::gas::Flow { dm, h }, b_new)
 }
 
 /// Bracket width the roots stop at, relative: π^7 is the pressure, so 1e-10 in π is 7e-10 in p.
@@ -569,10 +620,13 @@ mod tests {
     #[test]
     fn a_long_step_stops_where_the_pressures_meet_or_at_half_the_mass() {
         use crate::gas::GasVolume;
-        // equalising mass (gas.rs): moving dm with enthalpy h changes p by (γ−1)·h·dm/V, so a
-        // one-second step stops at relax·|p_c − p_b|·V/((γ−1)·h), and never past half the mass
+        // a step far longer than the valve's time constant is stiff: backward Euler moves the
+        // dm whose flow from the cylinder's new state is dm/dt (its defining identity), which
+        // leaves the cylinder all but at the pipe's pressure — and never past half the charge
+        // (a half-litre cylinder over a whole second; a half-cubic-centimetre one over 10 µs,
+        // still a hundred of its own time constants)
         let pipe = std::f64::consts::PI * 0.02 * 0.02;
-        for v in [5.0e-4, 5.0e-7] {
+        for (v, dt, tol) in [(5.0e-4, 1.0, 1e-6), (5.0e-7, 1e-5, 1e-3)] {
             let gas = GasVolume::at(3.0e5, 1300.0, v);
             let lam = lambda_of_wave(gas.pressure(), 0.0, 700.0, crate::units::ATM_PA);
             let at = Pipe {
@@ -580,11 +634,20 @@ mod tests {
                 lambda: lam,
                 t_back: 700.0,
             };
-            let (f, b) = valve_flow(&gas, 3.0e-4, at, 1.0, 0.5, &mut { f64::NAN });
-            let h = crate::gas::CP * 1300.0;
-            let limit = 0.5 * (3.0e5 - b.p) * v / (0.4 * h);
-            let want = limit.min(0.5 * gas.mass_kg);
-            assert_relative_eq!(f.dm, want, max_relative = 1e-9);
+            let (f, b) = valve_flow(&gas, 3.0e-4, at, dt, 0.5, &mut { f64::NAN });
+            assert!(f.dm > 0.0 && f.dm <= 0.5 * gas.mass_kg, "{}", f.dm);
+            if f.dm < 0.5 * gas.mass_kg {
+                assert_relative_eq!(b.mass_flow(pipe) * dt, f.dm, max_relative = tol);
+            }
+            let after = GasVolume {
+                mass_kg: gas.mass_kg - f.dm,
+                energy_j: gas.energy_j - f.dm * f.h,
+                volume_m3: v,
+            };
+            if dt >= 1.0 {
+                // a whole second: at the boundary's pressure
+                assert_relative_eq!(after.pressure(), b.p, max_relative = 1e-3);
+            }
         }
         // with relax 1 the equalising mass is 0.714·(1 − p_b/p_c) of the charge (R/((γ−1)c_p)),
         // so a 40-bar blowdown into a 1-bar pipe stops at half the charge
