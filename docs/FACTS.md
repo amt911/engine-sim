@@ -103,3 +103,12 @@ Real LFA idle (recording wR8FwJVFXOQ, 6–14 s, 1155 rpm): 125 Hz 0.52, 250 Hz 0
 1 kHz and up ≈ 0. Model v0.22.1: 0.99 / 0.98 / 0.90 / 0.70 (1 kHz) / 0.45 (2 kHz). With the
 burn-variability branch: 0.97 / 0.79 / 0.72 / 0.05 / 0.09. Autocorrelation picks the wrong
 period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130 rpm in renders).
+
+- **Real cam lift vs the model's sin²** (Heywood 2nd ed., Fig. 6.16c, digitized 2026-10-27; a
+  high-speed 2.2 L four, 36 mm intake valve, 10.6 mm lift → L/D 0.29):
+  - The curve is cos^1.16 over ±61° cam (RMS 1.3 %), or sin² over ±74.25° cam (2.9 %).
+  - Its duration at 0.15 mm lift (SAE) is 264° crank, so a sin² matching it needs ≈ 1.125 × the
+    0.15 mm duration.
+  - Time above 90 % lift is about the same for both shapes (0.23–0.245 of the 0.15 mm duration).
+    The lever on high-speed breathing is lift (presets cap L/D at 0.25; Heywood: max lift ≈ 12 %
+    of the bore), not shape.

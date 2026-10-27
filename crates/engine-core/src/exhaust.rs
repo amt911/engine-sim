@@ -737,11 +737,6 @@ impl ExhaustNet {
         self.primaries[i].at_near()
     }
 
-    /// Port impedance c/A of the primaries (Pa per kg/s).
-    pub fn port_impedance(&self) -> f64 {
-        C_PRIMARY / self.primary_area()
-    }
-
     /// Gauge pressure at cylinder `i`'s valve end now (p⁺ + p⁻).
     pub fn valve_pressure(&self, i: usize) -> f64 {
         self.primaries[i].at_near() + self.sent[i]

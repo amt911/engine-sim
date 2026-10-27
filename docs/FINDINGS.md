@@ -706,3 +706,28 @@ coupling removes the open-loop damping.
   exhaust-stroke pressure the same; FV's gross work is 8 % lower (152.6 vs 166.5 J) as it traps
   ~5 % less fresh charge. Freezing the residual's effect on the flame halves the open-loop swing;
   retuning the idle spark (reserve 10–15°, KD 10–60) does not help (more KD is worse).
+
+## Benson's valve boundary: three ways to NaN, and a closed form for C (2026-10-27)
+
+**Symptom.** The characteristic boundary (`valve_boundary`) passed its unit tests and then put NaN
+into 46 engine tests.
+
+**Causes**, each with its regression test:
+
+1. *The sin² lift starts from nothing.* At ψ ≈ 1e-26 the choked root sits within round-off of
+   π_α, where (6.51) divides by zero. Below ψ = 1e-9 (under 1e-10 kg/s) the valve is closed.
+2. *A small-ψ lower bound for the sonic bracket* overshot the root at ψ ≈ 0.5. Both ends had the
+   same sign and regula falsi divided 0/0. The bound now holds for any ψ, and `root` returns the
+   nearer end when there is no sign change.
+3. *Eq. (6.47)'s second term has a pole* at B = √((κ−1)/2), which the bracket straddled.
+
+**The closed form.** Benson finds C by successive substitution (6.61), solving (6.47) or (6.51)
+each time. It has a closed form in π: C = 1/√(π² + d²/KM), with d = π − π_α. That leaves one
+equation with no pole, since 1 − B²/KM = C²π².
+
+**Cost.** A solve cost 322 ns cold. Closed form, a step-size convergence test and a secant from
+each cylinder's last root (`valve_hint`) bring it to 71 ns warm. 4 s renders: +80 % → +5–13 %
+over the linear port.
+
+**Effect.** Torque within 1 % of the linear port's (K20A, LFA, LS3): the boundary is more correct,
+not more powerful.

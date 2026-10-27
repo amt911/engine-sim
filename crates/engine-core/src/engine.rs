@@ -7,9 +7,7 @@
 use crate::combustion::{AFR_STOICH, LHV_GASOLINE, flame_angle_scale, laminar_flame_speed, wiebe};
 use crate::exhaust::{ExhaustDef, ExhaustLink, ExhaustModel, ExhaustNet};
 use crate::exhaust_fv::ExhaustFv;
-use crate::gas::{
-    Flow, GasVolume, Reservoir, exchange_with_reservoir, exhaust_valve_flow, plan_exchange,
-};
+use crate::gas::{Flow, GasVolume, Reservoir, exchange_with_reservoir, plan_exchange};
 use crate::geometry::CylinderGeometry;
 use crate::intake_fv::{IntakeDef, IntakeFv, IntakeModel};
 use crate::jet_noise::JetNoise;
@@ -946,6 +944,8 @@ struct CylinderState {
     port_t: f64,
     /// The exhaust port's last mass flow, kg/s: where the next step's port solve starts.
     port_flow: f64,
+    /// The exhaust valve boundary's last root, where the next step's solve starts.
+    valve_hint: f64,
     wall_t: f64,
     /// State at intake closing (p_r, V_r, T_r): Woschni's reference for the motored pressure.
     ref_p: f64,
@@ -1073,7 +1073,6 @@ impl Default for Fidelity {
 struct Remote {
     link: Box<dyn ExhaustLink>,
     arriving: Vec<f64>,
-    z_port: f64,
     /// The primaries' area, m².
     a_pipe: f64,
     tails: Vec<f64>,
@@ -1304,6 +1303,7 @@ impl Engine {
                     armed: false,
                     port_t: PIPE_COLD_K,
                     port_flow: 0.0,
+                    valve_hint: f64::NAN,
                     wall_t: PIPE_COLD_K,
                     ref_p: ATM_PA,
                     ref_v: 1.0,
@@ -1645,11 +1645,6 @@ impl Engine {
         let blowby_area = BLOWBY_AREA_FRACTION * g.piston_area();
 
         let mut gas_torque = 0.0;
-        let z_port = match (&self.net, &self.remote.0) {
-            (Some(n), _) => n.port_impedance(),
-            (None, Some(r)) => r.z_port,
-            (None, None) => 1.0,
-        };
         let reserve = idle_reserve(self.rpm());
         let n_cyl = self.cyl.len();
         for i in 0..n_cyl {
@@ -1689,52 +1684,60 @@ impl Engine {
                 Some(net) => plan_exchange(&net.port_volume(i), &cs.gas, a_in, dt, VALVE_RELAX),
                 None => plan_exchange(&self.plenum, &cs.gas, a_in, dt, VALVE_RELAX),
             });
-            // The exhaust port and its primary pipe are solved together: the flow raises the
-            // pipe pressure at the port by z·ṁ (see `gas::port_flow`).
-            let plan_ex = |area: f64| match &self.fv {
-                // FV: the first pipe cell is a real volume — a planned two-volume exchange.
-                // FV: on the short time scale between pipe steps the primary is its
-                // characteristic impedance to the valve, driven by the wave its first cell sends
-                // back (the waveguide's implicit port, so the flow does not step at the FV rate).
-                Some(fv) => {
-                    let (arriving_fv, z_fv, t_fv) = fv.port_wave(i);
-                    exhaust_valve_flow(
-                        &cs.gas,
-                        area,
-                        crate::gas::Port {
-                            arriving: arriving_fv,
-                            z: z_fv,
-                            t_back: t_fv,
-                        },
-                        dt,
-                        VALVE_RELAX,
-                        cs.port_flow,
-                    )
-                }
-                None => exhaust_valve_flow(
-                    &cs.gas,
-                    area,
-                    crate::gas::Port {
-                        // the tail's mean backpressure adds to the port's base p_atm + 2p⁻
-                        arriving: arriving + 0.5 * back_at_port,
-                        z: z_port,
-                        t_back: cs.port_t,
-                    },
-                    dt,
-                    VALVE_RELAX,
-                    cs.port_flow,
+            // The exhaust valve is its primary's boundary, solved by characteristics (Benson;
+            // `valve_boundary`): the wave the pipe sends to the valve — the FV's first cell, or the
+            // waveguide's arriving wave on its quiet gas — meets the cylinder through the valve.
+            let pipe_area = match (&self.fv, &self.net, &self.remote.0) {
+                (Some(fv), _, _) => fv.primary_area(),
+                (None, Some(n), _) => n.primary_area(),
+                (None, None, Some(r)) => r.a_pipe,
+                _ => PI * 0.25 * self.def.exhaust.primary_diameter_m.powi(2),
+            };
+            let (lambda, t_back) = match &self.fv {
+                Some(fv) => fv.port_lambda(i, cs.gas.pressure()),
+                None => (
+                    // the arriving wave on the primary's gas at rest at the atmosphere's pressure
+                    // plus the tail's mean backpressure
+                    crate::valve_boundary::lambda_of_wave(
+                        cs.gas.pressure(),
+                        arriving,
+                        cs.port_t,
+                        ATM_PA + back_at_port,
+                    ),
+                    cs.port_t,
                 ),
+            };
+            // the boundary starts from this valve's last root (`valve_hint`)
+            let hint = std::cell::Cell::new(cs.valve_hint);
+            let plan_ex = |area: f64| {
+                let mut h = hint.get();
+                let pipe = crate::valve_boundary::Pipe {
+                    area: pipe_area,
+                    lambda,
+                    t_back,
+                };
+                let f =
+                    crate::valve_boundary::valve_flow(&cs.gas, area, pipe, dt, VALVE_RELAX, &mut h);
+                hint.set(h);
+                f
             };
             // Reverse flow (pipe → cylinder) passes the valve against the port's curve with a lower
             // discharge coefficient than forward flow (Blair measures separate in/out maps).
-            let f_ex = (a_ex > 0.0).then(|| {
-                let f = plan_ex(a_ex);
-                if f.dm < 0.0 && self.def.exhaust_reverse_cd_ratio < 1.0 {
+            let fb_ex = (a_ex > 0.0).then(|| {
+                let fb = plan_ex(a_ex);
+                if fb.0.dm < 0.0 && self.def.exhaust_reverse_cd_ratio < 1.0 {
                     plan_ex(a_ex * self.def.exhaust_reverse_cd_ratio)
                 } else {
-                    f
+                    fb
                 }
             });
+            let f_ex = fb_ex.map(|fb| fb.0);
+            cs.valve_hint = hint.get();
+            // the FV primary's first face takes the boundary's momentum (p + ρu²)
+            if let (Some(fv), Some((_, b))) = (&mut self.fv, fb_ex) {
+                let rho = crate::gas::GAMMA * b.p / (b.a * b.a);
+                fv.add_valve_boundary(i, b.p + rho * b.u * b.u, dt);
+            }
             if let Some(f) = f_ex
                 && f.dm < 0.0
             {
@@ -2304,7 +2307,6 @@ impl Engine {
             return false;
         }
         let arriving = (0..n).map(|i| net.arriving(i)).collect();
-        let z_port = net.port_impedance();
         let a_pipe = net.primary_area();
         let tails = vec![0.0; net.last_tails().len()];
         let Some(net) = self.net.take() else {
@@ -2313,7 +2315,6 @@ impl Engine {
         self.remote = RemoteSlot(Some(Box::new(Remote {
             link: link(net),
             arriving,
-            z_port,
             a_pipe,
             tails,
             pending: None,
@@ -5731,6 +5732,41 @@ mod tests {
         let x = run(&mut e, 0.1, &c);
         let rms = (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
         assert!(rms > 0.05, "{rms} Pa");
+    }
+
+    #[test]
+    fn the_fv_and_waveguide_exhausts_agree_on_torque_and_loudness() {
+        // two models of the same pipes: at 4000 rpm WOT they give the same torque within 2 %
+        // (143.6 N·m waveguide, 144.2 FV) and tail levels within a factor of two (4.1 and 2.8 Pa
+        // rms; the FV's shocks and losses differ from the linear lines). The valve's momentum
+        // flux p + ρu² on the FV's first face, with ρ = γp/a², keeps it there; ρ off by a²
+        // makes the FV five times louder
+        let at = |model: ExhaustModel| {
+            let mut d = EngineDef::inline4();
+            d.exhaust.model = model;
+            let mut e = Engine::new(d, 4000.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(4000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &c);
+            let n = (0.1 / DT) as usize;
+            let (mut tq, mut ss) = (0.0, 0.0);
+            for _ in 0..n {
+                let x = e.step(DT, &c);
+                tq += e.torque_nm();
+                ss += x * x;
+            }
+            (tq / n as f64, (ss / n as f64).sqrt())
+        };
+        let (tq_w, rms_w) = at(ExhaustModel::Waveguide);
+        let (tq_f, rms_f) = at(ExhaustModel::Fv);
+        assert_relative_eq!(tq_f, tq_w, max_relative = 0.02);
+        assert!(
+            rms_f > 0.5 * rms_w && rms_f < 2.0 * rms_w,
+            "FV {rms_f} Pa, waveguide {rms_w} Pa"
+        );
     }
 
     #[test]
