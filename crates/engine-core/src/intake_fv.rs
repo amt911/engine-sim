@@ -4,7 +4,7 @@
 //! tuning and induction sound. Spec: `docs/superpowers/specs/2026-10-22-intake-and-pipe-editor.md`.
 
 use crate::exhaust_fv::{CELL_M, PIPE_FRICTION, area, guard, junction_ghost, throttled_ghost};
-use crate::fv::{Boundary, Cons, Pipe1d, Prim, flux_boundary};
+use crate::fv::{Boundary, Cons, Pipe1d, Prim, flux_boundary, step_runners};
 use crate::gas::{GasVolume, R_AIR};
 use crate::units::ATM_PA;
 use serde::{Deserialize, Serialize};
@@ -238,7 +238,7 @@ fn stable_dt(pipes: &[Pipe1d]) -> f64 {
 /// ITB runners through one FV step: each runner's valve flow `acc` becomes its right-end flux,
 /// then k substeps of dt/k with the throttled trumpet (stable characteristic end on the
 /// atmosphere) at its left; each runner's left-end mass flux per substep goes to `flux`. Each
-/// runner is independent of the others, so they step one after another.
+/// runner is independent of the others, so they step side by side.
 #[allow(clippy::too_many_arguments)]
 fn itb_runners_step(
     pipes: &mut [Pipe1d],
@@ -255,15 +255,20 @@ fn itb_runners_step(
     let psi = a_itb / a;
     let rho_atm = ATM_PA / (R_AIR * AMBIENT_T_K);
     let h = dt / k as f64;
-    for ((pipe, &(m, e)), f) in pipes.iter_mut().zip(acc).zip(flux.chunks_mut(k)) {
+    let count = pipes.len().min(acc.len());
+    let used = (count * k).min(flux.len());
+    for (pipe, &(m, e)) in pipes.iter_mut().zip(acc) {
         set_valve_boundary(pipe, m, e, a, dt);
-        for fs in f.iter_mut() {
-            let ghost = throttled_ghost(pipe.prim(0), ATM_PA, rho_atm, -1.0, psi);
-            pipe.left = Boundary::State(ghost);
-            pipe.step(h);
-            *fs = pipe.end_flux.0.rho;
-        }
     }
+    // identical runners go four at a time through the vector unit (bit for bit the same as one
+    // after another)
+    step_runners(
+        &mut pipes[..count],
+        h,
+        k,
+        |cell| throttled_ghost(cell, ATM_PA, rho_atm, -1.0, psi),
+        &mut flux[..used],
+    );
 }
 
 impl IntakeFv {

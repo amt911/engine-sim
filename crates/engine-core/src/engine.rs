@@ -3674,6 +3674,43 @@ mod tests {
         assert!(e.idle_spark_deg > -10.0);
     }
 
+    #[test]
+    fn the_lfa_itb_runners_sound_the_same_batched_or_one_by_one() {
+        // the ten ITB runners go four at a time through the vector unit: the engine's output
+        // must be the scalar one, bit for bit, with either pipe scheme
+        let def = EngineDef::lfa_v10();
+        assert_eq!(def.intake.model, crate::intake_fv::IntakeModel::Fv);
+        assert!(def.intake.individual_throttles);
+        for scheme in [crate::fv::Scheme::Weno5Rk3, crate::fv::Scheme::MusclRk2] {
+            let run = |scalar: bool| {
+                crate::fv::set_scalar_runners(scalar);
+                let mut e = Engine::with_fidelity(
+                    EngineDef::lfa_v10(),
+                    7000.0,
+                    1,
+                    Fidelity {
+                        pipe_scheme: scheme,
+                        ..Fidelity::default()
+                    },
+                );
+                let c = Controls {
+                    throttle: 1.0,
+                    hold_rpm: Some(7000.0),
+                    ..Controls::default()
+                };
+                let out: Vec<u64> = (0..(0.3 / DT) as usize)
+                    .map(|_| e.step(DT, &c).to_bits())
+                    .collect();
+                crate::fv::set_scalar_runners(false);
+                out
+            };
+            let batched = run(false);
+            let one_by_one = run(true);
+            assert!(batched.iter().any(|&b| f64::from_bits(b) != 0.0));
+            assert_eq!(batched, one_by_one, "{scheme:?}");
+        }
+    }
+
     /// The user's journey on one engine: crank on the starter, let it idle, floor it for 0.3 s,
     /// let go. The ECU's idle control must hold `idle_rpm`, and overrun fuel cut, the dashpot
     /// and the idle control must bring it back from the blip. The single used to stall at idle,

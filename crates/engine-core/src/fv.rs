@@ -13,6 +13,9 @@
 
 use crate::gas::GAMMA;
 
+mod batch;
+pub use batch::{set_scalar_runners, step_runners};
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Prim {
     pub rho: f64,
@@ -400,6 +403,7 @@ impl Lane for wide::f64x4 {
 /// Phys. 126 (1996)) with the Z weights of Borges et al. (2008), which keep fifth order at
 /// smooth extrema, the crest of a sound wave. The left edge mirrors the stencil, so both share
 /// the smoothness indicators.
+#[inline(always)]
 fn weno5z<T: Lane>(v: [T; 5]) -> (T, T) {
     let [a, b, c, d, e] = v;
     let k = T::k;
