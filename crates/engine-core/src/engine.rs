@@ -6101,6 +6101,47 @@ mod tests {
         );
     }
 
+    /// Sign flips of cylinder 1's exhaust-valve flow over 0.2 s of the LFA held at idle, stepped
+    /// at `fs`, while the valve is open (steps with flow either side).
+    fn idle_exhaust_flips(fs: f64) -> (usize, usize) {
+        let dt = 1.0 / fs;
+        let mut e = Engine::new(EngineDef::lfa_v10(), 1100.0, 1);
+        let c = Controls {
+            throttle: 0.0,
+            hold_rpm: Some(1100.0),
+            ..Controls::default()
+        };
+        for _ in 0..(1.0 / dt) as usize {
+            e.step(dt, &c);
+        }
+        let (mut flips, mut open, mut prev) = (0, 0, 0.0f64);
+        for _ in 0..(0.2 / dt) as usize {
+            e.step(dt, &c);
+            let f = e.cyl[0].port_flow;
+            if f != 0.0 && prev != 0.0 {
+                open += 1;
+                flips += usize::from(f.signum() != prev.signum());
+            }
+            prev = f;
+        }
+        (flips, open)
+    }
+
+    #[test]
+    fn the_valve_flow_does_not_chatter_at_a_coarse_step() {
+        // at idle, near the pressure balance with the piston pushing, the valve's flow is
+        // smooth whatever the step: at Low/Medium's 96 kHz it chattered on and off (103 flips in
+        // 0.2 s against 5 at 192 kHz, +45 dB of hiss at 5–10 kHz). A real reversal or two per
+        // event is physics; the flips per open step must not grow as the step coarsens
+        let (fine, open_fine) = idle_exhaust_flips(192_000.0);
+        let (coarse, open_coarse) = idle_exhaust_flips(96_000.0);
+        let rate = |f: usize, o: usize| f as f64 / o.max(1) as f64;
+        assert!(
+            rate(coarse, open_coarse) <= 2.0 * rate(fine, open_fine) + 1e-3,
+            "96 kHz: {coarse} flips in {open_coarse} steps; 192 kHz: {fine} in {open_fine}"
+        );
+    }
+
     #[test]
     fn an_fv_exhaust_is_heard() {
         // the finite-volume exhaust's tails reach the listener as the waveguide's do
