@@ -3,7 +3,8 @@
 //! throttle from idle to redline), and `loops`: a grid of held speeds × loads, each a whole
 //! number of engine cycles long — at a speed nudged so a cycle is a whole number of samples —
 //! so a game can loop it without a seam; `held:RPM[:LOAD[:SECONDS]]`, one such held speed (to
-//! compare with a recording of a real engine held there).
+//! compare with a recording of a real engine held there); `gears`, a full-throttle pull through
+//! every gear of the engine's own car, from a clutch launch to the top gear's limit.
 
 use crate::quality::Quality;
 use crate::sim::Simulation;
@@ -16,6 +17,8 @@ pub enum Scene {
     Drive,
     Sweep,
     Loops,
+    /// Full throttle through every gear of the engine's car ([`render_gears`]).
+    Gears,
     /// One speed held at a load (0–1) for about `seconds` (whole cycles, seamless).
     Held {
         rpm: f64,
@@ -36,8 +39,9 @@ impl std::str::FromStr for Scene {
             "drive" => Ok(Scene::Drive),
             "sweep" => Ok(Scene::Sweep),
             "loops" => Ok(Scene::Loops),
+            "gears" => Ok(Scene::Gears),
             _ => Err(format!(
-                "unknown scene '{s}' (drive, sweep, loops, held:RPM[:LOAD[:SECONDS]])"
+                "unknown scene '{s}' (drive, sweep, loops, gears, held:RPM[:LOAD[:SECONDS]])"
             )),
         }
     }
@@ -152,6 +156,153 @@ pub fn render_sweep(def: &EngineDef, sample_rate: f64, quality: Quality, seconds
     out
 }
 
+/// Idle in neutral before the launch, s.
+const PULL_IDLE_S: f64 = 1.0;
+/// The launch: the clutch comes up at this share of the redline.
+const LAUNCH_SHARE: f64 = 0.45;
+/// Upshift at this share of the redline (just under the ECU's limiter).
+const SHIFT_SHARE: f64 = 0.97;
+/// A shift: throttle off and clutch down this long, s (a quick manual shift).
+const SHIFT_S: f64 = 0.3;
+/// Lift-off at the end, s.
+const LIFT_S: f64 = 2.0;
+/// A gear whose speed stops climbing (the car's drag holds it under the shift point) is left
+/// once it has gained less than `PLATEAU_GAIN` in this long, s: the next gear, or the lift-off
+/// in top gear — as a driver would.
+pub const PLATEAU_S: f64 = 2.0;
+const PLATEAU_GAIN: f64 = 0.005;
+
+/// The driver of a full-throttle pull through the gears: what the pedals and the lever do, step
+/// by step, from the engine speed.
+#[derive(Debug, Clone)]
+pub struct GearPull {
+    gears: usize,
+    redline: f64,
+    phase: PullPhase,
+    gear: usize,
+    t: f64,
+    /// The pull's best speed so far in this gear and when it was last bettered, s.
+    best: f64,
+    since_best: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PullPhase {
+    Idle,
+    /// Clutch down in neutral before a gear goes in (selecting one with the clutch still
+    /// engaged stalls the engine).
+    Clutch,
+    Launch,
+    Pull,
+    Shift,
+    Lift,
+    Done,
+}
+
+impl GearPull {
+    pub fn new(gears: usize, redline_rpm: f64) -> Self {
+        Self {
+            gears: gears.max(1),
+            redline: redline_rpm,
+            phase: PullPhase::Idle,
+            gear: 0,
+            t: 0.0,
+            best: 0.0,
+            since_best: 0.0,
+        }
+    }
+
+    /// This step's (throttle, pedals and lever) at engine speed `rpm`, `dt` s after the last.
+    pub fn next(&mut self, rpm: f64, dt: f64) -> (f64, crate::sim::DriveInput) {
+        let to = |p: &mut Self, phase| {
+            p.phase = phase;
+            p.t = 0.0;
+            p.best = 0.0;
+            p.since_best = 0.0;
+        };
+        if self.phase == PullPhase::Pull {
+            if rpm > self.best * (1.0 + PLATEAU_GAIN) {
+                self.best = rpm;
+                self.since_best = 0.0;
+            } else {
+                self.since_best += dt;
+            }
+        }
+        match self.phase {
+            PullPhase::Idle if self.t >= PULL_IDLE_S - 1e-9 => to(self, PullPhase::Clutch),
+            PullPhase::Clutch if self.t >= SHIFT_S - 1e-9 => {
+                self.gear = 1;
+                to(self, PullPhase::Launch);
+            }
+            PullPhase::Launch if rpm >= LAUNCH_SHARE * self.redline => to(self, PullPhase::Pull),
+            PullPhase::Pull
+                if rpm >= SHIFT_SHARE * self.redline || self.since_best >= PLATEAU_S - 1e-9 =>
+            {
+                let next = if self.gear < self.gears {
+                    PullPhase::Shift
+                } else {
+                    PullPhase::Lift
+                };
+                to(self, next);
+            }
+            PullPhase::Shift if self.t >= SHIFT_S - 1e-9 => {
+                self.gear += 1;
+                to(self, PullPhase::Pull);
+            }
+            PullPhase::Lift if self.t >= LIFT_S - 1e-9 => to(self, PullPhase::Done),
+            _ => {}
+        }
+        let (throttle, clutch_pedal) = match self.phase {
+            PullPhase::Idle | PullPhase::Lift | PullPhase::Done => (0.0, false),
+            PullPhase::Launch => (1.0, true),
+            PullPhase::Pull => (1.0, false),
+            PullPhase::Shift | PullPhase::Clutch => (0.0, true),
+        };
+        self.t += dt;
+        (
+            throttle,
+            crate::sim::DriveInput {
+                gear: self.gear,
+                clutch_pedal,
+                brake: 0.0,
+            },
+        )
+    }
+
+    /// The pull has lifted off and ended.
+    pub fn done(&self) -> bool {
+        self.phase == PullPhase::Done
+    }
+}
+
+/// The gears scene at `quality`: the engine in its own car, idling, then pulled at full throttle
+/// through every gear ([`GearPull`]). Returns the samples and the highest gear reached.
+pub fn render_gears(def: &EngineDef, sample_rate: f64, quality: Quality) -> (Vec<f32>, usize) {
+    let mut sim =
+        Simulation::with_quality(def.clone(), def.vehicle.clone(), sample_rate, 1, quality);
+    sim.set_limiter(false);
+    let mut idle = vec![0.0f32; (PREROLL_S * sample_rate) as usize];
+    sim.render(&mut idle);
+    let block = 240;
+    let dt = block as f64 / sample_rate;
+    let mut pull = GearPull::new(def.vehicle.gear_ratios.len(), def.redline_rpm);
+    let (mut out, mut buf, mut top) = (Vec::new(), vec![0.0f32; block], 0);
+    // a bound for a car that cannot pull at all (each gear's limit plus the top gear's cap)
+    let cap = ((def.vehicle.gear_ratios.len() as f64 * 30.0 + 10.0) / dt) as usize;
+    for _ in 0..cap {
+        let (throttle, drive) = pull.next(sim.snapshot().rpm, dt);
+        if pull.done() {
+            break;
+        }
+        sim.controls.throttle = throttle;
+        sim.drive = drive;
+        top = top.max(drive.gear);
+        sim.render(&mut buf);
+        out.extend_from_slice(&buf);
+    }
+    (out, top)
+}
+
 /// Seconds an engine idles before a scene is recorded: past its start-up transient (pipes and
 /// cylinders filling from rest) and the start flare its idle control brings back down (measured:
 /// 3 s still left the V10 15 dB over its idle; at 8 s every preset's idle is flat from the start).
@@ -213,6 +364,12 @@ pub fn render_scene(
     match scene {
         Scene::Drive => {
             let mut x = [render_drive(def, RATE, quality)];
+            normalize(&mut x, engine_audio::dsp::LIMITER_THRESHOLD as f32);
+            wav(out, &x[0])?;
+            Ok(vec![out.to_path_buf()])
+        }
+        Scene::Gears => {
+            let mut x = [render_gears(def, RATE, quality).0];
             normalize(&mut x, engine_audio::dsp::LIMITER_THRESHOLD as f32);
             wav(out, &x[0])?;
             Ok(vec![out.to_path_buf()])
@@ -297,6 +454,7 @@ mod tests {
         assert_eq!("drive".parse(), Ok(Scene::Drive));
         assert_eq!("Sweep".parse(), Ok(Scene::Sweep));
         assert_eq!("loops".parse(), Ok(Scene::Loops));
+        assert_eq!("gears".parse(), Ok(Scene::Gears));
         assert!("race".parse::<Scene>().is_err());
         // one held speed: held:RPM[:LOAD[:SECONDS]], full load and 4 s unless given
         assert_eq!(
@@ -345,6 +503,90 @@ mod tests {
         let wav = hound::WavReader::open(&path).unwrap();
         assert_eq!(wav.duration(), 24_960);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_gear_pull_launches_shifts_at_the_limit_and_lifts() {
+        // 5 gears, redline 6000: launch at 45 % of it with the clutch, full throttle; at 97 %
+        // (5820 rpm) a 0.3 s shift (throttle off, clutch down, next gear); in top gear it pulls
+        // to the shift point, then lifts off for 2 s and the scene ends
+        let dt = 0.01;
+        let mut p = GearPull::new(5, 6000.0);
+        let step = |p: &mut GearPull, rpm: f64| p.next(rpm, dt);
+        // idle in neutral first
+        let (thr, d) = step(&mut p, 900.0);
+        assert_eq!((thr, d.gear, d.clutch_pedal), (0.0, 0, false));
+        for _ in 0..100 {
+            step(&mut p, 900.0);
+        }
+        // the clutch goes down in neutral first (selecting a gear while it is still engaged
+        // stalls the engine), then first gear, revving for the launch
+        let (thr, d) = step(&mut p, 900.0);
+        assert_eq!((thr, d.gear, d.clutch_pedal), (0.0, 0, true));
+        for _ in 0..30 {
+            step(&mut p, 900.0);
+        }
+        let (thr, d) = step(&mut p, 1500.0);
+        assert_eq!((thr, d.gear, d.clutch_pedal), (1.0, 1, true));
+        // at launch revs the clutch comes up
+        let (thr, d) = step(&mut p, 2700.0);
+        assert_eq!((thr, d.gear, d.clutch_pedal), (1.0, 1, false));
+        // pulling until the shift point
+        assert_eq!(step(&mut p, 5000.0).1.gear, 1);
+        let (thr, d) = step(&mut p, 5820.0);
+        assert_eq!((thr, d.clutch_pedal), (0.0, true));
+        for _ in 0..30 {
+            step(&mut p, 5000.0);
+        }
+        let (thr, d) = step(&mut p, 4000.0);
+        assert_eq!((thr, d.gear, d.clutch_pedal), (1.0, 2, false));
+        // through to top gear
+        for g in 2..5 {
+            step(&mut p, 5820.0);
+            for _ in 0..31 {
+                step(&mut p, 4000.0);
+            }
+            assert_eq!(step(&mut p, 4000.0).1.gear, g + 1);
+        }
+        assert!(!p.done());
+        // top gear at the limit: lift off, then done after 2 s
+        let (thr, d) = step(&mut p, 5820.0);
+        assert_eq!((thr, d.gear), (0.0, 5));
+        for _ in 0..199 {
+            step(&mut p, 5000.0);
+        }
+        assert!(!p.done());
+        step(&mut p, 5000.0);
+        assert!(p.done());
+    }
+
+    #[test]
+    fn a_gear_pull_that_stops_climbing_moves_on() {
+        // drag can hold a gear under the limit: once its speed stops climbing for PLATEAU_S the
+        // pull moves on (here the only gear, so it lifts off and ends)
+        let mut p = GearPull::new(1, 6000.0);
+        for _ in 0..200 {
+            p.next(900.0, 0.01);
+        }
+        p.next(3000.0, 0.01);
+        let mut t = 0.0;
+        while !p.done() && t < 120.0 {
+            p.next(4000.0, 0.01);
+            t += 0.01;
+        }
+        assert!(p.done(), "never ended");
+        assert!(t < PLATEAU_S + LIFT_S + 0.1, "{t} s");
+    }
+
+    #[test]
+    fn the_gears_scene_drives_the_car_through_its_gears() {
+        // the real simulation: the car pulls through every gear to the top one (the LFA: its
+        // engine stalled when first gear went in with the clutch still engaged)
+        let def = EngineDef::lfa_v10();
+        let (x, gears) = render_gears(&def, RATE, Quality::Low);
+        assert!(x.iter().all(|v| v.is_finite()));
+        assert_eq!(gears, def.vehicle.gear_ratios.len(), "top gear reached");
+        assert!(x.len() > (5.0 * RATE) as usize);
     }
 
     #[test]

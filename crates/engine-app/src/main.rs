@@ -54,6 +54,7 @@ struct Cli {
     /// Render a scene offline at the finest quality (no real-time limit) and exit: `drive`
     /// (idle, blips, a pull, lift-off) or `sweep` (full throttle idle → redline) into the
     /// `--out` WAV; `loops` (held speeds × loads, each seamless) into the `--out` folder;
+    /// `gears` (full throttle through every gear of the engine's car) or
     /// `held:RPM[:LOAD[:SECONDS]]` (one speed held, full load and 4 s by default) into the WAV.
     #[arg(long)]
     render: Option<offline::Scene>,
