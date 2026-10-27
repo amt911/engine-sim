@@ -38,7 +38,7 @@ pub fn m3_to_cc(m3: f64) -> f64 {
 /// software `fmod` costing ~5 % of a step.
 #[inline]
 pub fn wrap(x: f64, period: f64) -> f64 {
-    if (0.0..period).contains(&x) || x == 0.0 {
+    if (0.0..period).contains(&x) {
         x
     } else if (period..2.0 * period).contains(&x) {
         x - period
