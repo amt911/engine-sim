@@ -3925,6 +3925,85 @@ mod tests {
     }
 
     #[test]
+    fn gas_flowing_in_brings_its_own_mixtures_enthalpy() {
+        // 10 g of half-products, fuelled charge at 800 K (c_p,air·T = 803 600 J/kg in the flow
+        // code's convention) enter: the cylinder gains 10 g × h of that mixture at 800 K
+        let mut e = Engine::new(EngineDef::inline4(), 1000.0, 1);
+        let th = e.thermo;
+        let cs = &mut e.cyl[0];
+        let c_in = Composition {
+            burned: 0.5,
+            fuelled: 1.0,
+        };
+        let u0 = cs.u_j;
+        let f = Flow {
+            dm: -0.01,
+            h: crate::gas::CP * 800.0,
+        };
+        cylinder_flow(cs, &th, f, c_in);
+        assert_relative_eq!(
+            cs.u_j - u0,
+            0.01 * th.mixture(c_in).h(800.0),
+            max_relative = 1e-12
+        );
+    }
+
+    #[test]
+    fn friction_fades_out_at_standstill() {
+        // T = FMEP·Vd/4π·tanh(ω/5): at 20 rpm, ω = 2.0944 rad/s and tanh(0.41888) = 0.39599
+        let d = EngineDef::inline4();
+        let e = Engine::new(d.clone(), 20.0, 1);
+        let at = d.friction.at_speed(&d.friction_engine(), 20.0);
+        let full = at.fmep(e.plenum_pressure_pa()) * d.displacement_m3() / (4.0 * PI);
+        assert_relative_eq!(e.friction_torque() / full, 0.39599, max_relative = 1e-4);
+    }
+
+    #[test]
+    fn the_primary_holds_products_under_power_and_air_after_a_fuel_cut() {
+        let mut e = Engine::new(EngineDef::inline4(), 4400.0, 1);
+        let wot = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(4400.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.5, &wot);
+        assert!(e.cyl[0].port_xb > 0.9, "under power {}", e.cyl[0].port_xb);
+        let cut = Controls {
+            hold_rpm: Some(4400.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.5, &cut);
+        assert!(e.cyl[0].port_xb < 0.1, "after the cut {}", e.cyl[0].port_xb);
+    }
+
+    #[test]
+    fn a_flame_turns_the_fresh_charge_into_products_as_it_burns() {
+        // with the valves shut, the burned share is the residual plus the fresh share times
+        // what the flame has released: x_b = (1 − f) + f·x
+        let mut e = Engine::new(EngineDef::inline4(), 3000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.3, &c);
+        let mut checked = 0;
+        for _ in 0..(0.1 / DT) as usize {
+            e.step(DT, &c);
+            let cs = &e.cyl[0];
+            if let Some(b) = &cs.burn
+                && b.released > 0.05
+                && b.released < 0.95
+            {
+                let want = (1.0 - cs.fresh_share) + cs.fresh_share * b.released;
+                assert_relative_eq!(cs.comp.burned, want, max_relative = 1e-9);
+                checked += 1;
+            }
+        }
+        assert!(checked > 10, "{checked} burning steps seen");
+    }
+
+    #[test]
     fn throttle_area_spans_idle_to_full_bore() {
         let e = Engine::new(EngineDef::single(), 900.0, 1);
         // full: 0.8 · π/4 · 0.04² = 1.00531e-3 m²; idle = 0.0015 of that
