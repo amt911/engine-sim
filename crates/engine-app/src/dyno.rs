@@ -211,9 +211,9 @@ mod tests {
     #[test]
     fn the_k20a_breathes_near_what_honda_published() {
         // Honda K20A (Integra Type R): 206 N·m at 7000 rpm, 220 PS (217 hp) at 8000. Peak torque
-        // lands within 10 % of it and holds within 10 % of its peak into VTEC's range (6500
-        // rpm); power runs ~16 % short at the top: VTC (set to this model's torque optimum)
-        // lifts the mid-range, while above 7000 rpm the model breathes less than the engine.
+        // lands within 10 % of it (≈ 198 N·m) and holds within 10 % of its peak into VTEC's
+        // range (6500 rpm); power, still rising at 8000 rpm as Honda's, runs ≈ 9 % short there:
+        // the presets' cams pass too little gas at speed (FINDINGS, 2026-10-27).
         let pts = sweep(&EngineDef::honda_k20a());
         assert_eq!(pts.len(), sweep_speeds(8400.0).len());
         let (t, p) = peaks(&pts).unwrap();

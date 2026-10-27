@@ -251,8 +251,9 @@ impl EngineDef {
             // intake's VTEC lobe opens 36° longer and lifts 12.65/8.84 as far (K20A: low 244°,
             // 8.84 mm; VTEC 280°, 12.65 mm — motorreviewer, a secondary source), opening 18°
             // earlier. The real engine switches its exhaust lobes too; here they lost torque at
-            // every speed (6000/7000/8000 rpm: 177/167/139 N·m against 194/183/148), so until a
-            // primary source gives their timing the exhaust keeps one lobe (spec 2026-10-26).
+            // every speed (with friction by components and real gas properties, ≈ 20 N·m less at
+            // 6000 rpm), so until a primary source gives their timing the exhaust keeps one lobe
+            // (spec 2026-10-26).
             intake_valve: ValveTiming {
                 open_deg: 340.0,
                 duration_deg: 265.0,
@@ -318,7 +319,7 @@ impl EngineDef {
                     },
                     crate::valve::PhaserPoint {
                         rpm: 1500.0,
-                        full_load_deg: 30.0,
+                        full_load_deg: 35.0,
                         no_load_deg: 9.0,
                     },
                     crate::valve::PhaserPoint {
@@ -328,17 +329,22 @@ impl EngineDef {
                     },
                     crate::valve::PhaserPoint {
                         rpm: 3000.0,
-                        full_load_deg: 30.0,
+                        full_load_deg: 35.0,
                         no_load_deg: 35.0,
                     },
                     crate::valve::PhaserPoint {
-                        rpm: 4000.0,
+                        rpm: 3500.0,
                         full_load_deg: 20.0,
+                        no_load_deg: 33.0,
+                    },
+                    crate::valve::PhaserPoint {
+                        rpm: 4000.0,
+                        full_load_deg: 10.0,
                         no_load_deg: 31.0,
                     },
                     crate::valve::PhaserPoint {
                         rpm: 5000.0,
-                        full_load_deg: 10.0,
+                        full_load_deg: 5.0,
                         no_load_deg: 28.0,
                     },
                     crate::valve::PhaserPoint {
@@ -348,17 +354,22 @@ impl EngineDef {
                     },
                     crate::valve::PhaserPoint {
                         rpm: 6000.0,
-                        full_load_deg: 25.0,
+                        full_load_deg: 20.0,
                         no_load_deg: 24.0,
                     },
                     crate::valve::PhaserPoint {
-                        rpm: 7000.0,
-                        full_load_deg: 15.0,
+                        rpm: 6500.0,
+                        full_load_deg: 10.0,
+                        no_load_deg: 23.0,
+                    },
+                    crate::valve::PhaserPoint {
+                        rpm: 7500.0,
+                        full_load_deg: 10.0,
                         no_load_deg: 20.0,
                     },
                     crate::valve::PhaserPoint {
                         rpm: 8000.0,
-                        full_load_deg: 10.0,
+                        full_load_deg: 0.0,
                         no_load_deg: 20.0,
                     },
                 ],
@@ -4109,8 +4120,10 @@ mod tests {
         // Net indicated fuel conversion efficiency at WOT: the fuel–air cycle's ≈ 47 % at
         // 11.5:1 (thermo::tests) less heat loss, finite burn and gas exchange — real engines
         // reach ≈ 0.8 of it, 35–40 % (Heywood, ICE Fundamentals, 2nd ed., ch. 5). With cold-air
-        // properties (γ = 1.4) the model made 45 %.
-        let d = EngineDef::honda_k20a();
+        // properties (γ = 1.4) the model made 45 %. The cycle alone: fixed cams, so no fresh air
+        // blows through the overlap (see `vtec_overlap_blows_some_fresh_air_through`).
+        let mut d = EngineDef::honda_k20a();
+        (d.vtec, d.intake_phaser, d.exhaust_phaser) = (None, None, None);
         let rpm = 6500.0;
         let mut e = Engine::new(d.clone(), rpm, 1);
         let c = Controls {
@@ -4119,7 +4132,11 @@ mod tests {
             ..Controls::default()
         };
         run(&mut e, 1.5, &c);
-        let (m0, f0) = (e.inducted_kg(), e.fuel_energy_j);
+        let (m0, f0, inj0) = (
+            e.inducted_kg(),
+            e.fuel_energy_j,
+            e.fuel_ledger.into_cylinders,
+        );
         let n = (0.5 / DT) as usize;
         let mut work = 0.0;
         for _ in 0..n {
@@ -4132,8 +4149,36 @@ mod tests {
             (0.33..0.41).contains(&eta),
             "net indicated efficiency {eta:.3}"
         );
-        // and what burnt is what came in (the ledger agrees with the air)
-        assert!(((e.fuel_energy_j - f0) / (fuel * COMBUSTION_EFFICIENCY) - 1.0).abs() < 0.05);
+        // and what burnt is what was injected (the ledger agrees with the fuel)
+        let injected = (e.fuel_ledger.into_cylinders - inj0) * LHV_GASOLINE;
+        assert!(((e.fuel_energy_j - f0) / (injected * COMBUSTION_EFFICIENCY) - 1.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn vtec_overlap_blows_some_fresh_air_through() {
+        // On its VTEC lobe with the cam advanced, the K20A's valves overlap widely at speed: part
+        // of the air drawn in passes straight to the exhaust (scavenging), so the fuel the ECU
+        // meters on the trapped charge is less than the inducted air's stoichiometric share
+        // (measured 0.93 at 6500 rpm); with fixed cams it is the share itself
+        let share = |vvt: bool| {
+            let mut d = EngineDef::honda_k20a();
+            if !vvt {
+                (d.vtec, d.intake_phaser, d.exhaust_phaser) = (None, None, None);
+            }
+            let mut e = Engine::new(d, 6500.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(6500.0),
+                ..Controls::default()
+            };
+            run(&mut e, 1.5, &c);
+            let (m0, inj0) = (e.inducted_kg(), e.fuel_ledger.into_cylinders);
+            run(&mut e, 0.5, &c);
+            (e.fuel_ledger.into_cylinders - inj0) * AFR_STOICH / (e.inducted_kg() - m0)
+        };
+        let (with, without) = (share(true), share(false));
+        assert!(with < 0.97 && with > 0.85, "with VTEC/VTC {with}");
+        assert!(without > with, "fixed cams {without}");
     }
 
     #[test]
