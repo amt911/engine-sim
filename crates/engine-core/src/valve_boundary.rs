@@ -647,6 +647,19 @@ mod tests {
             f.dm,
             mdot * dt
         );
+        // and the dm it moves is what the cylinder left after it pushes out in that step, asked
+        // afresh (an explicit flow from the new state, its wave referred to the new pressure)
+        let after = GasVolume {
+            mass_kg: gas.mass_kg - f.dm,
+            energy_j: gas.energy_j - f.dm * f.h,
+            volume_m3: v,
+        };
+        let at_after = Pipe {
+            lambda: lambda_of_wave(after.pressure(), 0.0, 700.0, crate::units::ATM_PA),
+            ..at
+        };
+        let (_, b_after) = valve_flow(&after, 3.0e-4, at_after, 1e-12, relax, &mut { f64::NAN });
+        assert_relative_eq!(b_after.mass_flow(pipe) * dt, f.dm, max_relative = 1e-3);
     }
 
     #[test]
