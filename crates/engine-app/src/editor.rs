@@ -344,7 +344,11 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
                 0.5,
                 &format!("{name} valve Ø (mm)"),
             );
+            vtec_lobe(ui, name, v);
         }
+        vtec_switch(ui, &mut d.vtec);
+        phaser(ui, "Intake", &mut d.intake_phaser);
+        phaser(ui, "Exhaust", &mut d.exhaust_phaser);
     });
 
     egui::CollapsingHeader::new("Intake & exhaust").show(ui, |ui| {
@@ -634,6 +638,157 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
     }
 }
 
+/// A valve's VTEC lobe: on adds one a little longer and higher than its base lobe (a typical
+/// VTEC step: about 15 % more duration and 40 % more lift, as on the K20A), then edited.
+fn vtec_lobe(ui: &mut egui::Ui, name: &str, v: &mut engine_core::valve::ValveTiming) {
+    let mut on = v.high.is_some();
+    if ui.checkbox(&mut on, format!("{name} VTEC lobe")).changed() {
+        v.high = on.then(|| engine_core::valve::CamLobe {
+            open_deg: (v.open_deg - 0.075 * v.duration_deg).rem_euclid(720.0),
+            duration_deg: 1.15 * v.duration_deg,
+            max_lift_m: 1.4 * v.max_lift_m,
+        });
+    }
+    if let Some(l) = &mut v.high {
+        ui.add(
+            slider(&mut l.open_deg, 0.0..=719.0)
+                .step_by(1.0)
+                .text(format!("{name} VTEC lobe opens (° of 720)")),
+        );
+        ui.add(
+            slider(&mut l.duration_deg, 120.0..=360.0)
+                .step_by(1.0)
+                .text(format!("{name} VTEC lobe duration (°)")),
+        );
+        scaled(
+            ui,
+            &mut l.max_lift_m,
+            1000.0,
+            3.0..=25.0,
+            0.1,
+            &format!("{name} VTEC lobe lift (mm)"),
+        );
+    }
+}
+
+/// When VTEC engages: its speed, its hysteresis and the pedal it waits for.
+fn vtec_switch(ui: &mut egui::Ui, vtec: &mut Option<engine_core::valve::Vtec>) {
+    let mut on = vtec.is_some();
+    if ui.checkbox(&mut on, "VTEC").changed() {
+        *vtec = on.then_some(engine_core::valve::Vtec {
+            engage_rpm: 6000.0,
+            hysteresis_rpm: 300.0,
+            min_throttle: 0.3,
+        });
+    }
+    if let Some(v) = vtec {
+        ui.add(
+            slider(&mut v.engage_rpm, 1000.0..=12000.0)
+                .step_by(100.0)
+                .text("VTEC engages (rpm)"),
+        );
+        ui.add(
+            slider(&mut v.hysteresis_rpm, 0.0..=2000.0)
+                .step_by(50.0)
+                .text("VTEC hysteresis (rpm)"),
+        );
+        ui.add(
+            slider(&mut v.min_throttle, 0.0..=1.0)
+                .step_by(0.05)
+                .text("VTEC needs pedal"),
+        );
+    }
+}
+
+/// A camshaft's phaser (VVT-i, VTC): its range, its rate and its map, point by point.
+fn phaser(ui: &mut egui::Ui, name: &str, phaser: &mut Option<engine_core::valve::Phaser>) {
+    let lower = name.to_lowercase();
+    let mut on = phaser.is_some();
+    if ui
+        .checkbox(&mut on, format!("{name} cam phaser (VVT)"))
+        .changed()
+    {
+        // a starting map in the spirit of Honda's i-VTEC (Honda R&D Tech. Review 12-2, 2000,
+        // Fig. 4): little overlap at idle, more at light load, a moderate advance at full load
+        *phaser = on.then(|| engine_core::valve::Phaser {
+            range_deg: 50.0,
+            rate_deg_s: 30.0,
+            map: vec![
+                engine_core::valve::PhaserPoint {
+                    rpm: 1000.0,
+                    full_load_deg: 0.0,
+                    no_load_deg: 0.0,
+                },
+                engine_core::valve::PhaserPoint {
+                    rpm: 3000.0,
+                    full_load_deg: 25.0,
+                    no_load_deg: 35.0,
+                },
+                engine_core::valve::PhaserPoint {
+                    rpm: 7000.0,
+                    full_load_deg: 15.0,
+                    no_load_deg: 20.0,
+                },
+            ],
+        });
+    }
+    if let Some(p) = phaser {
+        ui.add(
+            slider(&mut p.range_deg, 0.0..=80.0)
+                .step_by(1.0)
+                .text(format!("{name} phaser range (°)")),
+        );
+        ui.add(
+            slider(&mut p.rate_deg_s, 5.0..=300.0)
+                .step_by(5.0)
+                .text(format!("{name} phaser rate (°/s)")),
+        );
+        let range = p.range_deg;
+        // the map is interpolated between neighbours in speed order: each point stays between
+        // its neighbours, so a dragged point never swaps rows under the pointer
+        let rpms: Vec<f64> = p.map.iter().map(|q| q.rpm).collect();
+        for (k, pt) in p.map.iter_mut().enumerate() {
+            let lo = if k == 0 { 0.0 } else { rpms[k - 1] };
+            let hi = rpms.get(k + 1).copied().unwrap_or(12000.0);
+            ui.add(
+                slider(&mut pt.rpm, lo..=hi)
+                    .step_by(100.0)
+                    .text(format!("{name} map point {} rpm", k + 1)),
+            );
+            ui.add(
+                slider(&mut pt.full_load_deg, 0.0..=range)
+                    .step_by(1.0)
+                    .text(format!("{name} point {} advance, full load (°)", k + 1)),
+            );
+            ui.add(
+                slider(&mut pt.no_load_deg, 0.0..=range)
+                    .step_by(1.0)
+                    .text(format!("{name} point {} advance, no load (°)", k + 1)),
+            );
+        }
+        ui.horizontal(|ui| {
+            if ui.button(format!("Add {lower} map point")).clicked() {
+                let last = p
+                    .map
+                    .last()
+                    .copied()
+                    .unwrap_or(engine_core::valve::PhaserPoint {
+                        rpm: 1000.0,
+                        full_load_deg: 0.0,
+                        no_load_deg: 0.0,
+                    });
+                p.map.push(engine_core::valve::PhaserPoint {
+                    rpm: last.rpm + 1000.0,
+                    ..last
+                });
+            }
+            if p.map.len() > 1 && ui.button(format!("Remove {lower} map point")).clicked() {
+                p.map.pop();
+            }
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -653,6 +808,86 @@ mod tests {
         h.run();
         h.key_press(egui::Key::ArrowRight);
         h.run();
+    }
+
+    fn open_valves(h: &mut Harness<'static, UiState>) {
+        press(h, "Valves");
+    }
+
+    #[test]
+    fn vtec_can_be_switched_on_and_its_engagement_moved() {
+        let mut h = harness(EngineDef::single());
+        open_valves(&mut h);
+        press(&mut h, "VTEC");
+        assert!(h.state().def.vtec.is_some());
+        press(&mut h, "Intake VTEC lobe");
+        assert!(h.state().def.intake_valve.high.is_some());
+        let before = h.state().def.vtec.unwrap().engage_rpm;
+        nudge(&mut h, "VTEC engages (rpm)");
+        assert!(h.state().def.vtec.unwrap().engage_rpm > before);
+        assert!(h.state().engine_dirty);
+        // and off again
+        press(&mut h, "VTEC");
+        assert!(h.state().def.vtec.is_none());
+    }
+
+    #[test]
+    fn a_map_point_cannot_be_dragged_past_its_neighbour() {
+        // the map is interpolated between neighbours in speed order; a point dragged past the
+        // next one would swap rows under the pointer, so each point stops at its neighbours
+        let mut d = EngineDef::single();
+        let at = |rpm| engine_core::valve::PhaserPoint {
+            rpm,
+            full_load_deg: 10.0,
+            no_load_deg: 20.0,
+        };
+        d.intake_phaser = Some(engine_core::valve::Phaser {
+            range_deg: 50.0,
+            rate_deg_s: 30.0,
+            map: vec![at(2000.0), at(2000.0)],
+        });
+        let mut h = harness(d);
+        open_valves(&mut h);
+        nudge(&mut h, "Intake map point 1 rpm");
+        let rpms: Vec<f64> = h
+            .state()
+            .def
+            .intake_phaser
+            .as_ref()
+            .unwrap()
+            .map
+            .iter()
+            .map(|p| p.rpm)
+            .collect();
+        assert_eq!(rpms, [2000.0, 2000.0]);
+        nudge(&mut h, "Intake map point 2 rpm");
+        let rpms: Vec<f64> = h
+            .state()
+            .def
+            .intake_phaser
+            .as_ref()
+            .unwrap()
+            .map
+            .iter()
+            .map(|p| p.rpm)
+            .collect();
+        assert_eq!(rpms, [2000.0, 2100.0]);
+    }
+
+    #[test]
+    fn a_cam_phaser_can_be_added_and_its_map_edited() {
+        let mut h = harness(EngineDef::single());
+        open_valves(&mut h);
+        press(&mut h, "Intake cam phaser (VVT)");
+        let p = h.state().def.intake_phaser.clone().expect("phaser on");
+        assert!(!p.map.is_empty());
+        nudge(&mut h, "Intake phaser range (°)");
+        assert!(h.state().def.intake_phaser.as_ref().unwrap().range_deg > p.range_deg);
+        press(&mut h, "Add intake map point");
+        assert_eq!(
+            h.state().def.intake_phaser.as_ref().unwrap().map.len(),
+            p.map.len() + 1
+        );
     }
 
     #[test]

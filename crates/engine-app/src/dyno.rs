@@ -210,20 +210,23 @@ mod tests {
 
     #[test]
     fn the_k20a_breathes_near_what_honda_published() {
-        // Honda K20A (Integra Type R): 206 N·m at 7000 rpm, 220 PS (217 hp) at 8000. Torque
-        // lands within 10 % of it; power runs ~16 % short at the top — the real engine switches
-        // to a second, wilder VTEC cam above ~5800 rpm, the model has one profile.
+        // Honda K20A (Integra Type R): 206 N·m at 7000 rpm, 220 PS (217 hp) at 8000. Peak torque
+        // lands within 10 % of it (≈ 198 N·m) and holds within 10 % of its peak into VTEC's
+        // range (6500 rpm); power, still rising at 8000 rpm as Honda's, runs ≈ 9 % short there:
+        // the presets' cams pass too little gas at speed (FINDINGS, 2026-10-27).
         let pts = sweep(&EngineDef::honda_k20a());
         assert_eq!(pts.len(), sweep_speeds(8400.0).len());
         let (t, p) = peaks(&pts).unwrap();
         assert!(
-            (5000.0..=7500.0).contains(&t.rpm),
-            "torque peak at {}",
-            t.rpm
-        );
-        assert!(
             (t.torque_nm / 206.0 - 1.0).abs() < 0.1,
             "{} N·m",
+            t.torque_nm
+        );
+        let at_6500 = pts.iter().find(|q| q.rpm == 6500.0).unwrap();
+        assert!(
+            at_6500.torque_nm > 0.9 * t.torque_nm,
+            "{} N·m at 6500 rpm against a {} N·m peak",
+            at_6500.torque_nm,
             t.torque_nm
         );
         assert!(p.power_hp() > 0.8 * 217.0, "{} hp", p.power_hp());

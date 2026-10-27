@@ -572,6 +572,27 @@ laptop is always in the shared case (UI, audio, browser, one power budget), whic
 user heard underruns. They are now opt-in (`--threads`, `exhaust_thread::STEP_THREADS`). Any
 future parallelism must hand off per block of steps, never per step.
 
+## A longer cam lost torque until the cam phaser was calibrated (2026-10-26)
+
+**Symptom.** The K20A preset with its VTEC lobes (intake and exhaust) and a guessed VTC map made
+*less* torque above 6000 rpm than the old single lobe: 163/169/140 N·m at 6000/7000/8000 rpm
+against 194/183/148.
+
+**Measured, one lobe at a time** (dyno, phaser off): the exhaust VTEC lobe alone lost at every
+speed (177/167/139). The intake VTEC lobe alone lost at 6000 (178) and only won at 8000 (157). Its
+extra lift does little: both lobes reach the port limit (L/D 0.25). Its later closing does the
+damage until the phaser moves it.
+
+**What works.** Sweep constant VTC advances (0–50° in 10° steps) for each lobe and take each
+speed's best. Then the VTEC intake lobe beats the low lobe from ~6000 rpm (195 vs 194 N·m), and by
+10 N·m at 8000. That is the crossover Honda switches at. A longer cam only pays with its timing
+optimised, as the real ECU's map does (Niizato & Hayashi 2000, §6.1). A guessed map hides it. To
+redo it: write the engine with `--save`, set every `full_load_deg` to one value, and run `--dyno`
+once per value.
+
+**Still open.** Above 7000 rpm this model breathes less than the K20A on any cam (157 N·m at 8000
+against Honda's ~193). That is a general high-speed breathing deficit, not VVT.
+
 ## The torque was right for the wrong reasons: friction ×2, cold-air cycle (2026-10-27)
 
 **Symptom.** Above ~7000 rpm the K20A made far less than Honda's figures (158 N·m at 8000 rpm
