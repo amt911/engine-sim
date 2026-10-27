@@ -1,6 +1,7 @@
 //! 0D lumped gas volumes and compressible orifice flow.
 //!
-//! Ideal gas, constant γ = 1.4 (like engine-sim; NASA γ(T) tables are a later phase).
+//! Ideal gas, constant γ = 1.4: the pipes and plenums. The cylinders' gas has real properties
+//! (NASA c_p(T) of charge and products, [`crate::thermo`]) and shows the flow code a view of it.
 //! Orifice flow: isentropic nozzle with choked/unchoked regimes, computed from the
 //! high-pressure side (Heywood, *ICE Fundamentals*, App. C, eqs. C.8–C.9).
 

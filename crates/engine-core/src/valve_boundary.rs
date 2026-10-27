@@ -130,7 +130,7 @@ pub struct Pipe {
 /// One step of flow through an exhaust valve of effective area `cd_area` into a pipe of
 /// cross-section `pipe_area`, by the characteristic boundary: the pipe's incoming `lambda`
 /// ([`lambda_in`] or [`lambda_of_wave`]) and its gas at `t_back` K (what flows back). The step
-/// is limited, as [`crate::gas::exhaust_valve_flow`]'s, to `relax` of the mass that would
+/// is limited, as [`crate::gas::plan_exchange`]'s, to `relax` of the mass that would
 /// equalise the cylinder with the boundary and to half the cylinder's mass. + = out.
 pub fn valve_flow(
     gas: &crate::gas::GasVolume,

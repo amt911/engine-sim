@@ -7,7 +7,7 @@
 use crate::combustion::{AFR_STOICH, LHV_GASOLINE, flame_angle_scale, laminar_flame_speed, wiebe};
 use crate::exhaust::{ExhaustDef, ExhaustLink, ExhaustModel, ExhaustNet};
 use crate::exhaust_fv::ExhaustFv;
-use crate::gas::{GasVolume, Reservoir, exchange_with_reservoir, plan_exchange};
+use crate::gas::{Flow, GasVolume, Reservoir, exchange_with_reservoir, plan_exchange};
 use crate::geometry::CylinderGeometry;
 use crate::intake_fv::{IntakeDef, IntakeFv, IntakeModel};
 use crate::jet_noise::JetNoise;
@@ -15,6 +15,7 @@ use crate::layout::Layout;
 use crate::listener::Listener;
 use crate::sound::SoundDef;
 use crate::structure::StructureResponse;
+use crate::thermo::Composition;
 use crate::units::{ATM_PA, deg_to_rad, rad_s_to_rpm, rpm_to_rad_s};
 use crate::valve::ValveTiming;
 use serde::{Deserialize, Serialize};
@@ -57,8 +58,9 @@ pub struct EngineDef {
     pub intake: IntakeDef,
     pub redline_rpm: f64,
     pub starter_torque_nm: f64,
-    /// Friction mean effective pressure fit, bar: FMEP = a + b·(N/1000) + c·(N/1000)².
-    pub fmep_bar: [f64; 3],
+    /// How the engine is built, for its friction by components (Patton–Nitschke–Heywood as
+    /// improved by Sandoval & Heywood): valvetrain, followers, valves, crankpins, rings, oil.
+    pub friction: crate::friction::FrictionDef,
     /// Sound texture levels (noise, intake, mechanics, combustion variability).
     pub sound: SoundDef,
     /// Discharge-coefficient ratio for reverse flow through the exhaust valve (pipe → cylinder)
@@ -107,6 +109,24 @@ pub(crate) fn seat_pulse(peak: f64, t: f64) -> f64 {
 }
 
 impl EngineDef {
+    /// The engine as the friction model sees it. The definition lumps each cylinder's valves
+    /// into one per side with the pair's curtain area (lift × √n); one real valve lifts L/√n.
+    pub fn friction_engine(&self) -> crate::friction::FrictionEngine {
+        let per_side = (f64::from(self.friction.valves_per_cylinder) / 2.0).max(1.0);
+        crate::friction::FrictionEngine {
+            bore_m: self.geometry.bore_m,
+            stroke_m: self.geometry.stroke_m,
+            cylinders: self.cylinders,
+            vee: self.layout.bank_angle_deg != 0.0,
+            compression_ratio: self.geometry.compression_ratio,
+            valve_lift_m: self
+                .intake_valve
+                .max_lift_m
+                .max(self.exhaust_valve.max_lift_m)
+                / per_side.sqrt(),
+        }
+    }
+
     /// 500 cc four-stroke single (86 × 86 mm).
     pub fn single() -> Self {
         Self {
@@ -159,7 +179,8 @@ impl EngineDef {
             intake: IntakeDef::default(),
             redline_rpm: 7500.0,
             starter_torque_nm: 25.0,
-            fmep_bar: [0.97, 0.15, 0.05],
+            // the usual DOHC with bucket tappets and four valves (no particular engine)
+            friction: crate::friction::FrictionDef::default(),
             sound: SoundDef::default(),
             overrun_fuel_cut_rpm: 1500.0,
             exhaust_reverse_cd_ratio: 0.75,
@@ -246,6 +267,13 @@ impl EngineDef {
             redline_rpm: 8400.0,
             starter_torque_nm: 60.0,
             vehicle: crate::drivetrain::VehicleDef::inline4(),
+            // roller rocker arms on both camshafts (Niizato & Hayashi, Honda R&D Technical Review
+            // 12-2, 2000, Fig. 13), four valves
+            friction: crate::friction::FrictionDef {
+                valvetrain: crate::friction::Valvetrain::DohcFingerFollower,
+                roller_followers: true,
+                ..crate::friction::FrictionDef::default()
+            },
             ..Self::single()
         }
         .with_tail_pipe()
@@ -342,8 +370,9 @@ impl EngineDef {
             },
             redline_rpm: 9000.0,
             starter_torque_nm: 150.0,
-            // Low-friction racing build (dry sump, titanium valvetrain): estimated.
-            fmep_bar: [0.8, 0.10, 0.015],
+            // DOHC, four titanium valves a cylinder; Toyota has not published the valve drive, so
+            // the usual bucket tappets
+            friction: crate::friction::FrictionDef::default(),
             sound: SoundDef::default(),
             overrun_fuel_cut_rpm: 1500.0,
             exhaust_reverse_cd_ratio: 0.75,
@@ -415,7 +444,8 @@ impl EngineDef {
             intake: IntakeDef::default(),
             redline_rpm: 9000.0,
             starter_torque_nm: 150.0,
-            fmep_bar: [0.8, 0.10, 0.015],
+            // DOHC, four valves a cylinder; valve drive not published (bucket tappets assumed)
+            friction: crate::friction::FrictionDef::default(),
             sound: SoundDef::default(),
             overrun_fuel_cut_rpm: 1500.0,
             exhaust_reverse_cd_ratio: 0.75,
@@ -487,7 +517,13 @@ impl EngineDef {
             intake: IntakeDef::default(),
             redline_rpm: 6600.0,
             starter_torque_nm: 200.0,
-            fmep_bar: [0.97, 0.15, 0.05],
+            // pushrods, hydraulic roller lifters, two valves (GM LS3)
+            friction: crate::friction::FrictionDef {
+                valvetrain: crate::friction::Valvetrain::Ohv,
+                roller_followers: true,
+                valves_per_cylinder: 2,
+                ..crate::friction::FrictionDef::default()
+            },
             sound: SoundDef::default(),
             overrun_fuel_cut_rpm: 1300.0,
             exhaust_reverse_cd_ratio: 0.75,
@@ -927,6 +963,89 @@ struct CylinderState {
     slip: crate::fuel::ExhaustMixture,
     /// Unburnt mixture in this cylinder's exhaust primary.
     port_mix: crate::fuel::PortMixture,
+    /// The gas's sensible internal energy, J ([`crate::thermo`]); `gas` is its view for the
+    /// flow code: true pressure, and R_air·T' = R·T so its orifices see the true √(R·T).
+    u_j: f64,
+    /// What the gas is made of: burned share (residual, reversion, the flame's products) and
+    /// how much of the rest carries fuel.
+    comp: Composition,
+    /// The gas's true temperature, K.
+    t_k: f64,
+    /// `comp` as one mixture, recomputed by [`settle`] when `comp` has changed (`mix_stale`).
+    mix: crate::thermo::Mixture,
+    mix_stale: bool,
+    /// Share of the trapped charge that was fresh at intake closing: what a flame turns into
+    /// burned gas.
+    fresh_share: f64,
+    /// Burned share of the gas in the exhaust primary (what a reversion brings back): set by
+    /// what leaves the cylinder, like `port_t` (air on overrun, products under power).
+    port_xb: f64,
+}
+
+/// How far the speed may move before the friction's speed terms are recomputed, rpm: at most
+/// ≈ 0.02 kPa of fmep per rpm (the K20A at 8000 rpm), well under 0.1 % of it.
+const FRICTION_RPM: f64 = 1.0;
+
+/// Bring a cylinder's temperature and its `gas` view up to its true state (mass, internal
+/// energy, burned share) through the real gas's properties.
+fn settle(cs: &mut CylinderState, th: &crate::thermo::CylinderGas) {
+    if cs.mix_stale {
+        cs.mix = th.mixture(cs.comp);
+        cs.mix_stale = false;
+    }
+    let m = cs.gas.mass_kg.max(1e-12);
+    cs.t_k = cs.mix.temperature(cs.u_j / m, cs.t_k);
+    // p = m·R·T/V; the view keeps it as p·V/(γ_air − 1)
+    cs.gas.energy_j = m * cs.mix.r * cs.t_k / (crate::gas::GAMMA - 1.0);
+}
+
+/// `dm` kg leave the cylinder at its own enthalpy (its temperature does not jump).
+fn cylinder_out(cs: &mut CylinderState, dm: f64) {
+    cs.u_j -= dm * cs.mix.h(cs.t_k);
+    cs.gas.mass_kg -= dm;
+}
+
+/// `dm` kg of gas `c_in` come in carrying `h` J/kg; the compositions mix by mass.
+fn cylinder_in(cs: &mut CylinderState, dm: f64, h: f64, c_in: Composition) {
+    let m = cs.gas.mass_kg.max(0.0);
+    let (fresh, fresh_in) = (m * (1.0 - cs.comp.burned), dm * (1.0 - c_in.burned));
+    cs.comp = Composition {
+        burned: ((cs.comp.burned * m + c_in.burned * dm) / (m + dm)).clamp(0.0, 1.0),
+        fuelled: if fresh + fresh_in > 0.0 {
+            ((cs.comp.fuelled * fresh + c_in.fuelled * fresh_in) / (fresh + fresh_in))
+                .clamp(0.0, 1.0)
+        } else {
+            cs.comp.fuelled
+        },
+    };
+    cs.mix_stale = true;
+    cs.gas.mass_kg += dm;
+    cs.u_j += dm * h;
+}
+
+/// Apply a planned flow whose `dm` > 0 leaves the cylinder (and < 0 enters it, gas `c_in`). The flow code carries cold-air enthalpy, c_p,air·T; the gas enters at that
+/// temperature with its own mixture's enthalpy, so a reversion neither cools nor heats the
+/// cylinder by the model's convention alone.
+fn cylinder_flow(
+    cs: &mut CylinderState,
+    th: &crate::thermo::CylinderGas,
+    f: Flow,
+    c_in: Composition,
+) {
+    if f.dm > 0.0 {
+        cylinder_out(cs, f.dm);
+    } else if f.dm < 0.0 {
+        let t_in = f.h / crate::gas::CP;
+        // the enthalpy of what comes in, mass-weighted over its parts
+        let (a, u, b) = c_in.weights();
+        let mut h = 0.0;
+        for (m, w) in [(&th.air, a), (&th.unburned, u), (&th.burned, b)] {
+            if w > 0.0 {
+                h += w * m.h(t_in);
+            }
+        }
+        cylinder_in(cs, -f.dm, h, c_in);
+    }
 }
 
 /// How finely an engine is simulated (not part of its definition: the same engine at
@@ -1017,6 +1136,10 @@ pub struct Engine {
     /// Running totals for energy balances: heat lost to the walls, and fuel energy released, J.
     wall_heat_j: f64,
     fuel_energy_j: f64,
+    /// The friction model at the last speed it was evaluated at ([`Self::friction_torque`]).
+    friction_at: std::cell::Cell<crate::friction::AtSpeed>,
+    /// The cylinder gas's properties (unburned charge and burned gas).
+    thermo: crate::thermo::CylinderGas,
     /// Heat released by unburnt mixture burning in the exhaust primaries, J.
     afterburn_j: f64,
     /// Fuel ledger, kg: into the cylinders, burnt there, burnt in the primaries, and out of the
@@ -1162,6 +1285,7 @@ fn crossed(prev: f64, cur: f64, a: f64) -> bool {
 impl Engine {
     pub fn new(def: EngineDef, initial_rpm: f64, seed: u64) -> Self {
         let g = def.geometry;
+        let thermo = crate::thermo::CylinderGas::default();
         let tail_pipes = def.exhaust.groups(def.cylinders).len();
         let cyl = def
             .phase_offsets_deg()
@@ -1191,7 +1315,23 @@ impl Engine {
                     air_kg: 0.0,
                     slip: crate::fuel::ExhaustMixture::default(),
                     port_mix: crate::fuel::PortMixture::default(),
+                    u_j: 0.0,
+                    comp: Composition {
+                        burned: 0.0,
+                        fuelled: 0.0,
+                    },
+                    t_k: AMBIENT_K,
+                    mix: thermo.air,
+                    mix_stale: true,
+                    fresh_share: 1.0,
+                    port_xb: 0.0,
                 }
+            })
+            .map(|mut cs: CylinderState| {
+                // air at ambient, its internal energy at the model's datum
+                cs.u_j = cs.gas.energy_j;
+                settle(&mut cs, &thermo);
+                cs
             })
             .collect();
         let mut e = Self {
@@ -1217,6 +1357,12 @@ impl Engine {
             combustions: 0,
             wall_heat_j: 0.0,
             fuel_energy_j: 0.0,
+            friction_at: std::cell::Cell::new(crate::friction::AtSpeed {
+                rpm: f64::NEG_INFINITY,
+                rest_pa: 0.0,
+                gas_per_pa: 0.0,
+            }),
+            thermo,
             afterburn_j: 0.0,
             fuel_ledger: FuelLedger::default(),
             rng: seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1,
@@ -1406,14 +1552,19 @@ impl Engine {
         DISCHARGE_CD * PI * 0.25 * self.def.throttle_diameter_m.powi(2) * open
     }
 
-    /// Friction torque from a Chen–Flynn-style FMEP fit (SAE 650733 form):
-    /// FMEP [bar] = a + b·(N/1000) + c·(N/1000)² (default 0.97, 0.15, 0.05); T = FMEP·Vd / 4π.
-    /// tanh fades it to zero at standstill so the crank does not reverse.
+    /// Friction torque from the engine's friction by components ([`crate::friction`]) at its
+    /// speed and manifold pressure; T = FMEP·Vd / 4π. Pumping is not in it: the gas exchange is
+    /// simulated. tanh fades it to zero at standstill so the crank does not reverse.
     fn friction_torque(&self) -> f64 {
-        let k = rad_s_to_rpm(self.omega) / 1000.0;
-        let [a, b, c] = self.def.fmep_bar;
-        let fmep = (a + b * k + c * k * k) * 1e5;
-        fmep * self.def.displacement_m3() / (4.0 * PI) * (self.omega / 5.0).tanh()
+        // the speed terms are recomputed only when the speed moves by more than FRICTION_RPM
+        let rpm = rad_s_to_rpm(self.omega);
+        let mut at = self.friction_at.get();
+        if (rpm - at.rpm).abs() > FRICTION_RPM {
+            at = self.def.friction.at_speed(&self.def.friction_engine(), rpm);
+            self.friction_at.set(at);
+        }
+        at.fmep(self.plenum_pressure_pa()) * self.def.displacement_m3() / (4.0 * PI)
+            * (self.omega / 5.0).tanh()
     }
 
     /// Advance by `dt` seconds; returns the raw acoustic source sample (Pa).
@@ -1515,10 +1666,12 @@ impl Engine {
 
             // Piston motion: adiabatic work p·dV.
             let v_new = g.volume(theta_c);
+            let th = self.thermo;
             let cs = &mut self.cyl[i];
             let p = cs.gas.pressure();
-            cs.gas.energy_j -= p * (v_new - cs.gas.volume_m3);
+            cs.u_j -= p * (v_new - cs.gas.volume_m3);
             cs.gas.set_volume(v_new);
+            settle(cs, &th);
 
             // Valve and outlet flows.
             // Both valve flows are planned from the same state (Jacobi) and each may close
@@ -1591,20 +1744,32 @@ impl Engine {
                 self.reversion_kg -= f.dm;
             }
             if let Some(f) = f_in {
+                // dm > 0: intake → cylinder (fresh charge); < 0: the cylinder's gas backflows
+                let into_cyl = Flow { dm: -f.dm, h: f.h };
                 match &mut self.intake_net {
-                    Some(net) => {
-                        cs.gas.mass_kg += f.dm;
-                        cs.gas.energy_j += f.dm * f.h;
-                        net.add_valve_flow(i, f.dm, f.h);
+                    Some(net) => net.add_valve_flow(i, f.dm, f.h),
+                    None => {
+                        self.plenum.mass_kg -= f.dm;
+                        self.plenum.energy_j -= f.dm * f.h;
                     }
-                    None => f.apply(&mut self.plenum, &mut cs.gas),
                 }
+                // port injection: the charge carries fuel unless the ECU cuts it
+                let fresh = Composition {
+                    burned: 0.0,
+                    fuelled: if inject { 1.0 } else { 0.0 },
+                };
+                cylinder_flow(cs, &th, into_cyl, fresh);
             }
             cs.port_flow = f_ex.map_or(0.0, |f| f.dm / dt);
             let cyl_state = (cs.gas.pressure(), cs.gas.temperature());
             let port_t = cs.port_t;
             self.flows[i] = f_ex.map_or(0.0, |f| {
-                f.apply_to(&mut cs.gas);
+                // a reversion brings back burned gas
+                let port = Composition {
+                    burned: cs.port_xb,
+                    fuelled: cs.comp.fuelled,
+                };
+                cylinder_flow(cs, &th, f, port);
                 exhaust_source_flow(f.dm / dt, f.h)
             });
             // The valve's jet: its mixing noise, generated in the port, rides down the primary
@@ -1658,6 +1823,9 @@ impl Engine {
                 };
                 let a_wall = PI * ex.primary_diameter_m * ex.primary_length_m;
                 cs.port_t = port_gas_temperature(cs.port_t, m, dm, t_in, cs.wall_t, a_wall, dt);
+                if dm > 0.0 {
+                    cs.port_xb = (m * cs.port_xb + dm * cs.comp.burned) / (m + dm);
+                }
                 let r =
                     cs.port_mix
                         .step(out, (m, dm), (t_in, cs.port_t, ATM_PA), dt, AFTERBURN_TAU_S);
@@ -1677,7 +1845,13 @@ impl Engine {
             }
             // Blow-by past the rings into the (vented) crankcase. Small while running, but it
             // is what lets a charge trapped at a stop bleed off so the starter can turn it.
-            exchange_with_reservoir(&mut cs.gas, &self.atm, blowby_area, dt);
+            let f = crate::gas::plan_with_reservoir(&cs.gas, &self.atm, blowby_area, dt, 1.0);
+            let air = Composition {
+                burned: 0.0,
+                fuelled: 0.0,
+            };
+            cylinder_flow(cs, &th, f, air);
+            settle(cs, &th);
 
             // Combustion events.
             // a valve closing strikes its seat (both kinds: one valve each, conservative)
@@ -1710,7 +1884,8 @@ impl Engine {
                 cs.slip = crate::fuel::ExhaustMixture::default();
                 cs.ref_p = cs.gas.pressure();
                 cs.ref_v = cs.gas.volume_m3;
-                cs.ref_t = cs.gas.temperature();
+                cs.ref_t = cs.t_k;
+                cs.fresh_share = 1.0 - cs.comp.burned;
                 // the ECU reads the charge (speed, manifold, temperature) and times its spark
                 let dilution = dilution_of(cs);
                 let ratio = flame_ratio(
@@ -1758,7 +1933,11 @@ impl Engine {
                     since -= 720.0;
                 }
                 let x = wiebe(since, b.duration_deg);
-                cs.gas.energy_j += b.energy_j * (x - b.released);
+                cs.u_j += b.energy_j * (x - b.released);
+                // what burns turns the fresh charge into products
+                cs.comp.burned =
+                    (cs.comp.burned + cs.fresh_share * (x - b.released)).clamp(0.0, 1.0);
+                cs.mix_stale = true;
                 self.fuel_energy_j += b.energy_j * (x - b.released);
                 self.fuel_ledger.burnt +=
                     crate::fuel::burnable(b.fuel_kg, b.air_kg) * (x - b.released);
@@ -1771,7 +1950,9 @@ impl Engine {
 
             // Wall heat loss, Woschni. The combustion term compares the pressure with the
             // motored one, a polytropic (n = 1.32) compression from intake closing.
-            let t_gas = cs.gas.temperature();
+            // the gas as settled this step before the flame's increment (one substep behind it:
+            // the wall loss settles together with the burn below)
+            let t_gas = cs.t_k;
             let p_gas = cs.gas.pressure();
             let exchange = gas_exchange(a_in, a_ex);
             let rise_k = if exchange {
@@ -1783,8 +1964,9 @@ impl Engine {
             let w = woschni_velocity(mean_piston_speed, exchange, rise_k);
             let htc = woschni_htc(g.bore_m, p_gas, t_gas, w);
             let area = wall_area + PI * g.bore_m * (v_new / g.piston_area());
-            let q = (htc * area * (t_gas - WALL_TEMP_K) * dt).min(0.5 * cs.gas.energy_j);
-            cs.gas.energy_j -= q;
+            let q = (htc * area * (t_gas - WALL_TEMP_K) * dt).min(0.5 * cs.u_j);
+            cs.u_j -= q;
+            settle(cs, &th);
             self.wall_heat_j += q;
 
             gas_torque += (cs.gas.pressure() - ATM_PA) * g.piston_area() * g.dpos_dtheta(theta_c);
@@ -2272,7 +2454,7 @@ impl Engine {
             cycle_deg: cs.cycle_deg,
             piston_m: g.piston_position(deg_to_rad(cs.cycle_deg)),
             pressure_pa: cs.gas.pressure(),
-            temperature_k: cs.gas.temperature(),
+            temperature_k: cs.t_k,
             intake_lift_m: self.def.intake_valve.lift(cs.cycle_deg),
             exhaust_lift_m: self.def.exhaust_valve.lift(cs.cycle_deg),
             burning: cs
@@ -3348,8 +3530,10 @@ mod tests {
     /// there, not hung at the cut-off speed. One test per engine, so they run side by side.
     fn settles_at_its_idle_when_released(d: EngineDef) {
         let target = d.idle_rpm;
-        let (_, trace) = rev_and_release(d.clone(), 0.8 * d.redline_rpm, 8.0);
-        let tail = &trace[(6.0 / DT) as usize..];
+        // 10 s: with friction by components (half the old whole-engine fit, which held
+        // pumping twice) the single's heavy estimated flywheel (0.12 kg·m²) coasts down slower
+        let (_, trace) = rev_and_release(d.clone(), 0.8 * d.redline_rpm, 10.0);
+        let tail = &trace[(8.0 / DT) as usize..];
         let mean = tail.iter().sum::<f64>() / tail.len() as f64;
         let low = tail.iter().copied().fold(f64::INFINITY, f64::min);
         assert!(
@@ -3670,17 +3854,182 @@ mod tests {
     }
 
     #[test]
-    fn friction_matches_fmep_fit() {
-        // 1000 rpm: FMEP = 0.97 + 0.15 + 0.05 = 1.17 bar; T = 1.17e5 · 4.99556e-4 / 4π = 4.6513 N·m
-        let e = Engine::new(EngineDef::single(), 1000.0, 1);
-        assert_relative_eq!(e.friction_torque(), 4.6513, max_relative = 1e-4);
-        // 3000 rpm: 0.97 + 0.45 + 0.45 = 1.87 bar → 7.4341 N·m
-        let e = Engine::new(EngineDef::single(), 3000.0, 1);
-        assert_relative_eq!(e.friction_torque(), 7.4341, max_relative = 1e-4);
+    fn friction_is_the_component_model_at_the_manifold_pressure() {
+        // K20A at 8000 rpm, manifold at 1 atm: 2.144 bar by hand (friction::tests); its
+        // 86² · π/4 · 86 · 4 = 1.99825e-3 m³ gives T = 2.144e5 · 1.99825e-3 / 4π = 34.10 N·m
+        let e = Engine::new(EngineDef::honda_k20a(), 8000.0, 1);
+        assert_relative_eq!(e.plenum_pressure_pa(), ATM_PA, max_relative = 1e-9);
+        assert_relative_eq!(e.friction_torque(), 34.10, max_relative = 2e-3);
+        // the old whole-engine fit gave 5.37 bar there: 85.4 N·m
         assert_eq!(
             Engine::new(EngineDef::single(), 0.0, 1).friction_torque(),
             0.0
         );
+    }
+
+    #[test]
+    fn the_cycle_converts_fuel_like_a_real_engine_at_full_load() {
+        // Net indicated fuel conversion efficiency at WOT: the fuel–air cycle's ≈ 47 % at
+        // 11.5:1 (thermo::tests) less heat loss, finite burn and gas exchange — real engines
+        // reach ≈ 0.8 of it, 35–40 % (Heywood, ICE Fundamentals, 2nd ed., ch. 5). With cold-air
+        // properties (γ = 1.4) the model made 45 %.
+        let d = EngineDef::honda_k20a();
+        let rpm = 6500.0;
+        let mut e = Engine::new(d.clone(), rpm, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(rpm),
+            ..Controls::default()
+        };
+        run(&mut e, 1.5, &c);
+        let (m0, f0) = (e.inducted_kg(), e.fuel_energy_j);
+        let n = (0.5 / DT) as usize;
+        let mut work = 0.0;
+        for _ in 0..n {
+            e.step(DT, &c);
+            work += (e.torque_nm() + e.friction_torque()) * rpm_to_rad_s(rpm) * DT;
+        }
+        let fuel = (e.inducted_kg() - m0) / (1.0 + AFR_STOICH) * LHV_GASOLINE;
+        let eta = work / fuel;
+        assert!(
+            (0.33..0.41).contains(&eta),
+            "net indicated efficiency {eta:.3}"
+        );
+        // and what burnt is what came in (the ledger agrees with the air)
+        assert!(((e.fuel_energy_j - f0) / (fuel * COMBUSTION_EFFICIENCY) - 1.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn gas_coming_in_mixes_its_composition_by_mass() {
+        // a cylinder holding 1 kg, half of it products and all its fresh part fuelled, takes
+        // 0.6 kg of products-free gas that is ⅓ fuelled: burned (0.5·1 + 0)/(1.6) = 0.3125;
+        // fresh 0.5 kg (fuelled 1) + 0.6 kg (fuelled ⅓): fuelled (0.5 + 0.2)/1.1 = 0.636 36
+        // (hand); the mass and the energy carried add
+        let mut e = Engine::new(EngineDef::inline4(), 1000.0, 1);
+        let cs = &mut e.cyl[0];
+        cs.gas.mass_kg = 1.0;
+        cs.u_j = 5.0e5;
+        cs.comp = Composition {
+            burned: 0.5,
+            fuelled: 1.0,
+        };
+        let c_in = Composition {
+            burned: 0.0,
+            fuelled: 1.0 / 3.0,
+        };
+        cylinder_in(cs, 0.6, 3.0e5, c_in);
+        assert_relative_eq!(cs.comp.burned, 0.3125, max_relative = 1e-12);
+        assert_relative_eq!(cs.comp.fuelled, 0.7 / 1.1, max_relative = 1e-12);
+        assert_relative_eq!(cs.gas.mass_kg, 1.6, max_relative = 1e-12);
+        assert_relative_eq!(cs.u_j, 5.0e5 + 0.6 * 3.0e5, max_relative = 1e-12);
+        assert!(cs.mix_stale);
+        // burned gas coming in counts: 1.6 kg at 0.3125 take 0.4 kg at 0.75 burned →
+        // (0.5 + 0.3)/2.0 = 0.4
+        cylinder_in(
+            cs,
+            0.4,
+            3.0e5,
+            Composition {
+                burned: 0.75,
+                fuelled: 0.0,
+            },
+        );
+        assert_relative_eq!(cs.comp.burned, 0.4, max_relative = 1e-12);
+        // a cylinder of products alone (no fresh part) takes fresh charge: its fresh part is
+        // that charge's, fuelled 0.8
+        cs.comp = Composition {
+            burned: 1.0,
+            fuelled: 0.0,
+        };
+        cylinder_in(
+            cs,
+            0.1,
+            3.0e5,
+            Composition {
+                burned: 0.0,
+                fuelled: 0.8,
+            },
+        );
+        assert_relative_eq!(cs.comp.fuelled, 0.8, max_relative = 1e-12);
+    }
+
+    #[test]
+    fn gas_flowing_in_brings_its_own_mixtures_enthalpy() {
+        // 10 g of half-products, fuelled charge at 800 K (c_p,air·T = 803 600 J/kg in the flow
+        // code's convention) enter: the cylinder gains 10 g × h of that mixture at 800 K
+        let mut e = Engine::new(EngineDef::inline4(), 1000.0, 1);
+        let th = e.thermo;
+        let cs = &mut e.cyl[0];
+        let c_in = Composition {
+            burned: 0.5,
+            fuelled: 1.0,
+        };
+        let u0 = cs.u_j;
+        let f = Flow {
+            dm: -0.01,
+            h: crate::gas::CP * 800.0,
+        };
+        cylinder_flow(cs, &th, f, c_in);
+        assert_relative_eq!(
+            cs.u_j - u0,
+            0.01 * th.mixture(c_in).h(800.0),
+            max_relative = 1e-12
+        );
+    }
+
+    #[test]
+    fn friction_fades_out_at_standstill() {
+        // T = FMEP·Vd/4π·tanh(ω/5): at 20 rpm, ω = 2.0944 rad/s and tanh(0.41888) = 0.39599
+        let d = EngineDef::inline4();
+        let e = Engine::new(d.clone(), 20.0, 1);
+        let at = d.friction.at_speed(&d.friction_engine(), 20.0);
+        let full = at.fmep(e.plenum_pressure_pa()) * d.displacement_m3() / (4.0 * PI);
+        assert_relative_eq!(e.friction_torque() / full, 0.39599, max_relative = 1e-4);
+    }
+
+    #[test]
+    fn the_primary_holds_products_under_power_and_air_after_a_fuel_cut() {
+        let mut e = Engine::new(EngineDef::inline4(), 4400.0, 1);
+        let wot = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(4400.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.5, &wot);
+        assert!(e.cyl[0].port_xb > 0.9, "under power {}", e.cyl[0].port_xb);
+        let cut = Controls {
+            hold_rpm: Some(4400.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.5, &cut);
+        assert!(e.cyl[0].port_xb < 0.1, "after the cut {}", e.cyl[0].port_xb);
+    }
+
+    #[test]
+    fn a_flame_turns_the_fresh_charge_into_products_as_it_burns() {
+        // with the valves shut, the burned share is the residual plus the fresh share times
+        // what the flame has released: x_b = (1 − f) + f·x
+        let mut e = Engine::new(EngineDef::inline4(), 3000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.3, &c);
+        let mut checked = 0;
+        for _ in 0..(0.1 / DT) as usize {
+            e.step(DT, &c);
+            let cs = &e.cyl[0];
+            if let Some(b) = &cs.burn
+                && b.released > 0.05
+                && b.released < 0.95
+            {
+                let want = (1.0 - cs.fresh_share) + cs.fresh_share * b.released;
+                assert_relative_eq!(cs.comp.burned, want, max_relative = 1e-9);
+                checked += 1;
+            }
+        }
+        assert!(checked > 10, "{checked} burning steps seen");
     }
 
     #[test]

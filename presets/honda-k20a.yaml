@@ -1,4 +1,4 @@
-version: 2
+version: 3
 engine:
   name: Honda K20A 2.0 (inline-4)
   geometry:
@@ -67,10 +67,14 @@ engine:
     film_tau_s: 1.0
   redline_rpm: 8400.0
   starter_torque_nm: 60.0
-  fmep_bar:
-  - 0.97
-  - 0.15
-  - 0.05
+  friction:
+    valvetrain: dohc_finger_follower
+    roller_followers: true
+    valves_per_cylinder: 4
+    rods_per_crankpin: 2
+    ring_tension_ratio: 1.0
+    liner_roughness: 1.0
+    oil_viscosity_ratio: 1.0
   sound:
     flow_noise: 1.0
     intake: 1.0
