@@ -212,15 +212,16 @@ impl GearPull {
         }
     }
 
-    /// This step's (throttle, pedals and lever) at engine speed `rpm`, `dt` s after the last.
-    pub fn next(&mut self, rpm: f64, dt: f64) -> (f64, crate::sim::DriveInput) {
+    /// This step's (throttle, pedals and lever) at engine speed `rpm`, with the clutch `locked`
+    /// (engine and wheels turning together) or still slipping, `dt` s after the last.
+    pub fn next(&mut self, rpm: f64, locked: bool, dt: f64) -> (f64, crate::sim::DriveInput) {
         let to = |p: &mut Self, phase| {
             p.phase = phase;
             p.t = 0.0;
             p.best = 0.0;
             p.since_best = 0.0;
         };
-        if self.phase == PullPhase::Pull {
+        if self.phase == PullPhase::Pull && locked {
             if rpm > self.best * (1.0 + PLATEAU_GAIN) {
                 self.best = rpm;
                 self.since_best = 0.0;
@@ -236,7 +237,9 @@ impl GearPull {
             }
             PullPhase::Launch if rpm >= LAUNCH_SHARE * self.redline => to(self, PullPhase::Pull),
             PullPhase::Pull
-                if rpm >= SHIFT_SHARE * self.redline || self.since_best >= PLATEAU_S - 1e-9 =>
+                if locked
+                    && (rpm >= SHIFT_SHARE * self.redline
+                        || self.since_best >= PLATEAU_S - 1e-9) =>
             {
                 let next = if self.gear < self.gears {
                     PullPhase::Shift
@@ -255,6 +258,15 @@ impl GearPull {
         let (throttle, clutch_pedal) = match self.phase {
             PullPhase::Idle | PullPhase::Lift | PullPhase::Done => (0.0, false),
             PullPhase::Launch => (1.0, true),
+            // while the clutch slips the driver holds the engine near the launch revs (on the
+            // throttle up to 15 % over them, off by 45 %); locked, flat out
+            PullPhase::Pull if !locked => {
+                let launch = LAUNCH_SHARE * self.redline;
+                (
+                    ((1.15 * launch - rpm) / (0.3 * launch)).clamp(0.0, 1.0),
+                    false,
+                )
+            }
             PullPhase::Pull => (1.0, false),
             PullPhase::Shift | PullPhase::Clutch => (0.0, true),
         };
@@ -290,7 +302,7 @@ pub fn render_gears(def: &EngineDef, sample_rate: f64, quality: Quality) -> (Vec
     // a bound for a car that cannot pull at all (each gear's limit plus the top gear's cap)
     let cap = ((def.vehicle.gear_ratios.len() as f64 * 30.0 + 10.0) / dt) as usize;
     for _ in 0..cap {
-        let (throttle, drive) = pull.next(sim.snapshot().rpm, dt);
+        let (throttle, drive) = pull.next(sim.snapshot().rpm, sim.clutch_locked(), dt);
         if pull.done() {
             break;
         }
@@ -512,7 +524,7 @@ mod tests {
         // to the shift point, then lifts off for 2 s and the scene ends
         let dt = 0.01;
         let mut p = GearPull::new(5, 6000.0);
-        let step = |p: &mut GearPull, rpm: f64| p.next(rpm, dt);
+        let step = |p: &mut GearPull, rpm: f64| p.next(rpm, true, dt);
         // idle in neutral first
         let (thr, d) = step(&mut p, 900.0);
         assert_eq!((thr, d.gear, d.clutch_pedal), (0.0, 0, false));
@@ -561,17 +573,40 @@ mod tests {
     }
 
     #[test]
+    fn a_slipping_clutch_holds_the_launch_revs_and_never_shifts() {
+        // the clutch takes its time to bite: while it slips the driver holds the engine near
+        // the launch revs instead of letting it fly to the limiter, and does not shift
+        let mut p = GearPull::new(5, 6000.0);
+        for _ in 0..140 {
+            p.next(900.0, false, 0.01);
+        }
+        let (thr, d) = p.next(2700.0, false, 0.01);
+        assert_eq!((d.gear, d.clutch_pedal), (1, false));
+        assert!(thr > 0.0);
+        // flared to the shift point with the clutch still slipping: throttle off, no shift
+        let (thr, d) = p.next(5900.0, false, 0.01);
+        assert_eq!((thr, d.gear, d.clutch_pedal), (0.0, 1, false));
+        // slipping for long does not count as a plateau
+        for _ in 0..400 {
+            p.next(3000.0, false, 0.01);
+        }
+        assert_eq!(p.next(3000.0, false, 0.01).1.gear, 1);
+        // locked: full throttle
+        assert_eq!(p.next(3000.0, true, 0.01).0, 1.0);
+    }
+
+    #[test]
     fn a_gear_pull_that_stops_climbing_moves_on() {
         // drag can hold a gear under the limit: once its speed stops climbing for PLATEAU_S the
         // pull moves on (here the only gear, so it lifts off and ends)
         let mut p = GearPull::new(1, 6000.0);
         for _ in 0..200 {
-            p.next(900.0, 0.01);
+            p.next(900.0, true, 0.01);
         }
-        p.next(3000.0, 0.01);
+        p.next(3000.0, true, 0.01);
         let mut t = 0.0;
         while !p.done() && t < 120.0 {
-            p.next(4000.0, 0.01);
+            p.next(4000.0, true, 0.01);
             t += 0.01;
         }
         assert!(p.done(), "never ended");
@@ -586,6 +621,13 @@ mod tests {
         let (x, gears) = render_gears(&def, RATE, Quality::Low);
         assert!(x.iter().all(|v| v.is_finite()));
         assert_eq!(gears, def.vehicle.gear_ratios.len(), "top gear reached");
+        // a real pull: well over 15 s through six gears (it once flew through them in 3 s at
+        // walking pace, the clutch slipping)
+        assert!(
+            x.len() > (15.0 * RATE) as usize,
+            "{} s",
+            x.len() as f64 / RATE
+        );
         assert!(x.len() > (5.0 * RATE) as usize);
     }
 
