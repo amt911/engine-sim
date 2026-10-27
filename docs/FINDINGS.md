@@ -592,3 +592,138 @@ once per value.
 
 **Still open.** Above 7000 rpm this model breathes less than the K20A on any cam (157 N·m at 8000
 against Honda's ~193). That is a general high-speed breathing deficit, not VVT.
+
+## The torque was right for the wrong reasons: friction ×2, cold-air cycle (2026-10-27)
+
+**Symptom.** Above ~7000 rpm the K20A made far less than Honda's figures (158 N·m at 8000 rpm
+against ~193). Its friction was 5.4 bar there.
+
+**Two errors that hid each other.**
+
+- *Friction.* `fmep_bar` was Barnes-Moss's whole-engine fit, 0.97 + 0.15·N + 0.05·N² bar
+  (N in krpm; Heywood). That is *motored* friction, so it already holds pumping, which the model
+  also simulates in the p–V loop. Its N² term was fit on 1970s engines below ~6000 rpm.
+- *Cycle.* With γ = 1.4 for the cylinder's gas, the cycle was an air-standard Otto cycle. Net
+  indicated efficiency came out at 45–48 % at WOT; real engines run 35–40 % (Heywood ch. 5).
+- *Masking.* The doubled friction had been eating the excess work.
+
+**Fixes.**
+
+- Friction by components: Patton–Nitschke–Heywood as improved by Sandoval (`friction.rs`; MIT
+  thesis Appendix A-2; it reproduces Fig. 3-3's components within 1 kPa).
+- Real gas properties: NASA polynomials for air, the stoichiometric charge and frozen products
+  (`thermo.rs`; Heywood Tables 4.7, 4.10, 4.11; Fig. 4.13's γ within 0.005).
+- Result: η_net 0.36–0.41. Peak torque within ±5 % of the published value for the K20A, the LFA
+  and the LS3, with no per-engine number. The equations are images in the PDFs: read the
+  rendered pages, not `pdftotext`.
+
+## A reversion of air labelled as burned gas made the valve chatter (2026-10-27)
+
+**Symptom.** With real gas properties the FV exhaust valve flipped direction in 1–5-step bursts
+on overrun: 43 reversals in 7 cycles; the bursts reached 3.6 % of the peak flow.
+
+**Cause.** Reversion gas came back labelled as products (x_b = 1). On a fuel cut the primary
+holds air. Each reversion stepped the gas constant and the internal-energy curve, and with them
+the pressure.
+
+**Fix.** The primary's gas carries its composition (`port_xb`, set by what leaves the cylinder,
+like `port_t`). The fresh charge carries fuel only when the ECU injects (`Composition`). With
+that, overrun reverses as it did before the change.
+
+## High-speed power is lost in breathing, not at the valve's port model (2026-10-27)
+
+**Symptom.** At 8000–8500 rpm, WOT, pumping reaches 1.7–1.8 bar (0.3–0.5 at mid speed). The
+K20A's torque at 8000 rpm is 160 N·m against Honda's ≈ 193. At bottom dead centre, 8000 rpm, the
+cylinder is still at +3.5 bar: the blowdown has not finished when the piston starts to push.
+
+**What it is not.**
+
+- *The linear valve port* (p = p₀ + 2p⁻ + (c/A)·ṁ). Benson's characteristic boundary
+  (`feat/benson-valve`) puts a 3-bar, 1300 K blowdown into a quiet pipe at 2.38 bar where the
+  linear port says 2.48: 4 %. A first diagnosis blamed the port; the decomposition behind it
+  mixed the waveguide's volume-equivalent source with the valve's mass flow.
+- *The exhaust bores.* A 65 mm tail adds 5 N·m at 8000 rpm; no catalyst, 2 N·m; all open, 6 N·m.
+  An earlier ablation changed `tail_diameter_m`, which `after_collector` overrides, so it
+  measured nothing.
+
+**What moves it** (K20A, 8000 rpm, one change at a time):
+
+| Change | Torque at 8000 rpm |
+|---|---|
+| none | 160 N·m |
+| exhaust opening 20° earlier | 168 N·m |
+| exhaust valve 50 mm equivalent | 167 N·m |
+| intake valve 58 mm equivalent | 177 N·m |
+
+The valve events pass too little gas at speed. The lift curve is a sin² over the duration: its
+time-area is lower than a real cam's, which dwells near full lift. And the presets cap lift at
+L/D 0.25, where the K20A runs ≈ 0.33. Next: a cam profile from a cam-design source. The LFA's
+torque peak may sit at 5500 rather than 6800 rpm until then (the dyno test allows it).
+
+## Real gas properties cost ≈ 10 % of a step (2026-10-27)
+
+**Measured** under `scripts/cpu-lock.sh`, 4 s headless renders: inline4 1.79 → 2.00 s, single
+0.88 → 0.94 s, LFA 5.61 → 6.12 s.
+
+**What helps.**
+
+- One mixture per cylinder, recomputed only when its composition changes.
+- One fused c_v/u evaluation.
+- A Newton stop at 0.1 % of T: quadratic convergence leaves under 0.01 K.
+- Three settles a step.
+- The friction's speed terms cached per 1 rpm.
+
+**What does not.** `temperature()` alone is ≈ 12 ns a call (microbenchmark). `perf record` hangs
+on this machine; use valgrind when it is installed.
+
+## Profiling without perf or valgrind: eu-stack plus a preloaded PR_SET_PTRACER (2026-10-27)
+
+`perf record` hangs on this machine and valgrind is not installed. `eu-stack -p` fails with
+"Operation not permitted": Yama's `ptrace_scope = 1` lets a process trace only its descendants.
+gdb as the parent cannot sample from Python either: the stop is never processed while the
+script sleeps.
+
+**What works.** A three-line shared library whose constructor calls `prctl(PR_SET_PTRACER,
+PR_SET_PTRACER_ANY)`, preloaded into the binary. Then `eu-stack -s` can sample it.
+`scripts/profile.sh [preset] [samples]` does it all: line-table build, preload, about 300
+samples, a count by source line.
+
+**Limit.** eu-stack does not show inlined frames: most samples land on the caller of
+`Engine::step`. Its innermost-frame counts still compare two builds fairly.
+
+## Overrun is a perfect tone: ~100 % of it repeats cycle to cycle (2026-10-26)
+
+Share of each band that repeats from cycle to cycle (`periodic2.py`-style synchronous average over
+4 cycles, tracked cycle by cycle): the LFA lifting off at 5000–6000 rpm, model v0.23.0, repeats
+1.00 / 1.00 / 0.99 / 0.91 at 250 Hz / 500 Hz / 1 kHz / 2 kHz (4 kHz 0.64–0.78). Real LFA lift-offs
+at ~4900–5400 rpm (recording yY0Fx8Thyx4, 0.8 s after the lift): 0.11–0.24 / 0.13–0.39 /
+0.00–0.05 / ~0. That is the user's overrun "fly": with no combustion the pumping is identical
+every cycle. Caveat: the real clips are from a moving car (road and wind noise are aperiodic too).
+Candidates checked and why they do not supply it:
+- **Throttle-gap jet:** the gap is choked on overrun, so its noise cannot travel upstream to the
+  trumpet (sound does not cross a sonic throat against the flow).
+- **Reverse valve jets:** `valve_jet_level` is silent when the port is above the cylinder. At EVO
+  on overrun the backflow into a 0.13 bar cylinder is choked too: its noise is in the cylinder,
+  reaching us only through the block, whose model takes the 0D cylinder pressure (no turbulence).
+Open: what aperiodic source a real overrun has at 250 Hz–2 kHz (cycle-to-cycle gas exchange,
+turbulence in the cylinder through the structure, pipe-flow noise).
+
+## FV exhaust at idle, after the designed path (2026-10-26)
+
+Measured with `ExhaustModel::Fv`, 3 s settled then 3 s held at idle (core, 192 kHz): the **LFA is
+now steady** (900–966 rpm vs the waveguide's 905–982); the **K20A still hunts** (593–1065 vs
+807–904). Not misfires (firings match the speed). Not the idle loop either: with the loop frozen
+(pedal a hair open) the waveguide K20A settles near 860 rpm while the FV one drifts 1091 → 592 →
+1062 on its own. Per cycle the FV engine scavenges better (residual 7–12 % vs 17–19 %) and does
+about the same work for the same fresh charge; its residual follows the speed over ~1.5 s, a lag
+in a quantity that slows the flame. A faster idle integral makes it worse (KI 2 → stalls both
+engines), so the cure is not in the controller. Torque at a held speed, fixed idle air: FV 4–7
+N·m below the waveguide from 550 to 1150 rpm, both falling with speed. Open: what in the FV
+coupling removes the open-loop damping.
+- **All presets, FV vs waveguide idle (3 s held after 3 s settled, rpm range):** single 654–1371
+  vs 765–1291; inline-4 756–945 vs 768–872; K20A 593–1065 vs 807–904; flat-plane V8 859–1142 vs
+  985–1040; cross-plane V8 580–760 vs 690–766; LFA 900–966 vs 905–982. FV idles worse on five
+  of six. Per cycle (K20A, 800 rpm held, same idle air) pumping work is identical (−31 J) and the
+  exhaust-stroke pressure the same; FV's gross work is 8 % lower (152.6 vs 166.5 J) as it traps
+  ~5 % less fresh charge. Freezing the residual's effect on the flame halves the open-loop swing;
+  retuning the idle spark (reserve 10–15°, KD 10–60) does not help (more KD is worse).

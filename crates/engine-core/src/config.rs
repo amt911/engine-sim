@@ -5,7 +5,7 @@ use crate::engine::EngineDef;
 use serde::{Deserialize, Serialize};
 
 /// Current file format version. Bump on a breaking change and add a migration + test.
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 pub const MAX_CYLINDERS: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +79,9 @@ pub fn from_str(text: &str, format: Format) -> Result<EngineDef, ConfigError> {
     if version == 1 {
         migrate_v1(&mut tree);
     }
+    if version <= 2 {
+        migrate_v2(&mut tree);
+    }
     let file: EngineFile = serde_json::from_value(tree).map_err(|e| parse(e.to_string()))?;
     validate(&file.engine)?;
     Ok(file.engine)
@@ -119,6 +122,18 @@ fn migrate_v1(tree: &mut serde_json::Value) {
         None => {
             engine.insert("exhaust".into(), exhaust.into());
         }
+    }
+}
+
+/// v2 → v3: the whole-engine FMEP fit gave way to friction by components, built from the
+/// engine's design ([`crate::friction`]); the fit is dropped and the design's defaults apply.
+fn migrate_v2(tree: &mut serde_json::Value) {
+    tree["version"] = 3.into();
+    if let Some(engine) = tree
+        .get_mut("engine")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        engine.remove("fmep_bar");
     }
 }
 
@@ -243,9 +258,18 @@ pub fn validate(def: &EngineDef) -> Result<(), ConfigError> {
         within(def.starter_torque_nm, 0.0, 5000.0),
         "starter torque must be 0–5000 N·m",
     );
+    let f = &def.friction;
     check(
-        def.fmep_bar.iter().all(|c| within(*c, 0.0, 20.0)),
-        "fmep coefficients must be 0–20 bar",
+        [
+            f.ring_tension_ratio,
+            f.liner_roughness,
+            f.oil_viscosity_ratio,
+        ]
+        .iter()
+        .all(|r| within(*r, 0.1, 10.0))
+            && (1..=6).contains(&f.valves_per_cylinder)
+            && (1..=2).contains(&f.rods_per_crankpin),
+        "friction: ratios 0.1–10, 1–6 valves a cylinder, 1–2 rods a crankpin",
     );
     if !def.firing_order.is_empty() {
         let mut o = def.firing_order.clone();
@@ -331,9 +355,9 @@ mod tests {
     #[test]
     fn written_file_carries_version() {
         let y = to_string(&EngineDef::single(), Format::Yaml).unwrap();
-        assert!(y.starts_with("version: 2\n"), "{y}");
+        assert!(y.starts_with("version: 3\n"), "{y}");
         let j = to_string(&EngineDef::single(), Format::Json).unwrap();
-        assert!(j.contains("\"version\": 2"), "{j}");
+        assert!(j.contains("\"version\": 3"), "{j}");
     }
 
     #[test]
@@ -403,7 +427,17 @@ mod tests {
         // Each of these used to pass validation and then run silent or never fire.
         type Mutate = Box<dyn Fn(&mut EngineDef)>;
         let cases: Vec<(&str, Mutate)> = vec![
-            ("fmep", Box::new(|d| d.fmep_bar[0] = f64::NAN)),
+            (
+                "friction",
+                Box::new(|d| d.friction.oil_viscosity_ratio = f64::NAN),
+            ),
+            (
+                "friction",
+                Box::new(|d| d.friction.ring_tension_ratio = 50.0),
+            ),
+            ("friction", Box::new(|d| d.friction.liner_roughness = -1.0)),
+            ("friction", Box::new(|d| d.friction.valves_per_cylinder = 0)),
+            ("friction", Box::new(|d| d.friction.rods_per_crankpin = 3)),
             ("spark", Box::new(|d| d.spark_advance_deg = 900.0)),
             ("spark", Box::new(|d| d.spark_advance_deg = f64::NAN)),
             ("starter", Box::new(|d| d.starter_torque_nm = f64::NAN)),
@@ -475,6 +509,29 @@ mod tests {
         );
         // a v2 file must not use the old keys
         let bad = "version: 2\nengine:\n  exhaust_runner_length_m: 0.7\n";
+        assert!(matches!(
+            from_str(bad, Format::Yaml),
+            Err(ConfigError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn version_2_files_drop_the_old_friction_fit() {
+        // v2 (≤ v0.23) carried a whole-engine FMEP fit; v3 builds friction by components from
+        // the engine's design, so the fit goes and the design defaults come in
+        let v2 = "version: 2\nengine:\n  name: Old\n  fmep_bar: [0.97, 0.15, 0.05]\n";
+        let d = from_str(v2, Format::Yaml).unwrap();
+        assert_eq!(d.name, "Old");
+        assert_eq!(d.friction, crate::friction::FrictionDef::default());
+        // v1 files come through both steps
+        let v1 =
+            "version: 1\nengine:\n  fmep_bar: [0.97, 0.15, 0.05]\n  exhaust_runner_length_m: 0.7\n";
+        assert_eq!(
+            from_str(v1, Format::Yaml).unwrap().exhaust.primary_length_m,
+            0.7
+        );
+        // a v3 file must not carry it
+        let bad = "version: 3\nengine:\n  fmep_bar: [0.97, 0.15, 0.05]\n";
         assert!(matches!(
             from_str(bad, Format::Yaml),
             Err(ConfigError::Parse(_))
