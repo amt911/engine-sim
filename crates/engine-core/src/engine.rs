@@ -2452,6 +2452,14 @@ impl Engine {
                         self.fidelity.lining_segment_m,
                     ));
                 }
+                // the collectors' flow noise, at the definition's level (seeded once, from the
+                // engine's own generator)
+                let seed = self.rng;
+                if let Some(n) = self.net.as_mut()
+                    && n.flow_noise() != self.def.sound.duct_flow
+                {
+                    n.set_flow_noise(self.def.sound.duct_flow, seed);
+                }
             }
             ExhaustModel::Fv => {
                 self.net = None;
@@ -7554,6 +7562,34 @@ mod tests {
         assert!(
             rate(coarse, open_coarse) <= 2.0 * rate(fine, open_fine) + 1e-3,
             "96 kHz: {coarse} flips in {open_coarse} steps; 192 kHz: {fine} in {open_fine}"
+    /// FNV-1a of the bits of the LFA's samples over 0.25 s at full throttle held at 4000 rpm.
+    fn lfa_sound_hash(tweak: impl Fn(&mut EngineDef)) -> u64 {
+        let mut d = EngineDef::lfa_v10();
+        tweak(&mut d);
+        let mut e = Engine::new(d, 4000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(4000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.25, &c)
+            .iter()
+            .fold(0xcbf2_9ce4_8422_2325u64, |h, x| {
+                (h ^ x.to_bits()).wrapping_mul(0x0100_0000_01b3)
+            })
+    }
+
+    #[test]
+    fn duct_flow_off_is_the_old_sound() {
+        // with the ducts' flow noise off the LFA sounds exactly as before it existed (the hash
+        // captured on the code before the change); on, it does not
+        assert_eq!(
+            lfa_sound_hash(|d| d.sound.duct_flow = 0.0),
+            0x5874_4d7b_0787_96f4
+        );
+        assert_ne!(
+            lfa_sound_hash(|d| d.sound.duct_flow = 1.0),
+            0x5874_4d7b_0787_96f4
         );
     }
 
