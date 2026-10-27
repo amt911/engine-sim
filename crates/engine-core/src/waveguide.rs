@@ -55,7 +55,9 @@ impl DelayLine {
             let j = self.pos + n - k;
             self.buf[if j >= n { j - n } else { j }]
         };
-        Some(back(self.whole - ahead) * (1.0 - self.frac) + back(self.whole + 1 - ahead) * self.frac)
+        Some(
+            back(self.whole - ahead) * (1.0 - self.frac) + back(self.whole + 1 - ahead) * self.frac,
+        )
     }
     /// Whole steps of the delay (the fraction is interpolated past them).
     pub fn whole_steps(&self) -> usize {

@@ -213,9 +213,9 @@ impl Simulation {
         self.vehicle
             .set_clutch(if self.drive.clutch_pedal { 0.0 } else { 1.0 });
         let mut c = self.controls;
-        // the exhaust on its thread for this block: each step's sound then comes a step late
+        // the exhaust on its thread for this chunk, a block of steps at a time
         let detached = match &self.exhaust_thread {
-            Some(w) => self.engine.detach_exhaust(|net| w.link(net)),
+            Some(w) => self.engine.detach_exhaust(|net, block| w.link(net, block)),
             None => false,
         };
         // and half the ITB runners on theirs: the same samples, no delay
@@ -251,17 +251,16 @@ impl Simulation {
         {
             self.engine.attach_runners(set);
         }
-        // with the exhaust away the first step returned nothing yet and the last comes now
+        // with the exhaust away the first steps returned nothing yet (each step's sound comes
+        // `2·block` steps late) and the rest comes now: as many as returned nothing
         let first = if detached {
-            if let Some(last) = self.engine.flush_exhaust(dt) {
-                self.steps.push(last);
-            }
+            let late = self.engine.flush_exhaust(dt, &mut self.steps);
             if let (Some(w), Some(mut link)) = (&self.exhaust_thread, self.engine.end_detached())
                 && let Some(net) = w.back(&mut *link)
             {
                 self.engine.attach_exhaust(net);
             }
-            1
+            late
         } else {
             0
         };
@@ -369,7 +368,8 @@ pub(crate) mod tests {
                 let mut out = Vec::new();
                 for b in 0..12 {
                     sim.controls.throttle = if (4..7).contains(&b) { 1.0 } else { 0.1 };
-                    let mut buf = vec![0.0f32; 2000];
+                    // one chunk shorter than the exhaust's lag: all of it comes at the flush
+                    let mut buf = vec![0.0f32; if b == 2 { 7 } else { 2000 }];
                     sim.render(&mut buf);
                     out.extend_from_slice(&buf);
                 }

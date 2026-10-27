@@ -1029,7 +1029,8 @@ mod tests {
     #[test]
     fn a_block_is_half_a_primary_delay_capped_and_short_primaries_stay_put() {
         // delay = L/c/dt with c = 600 m/s (C_PRIMARY): 0.7 m at 192 kHz is 224 steps, so half is
-        // 112, capped at 64; at 48 kHz it is 56 steps and a block of 28; 0.205 m is 16.4 steps
+        // 112, capped at 64; 0.71 m at 48 kHz is 56.8 steps (whole 56: a block of 28 — 0.7 m would sit on
+        // the boundary, 55.999… in floating point); 0.205 m is 16.4 steps
         // (whole 16: a block of 8, the least worth it); 0.19 m is 15.2 (whole 15: 7 < 8: none)
         let block = |length_m: f64, fs: f64| {
             let def = ExhaustDef {
@@ -1039,7 +1040,7 @@ mod tests {
             ExhaustNet::new(&def, 4, 1.0 / fs).max_block()
         };
         assert_eq!(block(0.7, 192_000.0), 64);
-        assert_eq!(block(0.7, 48_000.0), 28);
+        assert_eq!(block(0.71, 48_000.0), 28);
         assert_eq!(block(0.205, 48_000.0), 8);
         assert_eq!(block(0.19, 48_000.0), 0);
         assert_eq!(block(0.05, 48_000.0), 0);
