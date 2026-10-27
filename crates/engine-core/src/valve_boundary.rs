@@ -493,6 +493,129 @@ mod tests {
     }
 
     #[test]
+    fn illinois_finds_newtons_cubic_root_in_few_evaluations() {
+        // x³ − 2x − 5 = 0 (Newton's own example): x = 2.094 551 481 542 33. Illinois regula falsi
+        // from [2, 3] converges superlinearly: well under 20 evaluations
+        let n = std::cell::Cell::new(0);
+        let f = |x: f64| {
+            n.set(n.get() + 1);
+            x * x * x - 2.0 * x - 5.0
+        };
+        let x = root(f, 2.0, 3.0);
+        assert_relative_eq!(x, 2.094_551_481_542_33, max_relative = 1e-9);
+        assert!(n.get() <= 20, "{} evaluations", n.get());
+        // the bracket's own ends are roots when they are
+        assert_eq!(root(|x: f64| x - 2.0, 2.0, 3.0), 2.0);
+        assert_eq!(root(|x: f64| x - 3.0, 2.0, 3.0), 3.0);
+        // no sign change: the end nearer zero
+        assert_eq!(root(|x: f64| x * x + 1.0, 0.5, 3.0), 0.5);
+        assert_eq!(root(|x: f64| 10.0 - x, -5.0, 3.0), 3.0);
+    }
+
+    #[test]
+    fn a_secant_from_a_good_guess_needs_three_or_four_evaluations() {
+        // from a guess 1e-4 off the cubic's root the secant lands in a few steps; a guess outside
+        // the bracket falls back to the bracketed solve and still finds it
+        let n = std::cell::Cell::new(0);
+        let f = |x: f64| {
+            n.set(n.get() + 1);
+            x * x * x - 2.0 * x - 5.0
+        };
+        let x = root_from(f, 2.0, 3.0, 2.094_65);
+        assert_relative_eq!(x, 2.094_551_481_542_33, max_relative = 1e-9);
+        assert!(n.get() <= 5, "{} evaluations", n.get());
+        n.set(0);
+        let x = root_from(f, 2.0, 3.0, 7.0);
+        assert_relative_eq!(x, 2.094_551_481_542_33, max_relative = 1e-9);
+        assert!(
+            n.get() > 5,
+            "fell back to the bracket: {} evaluations",
+            n.get()
+        );
+    }
+
+    #[test]
+    fn a_tiny_valve_still_passes_the_choked_nozzle_flow() {
+        // ψ = 1e-6, 4 bar and 1000 K into a 1-bar pipe of 1000 mm²: choked through 1e-9 m²,
+        // 0.6847·1e-9·4e5/√(287·1000) = 5.1126e-7 kg/s (Heywood App. C; the sonic bracket's
+        // lower bound is exercised at its smallest)
+        let (lam, a_back) = quiet(4.0e5, 1.0e5, 1000.0);
+        let b = solve(4.0e5, sound(1000.0), 1e-6, lam, a_back);
+        assert_relative_eq!(b.mass_flow(1e-3), 5.1126e-7, max_relative = 0.01);
+    }
+
+    #[test]
+    fn the_valve_step_lets_the_pipe_gas_back_in_with_its_enthalpy() {
+        use crate::gas::GasVolume;
+        // a 0.8-bar, 1000 K cylinder against a 1.2-bar, 600 K wave-free pipe: gas flows back in
+        // carrying the pipe gas's c_p·T, at the boundary's flow
+        let gas = GasVolume::at(0.8e5, 1000.0, 5.0e-4);
+        let pipe = std::f64::consts::PI * 0.02 * 0.02;
+        let lam = lambda_of_wave(gas.pressure(), 0.0, 600.0, 1.2e5);
+        let at = Pipe {
+            area: pipe,
+            lambda: lam,
+            t_back: 600.0,
+        };
+        let dt = 1.0 / 192_000.0;
+        let (f, b) = valve_flow(&gas, 3.0e-4, at, dt, 1.0, &mut { f64::NAN });
+        assert!(f.dm < 0.0);
+        assert_relative_eq!(f.h, crate::gas::CP * 600.0, max_relative = 1e-12);
+        assert_relative_eq!(f.dm, b.mass_flow(pipe) * dt, max_relative = 1e-12);
+        // the pipe gas's speed of sound brought to the cylinder's pressure: 600 K at 1.2 bar
+        // → (0.8/1.2)^(1/7) of √(1.4·287·600) = 491.00·0.943 7 = 463.36 m/s, so at the boundary
+        // a/A = 463.36
+        let a_pc = (KAPPA * 287.0 * 600.0).sqrt() * (0.8f64 / 1.2).powf(1.0 / 7.0);
+        let big_a = (b.p / 0.8e5).powf(1.0 / 7.0);
+        assert_relative_eq!(b.a / big_a, a_pc, max_relative = 1e-9);
+    }
+
+    #[test]
+    fn a_long_step_stops_where_the_pressures_meet_or_at_half_the_mass() {
+        use crate::gas::GasVolume;
+        // equalising mass (gas.rs): moving dm with enthalpy h changes p by (γ−1)·h·dm/V, so a
+        // one-second step stops at relax·|p_c − p_b|·V/((γ−1)·h), and never past half the mass
+        let pipe = std::f64::consts::PI * 0.02 * 0.02;
+        for v in [5.0e-4, 5.0e-7] {
+            let gas = GasVolume::at(3.0e5, 1300.0, v);
+            let lam = lambda_of_wave(gas.pressure(), 0.0, 700.0, crate::units::ATM_PA);
+            let at = Pipe {
+                area: pipe,
+                lambda: lam,
+                t_back: 700.0,
+            };
+            let (f, b) = valve_flow(&gas, 3.0e-4, at, 1.0, 0.5, &mut { f64::NAN });
+            let h = crate::gas::CP * 1300.0;
+            let limit = 0.5 * (3.0e5 - b.p) * v / (0.4 * h);
+            let want = limit.min(0.5 * gas.mass_kg);
+            assert_relative_eq!(f.dm, want, max_relative = 1e-9);
+        }
+        // with relax 1 the equalising mass is 0.714·(1 − p_b/p_c) of the charge (R/((γ−1)c_p)),
+        // so a 40-bar blowdown into a 1-bar pipe stops at half the charge
+        let gas = GasVolume::at(40.0e5, 1800.0, 5.0e-4);
+        let lam = lambda_of_wave(gas.pressure(), 0.0, 700.0, crate::units::ATM_PA);
+        let at = Pipe {
+            area: pipe,
+            lambda: lam,
+            t_back: 700.0,
+        };
+        let (f, _) = valve_flow(&gas, 3.0e-4, at, 1.0, 1.0, &mut { f64::NAN });
+        assert_relative_eq!(f.dm, 0.5 * gas.mass_kg, max_relative = 1e-12);
+        // closed: nothing moves, at the cylinder's own enthalpy and state
+        let gas = GasVolume::at(3.0e5, 1300.0, 5.0e-4);
+        let at = Pipe {
+            area: pipe,
+            lambda: 0.9,
+            t_back: 700.0,
+        };
+        let (f, b) = valve_flow(&gas, 0.0, at, 1e-5, 1.0, &mut { f64::NAN });
+        assert_eq!(f.dm, 0.0);
+        assert_relative_eq!(f.h, crate::gas::CP * 1300.0, max_relative = 1e-12);
+        assert_relative_eq!(b.p, 3.0e5, max_relative = 1e-12);
+        assert_relative_eq!(b.a, (KAPPA * 287.0 * 1300.0).sqrt(), max_relative = 1e-12);
+    }
+
+    #[test]
     fn equal_states_do_not_flow_and_a_closed_valve_reflects() {
         let a = sound(900.0);
         let b = solve(1.0e5, a, 0.5, 1.0, a);
@@ -502,6 +625,7 @@ mod tests {
         let b = solve(1.0e5, a, 0.0, 1.05, a);
         assert_eq!(b.u, 0.0);
         assert_relative_eq!(b.p, 1.0e5 * 1.05f64.powi(7), max_relative = 1e-12);
+        assert_relative_eq!(b.a, a * 1.05, max_relative = 1e-12);
     }
 
     #[test]
