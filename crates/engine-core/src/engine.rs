@@ -923,17 +923,18 @@ fn tail_exit(m: f64, losses: &crate::exhaust::ExitLosses) -> (f64, f64) {
     // (the root in (0, 1], written without the cancellation at small K).
     let rt = (R_AIR * TAIL_T_K).sqrt();
     let choked = m * rt / (a * CHOKED_FLOW_FACTOR);
-    let (p0, x) = if atm / choked <= CRITICAL_PRESSURE_RATIO {
-        (choked, CRITICAL_PRESSURE_RATIO.powf((GAMMA - 1.0) / GAMMA))
+    // The jet leaves at √(2c_pT(1 − x)): sonic (c*) when choked.
+    let (p0, u) = if atm / choked <= CRITICAL_PRESSURE_RATIO {
+        (choked, TAIL_SONIC)
     } else {
         let n = 2.0 * GAMMA / (GAMMA - 1.0);
         let k = m * rt / (a * atm);
         let x = 2.0 * n / (n + (n * n + 4.0 * n * k * k).sqrt());
-        (atm / x.powf(GAMMA / (GAMMA - 1.0)), x)
+        (
+            atm / x.powf(GAMMA / (GAMMA - 1.0)),
+            (2.0 * crate::gas::CP * TAIL_T_K * (1.0 - x)).sqrt(),
+        )
     };
-    let u = (2.0 * crate::gas::CP * TAIL_T_K * (1.0 - x))
-        .sqrt()
-        .min(TAIL_SONIC);
     let rho = p0 / (crate::gas::R_AIR * TAIL_T_K);
     let friction = losses.friction * m * m / (2.0 * rho);
     let laminar = losses.laminar * m / rho;
