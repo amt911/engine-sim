@@ -914,15 +914,27 @@ fn tail_exit(m: f64, losses: &crate::exhaust::ExitLosses) -> (f64, f64) {
     if m <= 0.0 {
         return (0.0, 0.0);
     }
+    use crate::gas::{CHOKED_FLOW_FACTOR, CRITICAL_PRESSURE_RATIO, GAMMA, R_AIR};
     let atm = crate::units::ATM_PA;
     let a = losses.outlet_area;
-    let flow = |p: f64| crate::gas::orifice_mass_flow(a, p, TAIL_T_K, atm) - m;
-    let p0 = crate::exhaust_fv::rising_root(flow, atm, 100.0 * atm);
-    let g = crate::gas::GAMMA;
-    let ratio = (atm / p0).max(crate::gas::CRITICAL_PRESSURE_RATIO);
-    let u = (2.0 * crate::gas::CP * TAIL_T_K * (1.0 - ratio.powf((g - 1.0) / g)))
-        .sqrt()
-        .min(TAIL_SONIC);
+    // The orifice equation (`orifice_mass_flow`) solved for p₀ in closed form. Choked:
+    // ṁ = A·p₀/√(RT)·Γ. Subsonic, with x = (p_a/p₀)^((γ−1)/γ) and n = 2γ/(γ−1):
+    // ṁ·√(RT)/(A·p_a) = K = √(n(1 − x))/x, so K²x² + n·x − n = 0 and x = 2n/(n + √(n² + 4nK²))
+    // (the root in (0, 1], written without the cancellation at small K).
+    let rt = (R_AIR * TAIL_T_K).sqrt();
+    let choked = m * rt / (a * CHOKED_FLOW_FACTOR);
+    // The jet leaves at √(2c_pT(1 − x)): sonic (c*) when choked.
+    let (p0, u) = if atm / choked <= CRITICAL_PRESSURE_RATIO {
+        (choked, TAIL_SONIC)
+    } else {
+        let n = 2.0 * GAMMA / (GAMMA - 1.0);
+        let k = m * rt / (a * atm);
+        let x = 2.0 * n / (n + (n * n + 4.0 * n * k * k).sqrt());
+        (
+            atm / x.powf(GAMMA / (GAMMA - 1.0)),
+            (2.0 * crate::gas::CP * TAIL_T_K * (1.0 - x)).sqrt(),
+        )
+    };
     let rho = p0 / (crate::gas::R_AIR * TAIL_T_K);
     let friction = losses.friction * m * m / (2.0 * rho);
     let laminar = losses.laminar * m / rho;
@@ -6120,6 +6132,24 @@ mod tests {
         assert!((u - 183.249).abs() < 0.05, "{u} m/s");
         // no flow, no backpressure
         assert_eq!(tail_exit(0.0, &losses(1000.0, 1000.0)), (0.0, 0.0));
+    }
+
+    #[test]
+    fn the_tail_exit_inverts_the_orifice() {
+        // the backpressure found for a flow passes exactly that flow through the outlet, from a
+        // trickle to deep choking
+        let losses = crate::exhaust::ExitLosses {
+            outlet_area: 1.963_495e-3,
+            friction: 0.0,
+            laminar: 0.0,
+        };
+        for m in [1e-3, 0.05, 0.2, 0.4, 0.5, 0.6, 1.0, 3.0] {
+            let (back, _) = tail_exit(m, &losses);
+            let p0 = crate::units::ATM_PA + back;
+            let through =
+                crate::gas::orifice_mass_flow(1.963_495e-3, p0, TAIL_T_K, crate::units::ATM_PA);
+            assert_relative_eq!(through, m, max_relative = 1e-9);
+        }
     }
 
     #[test]
