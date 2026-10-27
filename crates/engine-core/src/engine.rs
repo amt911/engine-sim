@@ -5735,6 +5735,41 @@ mod tests {
     }
 
     #[test]
+    fn the_fv_and_waveguide_exhausts_agree_on_torque_and_loudness() {
+        // two models of the same pipes: at 4000 rpm WOT they give the same torque within 2 %
+        // (143.6 N·m waveguide, 144.2 FV) and tail levels within a factor of two (4.1 and 2.8 Pa
+        // rms; the FV's shocks and losses differ from the linear lines). The valve's momentum
+        // flux p + ρu² on the FV's first face, with ρ = γp/a², keeps it there; ρ off by a²
+        // makes the FV five times louder
+        let at = |model: ExhaustModel| {
+            let mut d = EngineDef::inline4();
+            d.exhaust.model = model;
+            let mut e = Engine::new(d, 4000.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(4000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &c);
+            let n = (0.1 / DT) as usize;
+            let (mut tq, mut ss) = (0.0, 0.0);
+            for _ in 0..n {
+                let x = e.step(DT, &c);
+                tq += e.torque_nm();
+                ss += x * x;
+            }
+            (tq / n as f64, (ss / n as f64).sqrt())
+        };
+        let (tq_w, rms_w) = at(ExhaustModel::Waveguide);
+        let (tq_f, rms_f) = at(ExhaustModel::Fv);
+        assert_relative_eq!(tq_f, tq_w, max_relative = 0.02);
+        assert!(
+            rms_f > 0.5 * rms_w && rms_f < 2.0 * rms_w,
+            "FV {rms_f} Pa, waveguide {rms_w} Pa"
+        );
+    }
+
+    #[test]
     fn the_valve_jets_ride_the_blowdowns() {
         // what the valve jets add at the listener: broadband (zero-mean), and it comes with the
         // blowdowns — its envelope, a cycle at a time, follows the valves' outflow
