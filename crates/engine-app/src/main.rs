@@ -53,7 +53,8 @@ struct Cli {
     quality: quality::QualityChoice,
     /// Render a scene offline at the finest quality (no real-time limit) and exit: `drive`
     /// (idle, blips, a pull, lift-off) or `sweep` (full throttle idle → redline) into the
-    /// `--out` WAV; `loops` (held speeds × loads, each seamless) into the `--out` folder.
+    /// `--out` WAV; `loops` (held speeds × loads, each seamless) into the `--out` folder;
+    /// `held:RPM[:LOAD[:SECONDS]]` (one speed held, full load and 4 s by default) into the WAV.
     #[arg(long)]
     render: Option<offline::Scene>,
     /// Where `--render` writes: a .wav file, or a folder for `loops`.
