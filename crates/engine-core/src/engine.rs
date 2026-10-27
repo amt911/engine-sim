@@ -5,7 +5,9 @@
 //! Model ladder and references: `docs/research/simulador-motor-rust.md`.
 
 use crate::combustion::{AFR_STOICH, LHV_GASOLINE, flame_angle_scale, laminar_flame_speed, wiebe};
-use crate::exhaust::{ExhaustDef, ExhaustLink, ExhaustModel, ExhaustNet};
+use crate::exhaust::{
+    ArrivalProbe, BlockIn, BlockOut, ExhaustDef, ExhaustLink, ExhaustModel, ExhaustNet,
+};
 use crate::exhaust_fv::ExhaustFv;
 use crate::gas::{Flow, GasVolume, Reservoir, exchange_with_reservoir, plan_exchange};
 use crate::geometry::CylinderGeometry;
@@ -1201,18 +1203,58 @@ impl Default for Fidelity {
 }
 
 /// The exhaust net's side of an [`Engine`] whose net runs elsewhere: the link to it, the
-/// waves arriving at the valves this step, and the step whose sound waits for its tails.
+/// waves arriving at the valves (read from the copy of the primaries' lines), the block of
+/// steps being collected for the net, and the steps whose sound waits for their tails.
+///
+/// The net runs a block of `block` steps behind the engine and the engine never reads what it
+/// computes before two blocks later: a step's sound comes out `2·block` steps late, its waves
+/// at the valves come from the lines' contents (see [`ArrivalProbe`]).
 struct Remote {
     link: Box<dyn ExhaustLink>,
+    probe: ArrivalProbe,
     arriving: Vec<f64>,
     /// The primaries' area, m².
     a_pipe: f64,
-    tails: Vec<f64>,
-    /// (the intake mouth's and the block's sound, the cycle-mean constant) of the waiting step
-    pending: Option<(f64, f64)>,
-    /// Its tails' mean exit velocities, and a spare buffer to swap with.
-    u_pending: Vec<f64>,
-    u_spare: Vec<f64>,
+    /// Steps per block.
+    block: usize,
+    /// The inputs of the block being filled.
+    stage: BlockIn,
+    /// Blocks handed over and not yet collected (at most two).
+    in_flight: usize,
+    /// Steps taken since the net was detached, and those whose waves the probe has taken.
+    taken: u64,
+    applied: u64,
+    /// Scratch for one block's results.
+    out: BlockOut,
+    /// The tails of the steps collected and not yet heard (per step, in order).
+    tails: std::collections::VecDeque<f64>,
+    /// Per tail: the signals of the step being finished.
+    tails_now: Vec<f64>,
+    /// The steps taken whose sound waits for their tails: (the intake mouth's and the block's
+    /// sound, the cycle-mean constant, the tails' mean exit velocities).
+    pending: std::collections::VecDeque<(f64, f64, Vec<f64>)>,
+    /// Velocity buffers to reuse.
+    spare: Vec<Vec<f64>>,
+}
+
+impl Remote {
+    /// Send the staged block; with two in flight, take the older one back.
+    fn hand_over(&mut self) {
+        self.link.submit(&mut self.stage);
+        self.in_flight += 1;
+        if self.in_flight == 2 {
+            self.take_oldest();
+        }
+    }
+
+    /// Wait for the oldest block in flight: its waves go into the probe, its tails wait to be heard.
+    fn take_oldest(&mut self) {
+        self.link.collect(&mut self.out);
+        self.in_flight -= 1;
+        self.applied += self.out.steps as u64;
+        self.probe.push(&self.out.from_far);
+        self.tails.extend(self.out.tails.iter().copied());
+    }
 }
 
 /// Holds a [`Remote`]. A clone of an engine does not carry it (the link is not cloneable): a
@@ -2221,15 +2263,28 @@ impl Engine {
                 net.step(&self.flows);
             }
             (None, None, Some(r)) => {
-                // the net runs elsewhere: hand it this step, take back the next step's waves
+                // the net runs elsewhere: stage this step; a full block goes out and the one
+                // before it comes back; the next step's waves come from the primaries' lines
                 self.friction_age += 1;
                 let due = self.friction_age >= 64;
                 if due {
                     self.friction_age = 0;
                 }
-                let mean = due.then_some((&self.cyl_mean_flow[..], &self.tail_mean_flow[..]));
-                r.link.submit(&self.flows, &self.tail_mach, mean);
-                r.link.arriving_next(&mut r.arriving);
+                r.stage.steps += 1;
+                r.stage.flows.extend_from_slice(&self.flows);
+                r.stage.mach.extend_from_slice(&self.tail_mach);
+                r.stage.has_mean.push(due);
+                if due {
+                    r.stage.mean.extend_from_slice(&self.cyl_mean_flow);
+                    r.stage.mean.extend_from_slice(&self.tail_mean_flow);
+                    r.probe.set_mean_flow(&self.cyl_mean_flow);
+                }
+                r.taken += 1;
+                if r.stage.steps == r.block {
+                    r.hand_over();
+                }
+                r.probe
+                    .arriving((r.taken - r.applied) as usize, &mut r.arriving);
             }
             _ => {}
         }
@@ -2250,7 +2305,7 @@ impl Engine {
         let n_tails = match (&self.net, &self.fv, &self.remote.0) {
             (_, Some(fv), _) => fv.last_tails().len(),
             (Some(net), None, _) => net.last_tails().len(),
-            (None, None, Some(r)) => r.tails.len(),
+            (None, None, Some(r)) => r.tails_now.len(),
             _ => 0,
         };
         let throttle_area = self.throttle_area(self.plate);
@@ -2366,23 +2421,15 @@ impl Engine {
             None => 0.0,
         };
         let audio = if let Some(r) = self.remote.0.as_mut() {
-            // the net runs elsewhere: the tails of the step before arrive now, and its sound is
-            // finished one step late (the same samples, in the same order)
-            std::mem::swap(&mut r.u_pending, &mut r.u_spare);
-            r.u_pending.clone_from(&self.tail_u_mean);
-            match r.pending.replace((rest, k)) {
-                Some((rest_prev, k_prev)) => {
-                    r.link.tails(&mut r.tails);
-                    let tails = std::mem::take(&mut r.tails);
-                    let u = std::mem::take(&mut r.u_spare);
-                    let a = self.tails_sound(&tails, &u, rest_prev, k_prev, dt);
-                    if let Some(r) = self.remote.0.as_mut() {
-                        r.tails = tails;
-                        r.u_spare = u;
-                    }
-                    a
-                }
-                None => 0.0,
+            // the net runs elsewhere: the sound of the step `2·block` before is finished now
+            // (the same samples, in the same order)
+            let mut u = r.spare.pop().unwrap_or_default();
+            u.clone_from(&self.tail_u_mean);
+            r.pending.push_back((rest, k, u));
+            if r.pending.len() > 2 * r.block {
+                self.finish_remote_step(dt).unwrap_or(0.0)
+            } else {
+                0.0
             }
         } else {
             let mut tails = std::mem::take(&mut self.tails_buf);
@@ -2459,56 +2506,88 @@ impl Engine {
         heard + jets + rest
     }
 
-    /// Run the waveguide exhaust elsewhere from now on: `link` is handed the net (it will
-    /// receive each step's work, [`ExhaustLink`]). The sound comes out one step late — each
-    /// [`Engine::step`] returns the step before's — and [`Engine::flush_exhaust`] gives the last
-    /// one. The same samples as running it here. False (nothing changed) without a waveguide
-    /// net, or with a primary shorter than two steps (its next wave is not known a step early).
+    /// Finish the oldest step whose sound waits for its tails (they are in).
+    fn finish_remote_step(&mut self, dt: f64) -> Option<f64> {
+        let r = self.remote.0.as_mut()?;
+        let (rest, k, u) = r.pending.pop_front()?;
+        for t in r.tails_now.iter_mut() {
+            *t = r.tails.pop_front().unwrap_or(0.0);
+        }
+        let tails = std::mem::take(&mut r.tails_now);
+        let a = self.tails_sound(&tails, &u, rest, k, dt);
+        if let Some(r) = self.remote.0.as_mut() {
+            r.tails_now = tails;
+            r.spare.push(u);
+        }
+        Some(a)
+    }
+
+    /// Run the waveguide exhaust elsewhere from now on: `link` is handed the net and the most
+    /// steps a block can have (`max`: the block its link chooses is at most that) and receives
+    /// the steps' work a block at a time ([`ExhaustLink`]). The sound comes out `2·block` steps
+    /// late — each [`Engine::step`] returns the one that far back, 0 at first — and
+    /// [`Engine::flush_exhaust`] gives the rest. The same samples, to the bit, as running it
+    /// here. False (nothing changed) without a waveguide net, or with primaries too short for a
+    /// block to be worth it ([`ExhaustNet::max_block`]).
     pub fn detach_exhaust(
         &mut self,
-        link: impl FnOnce(ExhaustNet) -> Box<dyn ExhaustLink>,
+        link: impl FnOnce(ExhaustNet, usize) -> Box<dyn ExhaustLink>,
     ) -> bool {
         let Some(net) = self.net.as_ref() else {
             return false;
         };
         let n = self.cyl.len();
-        let mut probe = vec![0.0; n];
-        if self.remote.0.is_some() || !net.arriving_next(&mut probe) {
+        let max = net.max_block();
+        if self.remote.0.is_some() || max == 0 {
             return false;
         }
         let arriving = (0..n).map(|i| net.arriving(i)).collect();
         let a_pipe = net.primary_area();
-        let tails = vec![0.0; net.last_tails().len()];
+        let tails_now = vec![0.0; net.last_tails().len()];
+        let probe = ArrivalProbe::new(net);
         let Some(net) = self.net.take() else {
             return false;
         };
+        let link = link(net, max);
+        let block = link.block().clamp(1, max);
         self.remote = RemoteSlot(Some(Box::new(Remote {
-            link: link(net),
+            link,
+            probe,
             arriving,
             a_pipe,
-            tails,
-            pending: None,
-            u_pending: Vec::new(),
-            u_spare: Vec::new(),
+            block,
+            stage: BlockIn::default(),
+            in_flight: 0,
+            taken: 0,
+            applied: 0,
+            out: BlockOut::default(),
+            tails: std::collections::VecDeque::new(),
+            tails_now,
+            pending: std::collections::VecDeque::new(),
+            spare: Vec::new(),
         })));
         true
     }
 
-    /// The sound of the last step taken with the net elsewhere (waiting for its tails), if
-    /// one is waiting. Then the link has nothing outstanding.
-    pub fn flush_exhaust(&mut self, dt: f64) -> Option<f64> {
-        let r = self.remote.0.as_mut()?;
-        let (rest, k) = r.pending.take()?;
-        std::mem::swap(&mut r.u_pending, &mut r.u_spare);
-        r.link.tails(&mut r.tails);
-        let tails = std::mem::take(&mut r.tails);
-        let u = std::mem::take(&mut r.u_spare);
-        let a = self.tails_sound(&tails, &u, rest, k, dt);
-        if let Some(r) = self.remote.0.as_mut() {
-            r.tails = tails;
-            r.u_spare = u;
+    /// The sounds of the steps taken with the net elsewhere that are still waiting for their
+    /// tails, pushed to `out` in order (the partial block goes out and everything comes back):
+    /// how many. Then the link has nothing outstanding.
+    pub fn flush_exhaust(&mut self, dt: f64, out: &mut Vec<f64>) -> usize {
+        let Some(r) = self.remote.0.as_mut() else {
+            return 0;
+        };
+        if r.stage.steps > 0 {
+            r.hand_over();
         }
-        Some(a)
+        while r.in_flight > 0 {
+            r.take_oldest();
+        }
+        let mut count = 0;
+        while let Some(a) = self.finish_remote_step(dt) {
+            out.push(a);
+            count += 1;
+        }
+        count
     }
 
     /// Stop running the net elsewhere (after [`Engine::flush_exhaust`]): the link, to get the
@@ -5901,14 +5980,15 @@ mod tests {
     }
 
     #[test]
-    fn an_exhaust_run_elsewhere_gives_the_same_samples_a_step_late() {
-        // the net behind a link (here run in order, as a thread would) against the net in the
-        // engine: identical samples, each one step later; flushing gives the last. A blip midway
-        // moves the mean flows the pipes' friction follows.
+    fn an_exhaust_run_in_blocks_elsewhere_gives_the_same_samples_late() {
+        // the net behind a block link (here run in order, as a thread would) against the net in
+        // the engine: identical samples to the bit, each one `2·block` steps later; flushing gives
+        // the rest. A blip midway moves the mean flows the pipes' friction follows; the run ends
+        // in the middle of a block.
         for def in [EngineDef::lfa_v10(), EngineDef::inline4()] {
             let mut a = Engine::new(def.clone(), 3000.0, 1);
             let mut b = Engine::new(def.clone(), 3000.0, 1);
-            let n = (0.15 / DT) as usize;
+            let n = (0.15 / DT) as usize + 7;
             let c = |k: usize| Controls {
                 throttle: if (n / 3..n / 2).contains(&k) {
                     1.0
@@ -5921,18 +6001,27 @@ mod tests {
             for k in 0..10 {
                 assert_eq!(a.step(DT, &c(k)), b.step(DT, &c(k)));
             }
-            assert!(b.detach_exhaust(|net| Box::new(crate::exhaust::LocalLink::new(net))));
-            let mut previous = None;
+            let mut block = 0;
+            assert!(b.detach_exhaust(|net, max| {
+                block = max.min(16);
+                Box::new(crate::exhaust::LocalLink::new(net, block))
+            }));
+            assert!(block >= 8, "{}: block {block}", def.name);
+            let lag = 2 * block;
+            let mut want = Vec::new();
+            let mut got = Vec::new();
             for k in 10..n {
-                let x = a.step(DT, &c(k));
-                let y = b.step(DT, &c(k));
-                if let Some(p) = previous {
-                    assert_eq!(y, p, "{} step {k}", def.name);
-                }
-                previous = Some(x);
+                want.push(a.step(DT, &c(k)));
+                got.push(b.step(DT, &c(k)));
             }
-            assert_eq!(b.flush_exhaust(DT), previous, "{}", def.name);
-            assert_eq!(b.flush_exhaust(DT), None);
+            let flushed = b.flush_exhaust(DT, &mut got);
+            assert_eq!(flushed, lag, "{}", def.name);
+            assert_eq!(got.len(), want.len() + lag);
+            for (k, (w, g)) in want.iter().zip(&got[lag..]).enumerate() {
+                assert_eq!(w.to_bits(), g.to_bits(), "{} step {k}", def.name);
+            }
+            assert!(got[..lag].iter().all(|x| *x == 0.0));
+            assert_eq!(b.flush_exhaust(DT, &mut got), 0);
             assert_eq!(a.rpm(), b.rpm());
         }
     }
@@ -5987,17 +6076,17 @@ mod tests {
         }
         assert_eq!(b.cylinders(), 10);
         let (mut net, mut set) = (None, None);
-        assert!(b.detach_exhaust(|n| {
+        assert!(b.detach_exhaust(|n, max| {
             assert_eq!(n.valves(), 10);
             net = Some(n.clone());
-            Box::new(crate::exhaust::LocalLink::new(n))
+            Box::new(crate::exhaust::LocalLink::new(n, max.min(16)))
         }));
         assert!(format!("{b:?}").contains("remote exhaust"));
         assert!(b.detach_runners(5, |s| {
             set = Some(s.clone());
             Box::new(crate::intake_fv::LocalRunners::new(s))
         }));
-        assert_eq!(b.flush_exhaust(DT), None);
+        assert_eq!(b.flush_exhaust(DT, &mut Vec::new()), 0);
         assert!(b.end_detached().is_some());
         assert!(b.end_detached_runners().is_some());
         b.attach_exhaust(net.unwrap());
