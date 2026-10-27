@@ -166,7 +166,28 @@ pub struct Pipe1d {
     /// Each cell's slow mean velocity ū (time constant [`MEAN_FLOW_TAU_S`]), for the acoustic
     /// loss.
     u_mean: Vec<f64>,
+    /// Heat exchange with the wall by Reynolds' analogy (needs `friction`): Benson vol. 1, eqs.
+    /// 7.91–7.92, h = (f/2)·ρ|u|c_p with f Fanning's (Darcy's/4), so the gas gains
+    /// ρq = (f_D/2D)·ρ|u|c_p·(T_w − T) per volume. Real tubes lose energy to their walls as well
+    /// as to friction; without it pipe resonances ring too long (Ange, *Improving My Engine Sound
+    /// Simulator With Real Data*).
+    pub wall_heat: bool,
+    /// The wall's temperature, K: it takes the gas's heat into its thermal mass and gives it to
+    /// the ambient by free convection and radiation (see [`Pipe1d::step`]).
+    pub wall_t: f64,
 }
+
+/// The pipe wall: a 16-gauge (1.5 mm) carbon-steel tube, as tubular headers are built
+/// (Incropera et al., *Fundamentals of Heat and Mass Transfer*, Table A.1, AISI 1010 at 600 K:
+/// ρ = 7832 kg/m³, c_p = 559 J/(kg·K)).
+const WALL_THICKNESS_M: f64 = 1.5e-3;
+const WALL_RHO_CP: f64 = 7832.0 * 559.0;
+/// Outside the pipe: free convection to still air, h ≈ 10 W/(m²·K) (Incropera, Table 1.1:
+/// 2–25 for gases), and radiation from oxidized steel, ε = 0.79 (Table A.11), to 300 K.
+const WALL_H_FREE: f64 = 10.0;
+const WALL_EMISSIVITY: f64 = 0.79;
+const AMBIENT_T_K: f64 = 300.0;
+const STEFAN_BOLTZMANN: f64 = 5.670_374e-8;
 
 /// Time constant of the cells' mean velocity ū under the acoustic wall loss, s: slower than any
 /// engine order (an idling four-cylinder fires at ~27 Hz), so the loss acts on the waves only.
@@ -199,6 +220,8 @@ impl Pipe1d {
             friction: 0.0,
             acoustic_loss: 0.0,
             u_mean: Vec::new(),
+            wall_heat: false,
+            wall_t: init.p / (init.rho * crate::gas::R_AIR),
         }
     }
     /// Largest stable step for Courant number `cfl`.
@@ -267,11 +290,43 @@ impl Pipe1d {
             }
         }
         self.end_flux = ends;
+        if self.wall_heat {
+            self.wall_step(dt);
+        }
         if self.acoustic_loss > 0.0 {
             let k = (dt / MEAN_FLOW_TAU_S).min(1.0);
             for (m, c) in self.u_mean.iter_mut().zip(&self.cells) {
                 *m += k * (c.mom / c.rho - *m);
             }
+        }
+    }
+
+    /// The wall over `dt`: the heat the gas gives it (Reynolds' analogy, as in the energy
+    /// equation) into its thermal mass ρc_p·πD·t per length, less what it loses outside,
+    /// (h_free + εσ(T_w² + T_a²)(T_w + T_a))·π(D + 2t)·(T_w − T_a).
+    fn wall_step(&mut self, dt: f64) {
+        let pi = std::f64::consts::PI;
+        let (mut q, mut c, mut outside) = (0.0, 0.0, 0.0);
+        let tw = self.wall_t;
+        let ta = AMBIENT_T_K;
+        let h_out =
+            WALL_H_FREE + WALL_EMISSIVITY * STEFAN_BOLTZMANN * (tw * tw + ta * ta) * (tw + ta);
+        for (j, cell) in self.cells.iter().enumerate() {
+            let p = cell.to_prim();
+            let t = p.p / (p.rho * crate::gas::R_AIR);
+            let d = (4.0 * self.area[j] / pi).sqrt();
+            q += self.friction / (2.0 * d)
+                * p.rho
+                * p.u.abs()
+                * crate::gas::CP
+                * (t - tw)
+                * self.area[j]
+                * self.dx;
+            c += WALL_RHO_CP * pi * d * WALL_THICKNESS_M * self.dx;
+            outside += h_out * pi * (d + 2.0 * WALL_THICKNESS_M) * self.dx * (tw - ta);
+        }
+        if c > 0.0 {
+            self.wall_t += dt * (q - outside) / c;
         }
     }
 
@@ -523,7 +578,7 @@ impl Pipe1d {
         for (k, (q, s)) in self.qv.iter_mut().zip(w.iter()).enumerate() {
             *q = s.u * self.area[(k.max(3) - 3).min(n - 1)];
         }
-        if self.friction > 0.0 && self.wall_coef.len() != n {
+        if (self.friction > 0.0 || self.wall_heat) && self.wall_coef.len() != n {
             // the areas are set once (`new`, `segmented`); D = √(4A/π)
             self.wall_coef = self
                 .area
@@ -607,10 +662,22 @@ impl Pipe1d {
                 let c = (crate::gas::GAMMA * cell.p / cell.rho).sqrt();
                 wall -= 2.0 * self.acoustic_loss * c * cell.rho * (cell.u - self.u_mean[j]);
             }
+            // Reynolds' analogy: −f_D·wall_coef = f_D/(2D)
+            let heat = if self.wall_heat {
+                let t = cell.p / (cell.rho * crate::gas::R_AIR);
+                -self.friction
+                    * self.wall_coef[j]
+                    * cell.rho
+                    * cell.u.abs()
+                    * crate::gas::CP
+                    * (self.wall_t - t)
+            } else {
+                0.0
+            };
             *r = Cons {
                 rho: -(fb * b.rho - fa * a.rho) * inv,
                 mom: -(fb * b.mom - fa * a.mom - ps) * inv + wall,
-                e: -(fb * b.e - fa * a.e) * inv,
+                e: -(fb * b.e - fa * a.e) * inv + heat,
             };
         }
     }
@@ -927,6 +994,66 @@ mod tests {
         let dp = p.prim(2).p - p.prim(n - 3).p;
         let span = (n - 5) as f64 / n as f64;
         assert!((dp / (540.0 * span) - 1.0).abs() < 0.15, "Δp {dp:.0} Pa");
+    }
+
+    /// 0.2 m of 40 mm pipe full of gas at 882.6 K (ρ 0.4, 1 atm) flowing at 50 m/s, the same
+    /// state at both ends so the fluxes cancel: only the wall acts.
+    fn hot_flow(wall_t: f64) -> Pipe1d {
+        let gas = Prim {
+            rho: 0.4,
+            u: 50.0,
+            p: 101_325.0,
+        };
+        let a = std::f64::consts::PI * 0.25 * 0.04 * 0.04;
+        let mut p = Pipe1d::segmented(&[(0.2, a)], 0.02, gas);
+        p.friction = 0.025;
+        p.wall_heat = true;
+        p.wall_t = wall_t;
+        p.left = Boundary::State(gas);
+        p.right = Boundary::State(gas);
+        p
+    }
+
+    #[test]
+    fn the_wall_takes_heat_by_reynolds_analogy() {
+        // Benson eq. 7.92 per volume: (f_D/2D)·ρ|u|c_p·(T_w − T) = (0.025/0.08)·0.4·50·1004.5·
+        // (500 − 882.62) = −2.401 9e6 W/m³: over 1 µs each cell loses 2.4019 J/m³ (hand)
+        let mut p = hot_flow(500.0);
+        let before = p.cells[5].e;
+        p.step(1e-6);
+        let t_gas = 101_325.0 / (0.4 * crate::gas::R_AIR);
+        let want = 1e-6 * 0.025 / 0.08 * 0.4 * 50.0 * crate::gas::CP * (500.0 - t_gas);
+        approx::assert_relative_eq!(p.cells[5].e - before, want, max_relative = 1e-3);
+        approx::assert_relative_eq!(want, -2.4019, max_relative = 1e-3);
+        // still gas exchanges nothing by the analogy (h ∝ |u|)
+        let mut still = hot_flow(500.0);
+        for c in still.cells.iter_mut() {
+            *c = Prim {
+                rho: 0.4,
+                u: 0.0,
+                p: 101_325.0,
+            }
+            .to_cons();
+        }
+        still.left = Boundary::Wall;
+        still.right = Boundary::Wall;
+        let e0 = still.cells[5].e;
+        still.step(1e-6);
+        assert_eq!(still.cells[5].e, e0);
+    }
+
+    #[test]
+    fn the_wall_warms_by_what_it_takes_less_what_it_sheds() {
+        // the same pipe, wall at 500 K: in 603.7 W (2.4019e6 W/m³ over 2.5133e-4 m³); out
+        // (10 + 0.79·σ·(500² + 300²)·(500 + 300))·π·0.043·0.2·(500 − 300) = 22.18·0.027018·200
+        // = 119.86 W; thermal mass 7832·559·π·0.04·0.0015·0.2 = 164.98 J/K (hand). Over 1 ms:
+        // ΔT_w = 1e-3·(603.7 − 119.86)/164.98 = 2.933e-3 K, in 100 stable steps of 10 µs (the
+        // gas cools ≈ 2 % meanwhile, so it gives a little less)
+        let mut p = hot_flow(500.0);
+        for _ in 0..100 {
+            p.step(1e-5);
+        }
+        approx::assert_relative_eq!(p.wall_t - 500.0, 2.933e-3, max_relative = 0.03);
     }
 
     #[test]

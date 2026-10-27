@@ -270,6 +270,7 @@ fn pipe(length: f64, diameter: f64, init: Prim) -> Pipe1d {
     let mut p = Pipe1d::segmented(&[(length, area(diameter))], length / n, init);
     p.floors = (1e-3, 500.0);
     p.friction = PIPE_FRICTION;
+    p.wall_heat = true;
     p.acoustic_loss = acoustic_loss();
     p
 }
@@ -309,6 +310,7 @@ impl ExhaustFv {
                     Pipe1d::segmented(&[(def.collector_length_m, a_collector)], CELL_M, init);
                 out.floors = (1e-3, 500.0);
                 out.friction = PIPE_FRICTION;
+                out.wall_heat = true;
                 out.acoustic_loss = acoustic_loss();
                 Branch {
                     members,
@@ -1331,6 +1333,8 @@ mod tests {
         };
         for (demand, expected) in [(2.0, None), (1e-9, Some(1e-9))] {
             let mut net = ExhaustFv::new(&def(), 1, DT);
+            // the valve face's accounting alone: no heat to the wall meanwhile
+            net.primaries[0].wall_heat = false;
             let half = 0.5 * net.port_volume(0).mass_kg;
             let m0 = net.total_mass();
             let e0 = energy(&net.primaries[0]);
