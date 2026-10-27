@@ -608,3 +608,22 @@ coupling removes the open-loop damping.
   exhaust-stroke pressure the same; FV's gross work is 8 % lower (152.6 vs 166.5 J) as it traps
   ~5 % less fresh charge. Freezing the residual's effect on the flame halves the open-loop swing;
   retuning the idle spark (reserve 10–15°, KD 10–60) does not help (more KD is worse).
+
+## Wall heat makes the FV valve chatter on overrun, through the temperature contrast (2026-10-27)
+
+**Symptom.** With Reynolds-analogy wall heat in the FV exhaust pipes (`feat/pipe-heat`), the
+overrun chatter test counts 37 reversals in 7 cycles (the limit is 25). Its 1–4-step bursts
+reach 2 % of the peak flow, against 0.25 % without wall heat. Benson's boundary (PR #58) on top
+changes little: 33 reversals, 1.7 %.
+
+**Measured.**
+
+- *Not the first cell.* Without heat in the cell at the valve: 41 reversals.
+- *The contrast.* Walls starting at 350 K instead of the pipes' initial 600 K: 15 reversals, no
+  bursts. The hot walls keep the primary's gas hot while the cylinder holds cool air on a fuel
+  cut. Each crossing then trades gas of very different density and enthalpy, and the explicit
+  valve–pipe coupling overshoots.
+
+**State.** A real engine on overrun after a pull has exactly that contrast, so the coupling must
+handle it, not the walls. Next: a valve step implicit in the first cell's temperature, or a
+limiter that uses both sides' real enthalpies. The branch is parked until then.
