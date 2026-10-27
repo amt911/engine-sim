@@ -48,6 +48,10 @@ pub struct ExhaustFv {
     /// Valve mass and energy accumulated since the last FV step, per cylinder (kg, J).
     acc_mass: Vec<f64>,
     acc_energy: Vec<f64>,
+    /// The valve boundary's momentum flux per area, p + ρu², integrated over the physics steps
+    /// since the last FV step, and the time it covers ([`Self::add_valve_boundary`]).
+    acc_mom: Vec<f64>,
+    acc_t: Vec<f64>,
     /// Radiated source at each tail outlet this physics step.
     tails: Vec<f64>,
     /// Mass that left the FV pipes for the designed path in the last physics step, kg.
@@ -341,6 +345,8 @@ impl ExhaustFv {
             count: 0,
             acc_mass: vec![0.0; cylinders],
             acc_energy: vec![0.0; cylinders],
+            acc_mom: vec![0.0; cylinders],
+            acc_t: vec![0.0; cylinders],
             tails: vec![0.0; def.groups(cylinders).len()],
             vented: 0.0,
         }
@@ -389,6 +395,15 @@ impl ExhaustFv {
         self.acc_energy[i] += dm * h;
     }
 
+    /// Register this physics step's valve boundary (`p` + ρu², per area, for `dt` s): the
+    /// first face then carries the boundary's own pressure instead of rebuilding it from a
+    /// first cell several physics steps old — against that stale cell a strong temperature
+    /// contrast across the valve made the flow flip every few steps (FINDINGS, 2026-10-27).
+    pub fn add_valve_boundary(&mut self, i: usize, momentum_flux: f64, dt: f64) {
+        self.acc_mom[i] += momentum_flux * dt;
+        self.acc_t[i] += dt;
+    }
+
     /// Advance one physics step: every `substeps` steps the FV pipes advance by `dt_fv`; the
     /// designed paths every step. Returns the radiated source summed over the tails.
     pub fn step(&mut self) -> f64 {
@@ -434,9 +449,16 @@ impl ExhaustFv {
             };
             let mass_flux = scale * self.acc_mass[i] / (a * dt);
             let energy_flux = scale * self.acc_energy[i] / (a * dt);
-            pipe.left = Boundary::Flux(flux_boundary(mass_flux, energy_flux, cell));
+            let mut flux = flux_boundary(mass_flux, energy_flux, cell);
+            if self.acc_t[i] > 0.0 {
+                // the momentum the valve's boundary carried, on average over the open steps
+                flux.mom = self.acc_mom[i] / self.acc_t[i];
+            }
+            pipe.left = Boundary::Flux(flux);
             self.acc_mass[i] = 0.0;
             self.acc_energy[i] = 0.0;
+            self.acc_mom[i] = 0.0;
+            self.acc_t[i] = 0.0;
         }
         // Adaptive sub-cycling: deep rarefactions (overrun) can push |u| + c beyond the speed
         // the fixed step was sized for; split the step so every sub-step respects CFL ≤ 0.9.
@@ -1497,6 +1519,30 @@ mod tests {
         let (lambda, t) = net.port_lambda(0, 2.0e5);
         approx::assert_relative_eq!(lambda, 0.950_850_2, max_relative = 1e-6);
         approx::assert_relative_eq!(t, 1_045.30, max_relative = 1e-5);
+    }
+
+    #[test]
+    fn the_first_face_carries_the_valve_boundarys_momentum() {
+        // two physics steps of a boundary at p + ρu² = 1.6e5 and 1.8e5 Pa over equal times:
+        // the next FV step's first face carries their mean, 1.7e5 Pa (not the first cell's
+        // pressure); with no boundary registered it falls back to the cell's
+        let mut net = ExhaustFv::new(&def(), 1, DT);
+        net.add_valve_flow(0, 1e-6, 1004.5 * 900.0);
+        net.add_valve_boundary(0, 1.6e5, DT);
+        net.add_valve_flow(0, 1e-6, 1004.5 * 900.0);
+        net.add_valve_boundary(0, 1.8e5, DT);
+        net.pipe_step();
+        match net.primaries[0].left {
+            Boundary::Flux(f) => approx::assert_relative_eq!(f.mom, 1.7e5, max_relative = 1e-12),
+            other => panic!("{other:?}"),
+        }
+        // (the fallback rebuilds it from the first cell as it was before the step)
+        let cell = net.primaries[0].prim(0);
+        net.pipe_step();
+        match net.primaries[0].left {
+            Boundary::Flux(f) => assert!((f.mom - cell.p).abs() < 1e-6 * cell.p.max(1.0) + 1.0),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

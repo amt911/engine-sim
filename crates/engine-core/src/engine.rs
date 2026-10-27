@@ -1570,15 +1570,21 @@ impl Engine {
             };
             // Reverse flow (pipe → cylinder) passes the valve against the port's curve with a lower
             // discharge coefficient than forward flow (Blair measures separate in/out maps).
-            let f_ex = (a_ex > 0.0).then(|| {
-                let f = plan_ex(a_ex);
-                if f.dm < 0.0 && self.def.exhaust_reverse_cd_ratio < 1.0 {
+            let fb_ex = (a_ex > 0.0).then(|| {
+                let fb = plan_ex(a_ex);
+                if fb.0.dm < 0.0 && self.def.exhaust_reverse_cd_ratio < 1.0 {
                     plan_ex(a_ex * self.def.exhaust_reverse_cd_ratio)
                 } else {
-                    f
+                    fb
                 }
             });
+            let f_ex = fb_ex.map(|fb| fb.0);
             cs.valve_hint = hint.get();
+            // the FV primary's first face takes the boundary's momentum (p + ρu²)
+            if let (Some(fv), Some((_, b))) = (&mut self.fv, fb_ex) {
+                let rho = crate::gas::GAMMA * b.p / (b.a * b.a);
+                fv.add_valve_boundary(i, b.p + rho * b.u * b.u, dt);
+            }
             if let Some(f) = f_ex
                 && f.dm < 0.0
             {

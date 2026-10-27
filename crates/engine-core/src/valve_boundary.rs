@@ -139,7 +139,7 @@ pub fn valve_flow(
     dt: f64,
     relax: f64,
     hint: &mut f64,
-) -> crate::gas::Flow {
+) -> (crate::gas::Flow, Boundary) {
     use crate::gas::{CP, GAMMA, R_AIR};
     let Pipe {
         area: pipe_area,
@@ -148,10 +148,18 @@ pub fn valve_flow(
     } = pipe;
     let (p_c, t_c) = (gas.pressure(), gas.temperature());
     if cd_area <= 0.0 || pipe_area <= 0.0 {
-        return crate::gas::Flow {
-            dm: 0.0,
-            h: CP * t_c,
+        let closed = Boundary {
+            p: p_c,
+            u: 0.0,
+            a: (KAPPA * R_AIR * t_c).sqrt(),
         };
+        return (
+            crate::gas::Flow {
+                dm: 0.0,
+                h: CP * t_c,
+            },
+            closed,
+        );
     }
     let a_c = (KAPPA * R_AIR * t_c).sqrt();
     // the pipe gas's speed of sound brought isentropically to the cylinder's pressure, from
@@ -165,7 +173,7 @@ pub fn valve_flow(
     if dm > 0.0 {
         dm = dm.min(0.5 * gas.mass_kg);
     }
-    crate::gas::Flow { dm, h }
+    (crate::gas::Flow { dm, h }, b)
 }
 
 /// Bracket width the roots stop at, relative: π^7 is the pressure, so 1e-10 in π is 7e-10 in p.
@@ -528,7 +536,7 @@ mod tests {
             t_back: 700.0,
         };
         let dt = 1.0 / 192_000.0;
-        let f = valve_flow(&gas, 3.0e-4, at(pipe, lam), dt, 1.0, &mut { f64::NAN });
+        let (f, _) = valve_flow(&gas, 3.0e-4, at(pipe, lam), dt, 1.0, &mut { f64::NAN });
         let a_back = (KAPPA * 287.0 * 700.0).sqrt() / lam;
         let b = solve(
             3.0e5,
@@ -540,11 +548,13 @@ mod tests {
         assert_relative_eq!(f.dm, b.mass_flow(pipe) * dt, max_relative = 1e-12);
         assert_relative_eq!(f.h, crate::gas::CP * 1300.0, max_relative = 1e-12);
         // a step long enough to empty it stops at half the mass or at equal pressures
-        let f = valve_flow(&gas, 3.0e-4, at(pipe, lam), 1.0, 1.0, &mut { f64::NAN });
+        let (f, _) = valve_flow(&gas, 3.0e-4, at(pipe, lam), 1.0, 1.0, &mut { f64::NAN });
         assert!(f.dm <= 0.5 * gas.mass_kg + 1e-15);
         // a closed valve passes nothing
         assert_eq!(
-            valve_flow(&gas, 0.0, at(pipe, lam), dt, 1.0, &mut { f64::NAN }).dm,
+            valve_flow(&gas, 0.0, at(pipe, lam), dt, 1.0, &mut { f64::NAN })
+                .0
+                .dm,
             0.0
         );
     }
