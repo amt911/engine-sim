@@ -2,7 +2,8 @@
 //! scenes. `drive` (idle, three blips, a pull to the limiter, lift-off), `sweep` (full
 //! throttle from idle to redline), and `loops`: a grid of held speeds × loads, each a whole
 //! number of engine cycles long — at a speed nudged so a cycle is a whole number of samples —
-//! so a game can loop it without a seam.
+//! so a game can loop it without a seam; `held:RPM[:LOAD[:SECONDS]]`, one such held speed (to
+//! compare with a recording of a real engine held there).
 
 use crate::quality::Quality;
 use crate::sim::Simulation;
@@ -10,23 +11,56 @@ use engine_core::drivetrain::VehicleDef;
 use engine_core::engine::{Controls, EngineDef};
 
 /// A scripted scene.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Scene {
     Drive,
     Sweep,
     Loops,
+    /// One speed held at a load (0–1) for about `seconds` (whole cycles, seamless).
+    Held {
+        rpm: f64,
+        load: f64,
+        seconds: f64,
+    },
 }
 
 impl std::str::FromStr for Scene {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, String> {
-        match s.to_ascii_lowercase().as_str() {
+        let lower = s.to_ascii_lowercase();
+        if let Some(args) = lower.strip_prefix("held:") {
+            return held(args)
+                .ok_or_else(|| format!("bad held scene '{s}': held:RPM[:LOAD 0-1[:SECONDS > 0]]"));
+        }
+        match lower.as_str() {
             "drive" => Ok(Scene::Drive),
             "sweep" => Ok(Scene::Sweep),
             "loops" => Ok(Scene::Loops),
-            _ => Err(format!("unknown scene '{s}' (drive, sweep, loops)")),
+            _ => Err(format!(
+                "unknown scene '{s}' (drive, sweep, loops, held:RPM[:LOAD[:SECONDS]])"
+            )),
         }
     }
+}
+
+/// `RPM[:LOAD[:SECONDS]]` of a held scene; None unless the speed is positive, the load within
+/// 0–1 and the length positive.
+fn held(args: &str) -> Option<Scene> {
+    let v: Vec<f64> = args
+        .split(':')
+        .map(|a| a.parse().ok())
+        .collect::<Option<_>>()?;
+    let (rpm, load, seconds) = match v[..] {
+        [r] => (r, 1.0, 4.0),
+        [r, l] => (r, l, 4.0),
+        [r, l, t] => (r, l, t),
+        _ => return None,
+    };
+    (rpm > 0.0 && (0.0..=1.0).contains(&load) && seconds > 0.0).then_some(Scene::Held {
+        rpm,
+        load,
+        seconds,
+    })
 }
 
 /// The drive scene's throttle at `t` seconds: idle, blips at 2, 3 and 4 s (0.25 s each), full
@@ -189,6 +223,13 @@ pub fn render_scene(
             wav(out, &x[0])?;
             Ok(vec![out.to_path_buf()])
         }
+        Scene::Held { rpm, load, seconds } => {
+            let cycles = (seconds * rpm / 120.0).ceil().max(1.0) as usize;
+            let mut x = [render_loop(def, rpm, load, cycles, RATE, quality).1];
+            normalize(&mut x, engine_audio::dsp::LIMITER_THRESHOLD as f32);
+            wav(out, &x[0])?;
+            Ok(vec![out.to_path_buf()])
+        }
         Scene::Loops => {
             std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
             let mut files = Vec::new();
@@ -257,6 +298,53 @@ mod tests {
         assert_eq!("Sweep".parse(), Ok(Scene::Sweep));
         assert_eq!("loops".parse(), Ok(Scene::Loops));
         assert!("race".parse::<Scene>().is_err());
+        // one held speed: held:RPM[:LOAD[:SECONDS]], full load and 4 s unless given
+        assert_eq!(
+            "held:7400".parse(),
+            Ok(Scene::Held {
+                rpm: 7400.0,
+                load: 1.0,
+                seconds: 4.0
+            })
+        );
+        assert_eq!(
+            "Held:3000:0.5:8".parse(),
+            Ok(Scene::Held {
+                rpm: 3000.0,
+                load: 0.5,
+                seconds: 8.0
+            })
+        );
+        for bad in [
+            "held",
+            "held:",
+            "held:x",
+            "held:7400:2",
+            "held:7400:1:0",
+            "held:-5",
+            "held:1:1:1:1",
+        ] {
+            assert!(bad.parse::<Scene>().is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_held_scene_is_whole_cycles_at_its_speed() {
+        // 3000 rpm is 25 cycles/s: a cycle is 1920 samples at 48 kHz, so 0.5 s is 12.5 cycles,
+        // rounded up to 13 whole cycles = 24 960 samples
+        let dir = std::env::temp_dir().join(format!("engine-sim-held-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("held.wav");
+        let scene = Scene::Held {
+            rpm: 3000.0,
+            load: 1.0,
+            seconds: 0.5,
+        };
+        let files = render_scene(&EngineDef::single(), scene, &path, Quality::Low).unwrap();
+        assert_eq!(files, std::slice::from_ref(&path));
+        let wav = hound::WavReader::open(&path).unwrap();
+        assert_eq!(wav.duration(), 24_960);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

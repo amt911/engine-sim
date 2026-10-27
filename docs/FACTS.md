@@ -112,3 +112,50 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   - Time above 90 % lift is about the same for both shapes (0.23–0.245 of the 0.15 mm duration).
     The lever on high-speed breathing is lift (presets cap L/D at 0.25; Heywood: max lift ≈ 12 %
     of the bore), not shape.
+
+## Why it still sounds synthetic: real LFA against the render (2026-10-27, `--render held`)
+
+- **Spectral subtraction** (job script `resta.py`; render resampled to the real cycle rate, level
+  matched over 300–4000 Hz, over-subtraction α = 6, which leaves −15 dB of a recording against
+  itself): at 7400 rpm full load the render is lines (orders 5, 10, 20, 30) over a floor 10–25 dB
+  under the real one's.
+  - Missing: 100–250 Hz by 10–14 dB, below the firing frequency (617 Hz). Real engines fill that
+    range from cylinder-to-cylinder differences.
+  - Missing: 2.5–8 kHz by 15–22 dB.
+- **Three real LFA recordings** at 6900–8100 rpm (the 0.8 s clip, `lfa-k3t6V_oY-9Q` 20–23 s,
+  `lfa-yY0Fx8Thyx4` 178.8–183 s) agree:
+  - Level re the firing line: 2.5–5 kHz at −5 to −12 dB (render −23); 5–10 kHz at −12 to −15 dB
+    (render −29).
+  - The envelope of that noise is stationary: ≤ 1 % of its modulation at the firing (or half)
+    frequency, where the render has 25 %. The missing source is steady broadband noise, not
+    stronger pulses.
+- **Ablation at 7400 rpm full load** (LFA, one `sound.*` source at 0; dB change per band
+  80–160 / 160–315 / 315–630 / 630–1250 / 1250–2500 / 2500–5000 / 5000–10000 Hz):
+
+  | Source off | 80–160 | 160–315 | 315–630 | 630–1250 | 1250–2500 | 2500–5000 | 5000–10000 |
+  |---|---|---|---|---|---|---|---|
+  | flow_noise (tail jets) | −0.1 | −0.1 | −0.1 | −0.1 | −0.1 | −0.2 | −0.3 |
+  | intake | −0.4 | −0.4 | +2.4 | +0.7 | −1.2 | −2.1 | −0.6 |
+  | valve_jet | 0 | 0 | 0 | 0 | 0 | −0.8 | −6.2 |
+  | block | +0.5 | +0.4 | −3.9 | −11.0 | −11.0 | +0.1 | +0.4 |
+  | mechanical | 0 | 0 | +0.1 | 0 | −0.2 | −0.7 | −0.1 |
+  | combustion_jitter | −8.8 | +0.1 | +0.7 | +0.5 | −0.9 | 0 | +0.4 |
+
+  The block owns 0.6–2.5 kHz. The tail jets are negligible at the tail's ~55 m/s, and nothing
+  supplies steady broadband above 2.5 kHz. The candidate is in-duct flow-generated noise
+  (Nelson–Morfey). Yasuda 2010 measures silencer flow noise rivalling the engine's at
+  5000–6000 rpm. Papers requested in PAPERS.md.
+- **VTEC is nearly inaudible in the model**: the K20A held at 6500 rpm full load, VTEC on minus
+  forced off: ≤ 1.7 dB in any band, +0.1 dB overall; torque +3 % at 6500 and +10 % at 7500.
+- **K20A2 cam lobe heights** (Acura RSX 02–03 service manual, `papers/`):
+  - intake primary / mid (VTEC) / secondary: 32.791 / 35.534 / 32.678 mm;
+  - exhaust mid / secondary: 34.768 / 32.661 mm (the primary's figure is illegible in the scan).
+  - The exhaust's VTEC lobe is real: +2.1 mm of cam over its secondary, against +2.7 mm on the
+    intake.
+  - No durations or base circle are given.
+- **Converting quoted cam timing to the model's sin²**: from Heywood Fig. 6.16c (digitized), the
+  sin² of equal time-area and peak lift spans 149–150° cam, which is robust.
+  - Its ratio to the duration quoted at 0.15 mm is 1.14–1.19. This depends on the 0.1 mm offset
+    of the figure's axis, so the 1.125 above is the low end.
+  - At 1 mm it is 1.27–1.37 and depends on the lobe's peak lift. Lobes are not lift-scaled copies
+    of one shape, so a 1 mm timing alone does not fix the equivalent sin².
