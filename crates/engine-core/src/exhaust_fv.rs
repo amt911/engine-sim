@@ -48,6 +48,10 @@ pub struct ExhaustFv {
     /// Valve mass and energy accumulated since the last FV step, per cylinder (kg, J).
     acc_mass: Vec<f64>,
     acc_energy: Vec<f64>,
+    /// The valve boundary's momentum flux per area, p + ρu², integrated over the physics steps
+    /// since the last FV step, and the time it covers ([`Self::add_valve_boundary`]).
+    acc_mom: Vec<f64>,
+    acc_t: Vec<f64>,
     /// Radiated source at each tail outlet this physics step.
     tails: Vec<f64>,
     /// Mass that left the FV pipes for the designed path in the last physics step, kg.
@@ -341,6 +345,8 @@ impl ExhaustFv {
             count: 0,
             acc_mass: vec![0.0; cylinders],
             acc_energy: vec![0.0; cylinders],
+            acc_mom: vec![0.0; cylinders],
+            acc_t: vec![0.0; cylinders],
             tails: vec![0.0; def.groups(cylinders).len()],
             vented: 0.0,
         }
@@ -350,6 +356,20 @@ impl ExhaustFv {
     pub fn port_state(&self, i: usize) -> (f64, f64) {
         let p = self.primaries[i].prim(0);
         (p.p, p.p / (p.rho * R_AIR))
+    }
+
+    /// The primaries' cross-section, m².
+    pub fn primary_area(&self) -> f64 {
+        self.a_primary
+    }
+
+    /// The incoming Riemann variable at cylinder `i`'s valve from the first primary cell, referred
+    /// to the cylinder's pressure `p_cyl` ([`crate::valve_boundary::lambda_in`]), and that cell's
+    /// temperature, K.
+    pub fn port_lambda(&self, i: usize, p_cyl: f64) -> (f64, f64) {
+        let c = self.primaries[i].prim(0);
+        let lambda = crate::valve_boundary::lambda_in(p_cyl, c.p, c.u, c.sound_speed());
+        (lambda, c.p / (c.rho * R_AIR))
     }
 
     /// The first primary cell as a 0D volume, for the valve flow limiter.
@@ -368,22 +388,20 @@ impl ExhaustFv {
         }
     }
 
-    /// The primary as the valve sees it between pipe steps: the wave its first cell sends back
-    /// towards the valve (gauge Pa, the linear left-running part (p′ − ρc·u)/2), its impedance
-    /// to a mass flow c/A (Pa per kg/s), and the gas temperature there (K) for reversion.
-    pub fn port_wave(&self, i: usize) -> (f64, f64, f64) {
-        let c = self.primaries[i].prim(0);
-        let a = c.sound_speed();
-        let arriving = 0.5 * ((c.p - ATM_PA) - c.rho * a * c.u);
-        let t = c.p / (c.rho * R_AIR);
-        (arriving, a / self.a_primary, t)
-    }
-
     /// Register this physics step's valve flow: `dm` kg into the pipe (negative = back into
     /// the cylinder) carrying specific enthalpy `h` (J/kg).
     pub fn add_valve_flow(&mut self, i: usize, dm: f64, h: f64) {
         self.acc_mass[i] += dm;
         self.acc_energy[i] += dm * h;
+    }
+
+    /// Register this physics step's valve boundary (`p` + ρu², per area, for `dt` s): the
+    /// first face then carries the boundary's own pressure instead of rebuilding it from a
+    /// first cell several physics steps old — against that stale cell a strong temperature
+    /// contrast across the valve made the flow flip every few steps (FINDINGS, 2026-10-27).
+    pub fn add_valve_boundary(&mut self, i: usize, momentum_flux: f64, dt: f64) {
+        self.acc_mom[i] += momentum_flux * dt;
+        self.acc_t[i] += dt;
     }
 
     /// Advance one physics step: every `substeps` steps the FV pipes advance by `dt_fv`; the
@@ -431,9 +449,16 @@ impl ExhaustFv {
             };
             let mass_flux = scale * self.acc_mass[i] / (a * dt);
             let energy_flux = scale * self.acc_energy[i] / (a * dt);
-            pipe.left = Boundary::Flux(flux_boundary(mass_flux, energy_flux, cell));
+            let mut flux = flux_boundary(mass_flux, energy_flux, cell);
+            if self.acc_t[i] > 0.0 {
+                // the momentum the valve's boundary carried, on average over the open steps
+                flux.mom = self.acc_mom[i] / self.acc_t[i];
+            }
+            pipe.left = Boundary::Flux(flux);
             self.acc_mass[i] = 0.0;
             self.acc_energy[i] = 0.0;
+            self.acc_mom[i] = 0.0;
+            self.acc_t[i] = 0.0;
         }
         // Adaptive sub-cycling: deep rarefactions (overrun) can push |u| + c beyond the speed
         // the fixed step was sized for; split the step so every sub-step respects CFL ≤ 0.9.
@@ -1480,10 +1505,10 @@ mod tests {
     }
 
     #[test]
-    fn the_port_sees_the_wave_arriving_from_its_first_cell() {
-        // ρ = 0.5 kg/m³, u = 30 m/s, p = 1.5 bar: c = √(1.4·1.5e5/0.5) = 648.07 m/s; the wave
-        // towards the valve (p′ − ρc·u)/2 = (48 675 − 9 721.1)/2 = 19 476.9 Pa; impedance c/A
-        // over a 40 mm primary (A = 1.2566e-3 m²) = 515 721; T = p/(ρR) = 1 045.3 K
+    fn the_valve_sees_the_characteristic_arriving_from_its_first_cell() {
+        // ρ = 0.5 kg/m³, u = 30 m/s away from the valve, p = 1.5 bar: c = √(1.4·1.5e5/0.5) =
+        // 648.074 m/s. Against a 2-bar cylinder λ_in = (0.75)^(1/7)·(1 − 0.2·30/648.074) =
+        // 0.950 850; T = p/(ρR) = 1 045.30 K
         let mut net = ExhaustFv::new(&def(), 1, DT);
         net.primaries[0].cells[0] = Prim {
             rho: 0.5,
@@ -1491,10 +1516,33 @@ mod tests {
             p: 1.5e5,
         }
         .to_cons();
-        let (arriving, z, t) = net.port_wave(0);
-        approx::assert_relative_eq!(arriving, 19_476.9, max_relative = 1e-5);
-        approx::assert_relative_eq!(z, 515_721.0, max_relative = 1e-5);
+        let (lambda, t) = net.port_lambda(0, 2.0e5);
+        approx::assert_relative_eq!(lambda, 0.950_850_2, max_relative = 1e-6);
         approx::assert_relative_eq!(t, 1_045.30, max_relative = 1e-5);
+    }
+
+    #[test]
+    fn the_first_face_carries_the_valve_boundarys_momentum() {
+        // two physics steps of a boundary at p + ρu² = 1.6e5 and 1.8e5 Pa over equal times:
+        // the next FV step's first face carries their mean, 1.7e5 Pa (not the first cell's
+        // pressure); with no boundary registered it falls back to the cell's
+        let mut net = ExhaustFv::new(&def(), 1, DT);
+        net.add_valve_flow(0, 1e-6, 1004.5 * 900.0);
+        net.add_valve_boundary(0, 1.6e5, DT);
+        net.add_valve_flow(0, 1e-6, 1004.5 * 900.0);
+        net.add_valve_boundary(0, 1.8e5, DT);
+        net.pipe_step();
+        match net.primaries[0].left {
+            Boundary::Flux(f) => approx::assert_relative_eq!(f.mom, 1.7e5, max_relative = 1e-12),
+            other => panic!("{other:?}"),
+        }
+        // (the fallback rebuilds it from the first cell as it was before the step)
+        let cell = net.primaries[0].prim(0);
+        net.pipe_step();
+        match net.primaries[0].left {
+            Boundary::Flux(f) => assert!((f.mom - cell.p).abs() < 1e-6 * cell.p.max(1.0) + 1.0),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
