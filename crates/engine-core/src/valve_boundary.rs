@@ -618,6 +618,38 @@ mod tests {
     }
 
     #[test]
+    fn the_step_turns_implicit_only_past_the_share_of_the_balancing_mass() {
+        use crate::gas::{CP, GAMMA, GasVolume};
+        // the mass that brings a cylinder at p_c, T_c to the boundary pressure p_b, adiabatic:
+        // Δm = (p_c − p_b)·V / ((γ − 1)·c_p·T_c) (Heywood §4.2's energy balance of a fixed
+        // volume). Below `relax` of it a step stays explicit (dm = ṁ·dt from the start state, to
+        // the bit); at three times that share it is backward Euler, short of the explicit mass
+        let pipe = std::f64::consts::PI * 0.02 * 0.02;
+        let (v, t_c, relax) = (5.0e-4, 1300.0, 0.5);
+        let gas = GasVolume::at(3.0e5, t_c, v);
+        let at = Pipe {
+            area: pipe,
+            lambda: lambda_of_wave(gas.pressure(), 0.0, 700.0, crate::units::ATM_PA),
+            t_back: 700.0,
+        };
+        let (_, b) = valve_flow(&gas, 3.0e-4, at, 1e-12, relax, &mut { f64::NAN });
+        let mdot = b.mass_flow(pipe);
+        let share = relax * (gas.pressure() - b.p) * v / ((GAMMA - 1.0) * CP * t_c);
+        assert!(mdot > 0.0 && share > 0.0);
+        let dt = 0.5 * share / mdot;
+        let (f, _) = valve_flow(&gas, 3.0e-4, at, dt, relax, &mut { f64::NAN });
+        assert_eq!(f.dm.to_bits(), (mdot * dt).to_bits());
+        let dt = 3.0 * share / mdot;
+        let (f, _) = valve_flow(&gas, 3.0e-4, at, dt, relax, &mut { f64::NAN });
+        assert!(
+            f.dm > 0.0 && f.dm < 0.99 * mdot * dt,
+            "{} vs {}",
+            f.dm,
+            mdot * dt
+        );
+    }
+
+    #[test]
     fn a_long_step_stops_where_the_pressures_meet_or_at_half_the_mass() {
         use crate::gas::GasVolume;
         // a step far longer than the valve's time constant is stiff: backward Euler moves the
