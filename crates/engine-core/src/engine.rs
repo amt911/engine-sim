@@ -3922,6 +3922,34 @@ mod tests {
         assert_relative_eq!(cs.gas.mass_kg, 1.6, max_relative = 1e-12);
         assert_relative_eq!(cs.u_j, 5.0e5 + 0.6 * 3.0e5, max_relative = 1e-12);
         assert!(cs.mix_stale);
+        // burned gas coming in counts: 1.6 kg at 0.3125 take 0.4 kg at 0.75 burned →
+        // (0.5 + 0.3)/2.0 = 0.4
+        cylinder_in(
+            cs,
+            0.4,
+            3.0e5,
+            Composition {
+                burned: 0.75,
+                fuelled: 0.0,
+            },
+        );
+        assert_relative_eq!(cs.comp.burned, 0.4, max_relative = 1e-12);
+        // a cylinder of products alone (no fresh part) takes fresh charge: its fresh part is
+        // that charge's, fuelled 0.8
+        cs.comp = Composition {
+            burned: 1.0,
+            fuelled: 0.0,
+        };
+        cylinder_in(
+            cs,
+            0.1,
+            3.0e5,
+            Composition {
+                burned: 0.0,
+                fuelled: 0.8,
+            },
+        );
+        assert_relative_eq!(cs.comp.fuelled, 0.8, max_relative = 1e-12);
     }
 
     #[test]
