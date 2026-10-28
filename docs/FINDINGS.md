@@ -776,3 +776,13 @@ per file, so only in-file ratios compare): WOT 6.5–7.4 s, 2–8 kHz re total �
 −8…−19). The muffler did not cure the overrun shock: at 7000+ rpm its bypass valve is open (rpm
 rule), so the shock takes the short way. Whether the real valve also closes on overrun (a vacuum
 actuator usually answers to load too) is not published — asked the user (PAPERS.md).
+
+Lead (coast_chain, LFA 6300 rpm held, overrun vs WOT, sound layers off = valve source → tail only):
+the valve's volume-flow source falls 14.8 dB but the radiated tail only 3.7 dB even with LINEAR
+pipes (orders 9–11 of the tail rise +2…+12 dB while the source's fall). With the layers on, WOT is
+carried by the intake and flow noise, which hides it (−14.3 dB). So the exhaust's own overrun
+excess is not steepening's: the pipes ring more when the mean flow stops (the open end's jet
+reflection (1−M)/(1+M) and the friction α = f·M/D both vanish at M → 0) and the valve flow reverses
+~4×/cycle with sharp edges. Steepening then lifts those edges' harmonics. Next: check the reverse
+flow's sharpness at the valve (Benson boundary on inflow) and the pipes' damping at zero mean flow
+(heat transfer, Kirchhoff walls on the linear pipes too) before touching steepening.
