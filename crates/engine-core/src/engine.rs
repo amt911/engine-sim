@@ -190,6 +190,7 @@ impl EngineDef {
                 // one tail: no spread
                 tail_spacing_m: 0.9,
                 after_collector: Vec::new(),
+                merge: None,
             },
             intake: IntakeDef::default(),
             redline_rpm: 7500.0,
@@ -469,6 +470,7 @@ impl EngineDef {
                 // the tips sit together in the centre of the rear diffuser
                 tail_spacing_m: 0.25,
                 after_collector: Vec::new(),
+                merge: None,
             },
             // Ten ITBs (Toyota). Runner length not published: Helmholtz-tuned to the torque peak
             // (Engelman: f = (a/2π)·√(A/(L·V)), V = V_d/2·(r + 1)/(r − 1), tuned at twice the
@@ -557,6 +559,7 @@ impl EngineDef {
                 // the tips sit together in the centre (458 Italia)
                 tail_spacing_m: 0.25,
                 after_collector: Vec::new(),
+                merge: None,
             },
             intake: IntakeDef::default(),
             redline_rpm: 9000.0,
@@ -635,6 +638,7 @@ impl EngineDef {
                 // two tips each side (C6 Corvette)
                 tail_spacing_m: 1.1,
                 after_collector: Vec::new(),
+                merge: None,
             },
             intake: IntakeDef::default(),
             redline_rpm: 6600.0,
