@@ -172,12 +172,7 @@ pub fn valve_flow(
     // volume (Δm = |p_c − p_b|·V / ((γ − 1)·h)): the scale the step's flow is stiff against.
     let balance = (p_c - b.p).abs() * gas.volume_m3 / ((GAMMA - 1.0) * h);
     let x = mdot * dt;
-    let r = if balance > 0.0 {
-        x.abs() / balance
-    } else {
-        f64::INFINITY
-    };
-    if r <= STIFF_FROM {
+    if x.abs() <= STIFF_FROM * balance {
         return (crate::gas::Flow { dm: x, h }, b);
     }
     // Stiff: the explicit step would move a sizeable share of that mass and overshoot, chattering
@@ -186,11 +181,9 @@ pub fn valve_flow(
     // (energy E − dm·h), is dm/dt. The arriving characteristic λ is referred to the cylinder's
     // pressure, so it is carried to the new one, λ' = λ·(p_c/p')^(1/7). The flow falls as the
     // cylinder empties (fills), so g(dm) = dm − ṁ(dm)·dt changes sign between 0 and ṁ·dt.
-    // It is reached from the linearly implicit Euler step of a flow proportional to the
-    // pressure gap, x/(1 + r) (Hairer & Wanner, *Solving ODEs II*, §IV.7, Rosenbrock's method
-    // with the Jacobian −ṁ/Δm), by one secant step of g; and it takes over from the explicit
-    // step gradually, over r from STIFF_FROM to twice that, so the flow never jumps from one
-    // step to the next where the two would differ (a switch there was 6–24 kHz hiss).
+    // It takes over from the explicit step gradually, as the share of the balancing mass the
+    // explicit step would move goes from STIFF_FROM to twice that, so the flow never jumps from
+    // one step to the next where the two differ (a switch there was 6–24 kHz hiss at idle).
     let a_pipe = a_back * lambda.max(1e-3);
     let mut h_last = *hint;
     let flow_after = |dm: f64, hint: &mut f64| {
@@ -228,34 +221,13 @@ pub fn valve_flow(
             None => x,
         }
     };
-    let (lo, hi) = (end.min(0.0), end.max(0.0));
-    let x0 = (x / (1.0 + r)).clamp(lo, hi);
-    let mut h0 = h_last;
-    let (implicit, b_new) = match flow_after(x0, &mut h0) {
-        Some(b0) => {
-            let g0 = x0 - b0.mass_flow(pipe_area) * dt;
-            // secant through g(0) = −ṁ·dt and g(x0)
-            let x1 = if g0 != -x {
-                (x0 - g0 * x0 / (g0 + x)).clamp(lo, hi)
-            } else {
-                x0
-            };
-            if (x1 - x0).abs() <= 0.1 * x0.abs() {
-                h_last = h0;
-                (x1, b0)
-            } else {
-                // far from linear (steps no audio rate takes): the bracketed root
-                let dm = if g(end).signum() == g(0.0).signum() {
-                    end
-                } else {
-                    root(g, lo, hi)
-                };
-                (dm, flow_after(dm, &mut h_last).unwrap_or(b))
-            }
-        }
-        None => (x0, b),
+    let implicit = if g(end).signum() == g(0.0).signum() {
+        end
+    } else {
+        root(g, end.min(0.0), end.max(0.0))
     };
-    let w = ((r - STIFF_FROM) / STIFF_FROM).clamp(0.0, 1.0);
+    let b_new = flow_after(implicit, &mut h_last).unwrap_or(b);
+    let w = ((x.abs() / balance - STIFF_FROM) / STIFF_FROM).clamp(0.0, 1.0);
     let dm = (1.0 - w) * x + w * implicit;
     *hint = h_last;
     (crate::gas::Flow { dm, h }, b_new)
@@ -263,8 +235,9 @@ pub fn valve_flow(
 
 /// Share of the balancing mass a step may move before it turns implicit (see [`valve_flow`]),
 /// fully implicit at twice that. Measured on the LFA idling (2026-10-28): 0.05, 0.25 and 0.5 put
-/// every level equally close to Reference (third octaves, within 0.1 dB); 0.5 adds no cost, 0.05
-/// costs 10–23 %.
+/// every level equally close to Reference (third octaves, within 0.1 dB); at 0.5 the implicit
+/// steps are about the ones a switch at half the balancing mass already solved, so the cost is
+/// unchanged, while starting lower costs 10–23 % more.
 const STIFF_FROM: f64 = 0.5;
 
 /// Bracket width the roots stop at, relative: π^7 is the pressure, so 1e-10 in π is 7e-10 in p.
