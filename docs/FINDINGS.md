@@ -766,3 +766,13 @@ like a spectrum and periodicity survives — nothing flags it.
 
 **Fix.** Read the subformat's first two bytes when the tag is 0xFFFE (job script `wavio.py`), and
 check a reader's min/max/RMS on a known render (|x| ≤ 1) before trusting any number from it.
+
+## Steepening with the LFA's muffler: WOT right, lift-off still too loud (2026-10-29, branch feat/wave-steepening)
+
+Steepening (both directions, 0.2 m segments) on top of the as-built LFA exhaust (bypass muffler,
+engine sources ahead), `--render drive`, levels within one file (offline renders are normalized
+per file, so only in-file ratios compare): WOT 6.5–7.4 s, 2–8 kHz re total −8.9 dB (linear
+−24.6; real LFA blips −6…−8.5). Lift-off 7.6–8.5 s re WOT: −3.5 dB (linear −15.5; real LFA
+−8…−19). The muffler did not cure the overrun shock: at 7000+ rpm its bypass valve is open (rpm
+rule), so the shock takes the short way. Whether the real valve also closes on overrun (a vacuum
+actuator usually answers to load too) is not published — asked the user (PAPERS.md).
