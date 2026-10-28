@@ -130,14 +130,13 @@ pub struct Pipe {
 /// One step of flow through an exhaust valve of effective area `cd_area` into a pipe of
 /// cross-section `pipe_area`, by the characteristic boundary: the pipe's incoming `lambda`
 /// ([`lambda_in`] or [`lambda_of_wave`]) and its gas at `t_back` K (what flows back). The step
-/// is limited, as [`crate::gas::plan_exchange`]'s, to `relax` of the mass that would
-/// equalise the cylinder with the boundary and to half the cylinder's mass. + = out.
+/// turns implicit where it is stiff (see the body) and never takes more than half the
+/// cylinder's mass. + = out.
 pub fn valve_flow(
     gas: &crate::gas::GasVolume,
     cd_area: f64,
     pipe: Pipe,
     dt: f64,
-    relax: f64,
     hint: &mut f64,
 ) -> (crate::gas::Flow, Boundary) {
     use crate::gas::{CP, GAMMA, R_AIR};
@@ -169,17 +168,22 @@ pub fn valve_flow(
     let b = solve_with(p_c, a_c, psi, lambda, a_back, hint);
     let mdot = b.mass_flow(pipe_area);
     let h = if mdot >= 0.0 { CP * t_c } else { CP * t_back };
-    let limit = relax * (p_c - b.p).abs() * gas.volume_m3 / ((GAMMA - 1.0) * h);
-    if (mdot * dt).abs() <= limit {
-        return (crate::gas::Flow { dm: mdot * dt, h }, b);
+    // The mass that would bring the cylinder to the boundary's pressure, adiabatic at fixed
+    // volume (Δm = |p_c − p_b|·V / ((γ − 1)·h)): the scale the step's flow is stiff against.
+    let balance = (p_c - b.p).abs() * gas.volume_m3 / ((GAMMA - 1.0) * h);
+    let x = mdot * dt;
+    if x.abs() <= STIFF_FROM * balance {
+        return (crate::gas::Flow { dm: x, h }, b);
     }
-    // Stiff: in this step the flow would move more than `relax` of the mass that balances the
-    // pressures, and an explicit step would overshoot and chatter on and off from one step to
-    // the next (at idle, near the balance, with a coarse step). Backward Euler instead: the
-    // mass dm whose flow, computed from the cylinder already holding m − dm (energy E − dm·h),
-    // is dm/dt. The arriving characteristic λ is referred to the cylinder's pressure, so it is
-    // carried to the new one, λ' = λ·(p_c/p')^(1/7). The flow falls as the cylinder empties
-    // (fills), so g(dm) = dm − ṁ(dm)·dt changes sign between 0 and the explicit ṁ·dt.
+    // Stiff: the explicit step would move a sizeable share of that mass and overshoot, chattering
+    // on and off from step to step (at idle, near the balance, with a coarse step). Backward
+    // Euler instead: the mass dm whose flow, computed from the cylinder already holding m − dm
+    // (energy E − dm·h), is dm/dt. The arriving characteristic λ is referred to the cylinder's
+    // pressure, so it is carried to the new one, λ' = λ·(p_c/p')^(1/7). The flow falls as the
+    // cylinder empties (fills), so g(dm) = dm − ṁ(dm)·dt changes sign between 0 and ṁ·dt.
+    // It takes over from the explicit step gradually, as the share of the balancing mass the
+    // explicit step would move goes from STIFF_FROM to twice that, so the flow never jumps from
+    // one step to the next where the two differ (a switch there was 6–24 kHz hiss at idle).
     let a_pipe = a_back * lambda.max(1e-3);
     let mut h_last = *hint;
     let flow_after = |dm: f64, hint: &mut f64| {
@@ -217,15 +221,24 @@ pub fn valve_flow(
             None => x,
         }
     };
-    let dm = if g(end).signum() == g(0.0).signum() {
+    let implicit = if g(end).signum() == g(0.0).signum() {
         end
     } else {
         root(g, end.min(0.0), end.max(0.0))
     };
-    let b_new = flow_after(dm, &mut h_last).unwrap_or(b);
+    let b_new = flow_after(implicit, &mut h_last).unwrap_or(b);
+    let w = ((x.abs() / balance - STIFF_FROM) / STIFF_FROM).clamp(0.0, 1.0);
+    let dm = (1.0 - w) * x + w * implicit;
     *hint = h_last;
     (crate::gas::Flow { dm, h }, b_new)
 }
+
+/// Share of the balancing mass a step may move before it turns implicit (see [`valve_flow`]),
+/// fully implicit at twice that. Measured on the LFA idling (2026-10-28): 0.05, 0.25 and 0.5 put
+/// every level equally close to Reference (third octaves, within 0.1 dB); at 0.5 the implicit
+/// steps are about the ones a switch at half the balancing mass already solved, so the cost is
+/// unchanged, while starting lower costs 10–23 % more.
+const STIFF_FROM: f64 = 0.5;
 
 /// Bracket width the roots stop at, relative: π^7 is the pressure, so 1e-10 in π is 7e-10 in p.
 const ROOT_TOL: f64 = 1e-10;
@@ -605,7 +618,7 @@ mod tests {
             t_back: 600.0,
         };
         let dt = 1.0 / 192_000.0;
-        let (f, b) = valve_flow(&gas, 3.0e-4, at, dt, 1.0, &mut { f64::NAN });
+        let (f, b) = valve_flow(&gas, 3.0e-4, at, dt, &mut { f64::NAN });
         assert!(f.dm < 0.0);
         assert_relative_eq!(f.h, crate::gas::CP * 600.0, max_relative = 1e-12);
         assert_relative_eq!(f.dm, b.mass_flow(pipe) * dt, max_relative = 1e-12);
@@ -618,29 +631,44 @@ mod tests {
     }
 
     #[test]
-    fn the_step_turns_implicit_only_past_the_share_of_the_balancing_mass() {
+    fn the_step_turns_implicit_gradually_past_a_share_of_the_balancing_mass() {
         use crate::gas::{CP, GAMMA, GasVolume};
         // the mass that brings a cylinder at p_c, T_c to the boundary pressure p_b, adiabatic:
         // Δm = (p_c − p_b)·V / ((γ − 1)·c_p·T_c) (Heywood §4.2's energy balance of a fixed
-        // volume). Below `relax` of it a step stays explicit (dm = ṁ·dt from the start state, to
-        // the bit); at three times that share it is backward Euler, short of the explicit mass
+        // volume). A step moving under half of it stays explicit (dm = ṁ·dt from the start state,
+        // to the bit); one moving 1.5 times it is backward Euler, short of the explicit mass; in
+        // between dm/(ṁ·dt) slides from one to the other without a jump
         let pipe = std::f64::consts::PI * 0.02 * 0.02;
-        let (v, t_c, relax) = (5.0e-4, 1300.0, 0.5);
+        let (v, t_c) = (5.0e-4, 1300.0);
         let gas = GasVolume::at(3.0e5, t_c, v);
         let at = Pipe {
             area: pipe,
             lambda: lambda_of_wave(gas.pressure(), 0.0, 700.0, crate::units::ATM_PA),
             t_back: 700.0,
         };
-        let (_, b) = valve_flow(&gas, 3.0e-4, at, 1e-12, relax, &mut { f64::NAN });
+        let (_, b) = valve_flow(&gas, 3.0e-4, at, 1e-12, &mut { f64::NAN });
         let mdot = b.mass_flow(pipe);
-        let share = relax * (gas.pressure() - b.p) * v / ((GAMMA - 1.0) * CP * t_c);
-        assert!(mdot > 0.0 && share > 0.0);
-        let dt = 0.5 * share / mdot;
-        let (f, _) = valve_flow(&gas, 3.0e-4, at, dt, relax, &mut { f64::NAN });
+        let balance = (gas.pressure() - b.p) * v / ((GAMMA - 1.0) * CP * t_c);
+        assert!(mdot > 0.0 && balance > 0.0);
+        let dt = 0.4 * balance / mdot;
+        let (f, _) = valve_flow(&gas, 3.0e-4, at, dt, &mut { f64::NAN });
         assert_eq!(f.dm.to_bits(), (mdot * dt).to_bits());
-        let dt = 3.0 * share / mdot;
-        let (f, _) = valve_flow(&gas, 3.0e-4, at, dt, relax, &mut { f64::NAN });
+        let ratio = |share: f64| {
+            let dt = share * balance / mdot;
+            valve_flow(&gas, 3.0e-4, at, dt, &mut { f64::NAN }).0.dm / (mdot * dt)
+        };
+        let mut last = ratio(0.45);
+        for k in 1..=120 {
+            let now = ratio(0.45 + 0.005 * f64::from(k));
+            assert!(
+                (now - last).abs() < 0.005,
+                "share {}: {last} → {now}",
+                0.45 + 0.005 * f64::from(k)
+            );
+            last = now;
+        }
+        let dt = 1.5 * balance / mdot;
+        let (f, _) = valve_flow(&gas, 3.0e-4, at, dt, &mut { f64::NAN });
         assert!(
             f.dm > 0.0 && f.dm < 0.99 * mdot * dt,
             "{} vs {}",
@@ -658,7 +686,7 @@ mod tests {
             lambda: lambda_of_wave(after.pressure(), 0.0, 700.0, crate::units::ATM_PA),
             ..at
         };
-        let (_, b_after) = valve_flow(&after, 3.0e-4, at_after, 1e-12, relax, &mut { f64::NAN });
+        let (_, b_after) = valve_flow(&after, 3.0e-4, at_after, 1e-12, &mut { f64::NAN });
         assert_relative_eq!(b_after.mass_flow(pipe) * dt, f.dm, max_relative = 1e-3);
     }
 
@@ -679,7 +707,7 @@ mod tests {
                 lambda: lam,
                 t_back: 700.0,
             };
-            let (f, b) = valve_flow(&gas, 3.0e-4, at, dt, 0.5, &mut { f64::NAN });
+            let (f, b) = valve_flow(&gas, 3.0e-4, at, dt, &mut { f64::NAN });
             assert!(f.dm > 0.0 && f.dm <= 0.5 * gas.mass_kg, "{}", f.dm);
             if f.dm < 0.5 * gas.mass_kg {
                 assert_relative_eq!(b.mass_flow(pipe) * dt, f.dm, max_relative = tol);
@@ -703,7 +731,7 @@ mod tests {
             lambda: lam,
             t_back: 700.0,
         };
-        let (f, _) = valve_flow(&gas, 3.0e-4, at, 1.0, 1.0, &mut { f64::NAN });
+        let (f, _) = valve_flow(&gas, 3.0e-4, at, 1.0, &mut { f64::NAN });
         assert_relative_eq!(f.dm, 0.5 * gas.mass_kg, max_relative = 1e-12);
         // closed: nothing moves, at the cylinder's own enthalpy and state
         let gas = GasVolume::at(3.0e5, 1300.0, 5.0e-4);
@@ -712,7 +740,7 @@ mod tests {
             lambda: 0.9,
             t_back: 700.0,
         };
-        let (f, b) = valve_flow(&gas, 0.0, at, 1e-5, 1.0, &mut { f64::NAN });
+        let (f, b) = valve_flow(&gas, 0.0, at, 1e-5, &mut { f64::NAN });
         assert_eq!(f.dm, 0.0);
         assert_relative_eq!(f.h, crate::gas::CP * 1300.0, max_relative = 1e-12);
         assert_relative_eq!(b.p, 3.0e5, max_relative = 1e-12);
@@ -827,7 +855,7 @@ mod tests {
             t_back: 700.0,
         };
         let dt = 1.0 / 192_000.0;
-        let (f, _) = valve_flow(&gas, 3.0e-4, at(pipe, lam), dt, 1.0, &mut { f64::NAN });
+        let (f, _) = valve_flow(&gas, 3.0e-4, at(pipe, lam), dt, &mut { f64::NAN });
         let a_back = (KAPPA * 287.0 * 700.0).sqrt() / lam;
         let b = solve(
             3.0e5,
@@ -839,11 +867,11 @@ mod tests {
         assert_relative_eq!(f.dm, b.mass_flow(pipe) * dt, max_relative = 1e-12);
         assert_relative_eq!(f.h, crate::gas::CP * 1300.0, max_relative = 1e-12);
         // a step long enough to empty it stops at half the mass or at equal pressures
-        let (f, _) = valve_flow(&gas, 3.0e-4, at(pipe, lam), 1.0, 1.0, &mut { f64::NAN });
+        let (f, _) = valve_flow(&gas, 3.0e-4, at(pipe, lam), 1.0, &mut { f64::NAN });
         assert!(f.dm <= 0.5 * gas.mass_kg + 1e-15);
         // a closed valve passes nothing
         assert_eq!(
-            valve_flow(&gas, 0.0, at(pipe, lam), dt, 1.0, &mut { f64::NAN })
+            valve_flow(&gas, 0.0, at(pipe, lam), dt, &mut { f64::NAN })
                 .0
                 .dm,
             0.0

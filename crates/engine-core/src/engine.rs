@@ -1925,8 +1925,7 @@ impl Engine {
                     lambda,
                     t_back,
                 };
-                let f =
-                    crate::valve_boundary::valve_flow(&cs.gas, area, pipe, dt, VALVE_RELAX, &mut h);
+                let f = crate::valve_boundary::valve_flow(&cs.gas, area, pipe, dt, &mut h);
                 hint.set(h);
                 f
             };
@@ -6125,6 +6124,47 @@ mod tests {
             prev = f;
         }
         (flips, open)
+    }
+
+    /// RMS of the second difference ÷ dt² of cylinder 0's exhaust flow over its outflow, idle
+    /// LFA held at 1100 rpm, at the physics rate `fs`: the flow's curvature, kg/s³.
+    fn idle_outflow_curvature(fs: f64) -> f64 {
+        let dt = 1.0 / fs;
+        let mut e = Engine::new(EngineDef::lfa_v10(), 1100.0, 1);
+        let c = Controls {
+            throttle: 0.0,
+            hold_rpm: Some(1100.0),
+            ..Controls::default()
+        };
+        for _ in 0..(1.0 / dt) as usize {
+            e.step(dt, &c);
+        }
+        let (mut sum, mut n) = (0.0, 0usize);
+        let mut w = [0.0f64; 3];
+        for _ in 0..(0.3 / dt) as usize {
+            e.step(dt, &c);
+            w = [w[1], w[2], e.cyl[0].port_flow];
+            if w.iter().all(|f| *f > 0.0) {
+                let d2 = (w[2] - 2.0 * w[1] + w[0]) / (dt * dt);
+                sum += d2 * d2;
+                n += 1;
+            }
+        }
+        assert!(n > 100, "outflow steps: {n}");
+        (sum / n as f64).sqrt()
+    }
+
+    #[test]
+    fn the_valve_flow_is_smooth_through_the_exhaust_stroke_at_a_coarse_step() {
+        // At idle the piston pushes the gas out at ~0.01 kg/s over ~140° (21 ms at 1100 rpm): a
+        // smooth event curves at about 0.01·(2π/0.021 s)² ≈ 1e3 kg/s³, sharper features up to
+        // ~1e4. Where the step switched between the explicit and the implicit exchange it jumped
+        // a few per cent from one step to the next, curvature ~6e5 at 96 kHz: 6–24 kHz hiss
+        // 13–20 dB over a fine step's in the port flow, and Medium 6 dB from Reference at idle
+        for fs in [96_000.0, 192_000.0] {
+            let k = idle_outflow_curvature(fs);
+            assert!(k < 5e4, "{fs} Hz: {k:.3e} kg/s³");
+        }
     }
 
     #[test]
