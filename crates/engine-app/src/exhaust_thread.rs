@@ -1,36 +1,18 @@
-//! The exhaust net on its own thread: the cylinders of step n+1 run while it advances step n
-//! (`engine_core::engine::Engine::detach_exhaust` explains why that is exact). One persistent
-//! worker; the net is handed to it for a render block and comes back at the end. Per step the
-//! two threads trade whole messages through lock-free rings (one commit each: a value at a
-//! time would bounce a cache line between the cores per value) — no lock, no allocation.
+//! The exhaust net on its own thread, a block of steps at a time. The engine reads the waves
+//! arriving at its valves from its own copy of the primaries' delay lines
+//! (`engine_core::exhaust::ArrivalProbe`): what arrives in the next `block` steps is already
+//! in them, so the net may run a block or two behind on another core and give the very same
+//! samples (`Engine::detach_exhaust`). One persistent worker; per block the two threads trade
+//! one message each way through bounded channels — a thousand hand-offs a second, not one per
+//! physics step, so a shared core (a laptop) costs a block's wait, not a step's.
 
-use engine_core::exhaust::{ExhaustLink, ExhaustNet};
+use engine_core::exhaust::{BlockIn, BlockOut, ExhaustLink, ExhaustNet};
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
-/// Whether the sim may hand its exhaust and intake runners to their own threads (`--threads`).
-/// Off by default: every physics step trades messages with them, and when a core is shared (a
-/// laptop running the UI, audio and a browser, or any busy machine) the waiting thread loses its
-/// slot and the sim stalls. Measured 2026-10-26 on the LFA at Medium, six cores shared with other
-/// work: 7.8 s for 4 s of sound threaded, 3.2 s on one thread (and 16 CPU-s against 2.9). On an
-/// idle desktop they save about a quarter (v0.16.1).
-pub static STEP_THREADS: AtomicBool = AtomicBool::new(false);
-
-fn asked() -> bool {
-    STEP_THREADS.load(Ordering::Relaxed)
-}
-
-fn cores() -> usize {
-    std::thread::available_parallelism().map_or(1, |n| n.get())
-}
-
-/// Job header values.
-const STEP: f64 = 0.0;
-const STEP_MEAN: f64 = 1.0;
-const STOP: f64 = 2.0;
-/// Room in each ring, values (several steps of the largest engine).
+/// Room in each of the runners' rings, values (several steps of the largest engine).
 const RING: usize = 4096;
 
 /// Spin a while (a step takes microseconds), then yield the core.
@@ -74,20 +56,33 @@ fn recv(c: &mut Consumer<f64>, out: &mut [f64]) {
     }
 }
 
-/// A job: header, valve flows (n), tail Mach (m), mean flows per valve (n) and per tail (m).
-fn job_len(n: usize, m: usize) -> usize {
-    1 + 2 * n + 2 * m
+/// Whether the sim may hand its exhaust (and intake runners) to their own threads
+/// (`--threads`). The runners still trade messages every step (off by default for them, see
+/// `RunnerThread`); the exhaust trades a block at a time.
+pub static STEP_THREADS: AtomicBool = AtomicBool::new(false);
+
+fn asked() -> bool {
+    STEP_THREADS.load(Ordering::Relaxed)
 }
 
-/// The worker's end of a block: the net and the rings.
+fn cores() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get())
+}
+
+/// What the engine sends the worker.
+enum Job {
+    Run(BlockIn),
+    Stop,
+}
+
+/// The worker's end of a hand-off: the net, its jobs and where its results go.
 struct Block {
     net: ExhaustNet,
-    jobs: Consumer<f64>,
-    arriving: Producer<f64>,
-    tail_out: Producer<f64>,
+    jobs: mpsc::Receiver<Job>,
+    results: mpsc::SyncSender<BlockOut>,
 }
 
-/// A worker thread that runs exhaust nets handed to it, one block at a time.
+/// A worker thread that runs exhaust nets handed to it, a block of steps at a time.
 pub struct ExhaustThread {
     to_worker: Option<mpsc::Sender<Block>>,
     from_worker: mpsc::Receiver<ExhaustNet>,
@@ -95,14 +90,13 @@ pub struct ExhaustThread {
 }
 
 impl ExhaustThread {
-    /// Asked for (`--threads`) and with cores to spare: the UI, the audio callback and the sim
-    /// thread already take three.
+    /// With a core to spare beyond the UI's, the audio callback's and the sim's.
     pub fn worthwhile() -> bool {
-        Self::worth(asked(), cores())
+        Self::worth(cores())
     }
 
-    fn worth(asked: bool, cores: usize) -> bool {
-        asked && cores >= 4
+    fn worth(cores: usize) -> bool {
+        cores >= 4
     }
 
     pub fn spawn() -> std::io::Result<Self> {
@@ -112,23 +106,12 @@ impl ExhaustThread {
             .name("exhaust".into())
             .spawn(move || {
                 while let Ok(mut b) = blocks.recv() {
-                    let (n, m) = (b.net.valves(), b.net.last_tails().len());
-                    let mut job = vec![0.0; job_len(n, m)];
-                    let mut next = vec![0.0; n];
-                    loop {
-                        recv(&mut b.jobs, &mut job);
-                        if job[0] == STOP {
+                    while let Ok(Job::Run(input)) = b.jobs.recv() {
+                        let mut out = BlockOut::default();
+                        b.net.run_block(&input, &mut out);
+                        if b.results.send(out).is_err() {
                             break;
                         }
-                        let (flows, rest) = job[1..].split_at(n);
-                        let (mach, rest) = rest.split_at(m);
-                        let (cyl, branch) = rest.split_at(n);
-                        let mean = (job[0] == STEP_MEAN).then_some((cyl, branch));
-                        b.net.prepare(mach, mean);
-                        b.net.arriving_next(&mut next);
-                        send(&mut b.arriving, &next);
-                        b.net.step(flows);
-                        send(&mut b.tail_out, b.net.last_tails());
                     }
                     if back.send(b.net).is_err() {
                         return;
@@ -142,29 +125,23 @@ impl ExhaustThread {
         })
     }
 
-    /// Hand `net` to the worker for a block; the link the engine talks to it through.
-    pub fn link(&self, net: ExhaustNet) -> Box<dyn ExhaustLink> {
-        let (n, m) = (net.valves(), net.last_tails().len());
-        let (jobs_p, jobs_c) = RingBuffer::new(RING);
-        let (arr_p, arr_c) = RingBuffer::new(RING);
-        let (tail_p, tail_c) = RingBuffer::new(RING);
+    /// Hand `net` to the worker, in blocks of `block` steps; the link the engine talks to it
+    /// through.
+    pub fn link(&self, net: ExhaustNet, block: usize) -> Box<dyn ExhaustLink> {
+        // two blocks in flight at most, each way (the engine never runs further ahead)
+        let (jobs_tx, jobs) = mpsc::sync_channel(2);
+        let (results, results_rx) = mpsc::sync_channel(2);
         if let Some(tx) = &self.to_worker {
-            let _ = tx.send(Block {
-                net,
-                jobs: jobs_c,
-                arriving: arr_p,
-                tail_out: tail_p,
-            });
+            let _ = tx.send(Block { net, jobs, results });
         }
         Box::new(ThreadLink {
-            job: vec![0.0; job_len(n, m)],
-            jobs: jobs_p,
-            arriving: arr_c,
-            tails: tail_c,
+            block,
+            jobs: jobs_tx,
+            results: results_rx,
         })
     }
 
-    /// End the block (after the engine flushed): the net back from the worker.
+    /// End the hand-off (after the engine flushed): the net back from the worker.
     pub fn back(&self, link: &mut dyn ExhaustLink) -> Option<ExhaustNet> {
         link.stop();
         self.from_worker.recv().ok()
@@ -181,36 +158,27 @@ impl Drop for ExhaustThread {
     }
 }
 
-/// The engine's end: each step's job out, the next waves and the tails back.
+/// The engine's end: each block's inputs out, its results back in order.
 struct ThreadLink {
-    job: Vec<f64>,
-    jobs: Producer<f64>,
-    arriving: Consumer<f64>,
-    tails: Consumer<f64>,
+    block: usize,
+    jobs: mpsc::SyncSender<Job>,
+    results: mpsc::Receiver<BlockOut>,
 }
 
 impl ExhaustLink for ThreadLink {
-    fn submit(&mut self, flows: &[f64], mach: &[f64], mean: Option<(&[f64], &[f64])>) {
-        let (n, m) = (flows.len(), mach.len());
-        self.job[0] = if mean.is_some() { STEP_MEAN } else { STEP };
-        self.job[1..1 + n].copy_from_slice(flows);
-        self.job[1 + n..1 + n + m].copy_from_slice(mach);
-        if let Some((cyl, branch)) = mean {
-            self.job[1 + n + m..1 + 2 * n + m].copy_from_slice(cyl);
-            self.job[1 + 2 * n + m..].copy_from_slice(branch);
+    fn block(&self) -> usize {
+        self.block
+    }
+    fn submit(&mut self, input: &mut BlockIn) {
+        let _ = self.jobs.send(Job::Run(std::mem::take(input)));
+    }
+    fn collect(&mut self, out: &mut BlockOut) {
+        if let Ok(o) = self.results.recv() {
+            *out = o;
         }
-        send(&mut self.jobs, &self.job);
-    }
-    fn arriving_next(&mut self, out: &mut [f64]) {
-        recv(&mut self.arriving, out);
-    }
-    fn tails(&mut self, out: &mut [f64]) {
-        recv(&mut self.tails, out);
     }
     fn stop(&mut self) {
-        self.job.fill(0.0);
-        self.job[0] = STOP;
-        send(&mut self.jobs, &self.job);
+        let _ = self.jobs.send(Job::Stop);
     }
 }
 
@@ -384,12 +352,12 @@ mod opt_in_tests {
     use super::*;
 
     #[test]
-    fn step_threads_stay_off_unless_asked() {
-        // measured 2026-10-26: on six cores shared with other work the per-step hand-off made
-        // the LFA 2.5× slower than one thread, so only `--threads` turns them on
-        assert!(!ExhaustThread::worth(false, 24));
-        assert!(ExhaustThread::worth(true, 4));
-        assert!(!ExhaustThread::worth(true, 3));
+    fn the_exhaust_thread_needs_a_spare_core_and_the_runners_an_ask() {
+        // the exhaust trades a block at a time, so it is worth a spare core by default; the
+        // runners still trade every step (measured 2026-10-26: on six shared cores the per-step
+        // hand-off made the LFA 2.5× slower than one thread), so only `--threads` turns them on
+        assert!(ExhaustThread::worth(4));
+        assert!(!ExhaustThread::worth(3));
         assert!(!RunnerThread::worth(false, 24));
         assert!(RunnerThread::worth(true, 6));
         assert!(!RunnerThread::worth(true, 5));

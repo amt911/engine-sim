@@ -13,7 +13,7 @@ is set by ear. Updated as work lands. Details live in the specs (`docs/superpowe
 - Next, measured with callgrind on the LFA at High:
   - the ITB intake runners (41 % of the cost): four runners per SIMD lane, bit-identical;
   - the catalyst and silencer networks (19 %);
-  - block-level threading.
+  - ✅ v0.26.6: the exhaust net on its own thread, a block at a time (−15–18 %);
 - Then rebuild the quality levels from what each feature measurably changes against Ultra.
 
 ## 2. Realism ("still synthetic")
