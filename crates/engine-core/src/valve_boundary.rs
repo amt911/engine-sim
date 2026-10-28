@@ -261,9 +261,11 @@ pub fn valve_flow(
     (crate::gas::Flow { dm, h }, b_new)
 }
 
-/// Share of the balancing mass a step may move before it turns implicit (see [`valve_flow`]): below
-/// it the explicit and the implicit steps differ by less than its square, 0.25 %.
-const STIFF_FROM: f64 = 0.05;
+/// Share of the balancing mass a step may move before it turns implicit (see [`valve_flow`]),
+/// fully implicit at twice that. Measured on the LFA idling (2026-10-28): 0.05, 0.25 and 0.5 put
+/// every level equally close to Reference (third octaves, within 0.1 dB); 0.5 adds no cost, 0.05
+/// costs 10–23 %.
+const STIFF_FROM: f64 = 0.5;
 
 /// Bracket width the roots stop at, relative: π^7 is the pressure, so 1e-10 in π is 7e-10 in p.
 const ROOT_TOL: f64 = 1e-10;
@@ -660,9 +662,9 @@ mod tests {
         use crate::gas::{CP, GAMMA, GasVolume};
         // the mass that brings a cylinder at p_c, T_c to the boundary pressure p_b, adiabatic:
         // Δm = (p_c − p_b)·V / ((γ − 1)·c_p·T_c) (Heywood §4.2's energy balance of a fixed
-        // volume). A step moving under 5 % of it stays explicit (dm = ṁ·dt from the start state,
-        // to the bit); one moving 30 % is backward Euler, short of the explicit mass; in between
-        // dm/(ṁ·dt) slides from one to the other without a jump
+        // volume). A step moving under half of it stays explicit (dm = ṁ·dt from the start state,
+        // to the bit); one moving 1.5 times it is backward Euler, short of the explicit mass; in
+        // between dm/(ṁ·dt) slides from one to the other without a jump
         let pipe = std::f64::consts::PI * 0.02 * 0.02;
         let (v, t_c) = (5.0e-4, 1300.0);
         let gas = GasVolume::at(3.0e5, t_c, v);
@@ -675,24 +677,24 @@ mod tests {
         let mdot = b.mass_flow(pipe);
         let balance = (gas.pressure() - b.p) * v / ((GAMMA - 1.0) * CP * t_c);
         assert!(mdot > 0.0 && balance > 0.0);
-        let dt = 0.025 * balance / mdot;
+        let dt = 0.4 * balance / mdot;
         let (f, _) = valve_flow(&gas, 3.0e-4, at, dt, &mut { f64::NAN });
         assert_eq!(f.dm.to_bits(), (mdot * dt).to_bits());
         let ratio = |share: f64| {
             let dt = share * balance / mdot;
             valve_flow(&gas, 3.0e-4, at, dt, &mut { f64::NAN }).0.dm / (mdot * dt)
         };
-        let mut last = ratio(0.04);
-        for k in 1..=80 {
-            let now = ratio(0.04 + 0.001 * f64::from(k));
+        let mut last = ratio(0.45);
+        for k in 1..=120 {
+            let now = ratio(0.45 + 0.005 * f64::from(k));
             assert!(
                 (now - last).abs() < 0.005,
                 "share {}: {last} → {now}",
-                0.04 + 0.001 * f64::from(k)
+                0.45 + 0.005 * f64::from(k)
             );
             last = now;
         }
-        let dt = 0.3 * balance / mdot;
+        let dt = 1.5 * balance / mdot;
         let (f, _) = valve_flow(&gas, 3.0e-4, at, dt, &mut { f64::NAN });
         assert!(
             f.dm > 0.0 && f.dm < 0.99 * mdot * dt,
