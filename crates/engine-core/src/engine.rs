@@ -2364,7 +2364,7 @@ impl Engine {
                 ex.tail_spacing_m,
                 snd.listener_distance_m,
                 snd.listener_angle_deg,
-                PI * 0.25 * ex.outlet_diameter().powi(2),
+                PI * 0.25 * ex.radiating_diameter().powi(2),
                 dt,
                 snd.ground_heights(),
                 snd.street(),
@@ -2569,7 +2569,7 @@ impl Engine {
             && let Some((_, l)) = &self.listener
         {
             let rho = crate::exhaust::tail_reference_density();
-            let d = self.def.exhaust.outlet_diameter();
+            let d = self.def.exhaust.radiating_diameter();
             for ((jet, u), r) in self.jets.iter_mut().zip(&self.tail_u).zip(l.distances()) {
                 jets += jet.step(*u, d, rho, *r, dt);
             }
@@ -4972,7 +4972,8 @@ mod tests {
             d.exhaust.tail_spacing_m,
             d.sound.listener_distance_m,
             90.0,
-            PI * 0.25 * d.exhaust.tail_diameter_m.powi(2),
+            // the LFA's banks leave through their merged outlet
+            PI * 0.25 * d.exhaust.merge.as_ref().unwrap().outlet_diameter_m.powi(2),
             DT,
             d.sound.ground_heights(),
         );

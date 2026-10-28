@@ -414,6 +414,13 @@ impl ExhaustDef {
         }
     }
 
+    /// Bore the sound leaves through, m: the merged outlet when the banks join, else each tail's.
+    pub fn radiating_diameter(&self) -> f64 {
+        self.merge
+            .as_ref()
+            .map_or_else(|| self.outlet_diameter(), |m| m.outlet_diameter_m)
+    }
+
     /// Collector groups as 0-based cylinder indices (empty → all cylinders in one).
     pub fn groups(&self, cylinders: usize) -> Vec<Vec<usize>> {
         // Invalid indices are dropped (validation reports them; the sim must not panic).
@@ -1170,6 +1177,14 @@ mod tests {
             }),
             ..ExhaustDef::default()
         }
+    }
+
+    #[test]
+    fn the_sound_leaves_through_the_merged_outlet_not_the_bank_pipes() {
+        // Unmerged, each tail radiates through its own 50 mm pipe; merged, both banks leave
+        // through the one 70 mm outlet (two_banks), whatever the bank pipes measure.
+        assert_eq!(two_banks(false).radiating_diameter(), 0.05);
+        assert_eq!(two_banks(true).radiating_diameter(), 0.07);
     }
 
     #[test]
