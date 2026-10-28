@@ -14,8 +14,7 @@ is set by ear. Updated as work lands. Details live in the specs (`docs/superpowe
   - the ITB intake runners (41 % of the cost): four runners per SIMD lane, bit-identical;
   - the catalyst and silencer networks (19 %);
   - ✅ v0.26.6: the exhaust net on its own thread, a block at a time (−15–18 %);
-- ✅ v0.26.7: quality levels rebuilt from measurement (High at 2 steps with WENO-Z, −18 %).
-- Measured dead ends: SIMD of the ITB runners (−1.7 %), CFL-sized intake steps (bias the valve coupling; FACTS).
+- Then rebuild the quality levels from what each feature measurably changes against Ultra.
 
 ## 2. Realism ("still synthetic")
 

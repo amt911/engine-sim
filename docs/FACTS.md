@@ -159,19 +159,3 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
     of the figure's axis, so the 1.125 above is the low end.
   - At 1 mm it is 1.27–1.37 and depends on the lobe's peak lift. Lobes are not lift-scaled copies
     of one shape, so a 1 mm timing alone does not fix the equivalent sin².
-- **Performance dead ends, measured 2026-10-28 (LFA, 5 s headless, cores 0–5, median of 3)**:
-  - SIMD of the ITB runners four at a time (branch `perf/itb-runners-simd`, bit-identical):
-    −1.4 to −1.8 % for ~680 lines that duplicate the FV numerics. Not merged.
-  - Intake FV step sized by the CFL of the actual flow instead of the worst case (0.8·4 cm/700 m/s):
-    the step is bounded by the valve coupling, not by stability. Against the converged answer (an
-    FV step every physics step, `--dyno`), main is within ±0.1 % at 4500–7500 rpm (+3.7 % at
-    1500); twice-longer steps lose up to 9.7 % torque at high rpm. Making the port cell show what
-    the valve already drew this FV step (needed so longer steps do not create mass) costs 5 % by
-    itself: the cell is refilled from upstream during the step, which neither the stale cell nor
-    the drawn-down one represents.
-- **What each quality knob changes** (third-octave distance to Reference, LFA held 1100 rpm idle /
-  4000 rpm 30 % / 7000 rpm WOT, 2026-10-28): old High 0.19 / 0.27 / 0.21 dB; WENO-Z at 2 physics
-  steps per sample 0.27 / 0.29 / 0.35 (cost −18 %); its silencer packing in 4 cm segments instead
-  of 2 cm: identical; MUSCL-RK2 (Medium) 0.23 / 0.25 / 0.64; Ultra 0.19 / 0.33 / 0.33; Low (0D
-  intake, waveguide exhaust) 0.46 / 1.31 / 2.03, max 7.3 dB. After the valve-chatter fix (v0.26.5)
-  every 1D level is within 0.7 dB of Reference; Low is the only one that sounds different.
