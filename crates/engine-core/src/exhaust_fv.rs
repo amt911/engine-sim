@@ -665,11 +665,18 @@ mod tests {
         // computes them (the nine shut primaries stay at 600 K), the waveguide fixes 600 and
         // 560 m/s. Measured +4.9, +5.9, −3.4 dB (FV's 4 cm cells wear the highs); its own can and
         // no wall loss left it +6.7 dB at the bottom.
-        // the same pipes in both models: the FV net keeps the banks apart, so no merge
-        let d = crate::exhaust::ExhaustDef {
+        // the same pipes in both models: the FV net keeps the banks apart, so no merge; the
+        // 60 mm tail the figures above were measured with (the model gap, not the preset, is
+        // under test)
+        let mut d = crate::exhaust::ExhaustDef {
             merge: None,
             ..crate::engine::EngineDef::lfa_v10().exhaust
         };
+        for seg in &mut d.after_collector {
+            if let crate::exhaust::Segment::Pipe { diameter_m, .. } = seg {
+                *diameter_m = 0.060;
+            }
+        }
         let bands: [&[f64]; 3] = [
             &[60.0, 90.0, 120.0, 150.0, 180.0, 210.0, 240.0, 270.0],
             &[300.0, 400.0, 500.0, 600.0, 700.0, 800.0],

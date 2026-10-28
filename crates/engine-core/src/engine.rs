@@ -6,7 +6,7 @@
 
 use crate::combustion::{AFR_STOICH, LHV_GASOLINE, flame_angle_scale, laminar_flame_speed, wiebe};
 use crate::exhaust::{
-    ArrivalProbe, BlockIn, BlockOut, ExhaustDef, ExhaustLink, ExhaustModel, ExhaustNet,
+    ArrivalProbe, BlockIn, BlockOut, ExhaustDef, ExhaustLink, ExhaustModel, ExhaustNet, Segment,
 };
 use crate::exhaust_fv::ExhaustFv;
 use crate::gas::{Flow, GasVolume, Reservoir, exchange_with_reservoir, plan_exchange};
@@ -461,7 +461,7 @@ impl EngineDef {
                 collector_length_m: 0.3,
                 collector_diameter_m: 0.065,
                 tail_length_m: 1.2,
-                tail_diameter_m: 0.060,
+                tail_diameter_m: 0.070,
                 // Sport muffler with bypass valves: less damping than a road car.
                 muffler_transmission: 1.0,
                 model: ExhaustModel::Waveguide,
@@ -470,16 +470,72 @@ impl EngineDef {
                 // the tips sit together in the centre of the rear diffuser: one outlet
                 tail_spacing_m: 0.0,
                 after_collector: Vec::new(),
-                // Both banks run into one rear muffler and leave through the tips together
-                // (Okamoto et al., SAE 2011-01-2024, Fig. 19). Its inside is not published:
-                // ESTIMATE, the banks meet at the outlet, a short shared pipe of their two
-                // pipes' area (Ø 60 mm · √2).
+                // Both banks run into one rear muffler and leave through three tips together
+                // (Okamoto et al., SAE 2011-01-2024, Fig. 19; Toyota EPC 17410/17430): a Y into
+                // an 85 mm pipe, a transverse titanium muffler whose valve opens above 3000 rpm
+                // (Lexus UK "Sounds Spectacular"; Torque.com.sg) so the gas goes straight from
+                // the centre chamber to the tips, else round the end chambers. Bank pipes 70 mm,
+                // centre pipe 85 mm, tips ≈ 105 mm outside (press summary the user found,
+                // 2026-10-28). Chamber and tube sizes: ESTIMATE from the Motor-Fan cutaway's
+                // proportions against the 85 mm inlet.
                 merge: Some(crate::exhaust::Merge {
-                    segments: vec![crate::exhaust::Segment::Pipe {
-                        length_m: 0.15,
-                        diameter_m: 0.060 * std::f64::consts::SQRT_2,
-                    }],
-                    outlet_diameter_m: 0.060 * std::f64::consts::SQRT_2,
+                    segments: vec![
+                        Segment::Pipe {
+                            length_m: 0.15,
+                            diameter_m: 0.085,
+                        },
+                        // centre chamber
+                        Segment::Muffler {
+                            length_m: 0.20,
+                            diameter_m: 0.22,
+                            tube_diameter_m: 0.0,
+                            packing_resistivity: 0.0,
+                            packing_porosity: 1.0,
+                        },
+                    ],
+                    // three tips of 60 mm bore inside the 105 mm trims: their area as one
+                    outlet_diameter_m: 0.060 * 3f64.sqrt(),
+                    bypass: Some(crate::exhaust::Bypass {
+                        closed: vec![
+                            Segment::Pipe {
+                                length_m: 0.30,
+                                diameter_m: 0.05,
+                            },
+                            Segment::Muffler {
+                                length_m: 0.12,
+                                diameter_m: 0.22,
+                                tube_diameter_m: 0.0,
+                                packing_resistivity: 0.0,
+                                packing_porosity: 1.0,
+                            },
+                            Segment::Pipe {
+                                length_m: 0.55,
+                                diameter_m: 0.05,
+                            },
+                            Segment::Muffler {
+                                length_m: 0.12,
+                                diameter_m: 0.22,
+                                tube_diameter_m: 0.0,
+                                packing_resistivity: 0.0,
+                                packing_porosity: 1.0,
+                            },
+                            Segment::Pipe {
+                                length_m: 0.30,
+                                diameter_m: 0.05,
+                            },
+                        ],
+                        open: vec![Segment::Pipe {
+                            length_m: 0.10,
+                            diameter_m: 0.085,
+                        }],
+                        tips: vec![Segment::Pipe {
+                            length_m: 0.25,
+                            diameter_m: 0.060 * 3f64.sqrt(),
+                        }],
+                        open_rpm: 3000.0,
+                        // a vacuum diaphragm actuator: ESTIMATE
+                        travel_s: 0.3,
+                    }),
                 }),
             },
             // Ten ITBs (Toyota). Runner length not published: Helmholtz-tuned to the torque peak
@@ -2310,6 +2366,7 @@ impl Engine {
         }
         // Acoustic source: what the tail pipes radiate.
         // advance the exhaust; what each tail radiates is read below (`last_tails`)
+        let rpm = self.rpm();
         match (&mut self.net, &mut self.fv, &mut self.remote.0) {
             (_, Some(fv), _) => {
                 fv.set_outflow_mach(&self.tail_mach);
@@ -2327,7 +2384,7 @@ impl Engine {
                 if due {
                     self.friction_age = 0;
                 }
-                let mean = due.then_some((&self.cyl_mean_flow[..], &self.tail_mean_flow[..]));
+                let mean = due.then_some((&self.cyl_mean_flow[..], &self.tail_mean_flow[..], rpm));
                 net.prepare(&self.tail_mach, mean);
                 net.step(&self.flows);
             }
@@ -2346,6 +2403,7 @@ impl Engine {
                 if due {
                     r.stage.mean.extend_from_slice(&self.cyl_mean_flow);
                     r.stage.mean.extend_from_slice(&self.tail_mean_flow);
+                    r.stage.mean.push(rpm);
                     r.probe.set_mean_flow(&self.cyl_mean_flow);
                 }
                 r.taken += 1;
