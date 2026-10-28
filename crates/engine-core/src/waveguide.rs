@@ -196,6 +196,10 @@ impl DelayLine {
             back(self.whole - ahead) * (1.0 - self.frac) + back(self.whole + 1 - ahead) * self.frac,
         )
     }
+    /// Whether its values travel at their own speed ([`DelayLine::nonlinear`]).
+    pub fn is_nonlinear(&self) -> bool {
+        self.arrivals.is_some()
+    }
     /// Whole steps a value pushed now takes at least to arrive: the delay's, or on a non-linear
     /// line half of it (its loudest values travel at most twice as fast).
     pub fn whole_steps(&self) -> usize {
@@ -471,6 +475,10 @@ impl Pipe {
         self.fwd = DelayLine::nonlinear(delay, k);
         self.bwd = DelayLine::nonlinear(delay, k);
         self
+    }
+    /// Whether its waves steepen ([`Pipe::nonlinear`], [`Pipe::steepening`]).
+    pub fn is_nonlinear(&self) -> bool {
+        self.chain.is_some() || self.fwd.is_nonlinear()
     }
     /// Extra per-trip amplitude factor (e.g. a muffler in this pipe).
     pub fn with_extra_gain(mut self, g: f64) -> Self {

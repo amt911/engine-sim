@@ -69,6 +69,10 @@ pub struct ExhaustDef {
     /// collector has its own tail. The waveguide exhaust only; the finite-volume one keeps the
     /// paths apart.
     pub merge: Option<Merge>,
+    /// The waveguide's smooth pipes steepen their waves into shocks and their walls take the
+    /// highs (Msallam et al., *Acta Acustica* 86, 2000; Kirchhoff, Kinsler §9.9): see
+    /// [`Pipe::steepening`]. Off: linear pipes (cheaper; what lower quality levels run).
+    pub steepening: bool,
 }
 
 /// Where the collectors' paths meet: each path ends in a junction with this shared duct, which
@@ -432,6 +436,7 @@ impl Default for ExhaustDef {
             tail_spacing_m: 0.9,
             after_collector: Vec::new(),
             merge: None,
+            steepening: true,
         }
     }
 }
@@ -654,22 +659,29 @@ pub(crate) fn after_collector(def: &ExhaustDef, dt: f64, lining_m: f64) -> Duct 
         (def.tail_length_m, def.tail_diameter_m),
         dt,
         lining_m,
+        def.steepening,
     )
 }
 
 /// The duct of `path`'s segments, its last pipe carrying `transmission`; a lone pipe of
 /// `fallback` (length, diameter) if the path is empty.
+/// `pipe` steepening ([`Pipe::steepening`]) when `steep`, else as it is.
+fn shaped(pipe: Pipe, steep: bool) -> Pipe {
+    if steep { pipe.steepening() } else { pipe }
+}
+
 fn segments_duct(
     path: &[Segment],
     transmission: f64,
     fallback: (f64, f64),
     dt: f64,
     lining_m: f64,
+    steep: bool,
 ) -> Duct {
     let rho_c = crate::gas::GAMMA * crate::units::ATM_PA / C_TAIL;
     let plain = |len: f64, d: f64| Pipe::new(len, d, C_TAIL, dt, LOSS_PER_M);
     // a smooth-walled pipe: its waves steepen and its walls take the highs (Kirchhoff)
-    let pipe = |len: f64, d: f64| plain(len, d).steepening();
+    let pipe = |len: f64, d: f64| shaped(plain(len, d), steep);
     let mut duct: Option<Duct> = None;
     let mut pending = Node::Plain;
     let last_pipe = path
@@ -961,8 +973,8 @@ impl ExhaustNet {
                     dt,
                     LOSS_PER_M,
                 )
-                .steepening()
             })
+            .map(|p| shaped(p, def.steepening))
             .collect();
         let branches: Vec<Branch> = def
             .groups(cylinders)
@@ -970,14 +982,16 @@ impl ExhaustNet {
             .map(|members| Branch {
                 losses: collector_losses(def, members.len()),
                 members,
-                collector: Pipe::new(
-                    def.collector_length_m,
-                    def.collector_diameter_m,
-                    C_COLLECTOR,
-                    dt,
-                    LOSS_PER_M,
-                )
-                .steepening(),
+                collector: shaped(
+                    Pipe::new(
+                        def.collector_length_m,
+                        def.collector_diameter_m,
+                        C_COLLECTOR,
+                        dt,
+                        LOSS_PER_M,
+                    ),
+                    def.steepening,
+                ),
                 tail: after_collector(def, dt, lining_m),
                 end: OpenEnd::new(def.tail_diameter_m, dt),
             })
@@ -1004,10 +1018,12 @@ impl ExhaustNet {
                     fallback,
                     dt,
                     lining_m,
+                    def.steepening,
                 );
                 let valved = m.bypass.as_ref().map(|b| {
-                    let duct =
-                        |path: &[Segment], t: f64| segments_duct(path, t, fallback, dt, lining_m);
+                    let duct = |path: &[Segment], t: f64| {
+                        segments_duct(path, t, fallback, dt, lining_m, def.steepening)
+                    };
                     Valved {
                         closed: duct(&b.closed, 1.0),
                         open: duct(&b.open, 1.0),
@@ -1136,6 +1152,11 @@ impl ExhaustNet {
     /// primaries' lines as they stood when the oldest block's results were back), capped at
     /// [`MAX_BLOCK`]. Under [`MIN_BLOCK`] it is 0: not worth handing off.
     pub fn max_block(&self) -> usize {
+        // a steepening primary's waves arrive when their own speed says, through its segments:
+        // the copy the probe keeps of the lines cannot run ahead of the net
+        if self.primaries.iter().any(Pipe::is_nonlinear) {
+            return 0;
+        }
         let whole = self
             .primaries
             .iter()
@@ -1525,6 +1546,8 @@ mod tests {
         let block = |length_m: f64, fs: f64| {
             let def = ExhaustDef {
                 primary_length_m: length_m,
+                // linear primaries: a steepening one is never run ahead (max_block)
+                steepening: false,
                 ..ExhaustDef::default()
             };
             ExhaustNet::new(&def, 4, 1.0 / fs).max_block()
@@ -1534,6 +1557,11 @@ mod tests {
         assert_eq!(block(0.205, 48_000.0), 8);
         assert_eq!(block(0.19, 48_000.0), 0);
         assert_eq!(block(0.05, 48_000.0), 0);
+        // steepening primaries: never handed off
+        assert_eq!(
+            ExhaustNet::new(&ExhaustDef::default(), 4, 1.0 / 192_000.0).max_block(),
+            0
+        );
     }
 
     #[test]
@@ -1541,7 +1569,11 @@ mod tests {
         // the net steps on its own; the probe is given each step's result only when it is
         // `late − 1` steps old, and a change of the mean flows at step 300: at every step it
         // reads, with its results that late, the very bits the net reads
-        let def = ExhaustDef::default();
+        // the probe runs linear primaries ahead (a steepening net is never handed off)
+        let def = ExhaustDef {
+            steepening: false,
+            ..ExhaustDef::default()
+        };
         let mut net = ExhaustNet::new(&def, 4, 1.0 / 96_000.0);
         let mut probe = ArrivalProbe::new(&net);
         let late = 2 * net.max_block();

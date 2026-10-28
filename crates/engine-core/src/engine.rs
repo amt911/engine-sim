@@ -190,6 +190,7 @@ impl EngineDef {
                 // one tail: no spread
                 tail_spacing_m: 0.9,
                 after_collector: Vec::new(),
+                steepening: true,
                 merge: None,
             },
             intake: IntakeDef::default(),
@@ -470,6 +471,7 @@ impl EngineDef {
                 // the tips sit together in the centre of the rear diffuser: one outlet
                 tail_spacing_m: 0.0,
                 after_collector: Vec::new(),
+                steepening: true,
                 // Both banks run into one rear muffler and leave through three tips together
                 // (Okamoto et al., SAE 2011-01-2024, Fig. 19; Toyota EPC 17410/17430): a Y into
                 // an 85 mm pipe, a transverse titanium muffler whose valve opens above 3000 rpm
@@ -625,6 +627,7 @@ impl EngineDef {
                 // the tips sit together in the centre (458 Italia)
                 tail_spacing_m: 0.25,
                 after_collector: Vec::new(),
+                steepening: true,
                 merge: None,
             },
             intake: IntakeDef::default(),
@@ -704,6 +707,7 @@ impl EngineDef {
                 // two tips each side (C6 Corvette)
                 tail_spacing_m: 1.1,
                 after_collector: Vec::new(),
+                steepening: true,
                 merge: None,
             },
             intake: IntakeDef::default(),
@@ -6201,6 +6205,9 @@ mod tests {
         // the rest. A blip midway moves the mean flows the pipes' friction follows; the run ends
         // in the middle of a block.
         for def in [EngineDef::lfa_v10(), EngineDef::inline4()] {
+            // linear pipes: a steepening exhaust is never handed off (max_block)
+            let mut def = def;
+            def.exhaust.steepening = false;
             let mut a = Engine::new(def.clone(), 3000.0, 1);
             let mut b = Engine::new(def.clone(), 3000.0, 1);
             let n = (0.15 / DT) as usize + 7;
