@@ -197,7 +197,11 @@ impl FineScale {
 
 /// The jet through an open exhaust valve, heard inside the port: gas expanding from the
 /// cylinder (`p_cyl`, `t_cyl`) to the port (`p_port`, `t_port`) through the curtain's effective
-/// area `a_curtain`, isentropically, at most at c* (choked). Its turbulent mixing noise follows
+/// area `a_curtain`, isentropically. A choked (under-expanded) jet makes its noise at its fully
+/// expanded conditions (Tam & Tanna, JSV 81(3), 1982; Tam, JSV 140(1), 1990, §2): the speed it
+/// reaches expanding to the port's pressure, √(2c_pT₀(1 − (p/p₀)^((γ−1)/γ))), on the area that
+/// carries the throat's mass flow at that speed and density (continuity), not c* on the throat's
+/// area. Its turbulent mixing noise follows
 /// the same correlation as a tail jet's ([`jet_oaspl_db`], ARP876), with the port's gas as the
 /// medium (ρc² = γp: at one pressure the correlation needs no correction for hot gas); its
 /// acoustic power W = 4πr²·p²/(ρc) goes into the primary of area `a_pipe` as plane waves (below
@@ -213,15 +217,24 @@ pub fn valve_jet_level(
     if a_curtain <= 0.0 || p_port >= p_cyl || t_cyl <= 0.0 || t_port <= 0.0 {
         return (0.0, 0.0, 0.0);
     }
-    let ratio = (p_port / p_cyl).max(crate::gas::CRITICAL_PRESSURE_RATIO);
+    let ratio = p_port / p_cyl;
     // the step's hot path: the correlation's dB terms taken as one product (no logs), and
     // ratio^((γ−1)/γ) = ratio / ratio^(1/γ)
     let r_g = ratio.powf(1.0 / GAMMA);
     let u = (2.0 * CP * t_cyl * (1.0 - ratio / r_g)).sqrt();
+    // fully expanded: the throat's mass flux ρ*u* spread over the slower-per-area jet ρⱼuⱼ
+    let a_jet = if ratio < crate::gas::CRITICAL_PRESSURE_RATIO {
+        const RC: f64 = crate::gas::CRITICAL_PRESSURE_RATIO;
+        let rc_g = RC.powf(1.0 / GAMMA);
+        let u_star = (2.0 * CP * t_cyl * (1.0 - RC / rc_g)).sqrt();
+        a_curtain * rc_g * u_star / (r_g * u)
+    } else {
+        a_curtain
+    };
     // ρ_jet / ρ_port, both ideal gas
     let density_ratio = p_cyl * r_g * t_port / (t_cyl * p_port);
     let c_a = (GAMMA * R_AIR * t_port).sqrt();
-    let d = (4.0 * a_curtain / PI).sqrt();
+    let d = (4.0 * a_jet / PI).sqrt();
     let m = u / c_a;
     let sqrt_m = m.sqrt();
     let m35 = m * m * m * sqrt_m;
@@ -229,7 +242,7 @@ pub fn valve_jet_level(
     // p₁² = P_REF²·10^14.1·(ρ_j/ρ_a)^w·M^7.5/(1 + 0.01·M^4.5)·A; W = 4πr²p₁²/(ρc), half of it
     // down the pipe as a plane wave p = √(½Wρc/A_pipe): ρc cancels
     const P_REF_10_705: f64 = P_REF * 1.122_018_454_301_963_3e7;
-    let p1_sq = density_ratio.powf(w) * m35 * m35 * sqrt_m / (1.0 + 0.01 * m35 * m) * a_curtain;
+    let p1_sq = density_ratio.powf(w) * m35 * m35 * sqrt_m / (1.0 + 0.01 * m35 * m) * a_jet;
     (P_REF_10_705 * (2.0 * PI * p1_sq / a_pipe).sqrt(), u, d)
 }
 
@@ -287,16 +300,19 @@ mod tests {
 
     #[test]
     fn a_choked_exhaust_valve_jet_by_hand() {
-        // 3 bar, 1200 K in the cylinder, the port at 1 bar, 900 K: choked (1/3 < 0.528), the jet
-        // at c* = √(2γRT/(γ + 1)) = 633.9 m/s with the throat's 0.8711·0.6339 = 0.5522 kg/m³,
-        // into port gas of 0.38715 kg/m³ and c = 601.4 m/s: M = 1.0541, w = 1.0014. Through 4 cm²:
-        // 141 + 1.5444 + 1.7163 − 0.0547 − 33.979 = 110.227 dB at 1 m (6.497 Pa), W =
-        // 4π·6.497²/(0.38715·601.4) = 2.278 W, half of it down a 42 mm primary (1.3854e-3 m²):
-        // √(½·2.278·232.83/1.3854e-3) = 437.5 Pa
+        // 3 bar, 1200 K in the cylinder, the port at 1 bar, 900 K: choked (1/3 < 0.528), so the
+        // jet makes its noise fully expanded (Tam & Tanna 1982): √(2·1004.5·1200·(1 − (1/3)^(2/7)))
+        // = 805.9 m/s at 0.8711·(1/3)^(1/1.4) = 0.3974 kg/m³. The throat passes ρ*u* = 0.5522 ·
+        // 633.9 kg/m²s through 4 cm², so the jet is 4.3715 cm² wide. Into port gas of 0.38715
+        // kg/m³ and c = 601.4 m/s: M = 1.3401, w = 1.4685; 141 + 0.1676 + 9.2329 − 33.594 + ...
+        // = 116.95 dB at 1 m (14.079 Pa), W = 4π·14.079²/(0.38715·601.4) = 10.70 W, half of it
+        // down a 42 mm primary (1.3854e-3 m²): √(½·10.70·232.83/1.3854e-3) = 948.1 Pa (c* on
+        // the throat's area gave 437.5 Pa: 6.7 dB less)
         let a_pipe = PI * 0.25 * 0.042 * 0.042;
-        let (p, u, _) = valve_jet_level((3e5, 1200.0), (1e5, 900.0), 4e-4, a_pipe);
-        assert!((u - 633.9).abs() < 0.2, "{u} m/s");
-        assert!((p / 437.5 - 1.0).abs() < 0.01, "{p} Pa");
+        let (p, u, d) = valve_jet_level((3e5, 1200.0), (1e5, 900.0), 4e-4, a_pipe);
+        assert!((u - 805.9).abs() < 0.2, "{u} m/s");
+        assert!((p / 948.1 - 1.0).abs() < 0.01, "{p} Pa");
+        assert!((d - (4.0 * 4.3715e-4 / PI).sqrt()).abs() < 1e-5, "{d} m");
         // shut, or the port above the cylinder (reversion): no jet
         assert_eq!(
             valve_jet_level((3e5, 1200.0), (1e5, 900.0), 0.0, a_pipe).0,
@@ -321,7 +337,8 @@ mod tests {
             .map(|_| j.step(cyl, port, 4e-4, a_pipe, dt))
             .collect();
         let rms = (x.iter().map(|v| v * v).sum::<f64>() / n as f64).sqrt();
-        assert!((rms / 437.5 - 1.0).abs() < 0.1, "{rms} Pa");
+        // 948.1 Pa by hand (a_choked_exhaust_valve_jet_by_hand)
+        assert!((rms / 948.1 - 1.0).abs() < 0.1, "{rms} Pa");
         // and nothing while the valve is shut
         assert!((0..1000).all(|_| j.step(cyl, port, 0.0, a_pipe, dt) == 0.0));
     }
