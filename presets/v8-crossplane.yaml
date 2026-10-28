@@ -77,6 +77,7 @@ engine:
     - kind: pipe
       length_m: 2.0
       diameter_m: 0.065
+    merge: null
   intake:
     model: zero_d
     runner_length_m: 0.3
@@ -132,3 +133,4 @@ engine:
     clutch_capacity_nm: 850.0
     max_brake_decel_m_s2: 10.0
     shift_time_s: 0.0
+    engine_ahead_m: 3.5

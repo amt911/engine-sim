@@ -183,3 +183,4 @@ engine:
     clutch_capacity_nm: 800.0
     max_brake_decel_m_s2: 10.0
     shift_time_s: 0.2
+    engine_ahead_m: 3.2

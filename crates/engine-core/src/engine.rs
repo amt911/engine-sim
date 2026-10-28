@@ -2426,7 +2426,8 @@ impl Engine {
                 dt,
                 snd.ground_heights(),
                 snd.street(),
-            );
+            )
+            .with_engine_ahead(self.def.vehicle.engine_ahead_m);
             self.listener = Some((dt, l));
         }
         let n_tails = match (&self.net, &self.fv, &self.remote.0) {
@@ -2537,7 +2538,7 @@ impl Engine {
                 None => 0.0,
             }
         };
-        // what does not wait for the tails: the intake mouth and the block. The mouth is a
+        // the engine's own sources, heard from where it sits: the intake mouth and the block. The mouth is a
         // runner's trumpet with individual throttles, else the throttle bore (the air box's
         // own inlet is not in the definition: an estimate).
         let mouth_d = if self.def.intake.individual_throttles {
@@ -2547,7 +2548,10 @@ impl Engine {
         };
         let mouth_area = PI * 0.25 * mouth_d * mouth_d;
         let rest = match &mut self.listener {
-            Some((_, l)) => l.radiate_mouth(intake_flow, mouth_area) + l.spread_from_1m(block),
+            Some((_, l)) => {
+                let at_engine = l.radiate_mouth(intake_flow, mouth_area) + l.spread_from_1m(block);
+                l.from_engine(at_engine)
+            }
             None => 0.0,
         };
         let audio = if let Some(r) = self.remote.0.as_mut() {
@@ -4884,12 +4888,11 @@ mod tests {
 
     #[test]
     fn the_engine_is_heard_through_the_listener() {
-        // One tail: where you stand changes nothing (only the common path, which is dropped).
-        // (to rounding: √(sin² + cos²)·r is r in the last bit)
-        let (a, b) = (
-            heard_at(EngineDef::inline4(), 0.0),
-            heard_at(EngineDef::inline4(), 60.0),
-        );
+        // One tail and the engine at it: where you stand changes nothing (only the common
+        // path, which is dropped). (to rounding: √(sin² + cos²)·r is r in the last bit)
+        let mut at_tail = EngineDef::inline4();
+        at_tail.vehicle.engine_ahead_m = 0.0;
+        let (a, b) = (heard_at(at_tail.clone(), 0.0), heard_at(at_tail, 60.0));
         for (x, y) in a.iter().zip(&b) {
             assert_relative_eq!(x, y, max_relative = 1e-12, epsilon = 1e-15);
         }
@@ -6627,6 +6630,8 @@ mod tests {
             let mut d = EngineDef::inline4();
             d.sound.block = block;
             d.sound.listener_distance_m = distance;
+            // heard from the tails' place, as the hand figures below assume
+            d.vehicle.engine_ahead_m = 0.0;
             let mut e = Engine::new(d, 5000.0, 1);
             let c = Controls {
                 throttle: 1.0,
