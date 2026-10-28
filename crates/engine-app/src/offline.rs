@@ -184,6 +184,8 @@ pub struct GearPull {
     /// The pull's best speed so far in this gear and when it was last bettered, s.
     best: f64,
     since_best: f64,
+    /// Engine speed when the clutch came up after the last shift, rpm.
+    takeup: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -209,6 +211,7 @@ impl GearPull {
             t: 0.0,
             best: 0.0,
             since_best: 0.0,
+            takeup: 0.0,
         }
     }
 
@@ -250,6 +253,7 @@ impl GearPull {
             }
             PullPhase::Shift if self.t >= SHIFT_S - 1e-9 => {
                 self.gear += 1;
+                self.takeup = rpm;
                 to(self, PullPhase::Pull);
             }
             PullPhase::Lift if self.t >= LIFT_S - 1e-9 => to(self, PullPhase::Done),
@@ -258,9 +262,11 @@ impl GearPull {
         let (throttle, clutch_pedal) = match self.phase {
             PullPhase::Idle | PullPhase::Lift | PullPhase::Done => (0.0, false),
             PullPhase::Launch => (1.0, true),
-            // while the launch's clutch slips the driver holds the engine near the launch revs
-            // (on the throttle up to 15 % over them, off by 45 %); locked, or taking up after a
-            // shift, flat out
+            // while the clutch slips the driver holds the revs: at a launch near the launch revs
+            // (on the throttle up to 15 % over them, off by 45 %); after a shift where the
+            // clutch came up (half throttle there, full 10 % under, off 10 % over), as the
+            // clutch still short of the engine's torque would let it flare to the limiter.
+            // Locked, flat out
             PullPhase::Pull if !locked && self.gear == 1 => {
                 let launch = LAUNCH_SHARE * self.redline;
                 (
@@ -268,6 +274,10 @@ impl GearPull {
                     false,
                 )
             }
+            PullPhase::Pull if !locked => (
+                (0.5 + (self.takeup - rpm) / (0.2 * self.takeup)).clamp(0.0, 1.0),
+                false,
+            ),
             PullPhase::Pull => (1.0, false),
             PullPhase::Shift | PullPhase::Clutch => (0.0, true),
         };
@@ -519,7 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn after_a_shift_the_driver_is_on_the_throttle_while_the_clutch_takes_up() {
+    fn after_a_shift_the_driver_holds_the_revs_while_the_clutch_takes_up() {
         // an upshift lands the engine above the next gear's speed: the clutch slips until they
         // meet, and the driver is already back on the throttle (the launch's governor, which
         // holds the revs near 45 % of the redline while the clutch slips from rest, is for the
@@ -537,11 +547,19 @@ mod tests {
         for _ in 0..30 {
             step(5000.0, false);
         }
-        // second gear in, the clutch still slipping at 5000 rpm: full throttle
+        // second gear in at 5000 rpm, the clutch still slipping: on the throttle, but holding
+        // the revs where the clutch came up — more as the clutch pulls them down, none if they
+        // flare (with the clutch still short of the engine's torque, full throttle ran the
+        // engine to its limiter)
         let (thr, d) = step(5000.0, false);
         assert_eq!((d.gear, d.clutch_pedal), (2, false));
-        assert_eq!(thr, 1.0);
-        assert_eq!(step(4500.0, false).0, 1.0);
+        assert!(thr > 0.2 && thr < 1.0, "{thr}");
+        let (lower, _) = step(4500.0, false);
+        assert!(lower > thr, "{lower} vs {thr}");
+        assert_eq!(step(5600.0, false).0, 0.0);
+        assert_eq!(step(4000.0, false).0, 1.0);
+        // locked: flat out
+        assert_eq!(step(4000.0, true).0, 1.0);
     }
 
     #[test]
