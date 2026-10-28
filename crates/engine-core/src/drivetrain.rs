@@ -701,6 +701,16 @@ mod tests {
             close(Some(0.1))
         );
         assert!((close(None) - 1.0 / 1.5).abs() < 2e-3, "{}", close(None));
+        // no time given (a driver's shift) is the driver's release, not an instant one
+        assert!((close(Some(0.0)) - 1.0 / 1.5).abs() < 2e-3);
+    }
+
+    #[test]
+    fn the_single_rides_a_light_motorcycle() {
+        // its own figures, not a car's: 250 kg with the rider on a 0.312 m tyre
+        let d = VehicleDef::single();
+        assert_eq!((d.mass_kg, d.wheel_radius_m), (250.0, 0.312));
+        assert_eq!(d.shift_time_s, 0.0);
     }
 
     #[test]

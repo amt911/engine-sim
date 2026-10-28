@@ -3104,6 +3104,35 @@ mod tests {
                 .sum::<f64>()
                 / n as f64
         };
+        // and the cut is a retard: the burn, and its pressure peak, come later (Heywood §9.2.4:
+        // at 20 % the spark moves back by retard_for(0.8) ≈ 29°)
+        let peak_deg = |cut: f64| {
+            let mut e = Engine::new(EngineDef::lfa_v10(), 6000.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(6000.0),
+                torque_cut: cut,
+                ..Controls::default()
+            };
+            run(&mut e, 0.4, &c);
+            let (mut best, mut at) = (0.0, 0.0);
+            for _ in 0..(0.02 / DT) as usize {
+                e.step(DT, &c);
+                let cs = &e.cyl[0];
+                if cs.gas.pressure() > best {
+                    // ° from the firing top centre (0/720), before it negative
+                    let deg = if cs.cycle_deg > 360.0 {
+                        cs.cycle_deg - 720.0
+                    } else {
+                        cs.cycle_deg
+                    };
+                    (best, at) = (cs.gas.pressure(), deg);
+                }
+            }
+            at
+        };
+        let (early, late) = (peak_deg(0.0), peak_deg(0.2));
+        assert!(late - early > 10.0, "peak at {early:.1}° → {late:.1}°");
         let (full, motoring) = (torque(0.0), torque(1.0));
         assert!(full > 300.0 && motoring < 0.0, "{full} {motoring}");
         for cut in [0.2, 0.7] {
