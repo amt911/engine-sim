@@ -73,7 +73,7 @@ engine:
       thickness_m: 0.025
       flow_resistivity: 16000.0
       porosity: 0.95
-    tail_spacing_m: 0.25
+    tail_spacing_m: 0.0
     after_collector:
     - kind: catalyst
       length_m: 0.13
@@ -83,6 +83,12 @@ engine:
     - kind: pipe
       length_m: 1.2
       diameter_m: 0.06
+    merge:
+      segments:
+      - kind: pipe
+        length_m: 0.15
+        diameter_m: 0.08485281374238571
+      outlet_diameter_m: 0.08485281374238571
   intake:
     model: fv
     runner_length_m: 0.325

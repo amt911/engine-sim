@@ -467,10 +467,20 @@ impl EngineDef {
                 model: ExhaustModel::Waveguide,
                 muffler_volume_m3: 0.010,
                 muffler_packing: crate::lining::Packing::default(),
-                // the tips sit together in the centre of the rear diffuser
-                tail_spacing_m: 0.25,
+                // the tips sit together in the centre of the rear diffuser: one outlet
+                tail_spacing_m: 0.0,
                 after_collector: Vec::new(),
-                merge: None,
+                // Both banks run into one rear muffler and leave through the tips together
+                // (Okamoto et al., SAE 2011-01-2024, Fig. 19). Its inside is not published:
+                // ESTIMATE, the banks meet at the outlet, a short shared pipe of their two
+                // pipes' area (Ø 60 mm · √2).
+                merge: Some(crate::exhaust::Merge {
+                    segments: vec![crate::exhaust::Segment::Pipe {
+                        length_m: 0.15,
+                        diameter_m: 0.060 * std::f64::consts::SQRT_2,
+                    }],
+                    outlet_diameter_m: 0.060 * std::f64::consts::SQRT_2,
+                }),
             },
             // Ten ITBs (Toyota). Runner length not published: Helmholtz-tuned to the torque peak
             // (Engelman: f = (a/2π)·√(A/(L·V)), V = V_d/2·(r + 1)/(r − 1), tuned at twice the
