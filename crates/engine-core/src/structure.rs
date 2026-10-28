@@ -110,9 +110,39 @@ impl StructureResponse {
     }
 }
 
+/// What drives the block's response: one cylinder's pressure, the engine's own number of
+/// cylinders already in the measured attenuation (Anderton, *Relation between combustion system
+/// and engine noise*, SAE 790270, eq. 3: P² = (cylinder pressure × bore²)²/S, with S measured on
+/// whole engines against one cylinder's pressure). At the firing harmonics the cylinders' mean
+/// is any one cylinder's pressure, so the mean of `cylinders_pa` drives it, and their firing
+/// pattern stays in the sound. The curve is for a 100 mm bore and the noise grows with the
+/// bore's fifth power (Anderton: the direct force with its fourth, the attenuation falling with
+/// the first), so the drive scales by (bore / 0.1 m)^2.5. Pa.
+pub fn combustion_drive(cylinders_pa: impl IntoIterator<Item = f64>, bore_m: f64) -> f64 {
+    let (sum, n) = cylinders_pa
+        .into_iter()
+        .fold((0.0, 0usize), |(s, n), p| (s + p, n + 1));
+    if n == 0 {
+        return 0.0;
+    }
+    sum / n as f64 * (bore_m / 0.1).powf(2.5)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_block_is_driven_by_one_cylinders_pressure_scaled_to_the_bore() {
+        // Anderton (SAE 790270) eq. 3: P² = (cylinder pressure × bore²)²/S, one cylinder's
+        // pressure (its engine's noise already in S), S measured at 100 mm, noise ∝ bore⁵:
+        // ten equal 2 bar cylinders of 88 mm drive it as 2 bar × 0.88^2.5 = 2e5 × 0.726452
+        let ten = [2e5; 10];
+        assert!((combustion_drive(ten, 0.088) - 145_290.4).abs() < 1.0);
+        // at 100 mm, the mean pressure itself
+        assert!((combustion_drive([1e5, 3e5], 0.1) - 2e5).abs() < 1e-9);
+        assert_eq!(combustion_drive([], 0.1), 0.0);
+    }
 
     /// SRF (dB re 20 µPa at 1 m for 1 kPa) of a sine of `f` Hz through the filter at `fs`.
     fn srf_db(f: f64, fs: f64) -> f64 {

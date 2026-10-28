@@ -2455,7 +2455,10 @@ impl Engine {
             if self.structure.as_ref().is_none_or(|s| s.0 != dt) {
                 self.structure = Some((dt, StructureResponse::new(dt)));
             }
-            let p: f64 = self.cyl.iter().map(|cs| cs.gas.pressure()).sum();
+            let p = crate::structure::combustion_drive(
+                self.cyl.iter().map(|cs| cs.gas.pressure()),
+                g.bore_m,
+            );
             let seats = seat_force / g.piston_area();
             match &mut self.structure {
                 Some((_, s)) => s.process(snd.block * p + snd.mechanical * seats),
@@ -6540,11 +6543,13 @@ mod tests {
     fn the_block_radiates_the_cylinder_pressure() {
         // what the block adds at the listener: inline-4, 5000 rpm WOT. By hand: each cylinder's
         // pressure as a Gaussian pulse, 7 MPa peak, 60° wide at half height (σ = 0.85 ms), once
-        // per 24 ms cycle; its harmonic k has 2Pσ√(2π)/T·exp(−(2πfσ)²/2), four cylinders adding
-        // at the firing orders: 3.3 MPa at 167 Hz, 1.0 MPa at 333 Hz, 0.14 MPa at 500 Hz. The
-        // figure's structure response there (26, 39.5, 47 dB for 1 kPa) gives 1.3, 1.9, 0.6 Pa
-        // at 1 m: 1.7 Pa rms, 0.53 Pa at the 3.27 m to the ear. The real pulse rises faster than
-        // a Gaussian (more above 300 Hz), so up to a few times that
+        // per 24 ms cycle; its harmonic k has 2Pσ√(2π)/T·exp(−(2πfσ)²/2): one cylinder's, at the
+        // firing orders, 0.83 MPa at 167 Hz, 0.25 MPa at 333 Hz, 0.035 MPa at 500 Hz (Anderton,
+        // SAE 790270 eq. 3: the attenuation links one cylinder's pressure to the whole engine's
+        // noise). The figure's structure response there (26, 39.5, 47 dB for 1 kPa) gives 0.33,
+        // 0.47, 0.16 Pa at 1 m: 0.43 Pa rms, × (86/100 mm)^2.5 = 0.686 for the bore (the curve is
+        // for 100 mm, noise ∝ bore⁵): 0.29 Pa, 0.089 Pa at the 3.27 m to the ear. The real pulse
+        // rises faster than a Gaussian (more above 300 Hz), so up to a few times that
         let heard = |block: f64, distance: f64| {
             let mut d = EngineDef::inline4();
             d.sound.block = block;
@@ -6560,7 +6565,7 @@ mod tests {
         };
         let (m, near) = mean_rms_of_difference(&heard(1.0, 3.0), &heard(0.0, 3.0));
         assert!(
-            (0.25..1.6).contains(&near) && m.abs() < 0.05 * near,
+            (0.04..0.27).contains(&near) && m.abs() < 0.05 * near,
             "block: mean {m} rms {near} Pa"
         );
         // a spherical spreader, 1/r: the ear 1.3 m above the tails, so 3 m and 6 m out are
