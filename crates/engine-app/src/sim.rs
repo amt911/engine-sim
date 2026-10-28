@@ -44,6 +44,8 @@ pub struct DriveInput {
     pub clutch_pedal: bool,
     /// Brake pedal 0..1.
     pub brake: f64,
+    /// How long the clutch takes to close, s: an automated gearbox's; 0 = a driver's release.
+    pub clutch_engage_s: f64,
 }
 
 /// Just under the output's Nyquist (20.2 kHz at 48 kHz), at the level's physics rate.
@@ -214,6 +216,7 @@ impl Simulation {
         let substeps = self.quality.substeps();
         let dt = 1.0 / (self.sample_rate * substeps as f64);
         self.vehicle.set_gear(self.drive.gear);
+        self.vehicle.set_clutch_engage_s(self.drive.clutch_engage_s);
         self.vehicle
             .set_clutch(if self.drive.clutch_pedal { 0.0 } else { 1.0 });
         let mut c = self.controls;
@@ -880,6 +883,7 @@ pub(crate) mod tests {
             gear: 0,
             clutch_pedal: true,
             brake: 0.0,
+            clutch_engage_s: 0.0,
         };
         render_secs(&mut sim, 0.5);
         sim.drive.gear = gear;

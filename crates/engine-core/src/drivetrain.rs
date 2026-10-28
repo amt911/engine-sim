@@ -61,6 +61,12 @@ pub struct VehicleDef {
     pub clutch_capacity_nm: f64,
     /// Deceleration at full brake, m/s² (tyre grip limit, ~0.9 g road car).
     pub max_brake_decel_m_s2: f64,
+    /// Published gear-change time of an automated gearbox, s (0 = not given: a driver's manual
+    /// shift). A shift opens the clutch with the engine's torque cut for half of it and closes
+    /// it in the other half, the engine's torque held low until the clutch locks (Glielmo et
+    /// al., *Gearshift control for automated manual transmissions*, IEEE/ASME Trans.
+    /// Mechatronics 11(1), 2006, §III and Fig. 10).
+    pub shift_time_s: f64,
 }
 
 impl Default for VehicleDef {
@@ -86,6 +92,7 @@ impl VehicleDef {
             wheel_inertia_kgm2: 1.2,
             clutch_capacity_nm: 90.0,
             max_brake_decel_m_s2: 8.0,
+            shift_time_s: 0.0,
         }
     }
 
@@ -105,6 +112,7 @@ impl VehicleDef {
             wheel_inertia_kgm2: 4.0,
             clutch_capacity_nm: 350.0,
             max_brake_decel_m_s2: 9.0,
+            shift_time_s: 0.0,
         }
     }
 
@@ -112,7 +120,8 @@ impl VehicleDef {
     /// and the 4.556 final drive are the figures given for the LFA's 6-speed ASG in the
     /// task spec (not independently re-verified here). The rear tyre 305/30 ZR20 gives
     /// 0.305 × 0.30 + 0.508/2 = 0.3455 m (computed from the size). ESTIMATES: Cd·A 0.65 m²
-    /// (Cd ~0.31), Crr, efficiency, wheel inertia, clutch capacity, 1.0 g braking.
+    /// (Cd ~0.31), Crr, efficiency, wheel inertia, clutch capacity, 1.0 g braking. The ASG
+    /// changes gear in 0.20 s (Lexus; 0.15 s on the Nürburgring Package).
     pub fn lfa_v10() -> Self {
         Self {
             name: "Lexus LFA".into(),
@@ -126,6 +135,7 @@ impl VehicleDef {
             wheel_inertia_kgm2: 5.0,
             clutch_capacity_nm: 800.0,
             max_brake_decel_m_s2: 10.0,
+            shift_time_s: 0.2,
         }
     }
 
@@ -146,6 +156,7 @@ impl VehicleDef {
             wheel_inertia_kgm2: 5.0,
             clutch_capacity_nm: 800.0,
             max_brake_decel_m_s2: 10.0,
+            shift_time_s: 0.0,
         }
     }
 
@@ -166,6 +177,7 @@ impl VehicleDef {
             wheel_inertia_kgm2: 5.0,
             clutch_capacity_nm: 850.0,
             max_brake_decel_m_s2: 10.0,
+            shift_time_s: 0.0,
         }
     }
 
@@ -194,6 +206,8 @@ pub struct Vehicle {
     gear: usize,
     clutch: f64,
     clutch_target: f64,
+    /// Engagement rate when the clutch closes, 1/s.
+    engage_rate: f64,
     locked: bool,
     prev_omega: f64,
     required_nm: f64,
@@ -210,6 +224,7 @@ impl Vehicle {
             gear: 0,
             clutch: 1.0,
             clutch_target: 1.0,
+            engage_rate: CLUTCH_ENGAGE_RATE,
             locked: false,
             prev_omega: 0.0,
             required_nm: 0.0,
@@ -247,6 +262,15 @@ impl Vehicle {
     pub fn set_clutch(&mut self, engagement: f64) {
         self.clutch_target = engagement.clamp(0.0, 1.0);
     }
+    /// How long the clutch takes to close from open, s: an automated gearbox's actuator
+    /// ([`VehicleDef::shift_time_s`]); a non-positive time is a driver's release (1/1.5 s).
+    pub fn set_clutch_engage_s(&mut self, seconds: f64) {
+        self.engage_rate = if seconds > 0.0 {
+            1.0 / seconds
+        } else {
+            CLUTCH_ENGAGE_RATE
+        };
+    }
     pub fn locked(&self) -> bool {
         self.locked
     }
@@ -265,7 +289,7 @@ impl Vehicle {
 
     fn ramp_clutch(&mut self, dt: f64) {
         let rate = if self.clutch_target > self.clutch {
-            CLUTCH_ENGAGE_RATE
+            self.engage_rate
         } else {
             CLUTCH_RELEASE_RATE
         };
@@ -357,6 +381,7 @@ mod tests {
             wheel_inertia_kgm2: 0.0,
             clutch_capacity_nm: 400.0,
             max_brake_decel_m_s2: 9.0,
+            shift_time_s: 0.0,
         }
     }
 
@@ -645,6 +670,49 @@ mod tests {
         let d = VehicleDef::lfa_v10();
         let v = 942.478 * d.wheel_radius_m / d.overall_ratio(6);
         assert_relative_eq!(v * 3.6, 323.6, max_relative = 2e-3);
+    }
+
+    #[test]
+    fn a_clutch_told_to_close_in_a_tenth_of_a_second_does_so() {
+        // an automated gearbox closes its clutch as fast as its shift allows; a driver's
+        // default release takes 1/1.5 s
+        let close = |engage_s: Option<f64>| {
+            let mut v = Vehicle::new(VehicleDef::lfa_v10());
+            v.set_clutch(0.0);
+            for _ in 0..100 {
+                v.step(1e-3, 600.0, 0.0);
+            }
+            assert_eq!(v.clutch(), 0.0);
+            if let Some(s) = engage_s {
+                v.set_clutch_engage_s(s);
+            }
+            v.set_clutch(1.0);
+            let mut t = 0.0f64;
+            while v.clutch() < 1.0 && t < 2.0 {
+                v.step(1e-3, 600.0, 0.0);
+                t += 1e-3;
+            }
+            t
+        };
+        assert!(
+            (close(Some(0.1)) - 0.1).abs() < 2e-3,
+            "{}",
+            close(Some(0.1))
+        );
+        assert!((close(None) - 1.0 / 1.5).abs() < 2e-3, "{}", close(None));
+    }
+
+    #[test]
+    fn the_lfa_shifts_in_its_published_time_and_old_files_have_none() {
+        // Lexus LFA ASG: 0.20 s per gear change (0.15 s on the Nürburgring Package)
+        assert_eq!(VehicleDef::lfa_v10().shift_time_s, 0.2);
+        let old: VehicleDef = serde_yaml_ng::from_str("name: x\nmass_kg: 1000\n").unwrap();
+        assert_eq!(old.shift_time_s, 0.0);
+        let d = VehicleDef::lfa_v10();
+        let json: VehicleDef = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+        let yaml: VehicleDef =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&d).unwrap()).unwrap();
+        assert_eq!((json, yaml), (d.clone(), d));
     }
 
     #[test]
