@@ -114,3 +114,12 @@ silencer's internal flow (Davies & Holland 2001) and the tail pipe's jet at the 
 - Tam 1990, *Broadband shock-associated noise of moderately imperfectly expanded supersonic
   jets*, JSV 140(1), eq. 3.7.
 - Davies & Holland 2001 (fallback candidate), Davies 1988 and 1999.
+
+## Result of the feasibility step (2026-10-28): NO-GO
+
+LFA held at 7400 rpm WOT, cylinder 0, 192 kHz: the exhaust valve as a spoiler in a 42 mm port
+(C_L median 7.8, Δp up to 445 kPa, u_c capped at Mach 0.3 on 98 % of the open steps) generates
+≈ 71 dB re 1 pW per third octave downstream, against 141–148 dB of the pulse waves the valve sends
+in the same bands: **−73 dB** in 1–4 kHz where +4 dB was needed. Lifting the Mach cap would gain
+20–30 dB at most. Not built. The other candidates checked the same day are in FACTS (tail-pipe
+jets, crank coupling, cycle-to-cycle combustion, non-linear propagation): none closes the gap.

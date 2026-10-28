@@ -186,3 +186,19 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   - The share does not depend on the mic (a linear path scales repeat and residue alike).
     `held:RPM:0` above idle is overrun with fuel cut: perfectly periodic, not comparable. The
     period finder locks on wrong on interior mics.
+- **Idle periodicity: hold the speed and you get a tone** (2026-10-28). `--render held:` pins the
+  crank; idling free (`--headless --throttle 0`) the LFA repeats 0.48 / 0.42 / 0.15 / 0.02 of its
+  125 / 250 / 500 / 1000 Hz octaves, like the real LFA (0.52 / 0.50 / 0.19 / ≈0) and a real Viper
+  V10 (0.38 / 0.48 / 0.12 / 0.01). Cross-plane V8 free 0.84 / 0.68 / 0.33 / −0.02 (real Camaro
+  0.52 / 0.27 / 0.09 / 0.01); flat-plane V8 free 0.97 / 0.93 / 0.76 / 0.41 (real RS4 0.78 / 0.46 /
+  0.22 / 0.02): only the flat-plane stays too regular. Compare idle only free-running.
+- **At load the render repeats too much, and five suspects are cleared** (2026-10-28):
+  - Real Viper V10, mic at the exhaust, slow ramp under load ~2100 rpm: 125 / 250 / 500 / 1k Hz
+    0.40 / 0.36 / 0.02 / −0.01. LFA held 2100 WOT: 1.00 / 0.91 / 0.86 / 0.60.
+  - Crank coupled to the car (`--render gears`, 6th gear, 7760 rpm) ≈ held (500 Hz 0.88 vs 0.90):
+    not a held artifact at load.
+  - Tail-pipe jets (`sound.flow_noise`, ARP876): 0.0 dB at 1–4 kHz when removed.
+  - Valve flow noise (Nelson–Morfey): −73 dB short (design doc 2026-10-28, NO-GO).
+  - Cycle-to-cycle combustion already matches Soltau's WOT data (COV p_max 7–10 %, IMEP
+    1.5–1.9 %).
+  - Non-linear FV exhaust is not less periodic (7740 WOT, 1 kHz 0.76 vs waveguide 0.67).
