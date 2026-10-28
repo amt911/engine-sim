@@ -753,7 +753,7 @@ over the linear port.
 **Effect.** Torque within 1 % of the linear port's (K20A, LFA, LS3): the boundary is more correct,
 not more powerful.
 
-### The app's WAVs are WAVE_FORMAT_EXTENSIBLE float — a reader keyed on format tag 3 misreads them
+## A WAV reader keyed on format tag 3 misreads the app's float files (2026-10-28)
 
 **Symptom (2026-10-28).** Third-octave distances between quality levels came out 0.2–0.6 dB and
 justified a release (v0.26.7) that was then withdrawn: read correctly, the levels were 0.4–6.3 dB
