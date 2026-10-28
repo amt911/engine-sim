@@ -6,19 +6,21 @@
 //! so the result is bit-for-bit the scalar one.
 
 use super::*;
-use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::cell::{Cell, RefCell};
 use wide::f64x4;
 
 type V = f64x4;
 
-static FORCE_SCALAR: AtomicBool = AtomicBool::new(false);
+thread_local! {
+    // per thread, so tests running side by side cannot switch each other's path
+    static FORCE_SCALAR: Cell<bool> = const { Cell::new(false) };
+}
 
 /// Force [`step_runners`] to step the pipes one at a time (the reference path). For tests that
-/// compare the two paths; process-wide.
+/// compare the two paths; for the calling thread only.
 #[doc(hidden)]
 pub fn set_scalar_runners(on: bool) {
-    FORCE_SCALAR.store(on, Ordering::Relaxed);
+    FORCE_SCALAR.set(on);
 }
 
 #[derive(Clone, Copy)]
@@ -393,7 +395,7 @@ pub fn step_runners(
         return;
     }
     for (group, out) in pipes.chunks_mut(4).zip(out.chunks_mut(4 * substeps)) {
-        if group.len() < 2 || FORCE_SCALAR.load(Ordering::Relaxed) || !same_group(group) {
+        if group.len() < 2 || FORCE_SCALAR.get() || !same_group(group) {
             for (pipe, o) in group.iter_mut().zip(out.chunks_mut(substeps)) {
                 for fs in o.iter_mut() {
                     pipe.left = Boundary::State(ghost(pipe.prim(0)));
