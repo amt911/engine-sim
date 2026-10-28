@@ -1,0 +1,5 @@
+# A test still running after 5 minutes is killed (nextest's own per-test timeout). Mutants that
+# turn a loop endless otherwise hang a cargo-mutants worker: its whole-run timeout terminates
+# nextest, but the looping test binaries were seen to outlive it (2026-10-28, 40 min).
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 5 }

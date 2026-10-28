@@ -592,50 +592,136 @@ pub struct ExhaustNet {
     pub dt: f64,
 }
 
-/// Where an [`Engine`](crate::engine::Engine) sends its exhaust's per-step work when the net
-/// runs elsewhere (another thread, in the app): the boundary that keeps this crate free of
-/// threads. Calls come in order, once per step: `submit` the step's valve flows, tail Mach and
-/// (every few dozen steps) the mean flows; `arriving_next` the waves at the valves for the next
-/// step; `tails` the radiated tail signals of the oldest submitted step not yet collected.
+/// Most steps a block of the net's work may hold, and fewest worth handing off (below it the
+/// hand-off costs more than it saves: very short primaries stay on the engine's thread).
+pub const MAX_BLOCK: usize = 64;
+pub const MIN_BLOCK: usize = 8;
+
+/// Per-step inputs of the exhaust net for a block of steps, in order: what the engine hands
+/// over (steps × valves flows, steps × tails Mach, and the mean flows on the steps that carry
+/// them).
+#[derive(Debug, Clone, Default)]
+pub struct BlockIn {
+    pub steps: usize,
+    pub flows: Vec<f64>,
+    pub mach: Vec<f64>,
+    /// Per step: the mean flows follow in `mean` (cylinders, then tails).
+    pub has_mean: Vec<bool>,
+    pub mean: Vec<f64>,
+}
+
+impl BlockIn {
+    pub fn clear(&mut self) {
+        self.steps = 0;
+        self.flows.clear();
+        self.mach.clear();
+        self.has_mean.clear();
+        self.mean.clear();
+    }
+}
+
+/// What the net did over a [`BlockIn`]: per step, the wave each primary's collector end sent
+/// back toward its valve (steps × valves) and the radiated tail signals (steps × tails).
+#[derive(Debug, Clone, Default)]
+pub struct BlockOut {
+    pub steps: usize,
+    pub from_far: Vec<f64>,
+    pub tails: Vec<f64>,
+}
+
+/// Where an [`Engine`](crate::engine::Engine) sends its exhaust's work when the net runs
+/// elsewhere (another thread, in the app): the boundary that keeps this crate free of threads.
+///
+/// The engine hands the net a [`BlockIn`] of up to [`ExhaustLink::block`] steps at a time and
+/// takes the [`BlockOut`]s back in order, never more than two blocks behind (`collect` may
+/// wait for the oldest). The engine reads the waves arriving at its valves from the primaries'
+/// delay lines it keeps a copy of ([`ArrivalProbe`]), not from the net.
 pub trait ExhaustLink: Send {
-    fn submit(&mut self, flows: &[f64], mach: &[f64], mean: Option<(&[f64], &[f64])>);
-    fn arriving_next(&mut self, out: &mut [f64]);
-    fn tails(&mut self, out: &mut [f64]);
-    /// No more steps: whatever runs the net may hand it back.
+    /// Steps per block (at most the `max` the engine offered).
+    fn block(&self) -> usize;
+    /// Take the inputs of the next block (leaving `input` cleared, for reuse).
+    fn submit(&mut self, input: &mut BlockIn);
+    /// The results of the oldest block not yet collected, waiting for them if need be.
+    fn collect(&mut self, out: &mut BlockOut);
+    /// No more blocks: whatever runs the net may hand it back.
     fn stop(&mut self) {}
 }
 
-/// [`ExhaustLink`] that runs the net right here, in order: the reference the threaded one is
-/// compared against (and the test of the engine's split step without threads).
+/// [`ExhaustLink`] that runs the net right here, at `submit`: the reference the threaded one
+/// is compared against (and the test of the engine's split step without threads).
 pub struct LocalLink {
     pub net: ExhaustNet,
-    tails: std::collections::VecDeque<Vec<f64>>,
-    next: Vec<f64>,
+    block: usize,
+    done: std::collections::VecDeque<BlockOut>,
 }
 
 impl LocalLink {
-    pub fn new(net: ExhaustNet) -> Self {
+    pub fn new(net: ExhaustNet, block: usize) -> Self {
         Self {
-            next: vec![0.0; net.primaries.len()],
             net,
-            tails: std::collections::VecDeque::new(),
+            block,
+            done: std::collections::VecDeque::new(),
         }
     }
 }
 
 impl ExhaustLink for LocalLink {
-    fn submit(&mut self, flows: &[f64], mach: &[f64], mean: Option<(&[f64], &[f64])>) {
-        self.net.prepare(mach, mean);
-        self.net.arriving_next(&mut self.next);
-        self.net.step(flows);
-        self.tails.push_back(self.net.last_tails().to_vec());
+    fn block(&self) -> usize {
+        self.block
     }
-    fn arriving_next(&mut self, out: &mut [f64]) {
-        out.copy_from_slice(&self.next);
+    fn submit(&mut self, input: &mut BlockIn) {
+        let mut out = BlockOut::default();
+        self.net.run_block(input, &mut out);
+        input.clear();
+        self.done.push_back(out);
     }
-    fn tails(&mut self, out: &mut [f64]) {
-        if let Some(t) = self.tails.pop_front() {
-            out.copy_from_slice(&t);
+    fn collect(&mut self, out: &mut BlockOut) {
+        if let Some(o) = self.done.pop_front() {
+            *out = o;
+        }
+    }
+}
+
+/// The waves arriving at the valves while the net is a block or two behind: copies of the
+/// primaries' near-end delay lines, fed the waves the net sent into them as its results come
+/// back. A primary's line carries a wave `whole` steps, so the waves for the next `whole`
+/// steps are already in it (or in what the net is still to hand back): the engine reads them
+/// from the copy, the same bits the net itself would read.
+#[derive(Debug, Clone)]
+pub struct ArrivalProbe {
+    pipes: Vec<Pipe>,
+}
+
+impl ArrivalProbe {
+    pub fn new(net: &ExhaustNet) -> Self {
+        Self {
+            pipes: net.primaries.clone(),
+        }
+    }
+
+    /// The primaries' friction follows these mean flows from now on (as in
+    /// [`ExhaustNet::set_mean_flow`]).
+    pub fn set_mean_flow(&mut self, per_cylinder: &[f64]) {
+        for (p, m) in self.pipes.iter_mut().zip(per_cylinder) {
+            p.set_mean_flow(*m);
+        }
+    }
+
+    /// The net's results for steps the copy has not taken yet: `from_far` (steps × valves).
+    pub fn push(&mut self, from_far: &[f64]) {
+        let n = self.pipes.len();
+        for step in from_far.chunks_exact(n) {
+            for (p, &w) in self.pipes.iter_mut().zip(step) {
+                p.bwd.push(w);
+            }
+        }
+    }
+
+    /// The wave arriving at each valve now, with `ahead` steps' results not pushed yet.
+    /// `ahead` must stay below [`ExhaustNet::max_block`]`·2`.
+    pub fn arriving(&self, ahead: usize, out: &mut [f64]) {
+        for (o, p) in out.iter_mut().zip(&self.pipes) {
+            *o = p.at_near_ahead(ahead).unwrap_or(0.0);
         }
     }
 }
@@ -757,17 +843,48 @@ impl ExhaustNet {
         }
     }
 
-    /// The wave each primary will bring to its valve after the next [`ExhaustNet::step`],
-    /// known before it: a primary at least two steps long carries nothing from this step's
-    /// sends to its valve end yet. False (and `out` untouched) if a primary is shorter.
-    pub fn arriving_next(&self, out: &mut [f64]) -> bool {
-        if self.primaries.iter().any(|p| p.at_near_next().is_none()) {
-            return false;
+    /// The waves each primary last sent toward its valve (from its collector end) in the last
+    /// [`ExhaustNet::step`].
+    pub fn last_from_far(&self) -> &[f64] {
+        &self.scratch.from_far
+    }
+
+    /// Steps per block the net can run a block behind its engine with: a block must be at most
+    /// half a primary's delay (the engine reads the waves for two blocks of steps from the
+    /// primaries' lines as they stood when the oldest block's results were back), capped at
+    /// [`MAX_BLOCK`]. Under [`MIN_BLOCK`] it is 0: not worth handing off.
+    pub fn max_block(&self) -> usize {
+        let whole = self
+            .primaries
+            .iter()
+            .map(|p| p.bwd.whole_steps())
+            .min()
+            .unwrap_or(0);
+        let b = (whole / 2).min(MAX_BLOCK);
+        if b < MIN_BLOCK { 0 } else { b }
+    }
+
+    /// Run `input`'s steps in order ([`ExhaustNet::prepare`] then [`ExhaustNet::step`] each).
+    pub fn run_block(&mut self, input: &BlockIn, out: &mut BlockOut) {
+        let n = self.primaries.len();
+        let m = self.tails.len();
+        out.steps = input.steps;
+        out.from_far.clear();
+        out.tails.clear();
+        let mut mean_at = 0;
+        for s in 0..input.steps {
+            let mean = if input.has_mean[s] {
+                let (cyl, rest) = input.mean[mean_at..].split_at(n);
+                mean_at += n + m;
+                Some((cyl, &rest[..m]))
+            } else {
+                None
+            };
+            self.prepare(&input.mach[s * m..(s + 1) * m], mean);
+            self.step(&input.flows[s * n..(s + 1) * n]);
+            out.from_far.extend_from_slice(&self.scratch.from_far);
+            out.tails.extend_from_slice(&self.tails);
         }
-        for (o, p) in out.iter_mut().zip(&self.primaries) {
-            *o = p.at_near_next().unwrap_or(0.0);
-        }
-        true
     }
 
     /// Advance one step. `flows[i]`: mass flow (kg/s) from cylinder `i` into its primary
@@ -908,6 +1025,60 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_block_is_half_a_primary_delay_capped_and_short_primaries_stay_put() {
+        // delay = L/c/dt with c = 600 m/s (C_PRIMARY): 0.7 m at 192 kHz is 224 steps, so half is
+        // 112, capped at 64; 0.71 m at 48 kHz is 56.8 steps (whole 56: a block of 28 — 0.7 m would sit on
+        // the boundary, 55.999… in floating point); 0.205 m is 16.4 steps
+        // (whole 16: a block of 8, the least worth it); 0.19 m is 15.2 (whole 15: 7 < 8: none)
+        let block = |length_m: f64, fs: f64| {
+            let def = ExhaustDef {
+                primary_length_m: length_m,
+                ..ExhaustDef::default()
+            };
+            ExhaustNet::new(&def, 4, 1.0 / fs).max_block()
+        };
+        assert_eq!(block(0.7, 192_000.0), 64);
+        assert_eq!(block(0.71, 48_000.0), 28);
+        assert_eq!(block(0.205, 48_000.0), 8);
+        assert_eq!(block(0.19, 48_000.0), 0);
+        assert_eq!(block(0.05, 48_000.0), 0);
+    }
+
+    #[test]
+    fn the_probe_reads_the_waves_the_net_would_with_results_still_out() {
+        // the net steps on its own; the probe is given each step's result only when it is
+        // `late − 1` steps old, and a change of the mean flows at step 300: at every step it
+        // reads, with its results that late, the very bits the net reads
+        let def = ExhaustDef::default();
+        let mut net = ExhaustNet::new(&def, 4, 1.0 / 96_000.0);
+        let mut probe = ArrivalProbe::new(&net);
+        let late = 2 * net.max_block();
+        assert!(late >= 16);
+        let mut results: Vec<Vec<f64>> = Vec::new();
+        let mut pushed = 0;
+        let mut got = [0.0; 4];
+        for s in 0..600usize {
+            while pushed < s.saturating_sub(late - 1) {
+                probe.push(&results[pushed]);
+                pushed += 1;
+            }
+            probe.arriving(s - pushed, &mut got);
+            for (i, g) in got.iter().enumerate() {
+                assert_eq!(g.to_bits(), net.arriving(i).to_bits(), "step {s} valve {i}");
+            }
+            let flows = [0.02 * (s as f64 * 0.37).sin(); 4];
+            net.step(&flows);
+            if s == 300 {
+                let mean = [0.05, 0.04, 0.03, 0.02];
+                net.set_mean_flow(&mean, &[0.1]);
+                probe.set_mean_flow(&mean);
+            }
+            results.push(net.last_from_far().to_vec());
+        }
+        assert!(results.iter().flatten().any(|w| *w != 0.0));
+    }
 
     #[test]
     fn a_catalyst_brick_resists_as_laminar_channels() {

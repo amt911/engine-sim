@@ -41,7 +41,13 @@ impl DelayLine {
     /// values it interpolates were pushed at least a step earlier when the delay is ≥ 2 steps
     /// (`None` below that, where the next read depends on the value about to be pushed).
     pub fn read_next(&self) -> Option<f64> {
-        if self.whole < 2 {
+        self.read_ahead(1)
+    }
+    /// What [`DelayLine::read`] will return after `ahead` more pushes, before them: known
+    /// while those pushes are not among the values it interpolates, `ahead < whole delay`
+    /// (`None` otherwise). The same arithmetic as `read`, so the same bits.
+    pub fn read_ahead(&self, ahead: usize) -> Option<f64> {
+        if ahead >= self.whole {
             return None;
         }
         let n = self.buf.len();
@@ -49,7 +55,13 @@ impl DelayLine {
             let j = self.pos + n - k;
             self.buf[if j >= n { j - n } else { j }]
         };
-        Some(back(self.whole - 1) * (1.0 - self.frac) + back(self.whole) * self.frac)
+        Some(
+            back(self.whole - ahead) * (1.0 - self.frac) + back(self.whole + 1 - ahead) * self.frac,
+        )
+    }
+    /// Whole steps of the delay (the fraction is interpolated past them).
+    pub fn whole_steps(&self) -> usize {
+        self.whole
     }
     pub fn push(&mut self, x: f64) {
         self.buf[self.pos] = x;
@@ -119,6 +131,11 @@ impl Pipe {
     /// pipe is at least two steps long.
     pub fn at_near_next(&self) -> Option<f64> {
         self.bwd.read_next().map(|x| x * self.gain)
+    }
+    /// [`Pipe::at_near`] as it will read after `ahead` more `send`s (at the current gain), if
+    /// those sends are not among the values it interpolates.
+    pub fn at_near_ahead(&self, ahead: usize) -> Option<f64> {
+        self.bwd.read_ahead(ahead).map(|x| x * self.gain)
     }
     /// Send this step's outgoing waves: `from_near` into `fwd`, `from_far` into `bwd`.
     pub fn send(&mut self, from_near: f64, from_far: f64) {
@@ -674,6 +691,29 @@ mod tests {
         }
         // shorter than two steps it cannot be: the next read needs the value about to come
         assert_eq!(DelayLine::new(1.5).read_next(), None);
+    }
+
+    #[test]
+    fn a_delay_line_reads_ahead_what_it_will_read_after_more_pushes() {
+        // a 5.3-step delay with a ramp pushed: read_ahead(k) says what read() returns after k
+        // more pushes, for every k below the whole delay (5), and nothing beyond
+        let mut d = DelayLine::new(5.3);
+        for i in 0..20 {
+            d.push(f64::from(i) * 1.5 - 4.0);
+        }
+        for ahead in 0..8 {
+            let said = d.read_ahead(ahead);
+            let mut e = d.clone();
+            for _ in 0..ahead {
+                e.push(1000.0);
+            }
+            if ahead < 5 {
+                assert_eq!(said.unwrap().to_bits(), e.read().to_bits(), "{ahead}");
+            } else {
+                assert_eq!(said, None, "{ahead}");
+            }
+        }
+        assert_eq!(d.whole_steps(), 5);
     }
 
     #[test]
