@@ -1,6 +1,6 @@
 # Valve flow noise on the port's scale — design
 
-Status: **proposed** (2026-10-28). The user asked for a design ("diséñalo") of the turbulent noise
+Status: **approved** by the user (2026-10-28). The user asked for a design ("diséñalo") of the turbulent noise
 of the valve jets; this document is that design, for approval before any code.
 
 ## Why
