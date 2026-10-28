@@ -15,7 +15,7 @@ pub enum Quality {
     Low,
     /// 2× the audio rate, the engine's own pipe models stepped with the second-order scheme.
     Medium,
-    /// 3× the audio rate.
+    /// 2× the audio rate like Medium, the pipes stepped with Ultra's scheme.
     High,
     /// 4× the audio rate (192 kHz at 48 kHz): the best real time.
     Ultra,
@@ -30,8 +30,7 @@ impl Quality {
     /// Physics steps per audio sample.
     pub fn substeps(self) -> usize {
         match self {
-            Quality::Low | Quality::Medium => 2,
-            Quality::High => 3,
+            Quality::Low | Quality::Medium | Quality::High => 2,
             Quality::Ultra => 4,
             Quality::Reference => 8,
         }
@@ -46,9 +45,14 @@ impl Quality {
                 lining_segment_m: 0.005,
                 ..Fidelity::default()
             },
-            // silencers' packing in 2 cm segments (17 % off at 4 kHz, where it has cut 30 dB)
+            // Ultra's pipe scheme at Medium's rate and segments. Measured on the LFA held at
+            // idle, 4000 rpm part load and 7000 rpm full load (2026-10-28, third-octave distance
+            // to Reference): 0.27–0.35 dB, as close as Ultra (0.19–0.33 dB), where the
+            // second-order scheme is 0.64 dB off at full load; 2 cm packing segments instead of
+            // 4 cm changed nothing measurable, a third physics step 0.1 dB. 18 % cheaper than
+            // the old High (3 steps, 2 cm).
             Quality::High => Fidelity {
-                lining_segment_m: 0.02,
+                lining_segment_m: 0.04,
                 ..Fidelity::default()
             },
             Quality::Medium | Quality::Low => Fidelity {
@@ -191,7 +195,7 @@ mod tests {
     #[test]
     fn each_level_steps_the_physics_at_its_rate() {
         assert_eq!(Quality::Ultra.substeps(), 4);
-        assert_eq!(Quality::High.substeps(), 3);
+        assert_eq!(Quality::High.substeps(), 2);
         assert_eq!(Quality::Medium.substeps(), 2);
         assert_eq!(Quality::Low.substeps(), 2);
         // offline only: twice Ultra's rate, and Auto never picks it
@@ -208,7 +212,7 @@ mod tests {
         assert_eq!(Quality::High.fidelity().pipe_scheme, Scheme::Weno5Rk3);
         assert_eq!(Quality::Ultra.fidelity(), Fidelity::default());
         assert_eq!(Quality::Ultra.fidelity().lining_segment_m, 0.01);
-        assert_eq!(Quality::High.fidelity().lining_segment_m, 0.02);
+        assert_eq!(Quality::High.fidelity().lining_segment_m, 0.04);
         assert_eq!(Quality::Low.fidelity().lining_segment_m, 0.04);
         assert_eq!(Quality::Reference.fidelity().lining_segment_m, 0.005);
     }
