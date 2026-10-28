@@ -752,3 +752,17 @@ over the linear port.
 
 **Effect.** Torque within 1 % of the linear port's (K20A, LFA, LS3): the boundary is more correct,
 not more powerful.
+
+### The app's WAVs are WAVE_FORMAT_EXTENSIBLE float — a reader keyed on format tag 3 misreads them
+
+**Symptom (2026-10-28).** Third-octave distances between quality levels came out 0.2–0.6 dB and
+justified a release (v0.26.7) that was then withdrawn: read correctly, the levels were 0.4–6.3 dB
+apart.
+
+**Cause.** `hound` writes 32-bit float as format tag 0xFFFE (extensible) whose subformat GUID
+starts with 3; a reader that only checks `tag == 3` falls through to an integer branch and reads
+the float bits as int16 or int32. A deterministic per-sample map, so the result still "looks"
+like a spectrum and periodicity survives — nothing flags it.
+
+**Fix.** Read the subformat's first two bytes when the tag is 0xFFFE (job script `wavio.py`), and
+check a reader's min/max/RMS on a known render (|x| ≤ 1) before trusting any number from it.

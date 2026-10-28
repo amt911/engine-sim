@@ -159,3 +159,30 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
     of the figure's axis, so the 1.125 above is the low end.
   - At 1 mm it is 1.27–1.37 and depends on the lobe's peak lift. Lobes are not lift-scaled copies
     of one shape, so a 1 mm timing alone does not fix the equivalent sin².
+- **Performance dead ends, measured 2026-10-28 (LFA, 5 s headless, cores 0–5, median of 3)**:
+  - SIMD of the ITB runners four at a time (branch `perf/itb-runners-simd`, bit-identical):
+    −1.4 to −1.8 % for ~680 lines that duplicate the FV numerics. Not merged.
+  - Intake FV step sized by the CFL of the actual flow instead of the worst case (0.8·4 cm/700 m/s):
+    the step is bounded by the valve coupling, not by stability. Against the converged answer (an
+    FV step every physics step, `--dyno`), main is within ±0.1 % at 4500–7500 rpm (+3.7 % at
+    1500); twice-longer steps lose up to 9.7 % torque at high rpm. Making the port cell show what
+    the valve already drew this FV step (needed so longer steps do not create mass) costs 5 % by
+    itself: the cell is refilled from upstream during the step, which neither the stale cell nor
+    the drawn-down one represents.
+- **What the quality knobs change** (third-octave distance to Reference in dB, LFA held 1100 rpm
+  idle / 4000 rpm 30 % / 7000 rpm WOT, 2026-10-28, read correctly — see FINDINGS on WAV readers):
+  High (3 steps) 6.3 / 0.6 / 0.4; 2 steps with WENO-Z 5.7 / 1.2 / 0.9; Medium (2 steps, MUSCL)
+  5.7 / 1.3 / 0.9; Ultra 1.9 / 0.3 / 0.2; Low 5.1 / 3.7 / 2.1. At 2 steps the pipe scheme and 2 vs
+  4 cm packing segments change nothing measurable; the step count does. Idle is where every level
+  below Ultra is far off (max 15–21 dB in one band).
+- **Real engines at idle repeat almost nothing above 500 Hz** (share of each octave band that a
+  synchronous average over 8 cycles keeps; job scripts `periodic2.py` + `s5/sync.py`, period search
+  ±8 % around the known speed; recordings in `real_engine_sounds/`, local only):
+  - real: Viper V10 race ext 1197 rpm 125/250/500/1k Hz 0.38/0.48/0.12/0.01 (again at 1120 rpm
+    0.32/0.24/0.04/0.00); Camaro Z28 V8 intake mic 882 rpm 0.52/0.27/0.09/0.01; Audi RS4 flat V8
+    engine-bay mic 800 rpm 0.78/0.46/0.22/0.02.
+  - renders (v0.26.6 High, held at load 0): LFA 1150 rpm 0.94/0.97/0.78/0.63 (2 kHz 0.48, 4 kHz
+    0.34); cross-plane V8 880 rpm 0.99/0.98/0.96/0.71 (2 kHz 0.42).
+  - The share does not depend on the mic (a linear path scales repeat and residue alike).
+    `held:RPM:0` above idle is overrun with fuel cut: perfectly periodic, not comparable. The
+    period finder locks on wrong on interior mics.
