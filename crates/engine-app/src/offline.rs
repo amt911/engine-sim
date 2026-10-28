@@ -258,9 +258,10 @@ impl GearPull {
         let (throttle, clutch_pedal) = match self.phase {
             PullPhase::Idle | PullPhase::Lift | PullPhase::Done => (0.0, false),
             PullPhase::Launch => (1.0, true),
-            // while the clutch slips the driver holds the engine near the launch revs (on the
-            // throttle up to 15 % over them, off by 45 %); locked, flat out
-            PullPhase::Pull if !locked => {
+            // while the launch's clutch slips the driver holds the engine near the launch revs
+            // (on the throttle up to 15 % over them, off by 45 %); locked, or taking up after a
+            // shift, flat out
+            PullPhase::Pull if !locked && self.gear == 1 => {
                 let launch = LAUNCH_SHARE * self.redline;
                 (
                     ((1.15 * launch - rpm) / (0.3 * launch)).clamp(0.0, 1.0),
@@ -515,6 +516,32 @@ mod tests {
         let wav = hound::WavReader::open(&path).unwrap();
         assert_eq!(wav.duration(), 24_960);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn after_a_shift_the_driver_is_on_the_throttle_while_the_clutch_takes_up() {
+        // an upshift lands the engine above the next gear's speed: the clutch slips until they
+        // meet, and the driver is already back on the throttle (the launch's governor, which
+        // holds the revs near 45 % of the redline while the clutch slips from rest, is for the
+        // launch only; after a shift it shut the throttle until the clutch locked, then opened
+        // it at once: the engine cut and refired as the clutch took up)
+        let dt = 0.01;
+        let mut p = GearPull::new(5, 6000.0);
+        let mut step = |rpm: f64, locked: bool| p.next(rpm, locked, dt);
+        for _ in 0..131 {
+            step(900.0, true);
+        }
+        step(1500.0, false);
+        step(2700.0, false);
+        step(5820.0, true);
+        for _ in 0..30 {
+            step(5000.0, false);
+        }
+        // second gear in, the clutch still slipping at 5000 rpm: full throttle
+        let (thr, d) = step(5000.0, false);
+        assert_eq!((d.gear, d.clutch_pedal), (2, false));
+        assert_eq!(thr, 1.0);
+        assert_eq!(step(4500.0, false).0, 1.0);
     }
 
     #[test]
