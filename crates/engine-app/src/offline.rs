@@ -188,6 +188,8 @@ pub struct GearPull {
     takeup: f64,
     /// The gearbox's published gear-change time, s (0: a driver's manual shift).
     shift_time: f64,
+    /// The torque cut the gearbox asks of the ECU this step, 0..=1.
+    cut: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -216,7 +218,16 @@ impl GearPull {
             since_best: 0.0,
             takeup: 0.0,
             shift_time: shift_time_s.max(0.0),
+            cut: 0.0,
         }
+    }
+
+    /// The share of the engine's torque an automated gearbox has the ECU take away this step
+    /// ([`engine_core::engine::Controls::torque_cut`]): ramped out while its clutch opens, held
+    /// out while it closes, ramped back in once it has locked (Glielmo et al. 2006, Fig. 10).
+    /// A driver's shift lifts the pedal instead: 0.
+    pub fn torque_cut(&self) -> f64 {
+        self.cut
     }
 
     /// How long a shift keeps the clutch open: half an automated gearbox's gear-change time
@@ -289,13 +300,23 @@ impl GearPull {
                     false,
                 )
             }
-            PullPhase::Pull if !locked && self.shift_time > 0.0 => (0.0, false),
+            PullPhase::Pull if !locked && self.shift_time > 0.0 && self.gear > 1 => (1.0, false),
             PullPhase::Pull if !locked => (
                 (0.5 + (self.takeup - rpm) / (0.2 * self.takeup)).clamp(0.0, 1.0),
                 false,
             ),
             PullPhase::Pull => (1.0, false),
+            // shifted on paddles the foot stays down; a driver lifts it
+            PullPhase::Shift if self.shift_time > 0.0 => (1.0, true),
             PullPhase::Shift | PullPhase::Clutch => (0.0, true),
+        };
+        let ramp = dt / self.open_s();
+        self.cut = match self.phase {
+            _ if self.shift_time <= 0.0 => 0.0,
+            PullPhase::Shift => ((self.t + dt) / self.open_s()).min(1.0),
+            PullPhase::Pull if !locked && self.gear > 1 => 1.0,
+            PullPhase::Pull => (self.cut - ramp).max(0.0),
+            _ => 0.0,
         };
         self.t += dt;
         (
@@ -344,6 +365,7 @@ pub fn render_gears(def: &EngineDef, sample_rate: f64, quality: Quality) -> (Vec
             break;
         }
         sim.controls.throttle = throttle;
+        sim.controls.torque_cut = pull.torque_cut();
         sim.drive = drive;
         top = top.max(drive.gear);
         sim.render(&mut buf);
@@ -555,32 +577,44 @@ mod tests {
     }
 
     #[test]
-    fn an_automated_gearbox_shifts_in_its_published_time_on_a_closed_throttle() {
-        // a 0.2 s gearbox (the LFA's ASG): the clutch opens with the torque cut for 0.1 s, then
-        // closes in 0.1 s with the engine's torque held low until it locks (Glielmo et al.
-        // 2006, Fig. 10), and only then does the throttle come back
+    fn an_automated_gearbox_shifts_in_its_published_time_by_a_torque_cut() {
+        // a 0.2 s gearbox shifted on paddles (the LFA's ASG): the foot stays down; the gearbox
+        // asks the ECU to cut the torque, ramping it out while the clutch opens (0.1 s), holds
+        // it out while the clutch closes (0.1 s) and ramps it back once the clutch has locked
+        // (Glielmo et al. 2006, Fig. 10: the engine torque falls before the clutch opens, stays
+        // low while it slips and rises after lock-up)
         let dt = 0.01;
         let mut p = GearPull::new(5, 6000.0, 0.2);
-        let mut step = |rpm: f64, locked: bool| p.next(rpm, locked, dt);
         for _ in 0..131 {
-            step(900.0, true);
+            p.next(900.0, true, dt);
         }
-        let (_, d) = step(1500.0, false);
-        // the launch is the driver's: a driver's clutch release
+        let (_, d) = p.next(1500.0, false, dt);
+        // the launch is the driver's: a driver's clutch release, no torque cut
         assert_eq!(d.clutch_engage_s, 0.0);
-        step(2700.0, false);
-        let (thr, d) = step(5820.0, true);
-        assert_eq!((thr, d.clutch_pedal), (0.0, true));
+        assert_eq!(p.torque_cut(), 0.0);
+        p.next(2700.0, false, dt);
+        let (thr, d) = p.next(5820.0, true, dt);
+        assert_eq!((thr, d.clutch_pedal), (1.0, true));
+        let mut cut = p.torque_cut();
         for _ in 0..9 {
-            assert!(step(5500.0, false).1.clutch_pedal);
+            let (thr, d) = p.next(5500.0, false, dt);
+            assert!(d.clutch_pedal && thr == 1.0);
+            assert!(p.torque_cut() > cut, "{} after {cut}", p.torque_cut());
+            cut = p.torque_cut();
         }
-        // 0.1 s on: second gear in, the clutch closing in 0.1 s, the throttle still shut
-        let (thr, d) = step(5400.0, false);
+        // 0.1 s on: second gear in, the clutch closing in 0.1 s, the torque still out
+        let (thr, d) = p.next(5400.0, false, dt);
         assert_eq!((d.gear, d.clutch_pedal, d.clutch_engage_s), (2, false, 0.1));
-        assert_eq!(thr, 0.0);
-        assert_eq!(step(5000.0, false).0, 0.0);
-        // locked: flat out
-        assert_eq!(step(4000.0, true).0, 1.0);
+        assert_eq!((thr, p.torque_cut()), (1.0, 1.0));
+        p.next(5000.0, false, dt);
+        assert_eq!(p.torque_cut(), 1.0);
+        // locked: the torque ramps back in over 0.1 s
+        p.next(4000.0, true, dt);
+        assert!(p.torque_cut() < 1.0 && p.torque_cut() > 0.5);
+        for _ in 0..10 {
+            p.next(4000.0, true, dt);
+        }
+        assert_eq!(p.torque_cut(), 0.0);
     }
 
     #[test]

@@ -749,6 +749,10 @@ pub struct Controls {
     /// Inertia the crank drags along on top of the flywheel, kg·m² (e.g. the car reflected
     /// through a locked clutch, see `drivetrain`). Default 0.
     pub extra_inertia_kgm2: f64,
+    /// Share of the engine's torque the gearbox asks the ECU to take away, 0..=1 (a shift's
+    /// torque intervention): the ECU retards the spark, then blanks out injections
+    /// ([`retard_for`], [`MAX_RETARD_DEG`]). Default 0.
+    pub torque_cut: f64,
 }
 
 impl Default for Controls {
@@ -760,6 +764,7 @@ impl Default for Controls {
             load_torque_nm: 0.0,
             hold_rpm: None,
             extra_inertia_kgm2: 0.0,
+            torque_cut: 0.0,
         }
     }
 }
@@ -1037,6 +1042,40 @@ fn idle_reserve(rpm: f64) -> f64 {
     (0.35 + 0.65 * rpm.max(0.0) / 4000.0).min(1.0)
 }
 
+/// Net imep relative to its value at MBT timing for a combustion retarded `retard_deg` crank
+/// degrees from MBT (Heywood, *Internal Combustion Engine Fundamentals*, 2nd ed., eq. 9.29: a
+/// fit over many fuels, mixtures, compression ratios and loads of naturally aspirated SI
+/// engines, on the 50 %-burned point): 1 − 0.168·{[1 + 4.44·10⁻³·Δθ²]^½ − 1}.
+pub fn ignition_efficiency(retard_deg: f64) -> f64 {
+    1.0 - 0.168 * ((1.0 + 4.44e-3 * retard_deg * retard_deg).sqrt() - 1.0)
+}
+
+/// The retard from MBT, ° crank, that leaves `efficiency` of the torque ([`ignition_efficiency`]
+/// inverted), 0 at full efficiency.
+pub fn retard_for(efficiency: f64) -> f64 {
+    let root = 1.0 + (1.0 - efficiency.min(1.0)) / 0.168;
+    ((root * root - 1.0) / 4.44e-3).sqrt()
+}
+
+/// The most spark retard a torque cut takes, ° crank: the end of the data behind Heywood's
+/// fit (Fig. 9.16, combustion retard to 40°). Below what it leaves, the ECU blanks out
+/// injections, whose efficiency is the share of charges still fired (Bosch, *Gasoline Engine
+/// Management*, "torque structure": ignition-timing and blank-out efficiencies).
+pub const MAX_RETARD_DEG: f64 = 40.0;
+
+/// A torque cut as the ECU carries it out: (spark retard, ° crank; share of charges blanked
+/// out). The retard alone takes it down to `ignition_efficiency(MAX_RETARD_DEG)`; the rest is
+/// blank-out at that retard.
+fn torque_intervention(cut: f64) -> (f64, f64) {
+    let keep = 1.0 - cut.clamp(0.0, 1.0);
+    let floor = ignition_efficiency(MAX_RETARD_DEG);
+    if keep >= floor {
+        (retard_for(keep), 0.0)
+    } else {
+        (MAX_RETARD_DEG, 1.0 - keep / floor)
+    }
+}
+
 fn mean_piston_speed(stroke_m: f64, omega: f64) -> f64 {
     2.0 * stroke_m * omega.abs() / (2.0 * PI)
 }
@@ -1073,6 +1112,8 @@ struct CylinderState {
     /// The charge trapped at intake closing still awaits its spark: one spark per charge,
     /// whatever the ECU does with the timing meanwhile.
     armed: bool,
+    /// This cycle's charge blanked out by a torque cut: no injection.
+    blanked: bool,
     /// Gas temperature in this cylinder's exhaust primary, and the primary's wall temperature,
     /// K: what reversion pushes back, and how much volume it is.
     port_t: f64,
@@ -1302,6 +1343,9 @@ pub struct Engine {
     /// The ECU's injection cut-offs, each with its hysteresis: overrun (pedal released at
     /// speed) and the speed limiter.
     overrun_cut: bool,
+    /// Blank-out owed by a torque cut, in charges: each charge adds the cut's share and is
+    /// blanked out when a whole one is owed, so the blanked charges spread evenly.
+    blank_owed: f64,
     limiter_cut: bool,
     /// The idle-speed control's spark trim, degrees (negative = retarded); 0 off idle.
     idle_spark_deg: f64,
@@ -1479,6 +1523,7 @@ impl Engine {
                     flame: 1.0,
                     charge_bias: 1.0,
                     armed: false,
+                    blanked: false,
                     port_t: PIPE_COLD_K,
                     port_flow: 0.0,
                     valve_hint: f64::NAN,
@@ -1533,6 +1578,7 @@ impl Engine {
             plate: 0.0,
             iac_last_rpm: initial_rpm,
             overrun_cut: false,
+            blank_owed: 0.0,
             limiter_cut: false,
             combustions: 0,
             wall_heat_j: 0.0,
@@ -1855,6 +1901,10 @@ impl Engine {
 
         let mut gas_torque = 0.0;
         let reserve = idle_reserve(self.rpm());
+        let (retard, blank_share) = torque_intervention(c.torque_cut);
+        if blank_share <= 0.0 {
+            self.blank_owed = 0.0;
+        }
         let n_cyl = self.cyl.len();
         for i in 0..n_cyl {
             let arriving = match (&self.net, &self.remote.0) {
@@ -1964,7 +2014,7 @@ impl Engine {
                 // port injection: the charge carries fuel unless the ECU cuts it
                 let fresh = Composition {
                     burned: 0.0,
-                    fuelled: if inject { 1.0 } else { 0.0 },
+                    fuelled: if inject && !cs.blanked { 1.0 } else { 0.0 },
                 };
                 cylinder_flow(cs, &th, into_cyl, fresh);
             }
@@ -2069,6 +2119,12 @@ impl Engine {
             }
             if crossed(prev, cur, evc) {
                 cs.residual_kg = cs.gas.mass_kg;
+                // the next charge: fired, or blanked out by a torque cut
+                self.blank_owed += blank_share;
+                cs.blanked = self.blank_owed >= 1.0;
+                if cs.blanked {
+                    self.blank_owed -= 1.0;
+                }
             }
             if crossed(prev, cur, ivc) {
                 cs.trapped_kg = cs.gas.mass_kg;
@@ -2080,7 +2136,7 @@ impl Engine {
                 let air = fresh * AFR_STOICH / (1.0 + AFR_STOICH);
                 let film_x =
                     crate::fuel::deposit_fraction(film_x, cs.gas.pressure(), self.omega.abs());
-                let fuel = if inject {
+                let fuel = if inject && !cs.blanked {
                     cs.film.meter(air / AFR_STOICH, film_x, film_share).1
                 } else {
                     cs.film.intake(0.0, film_x, film_share)
@@ -2108,8 +2164,8 @@ impl Engine {
                     cs.flame = ratio;
                 }
             }
-            let spark_deg =
-                720.0 - (self.def.spark_advance_for(cs.flame) * reserve + self.idle_spark_deg);
+            let spark_deg = 720.0
+                - (self.def.spark_advance_for(cs.flame) * reserve + self.idle_spark_deg - retard);
             let mut new_burn = false;
             // The spark fires on the first step at or past its angle (within the half cycle
             // after it), so a timing that moved earlier past the crank still fires this charge,
@@ -3008,6 +3064,56 @@ mod tests {
         let mut e = Engine::new(d, 3000.0, 1);
         run(&mut e, 0.01, &c);
         assert!((e.valves().0.open_deg - (base - 20.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn spark_retard_costs_torque_as_heywoods_fit() {
+        // Heywood 2nd ed. §9.2.4, eq. 9.29 and its text: 5° of retard of the 50 %-burned point
+        // from MBT costs 1 % of net imep, 10° costs 3 %; no retard, nothing
+        assert!((ignition_efficiency(5.0) - 0.99).abs() < 0.002);
+        assert!((ignition_efficiency(10.0) - 0.97).abs() < 0.005);
+        assert_eq!(ignition_efficiency(0.0), 1.0);
+        for r in [0.0, 3.0, 12.5, 25.0, 40.0] {
+            assert!((retard_for(ignition_efficiency(r)) - r).abs() < 1e-9, "{r}");
+        }
+        // the fit's data reach 40°: about 31 % lost there, the most retard alone may take
+        assert!((ignition_efficiency(MAX_RETARD_DEG) - 0.69).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_torque_cut_retards_the_spark_then_blanks_out_cylinders() {
+        // what the engine gives at a cut is the share of the way from motoring (every charge
+        // blanked out) to full power that the cut leaves: 20 % by spark retard alone, 70 % by
+        // the most retard plus blanking out the charges left over (Bosch, *Gasoline Engine
+        // Management*, torque structure: ignition-timing and blank-out efficiencies)
+        let torque = |cut: f64| {
+            let mut e = Engine::new(EngineDef::lfa_v10(), 6000.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(6000.0),
+                torque_cut: cut,
+                ..Controls::default()
+            };
+            run(&mut e, 0.4, &c);
+            let n = (0.4 / DT) as usize;
+            (0..n)
+                .map(|_| {
+                    e.step(DT, &c);
+                    e.torque_nm()
+                })
+                .sum::<f64>()
+                / n as f64
+        };
+        let (full, motoring) = (torque(0.0), torque(1.0));
+        assert!(full > 300.0 && motoring < 0.0, "{full} {motoring}");
+        for cut in [0.2, 0.7] {
+            let want = motoring + (1.0 - cut) * (full - motoring);
+            let got = torque(cut);
+            assert!(
+                (got - want).abs() < 0.08 * (full - motoring),
+                "cut {cut}: {got:.1} N·m, want {want:.1}"
+            );
+        }
     }
 
     #[test]
