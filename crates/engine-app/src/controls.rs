@@ -193,6 +193,7 @@ impl UiState {
             gear: self.gear,
             clutch_pedal: self.clutch_held,
             brake: if self.brake_held { 1.0 } else { 0.0 },
+            clutch_engage_s: 0.0,
         }
     }
 }

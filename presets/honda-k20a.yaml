@@ -158,3 +158,4 @@ engine:
     wheel_inertia_kgm2: 4.0
     clutch_capacity_nm: 350.0
     max_brake_decel_m_s2: 9.0
+    shift_time_s: 0.0

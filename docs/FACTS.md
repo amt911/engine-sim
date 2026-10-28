@@ -64,11 +64,11 @@ fibre R = 4896 rayl/m. Our lining (`Shunt::lining`, low-frequency limit of a rig
 the tube; plane waves) gives TL 3.7 / 10.3 / 20.0 / 32.7 / 47.2 / 62.7 dB at 0.5 / 1 / 1.5 / 2 / 2.5 / 3 kHz; measured
 21 / 29 / 36 / 30 / 22 / 18. Too little below 1.5 kHz, up to 45 dB too much above (TL rising ~f² instead of the
 measured dome). A thick layer is far from its low-frequency limit (t = 58 mm), and above the shell's cut-on the
-measured TL falls (beaming) where any 1D model keeps rising. Check: `papers/dl-silencer/compare_lining.py`
+measured TL falls (beaming) where any 1D model keeps rising. Check: `papers/silencers/lining-study/compare_lining.py`
 (local). Plan: the silencer's two-port from a 2D axisymmetric mode-matching model (Selamet, Xu, Lee, JASA 117,
 2005), realised in the time domain by a rational fit of its scattering matrix (vector fitting, Gustavsen &
 Semlyen 1999) — a few biquads per silencer.
-- 2D mode-matching prototype (`papers/dl-silencer/modal2d.py`, local; Selamet–Xu–Lee 2005 re-derived in e^{jωt},
+- 2D mode-matching prototype (`papers/silencers/lining-study/modal2d.py`, local; Selamet–Xu–Lee 2005 re-derived in e^{jωt},
   Nice's fibre fit, Sullivan–Crocker/Kirby perforate, fundamental seeded from the bulk-reacting effective medium
   kx² = (k0²A1/ρ0 + k̃²A2/ρ̃)/(A1/ρ0 + A2/ρ̃)) reproduces JSV 262 Figs. 6–7: empty zeros at 680/1350 Hz, 25.6 dB at
   1.75 kHz, 1–3 dB above 2.2 kHz; filled 20.0/29.8/35.4/22.7/16.7/15.7 dB at 0.5/1/1.5/2/2.5/3 kHz (measured
