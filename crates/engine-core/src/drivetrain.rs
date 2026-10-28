@@ -120,8 +120,9 @@ impl VehicleDef {
     /// and the 4.556 final drive are the figures given for the LFA's 6-speed ASG in the
     /// task spec (not independently re-verified here). The rear tyre 305/30 ZR20 gives
     /// 0.305 × 0.30 + 0.508/2 = 0.3455 m (computed from the size). ESTIMATES: Cd·A 0.65 m²
-    /// (Cd ~0.31), Crr, efficiency, wheel inertia, clutch capacity, 1.0 g braking. The ASG
-    /// changes gear in 0.20 s (Lexus; 0.15 s on the Nürburgring Package).
+    /// (Cd ~0.31), Crr, efficiency, wheel inertia, clutch capacity, 1.0 g braking. The ASG's
+    /// "upshift speeds down to 0.2 seconds" (Toyota, *Lexus Debuts LFA*, news release,
+    /// 21 October 2009).
     pub fn lfa_v10() -> Self {
         Self {
             name: "Lexus LFA".into(),
