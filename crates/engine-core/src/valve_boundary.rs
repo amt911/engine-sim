@@ -106,14 +106,29 @@ pub fn solve_with(
     }
 }
 
-/// The incoming Riemann variable of a linear wave `arriving` (gauge Pa, travelling towards the
-/// valve) on a pipe of gas at rest at `t_pipe` K and pressure `p0` (the atmosphere plus the
-/// tail's mean backpressure), as a simple wave: p = p₀ + p⁻, u = −p⁻/(ρc) (towards the valve).
+/// Absolute pressure, Pa, where waves of summed strength `w` (Pa) stand on gas at `p0`. The
+/// waveguide's waves are finite-amplitude waves in pressure units: a wave of strength w is the
+/// amplitude ratio X = 1 + w/(7p₀) (Blair, *Design and Simulation of Four-Stroke Engines*, 1999,
+/// §2.1–2.2: X = (p/p₀)^((κ−1)/2κ), particle speed (2a₀/(κ−1))·(X − 1), linear in X, so the
+/// lines, junctions and open ends stay linear in w); waves superpose as X_s = ΣX − (n − 1), and
+/// the pressure is p₀·X_s^7. Small waves are the linear ones (p − p₀ ≈ w); a deep rarefaction
+/// can never take the gas below vacuum.
+pub fn wave_pressure(w: f64, p0: f64) -> f64 {
+    let x = (1.0 + w / (f64::from(P_EXP) * p0)).max(0.0);
+    p0 * x.powi(P_EXP)
+}
+
+/// The incoming Riemann variable of a wave `arriving` (strength in Pa, [`wave_pressure`],
+/// travelling towards the valve) on a pipe of gas at rest at `t_pipe` K and pressure `p0` (the
+/// atmosphere plus the tail's mean backpressure), as a simple wave: p = [`wave_pressure`],
+/// u = −p⁻/(ρc) (towards the valve).
 pub fn lambda_of_wave(p_cyl: f64, arriving: f64, t_pipe: f64, p0: f64) -> f64 {
     let a = (KAPPA * crate::gas::R_AIR * t_pipe).sqrt();
     let rho = p0 / (crate::gas::R_AIR * t_pipe);
-    let p = (p0 + arriving).max(0.05 * p0);
-    lambda_in(p_cyl, p, -arriving / (rho * a), a)
+    let p = wave_pressure(arriving, p0).max(0.05 * p0);
+    // a simple wave carries its own speed of sound, a₀·X (Blair §2.1.4): λ = 2X − 1 referred to p₀
+    let x = (p / p0).powf(1.0 / f64::from(P_EXP));
+    lambda_in(p_cyl, p, -arriving / (rho * a), a * x)
 }
 
 /// The pipe at the valve, as the boundary needs it.
@@ -413,6 +428,25 @@ mod tests {
     fn quiet(p_c: f64, p: f64, t: f64) -> (f64, f64) {
         let a = sound(t);
         (lambda_in(p_c, p, 0.0, a), a * (p_c / p).powf(1.0 / 7.0))
+    }
+
+    #[test]
+    fn waves_superpose_as_amplitude_ratios_not_pressures() {
+        // Blair (Design and Simulation of Four-Stroke Engines, 1999, §2.1–2.2): a wave of
+        // pressure ratio P has the amplitude ratio X = P^(1/7) (κ = 1.4), two waves superpose as
+        // X_s = X_i + X_r − 1, and the particle speed is linear in X. +0.5 bar on 1 bar:
+        // X = 1.5^(1/7) = 1.059634; met by its rigid-wall echo, X_s = 1.119268 and
+        // p_s = 1.119268^7 bar = 2.2006 bar (the linear sum: 2.0 bar).
+        let p0 = 1e5;
+        let w = 7.0 * p0 * (1.5f64.powf(1.0 / 7.0) - 1.0);
+        assert!((wave_pressure(w, p0) - 1.5e5).abs() < 1.0);
+        assert!((wave_pressure(2.0 * w, p0) - 2.2006e5).abs() < 10.0);
+        // two −0.6 bar rarefactions: X = 0.4^(1/7) = 0.877307 each, X_s = 0.754613,
+        // p_s = 0.1394 bar absolute (the linear sum: −0.2 bar, below vacuum)
+        let r = 7.0 * p0 * (0.4f64.powf(1.0 / 7.0) - 1.0);
+        assert!((wave_pressure(2.0 * r, p0) - 0.1394e5).abs() < 10.0);
+        // past vacuum there is no gas: zero, never negative
+        assert_eq!(wave_pressure(-8.0 * p0, p0), 0.0);
     }
 
     #[test]
@@ -783,11 +817,11 @@ mod tests {
 
     #[test]
     fn a_wave_arriving_on_the_quiet_pipe_raises_lambda_by_hand() {
-        // 600 K pipe at 1 bar, +0.1 bar arriving, cylinder at 1 bar: a = √(1.4·287·600) =
-        // 491.00 m/s, ρ = 1e5/(287·600) = 0.580 72 kg/m³, u = −1e4/(ρa) = −35.071 m/s, so
-        // λ = 1.1^(1/7)·(1 + 0.2·35.071/491.00) = 1.028 190
+        // 600 K pipe at 1 bar, a wave of 0.1 bar strength arriving, cylinder at 1 bar: its
+        // amplitude ratio X = 1 + 0.1/7 = 1.014 286 and a simple wave's Riemann variable is
+        // λ = 2X − 1 = 1.028 571 (Blair §2.1; the linear wave gave 1.028 190)
         let lam = lambda_of_wave(1.0e5, 1.0e4, 600.0, 1.0e5);
-        assert_relative_eq!(lam, 1.028_190, max_relative = 1e-6);
+        assert_relative_eq!(lam, 1.028_571, max_relative = 1e-6);
     }
 
     #[test]
@@ -802,12 +836,15 @@ mod tests {
 
     #[test]
     fn a_deep_rarefaction_is_floored_at_a_twentieth_of_the_base_pressure() {
-        // −0.99 bar arriving on 1 bar: the pressure is held at 0.05 bar (a linear wave can't
-        // take the gas below vacuum), while the velocity is the wave's: u = 0.99e5/(ρa) =
-        // 0.99e5/(0.580 72·491.00) = 347.21 m/s away from the valve, so with the cylinder at
-        // 1 bar λ = 0.05^(1/7)·(1 − 0.2·347.21/491.00) = 0.651 836·0.858 57 = 0.559 648
+        // −0.99 bar of strength on 1 bar is a real wave: X = 1 − 0.99/7 = 0.858 571, it stands at
+        // 0.3439 bar and λ = 2X − 1 = 0.717 143 (the linear wave hit the floor here)
         let lam = lambda_of_wave(1.0e5, -0.99e5, 600.0, 1.0e5);
-        assert_relative_eq!(lam, 0.559_648, max_relative = 1e-6);
+        assert_relative_eq!(lam, 0.717_143, max_relative = 1e-6);
+        // −3 bar: X = 0.571 4, 0.0198 bar, under the floor: the pressure is held at 0.05 bar
+        // (X_f = 0.05^(1/7) = 0.651 836), the velocity is the wave's, u = 3e5/(ρa) =
+        // 3e5/(0.580 72·491.00) = 1052.14 m/s, so λ = X_f − 0.2·u/a = 0.223 265
+        let lam = lambda_of_wave(1.0e5, -3.0e5, 600.0, 1.0e5);
+        assert_relative_eq!(lam, 0.223_265, max_relative = 1e-5);
     }
 
     #[test]

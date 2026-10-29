@@ -2124,8 +2124,11 @@ impl Engine {
                 match &self.fv {
                     None => {
                         // the port: the atmosphere, the wave arriving and the one the flow sends
-                        // (p⁺ + p⁻)
-                        let p_port = ATM_PA + 2.0 * arriving + c * self.flows[i] / a_pipe;
+                        // (p⁺ + p⁻, finite-amplitude)
+                        let p_port = crate::valve_boundary::wave_pressure(
+                            2.0 * arriving + c * self.flows[i] / a_pipe,
+                            ATM_PA,
+                        );
                         let port = (p_port, port_t);
                         let p = self.valve_jets[i].step(cyl_state, port, a_ex, a_pipe, dt);
                         self.flows[i] += jet_level * p * a_pipe / c;
