@@ -469,7 +469,36 @@ impl EngineDef {
                 muffler_packing: crate::lining::Packing::default(),
                 // the tips sit together in the centre of the rear diffuser: one outlet
                 tail_spacing_m: 0.0,
-                after_collector: Vec::new(),
+                // Each bank keeps its own line to the main muffler: close-coupled catalyst, pipe,
+                // sub muffler (straight-through, packed: it takes the highs, order 6 and up),
+                // pipe (Torimoto & Mabuchi, JP 2008-180136 A; Lexus' "full dual pipes" drawing;
+                // EPC 17410: two parallel pipes in one part). Lengths: ESTIMATE, scaled off the
+                // Lexus drawing against the engine-to-tail distance (≈ 2.1 m catalyst to muffler,
+                // the sub muffler ≈ 0.38 m a third of the way); glass-wool packing as the
+                // default lining.
+                after_collector: vec![
+                    Segment::Catalyst {
+                        length_m: 0.13,
+                        diameter_m: 0.1534,
+                        cells_per_in2: 400.0,
+                        wall_m: 0.000165,
+                    },
+                    Segment::Pipe {
+                        length_m: 0.50,
+                        diameter_m: 0.070,
+                    },
+                    Segment::Muffler {
+                        length_m: 0.38,
+                        diameter_m: 0.12,
+                        tube_diameter_m: 0.070,
+                        packing_resistivity: 16_000.0,
+                        packing_porosity: 0.95,
+                    },
+                    Segment::Pipe {
+                        length_m: 1.10,
+                        diameter_m: 0.070,
+                    },
+                ],
                 // Both banks run into one rear muffler and leave through three tips together
                 // (Okamoto et al., SAE 2011-01-2024, Fig. 19; Toyota EPC 17410/17430): a Y into
                 // an 85 mm pipe, a transverse titanium muffler whose valve opens above 3000 rpm
@@ -478,25 +507,29 @@ impl EngineDef {
                 // centre pipe 85 mm, tips ≈ 105 mm outside (press summary the user found,
                 // 2026-10-28). Chamber and tube sizes: ESTIMATE from the Motor-Fan cutaway's
                 // proportions against the 85 mm inlet.
+                // The muffler as patented (JP 2008-169751 A, Figs. 1–5): the banks' two inlets
+                // join (38); the valve (46) opens a straight pipe (44) into a spherical final
+                // chamber (30), else the gas goes round the inlet chamber (28), the side
+                // chambers (32, 34) and their tubes (36) into it; the final chamber feeds three
+                // tips, two short above and a lower one at least twice as long whose part inside
+                // the chamber is wrapped in glass wool (cutting it above ≈ 1 kHz).
                 merge: Some(crate::exhaust::Merge {
-                    segments: vec![
-                        Segment::Pipe {
-                            length_m: 0.15,
-                            diameter_m: 0.085,
-                        },
-                        // centre chamber
-                        Segment::Muffler {
-                            length_m: 0.20,
-                            diameter_m: 0.22,
-                            tube_diameter_m: 0.0,
-                            packing_resistivity: 0.0,
-                            packing_porosity: 1.0,
-                        },
-                    ],
+                    segments: vec![Segment::Pipe {
+                        length_m: 0.15,
+                        diameter_m: 0.085,
+                    }],
                     // three tips of 60 mm bore inside the 105 mm trims: their area as one
                     outlet_diameter_m: 0.060 * 3f64.sqrt(),
                     bypass: Some(crate::exhaust::Bypass {
                         closed: vec![
+                            // inlet chamber (28)
+                            Segment::Muffler {
+                                length_m: 0.20,
+                                diameter_m: 0.22,
+                                tube_diameter_m: 0.0,
+                                packing_resistivity: 0.0,
+                                packing_porosity: 1.0,
+                            },
                             Segment::Pipe {
                                 length_m: 0.30,
                                 diameter_m: 0.05,
@@ -528,11 +561,40 @@ impl EngineDef {
                             length_m: 0.10,
                             diameter_m: 0.085,
                         }],
-                        tips: vec![Segment::Pipe {
-                            length_m: 0.25,
-                            diameter_m: 0.060 * 3f64.sqrt(),
+                        // final chamber (30): a sphere of ≈ 0.30 m (ESTIMATE, the patent's Fig. 1
+                        // against the 60 mm tips) as a cylinder of its volume
+                        tips: vec![Segment::Muffler {
+                            length_m: 0.20,
+                            diameter_m: 0.30,
+                            tube_diameter_m: 0.0,
+                            packing_resistivity: 0.0,
+                            packing_porosity: 1.0,
                         }],
-                        outlets: Vec::new(),
+                        // L₁ = 0.08 m above, L₂ = 0.23 m below (Fig. 1's proportion, ≈ 2.9·L₁;
+                        // the claim: L₂ ≥ 2·L₁), 60 mm bores; the lower one's first 70 mm packed
+                        outlets: vec![
+                            vec![Segment::Pipe {
+                                length_m: 0.08,
+                                diameter_m: 0.060,
+                            }],
+                            vec![Segment::Pipe {
+                                length_m: 0.08,
+                                diameter_m: 0.060,
+                            }],
+                            vec![
+                                Segment::Muffler {
+                                    length_m: 0.07,
+                                    diameter_m: 0.09,
+                                    tube_diameter_m: 0.060,
+                                    packing_resistivity: 16_000.0,
+                                    packing_porosity: 0.95,
+                                },
+                                Segment::Pipe {
+                                    length_m: 0.16,
+                                    diameter_m: 0.060,
+                                },
+                            ],
+                        ],
                         open_rpm: 3000.0,
                         // a vacuum diaphragm actuator: ESTIMATE
                         travel_s: 0.3,
