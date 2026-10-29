@@ -1453,8 +1453,13 @@ pub struct Engine {
     tail_pipes: usize,
     /// Where the listener hears the tails from, built for the step size it was made with.
     listener: Option<(f64, Listener)>,
-    /// The block's structure response at the step it was built for ([`crate::structure`]).
-    structure: Option<(f64, StructureResponse)>,
+    /// The block's structure response per bank at the step it was built for
+    /// ([`crate::structure`]; each bank's side radiates its own cylinders' combustion).
+    structure: Option<(f64, Vec<StructureResponse>)>,
+    /// Each cylinder's bank ([`crate::layout::Layout::place`]) and the number of banks, kept
+    /// with the listener (rebuilt with it).
+    bank_of: Vec<usize>,
+    n_banks: usize,
     /// Valve strikes still ringing: (time since the strike, s; its peak force, N).
     seat_strikes: Vec<(f64, f64)>,
     /// The texture layers' signal this step, in the tails' units, before it is radiated.
@@ -1670,6 +1675,8 @@ impl Engine {
             tail_pipes,
             listener: None,
             structure: None,
+            bank_of: Vec::new(),
+            n_banks: 1,
             seat_strikes: Vec::new(),
             texture_signal: 0.0,
             jets: Vec::new(),
@@ -1722,7 +1729,8 @@ impl Engine {
             && d.plenum_volume_m3 == def.plenum_volume_m3
             && d.exhaust == def.exhaust;
         if same {
-            if self.def.sound != def.sound {
+            // the listener places the banks: a new layout moves them
+            if self.def.sound != def.sound || self.def.layout != def.layout {
                 self.listener = None;
             }
             self.def = def;
@@ -2430,8 +2438,19 @@ impl Engine {
                 snd.ground_heights(),
                 snd.street(),
             )
-            .with_engine_ahead(self.def.vehicle.engine_ahead_m);
+            .with_engine_at(
+                self.def.vehicle.engine_ahead_m,
+                &self.engine_sources_across(),
+            );
             self.listener = Some((dt, l));
+            self.bank_of = self
+                .def
+                .layout
+                .place(self.cyl.len())
+                .iter()
+                .map(|p| p.0)
+                .collect();
+            self.n_banks = self.bank_of.iter().max().map_or(1, |b| b + 1);
         }
         let n_tails = match (&self.net, &self.fv, &self.remote.0) {
             (_, Some(fv), _) => fv.last_tails().len(),
@@ -2526,24 +2545,41 @@ impl Engine {
             *t += dt;
         }
         self.seat_strikes.retain(|(t, _)| *t <= SEAT_PULSE_S);
-        // (always run: a few multiplies a step, and an engine without either is silent here)
-        let block = {
-            if self.structure.as_ref().is_none_or(|s| s.0 != dt) {
-                self.structure = Some((dt, StructureResponse::new(dt)));
+        // (always run: a few multiplies a step, and an engine without either is silent here).
+        // Per bank: a bank's side of the block carries its own cylinders' combustion (Anderton's
+        // response is the whole engine's for one cylinder's pressure, so each of the n banks'
+        // sides radiates 1/n of it: at the firing orders the sides add up to the whole, and
+        // what one bank fires and the other does not stays apart to be heard from either side).
+        let n_banks = self.n_banks.clamp(1, 2);
+        let mut block = [0.0; 2];
+        {
+            if self
+                .structure
+                .as_ref()
+                .is_none_or(|s| s.0 != dt || s.1.len() != n_banks)
+            {
+                let s = (0..n_banks).map(|_| StructureResponse::new(dt)).collect();
+                self.structure = Some((dt, s));
             }
-            let p = crate::structure::combustion_drive(
-                self.cyl.iter().map(|cs| cs.gas.pressure()),
-                g.bore_m,
-            );
-            let seats = seat_force / g.piston_area();
-            match &mut self.structure {
-                Some((_, s)) => s.process(snd.block * p + snd.mechanical * seats),
-                None => 0.0,
+            let seats = seat_force / g.piston_area() / n_banks as f64;
+            if let Some((_, s)) = &mut self.structure {
+                for (b, (out, s)) in block.iter_mut().zip(s.iter_mut()).enumerate() {
+                    let bank = self.cyl.iter().zip(&self.bank_of).filter(|&(_, &k)| k == b);
+                    let p = crate::structure::combustion_drive(
+                        bank.map(|(cs, _)| cs.gas.pressure()),
+                        g.bore_m,
+                    ) / n_banks as f64;
+                    *out = s.process(snd.block * p + snd.mechanical * seats);
+                }
             }
         };
-        // the engine's own sources, heard from where it sits: the intake mouth and the block. The mouth is a
-        // runner's trumpet with individual throttles, else the throttle bore (the air box's
-        // own inlet is not in the definition: an estimate).
+        // the engine's own sources, heard from where it sits: each bank's side of the block, and
+        // the intake mouth on the centre line. The mouth is a runner's trumpet with individual
+        // throttles, else the throttle bore (the air box's own inlet is not in the definition:
+        // an estimate). The trumpets are not split by bank: without the surge tank between them
+        // and the air, a bank's five trumpets heard apart put the LFA's 5th cycle order 16 dB
+        // over a real one's (docs/FINDINGS.md, 2026-10-29); one point cancels it as the tank
+        // would damp it.
         let mouth_d = if self.def.intake.individual_throttles {
             self.def.intake.runner_diameter_m
         } else {
@@ -2552,8 +2588,12 @@ impl Engine {
         let mouth_area = PI * 0.25 * mouth_d * mouth_d;
         let rest = match &mut self.listener {
             Some((_, l)) => {
-                let at_engine = l.radiate_mouth(intake_flow, mouth_area) + l.spread_from_1m(block);
-                l.from_engine(at_engine)
+                let mut rest = 0.0;
+                for (b, &p) in block.iter().enumerate().take(n_banks) {
+                    rest += l.from_engine_at(b, l.spread_from_1m_at(b, p));
+                }
+                let at_mouth = l.radiate_mouth_at(n_banks, intake_flow, mouth_area);
+                rest + l.from_engine_at(n_banks, at_mouth)
             }
             None => 0.0,
         };
@@ -2612,6 +2652,36 @@ impl Engine {
         }
         self.theta = crate::units::wrap(self.theta + self.omega * dt, 4.0 * PI);
         audio
+    }
+
+    /// Where the engine's sound comes from, across the car's axis, m: one place per bank
+    /// (positive towards the listener's side at positive angles), then the centre line for a
+    /// common throttle's mouth. A bank's head stands at the top of its cylinder axis, about
+    /// rod + stroke/2 + bore from the crank's axis (the crank's throw, a piston's compression
+    /// height and the chamber with its valves, each about half a bore); on a V that axis leans
+    /// half the bank angle from the vertical, so the head sits (rod + stroke/2 + bore)·sin(θ/2)
+    /// from the centre line (the LFA's 72° V: 0.157 m; a flat engine: the whole length). An
+    /// inline engine is one bank on the axis. A geometric estimate, no source measures it.
+    fn engine_sources_across(&self) -> Vec<f64> {
+        let g = self.def.geometry;
+        let l = &self.def.layout;
+        let n_banks = l
+            .place(self.cyl.len())
+            .iter()
+            .map(|p| p.0 + 1)
+            .max()
+            .unwrap_or(1);
+        let mut across = Vec::with_capacity(n_banks + 1);
+        if n_banks >= 2 {
+            let w = (g.rod_m + 0.5 * g.stroke_m + g.bore_m)
+                * (0.5 * l.bank_angle_deg.to_radians()).sin();
+            across.push(w);
+            across.push(-w);
+        } else {
+            across.push(0.0);
+        }
+        across.push(0.0);
+        across
     }
 
     /// The sound of a step whose tails are in: the listener hears them, each tail's jet swings
@@ -4911,6 +4981,63 @@ mod tests {
         );
     }
 
+    /// Power at the given frequencies of `x` (sampled at 1/DT) by direct DFT, re the power at
+    /// `reference_hz`, dB.
+    fn lines_db(x: &[f64], hz: &[f64], reference_hz: f64) -> f64 {
+        let power = |f: f64| {
+            let (mut re, mut im) = (0.0, 0.0);
+            for (k, &v) in x.iter().enumerate() {
+                let ph = 2.0 * PI * f * k as f64 * DT;
+                re += v * ph.cos();
+                im += v * ph.sin();
+            }
+            re * re + im * im
+        };
+        10.0 * (hz.iter().map(|&f| power(f)).sum::<f64>() / power(reference_hz)).log10()
+    }
+
+    #[test]
+    fn a_v_engines_banks_are_heard_from_either_side_of_the_car() {
+        // The LFA (its banks' exhausts merge into one outlet, so the tails carry no bank; the
+        // intake off, so only the block and the exhaust speak) held at 6000 rpm (cycle 50 Hz,
+        // firing 500 Hz), heard 3 m abeam of the engine (90°, the engine at the tails' station):
+        // the banks fire in turn, each once per 144° of crank, so a bank's side of the block
+        // carries the 250 Hz half-firing orders, which cancel between two identical banks heard
+        // from one point. With the banks 0.157 m either side of the axis the paths differ by
+        // √(3.157² + 1.3²) − √(2.843² + 1.3²) = 0.29 m, 0.84 ms: the two sides' odd orders add
+        // as |1 − e^{−iωτ}|, −10 dB of a side's line at 250 Hz and within ±6 dB from 750 Hz
+        // up, where the block's response (1–3 kHz) is: the V's half orders sit near its block
+        // lines. The same engine drawn inline (one bank) keeps only what the 2 % cylinder
+        // imbalance leaves, ~34 dB under the lines — at least 10 dB apart.
+        let half_orders: Vec<f64> = (0..12).map(|m| 250.0 * (2 * m + 1) as f64).collect();
+        let heard = |bank_angle: f64| {
+            let mut d = EngineDef::lfa_v10();
+            d.layout.bank_angle_deg = bank_angle;
+            d.sound.combustion_jitter = 0.0;
+            d.sound.intake = 0.0;
+            d.sound.listener_angle_deg = 90.0;
+            d.vehicle.engine_ahead_m = 0.0;
+            let mut e = Engine::new(d, 6000.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(6000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.5, &c);
+            // 20 whole cycles: every order falls on a bin
+            run(&mut e, 0.4, &c)
+        };
+        let (v, inline) = (heard(72.0), heard(0.0));
+        let (v_db, inline_db) = (
+            lines_db(&v, &half_orders, 500.0),
+            lines_db(&inline, &half_orders, 500.0),
+        );
+        assert!(
+            v_db - inline_db > 10.0,
+            "half-firing orders re the firing line: V {v_db:.1} dB, inline {inline_db:.1} dB"
+        );
+    }
+
     #[test]
     fn moving_the_listener_retunes_in_place() {
         // A tuning change, not a rebuild: the engine keeps running and builds a new listener.
@@ -4923,6 +5050,12 @@ mod tests {
         assert!(e.listener.is_none());
         run(&mut e, 0.001, &Controls::default());
         assert!(e.listener.is_some());
+        // so does a new layout: the banks' places are the listener's
+        let mut d = EngineDef::crossplane_v8();
+        d.sound.listener_angle_deg = 75.0;
+        d.layout.bank_angle_deg = 60.0;
+        assert!(e.retune(d));
+        assert!(e.listener.is_none());
     }
 
     #[test]
