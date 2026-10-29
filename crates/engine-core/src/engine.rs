@@ -5071,6 +5071,8 @@ mod tests {
         let heard = |bank_angle: f64| {
             let mut d = EngineDef::lfa_v10();
             d.layout.bank_angle_deg = bank_angle;
+            // equal bank lines: the exhaust's own half orders (its banks 10 cm apart) aside
+            d.exhaust.collector_extra_length_m.clear();
             d.sound.combustion_jitter = 0.0;
             d.sound.intake = 0.0;
             d.sound.listener_angle_deg = 90.0;
