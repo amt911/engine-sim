@@ -308,9 +308,10 @@ impl ExhaustFv {
         let branches = def
             .groups(cylinders)
             .into_iter()
-            .map(|members| {
+            .enumerate()
+            .map(|(bi, members)| {
                 let mut out =
-                    Pipe1d::segmented(&[(def.collector_length_m, a_collector)], CELL_M, init);
+                    Pipe1d::segmented(&[(def.collector_length(bi), a_collector)], CELL_M, init);
                 out.floors = (1e-3, 500.0);
                 out.friction = PIPE_FRICTION;
                 out.acoustic_loss = acoustic_loss();

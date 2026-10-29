@@ -70,6 +70,10 @@ pub struct ExhaustDef {
     pub collectors: Vec<Vec<usize>>,
     pub collector_length_m: f64,
     pub collector_diameter_m: f64,
+    /// Extra length of each collector's line over `collector_length_m`, m, in collector order
+    /// (missing: none). Two banks are never exactly alike: their pulses meet a little apart, and
+    /// a V engine's half orders come from that.
+    pub collector_extra_length_m: Vec<f64>,
     pub tail_length_m: f64,
     pub tail_diameter_m: f64,
     /// Extra lumped loss on the tail pipe, amplitude kept per pass (1 = none). The muffler
@@ -504,6 +508,7 @@ impl Default for ExhaustDef {
             collectors: Vec::new(),
             collector_length_m: 0.25,
             collector_diameter_m: 0.055,
+            collector_extra_length_m: Vec::new(),
             tail_length_m: 1.5,
             tail_diameter_m: 0.050,
             muffler_transmission: 1.0,
@@ -637,6 +642,16 @@ impl ExhaustDef {
         self.merge
             .as_ref()
             .map_or_else(|| self.outlet_diameter(), |m| m.outlet_diameter_m)
+    }
+
+    /// Length of collector `branch`'s line, m: `collector_length_m` and its extra, if any.
+    pub fn collector_length(&self, branch: usize) -> f64 {
+        self.collector_length_m
+            + self
+                .collector_extra_length_m
+                .get(branch)
+                .copied()
+                .unwrap_or(0.0)
     }
 
     /// Collector groups as 0-based cylinder indices (empty → all cylinders in one).
@@ -1067,11 +1082,12 @@ impl ExhaustNet {
         let branches: Vec<Branch> = def
             .groups(cylinders)
             .into_iter()
-            .map(|members| Branch {
+            .enumerate()
+            .map(|(bi, members)| Branch {
                 losses: collector_losses(def, members.len()),
                 members,
                 collector: Pipe::new(
-                    def.collector_length_m,
+                    def.collector_length(bi),
                     def.collector_diameter_m,
                     C_COLLECTOR,
                     dt,
@@ -2155,6 +2171,50 @@ mod tests {
             seen += t[0].abs();
         }
         assert!(seen > 0.0);
+    }
+
+    #[test]
+    fn a_longer_bank_line_delays_its_pulses_by_its_extra_length() {
+        // 0.2 m more collector on the second bank: its pulses reach the open end 0.2/560 s
+        // later, 68.57 steps at 192 kHz (C_COLLECTOR = 560 m/s); the first bank's are unchanged
+        let def = ExhaustDef {
+            collectors: vec![vec![1], vec![2]],
+            collector_extra_length_m: vec![0.0, 0.2],
+            ..ExhaustDef::default()
+        };
+        let arrival = |d: &ExhaustDef, cyl: usize| {
+            let mut net = ExhaustNet::new(d, 2, DT);
+            (0..20_000)
+                .position(|k| {
+                    let mut f = [0.0; 2];
+                    if k < 20 {
+                        f[cyl] = 0.2;
+                    }
+                    net.step(&f).abs() > 1.0
+                })
+                .unwrap() as f64
+        };
+        let even = ExhaustDef {
+            collector_extra_length_m: Vec::new(),
+            ..def.clone()
+        };
+        assert_eq!(arrival(&def, 0), arrival(&even, 0));
+        let late = arrival(&def, 1) - arrival(&even, 1);
+        assert!((late - 68.57).abs() <= 1.0, "{late} steps");
+    }
+
+    #[test]
+    fn bank_extra_lengths_round_trip_and_default_to_none() {
+        let old: ExhaustDef = serde_yaml_ng::from_str("tail_length_m: 1.0\n").unwrap();
+        assert!(old.collector_extra_length_m.is_empty());
+        let d = ExhaustDef {
+            collector_extra_length_m: vec![0.0, 0.1],
+            ..ExhaustDef::default()
+        };
+        let j: ExhaustDef = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+        let y: ExhaustDef =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&d).unwrap()).unwrap();
+        assert_eq!((j, y), (d.clone(), d));
     }
 
     #[test]
