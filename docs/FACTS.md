@@ -247,3 +247,20 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   High 0.57 → 0.32 (−40 %: the +28 % of the spec plus the exhaust thread, which a steepening net never takes).
   Absolute values are far below the table above (start-up and the 6-core pin); the ratio is the fact.
   *(verified: `scratchpad/far/rt.sh`)*
+- **Surge tank (air box) on the intake (2026-10-29)**: `IntakeDef.airbox: Option<AirboxDef>` (volume, n ducts,
+  duct length and Ø). ITB trumpets draw from the box (`throttled_ghost` on the box's state, held over an FV step),
+  the box breathes through its ducts as 1D pipes of L + 0.85a + 0.6a (Kinsler §10.8 end corrections), the sound
+  source is c·Σρu at the duct mouths; with a common throttle the throttle draws from the box. Verified against hand
+  values: the 20 L / 2 × Ø90 × 0.40 m box rings at 61.6 Hz (x·tan x = A_t L'/V, within 4 %) and passes a 2 f_H
+  pulsation at |H| = 0.513 (runner line + duct line + box by transfer matrices, within 3 %). LFA with
+  `AirboxDef::lfa_v10_estimate()` (not in the preset — FINDINGS 2026-10-29): `--render drive` blips octave bands
+  re total 31/63/125/250/500/1k/2k/4k −15.0 −9.6 −3.3 −15.8 −21.0 −14.2 −8.7 −18.2 (before −15.9 −10.9 −3.8 −15.8
+  −8.3 −14.1 −9.8 −19.5; real blips −12.3 −6.4 −3.3 −13.2 −17.2 −11.7 −14.1 −14.8): the 500 Hz band goes from
+  +8.9 dB over the real car to −3.8 under it; idle's 31 Hz band −23.8 → −9.3 (real −9.2: the box's 62 Hz mode
+  under the 54 Hz idle firing). Held 6700 WOT ruler 7.6 → 24.9 dB (firing order gone, see FINDINGS). Dyno: −0.1 %
+  at 1000 rpm to −2.6 % at 8000 (489 → 476 hp), one dynamic head at the ducts' exit. *(verified: scratchpad
+  `airbox/`, 2026-10-29)*
+- **The surge tank's real-time cost is nil (2026-10-29)**: LFA `--headless --seconds 5 --throttle 1`, cores 0–5,
+  under the CPU lock, audio seconds per wall second with and without `lfa_v10_estimate()`: High 0.344 → 0.327,
+  Ultra 0.238 → 0.248 (±5 %, noise either way: two 12-cell ducts beside ten 8-cell runners and the exhaust).
+  *(verified: scratchpad `airbox/rt.sh`)*

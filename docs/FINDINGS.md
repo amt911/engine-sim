@@ -892,3 +892,25 @@ purpose rather than weakened: the physics to fix is the chambered path's damping
 cm is the right bank asymmetry), not the assertion.
 
 Found: 2026-10-29 · physics
+
+## The LFA's firing order at 6700 rpm WOT was the trumpets', not the exhaust's (2026-10-29)
+
+**Symptom.** Giving the LFA its surge tank (`AirboxDef::lfa_v10_estimate`: 20 L, two Ø90 mm
+ducts of 0.40 m, the trumpets drawing from the box and the induction sound radiating from the
+duct mouths) sent `the_lfa_at_full_throttle_keeps_the_real_cars_orders` from 11.7 to 20.0 dB RMS,
+every order *above* the real car's. Peak-picking the held 6700 rpm render: before, 558 Hz (the
+firing order) was the top line; after, it is not in the top ten (2511 Hz = order 45 leads, order 5
+at −9 dB). The ruler's f0 tracker then locks on 7538 rpm — read its rpm line before its score.
+**Cause.** The runners' half-wave (c/2L ≈ 520 Hz) coincides with the firing frequency at 6700 rpm,
+and the ten trumpets open to the air radiated it: the whole firing order of the render was the
+intake's. Behind a 20 L box the duct mouths pass 1/|cos kL' − (kV/A_t) sin kL'| ≈ 0.06 (−24 dB)
+of it, as a Helmholtz filter must, and the exhaust alone has no firing order at that speed.
+**What it says.** The exhaust model's missing line at the firing order at high rpm was masked by
+the intake, and the real car's remaining intake path is the one Yamaha built: the tank's walls,
+tuned to radiate 250–500 Hz (Yamaha, 2009 release). Until that path exists, the preset keeps the
+trumpets in the open air (`lfa_v10`), and the tank is an estimate ready to wire in. Numbers:
+`docs/FACTS.md` (surge tank, 2026-10-29).
+**Why it isn't obvious.** Every band and order test passed with the trumpets masking it; the
+dyno barely moves (−2 % at 6000–8000 rpm, one dynamic head lost at the duct's exit into the box).
+
+Found: 2026-10-29 · physics
