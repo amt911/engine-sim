@@ -109,13 +109,14 @@ impl Pipe {
     }
 
     /// The pipe's mean mass flow, kg/s, of gas at its sound speed and an atmosphere: turbulent
-    /// wall friction, ½ρu|u|·f/D per unit volume, linearized about the mean velocity U damps a
-    /// wave by α = f·M/D per metre (M = U/c; Darcy f of [`crate::exhaust_fv::PIPE_FRICTION`]):
+    /// wall friction, ½ρu|u|·f/D per unit volume, linearized about the mean velocity U, is a
+    /// resistance R = ρ·f·U/D on the wave's velocity, which damps it by α = R/(2ρc) = f·M/(2D)
+    /// per metre (M = U/c; Darcy f of [`crate::exhaust_fv::PIPE_FRICTION`]):
     /// the faster the gas, the more a pipe's resonances are worn down.
     pub fn set_mean_flow(&mut self, mass_flow: f64) {
         let rho_c = crate::gas::GAMMA * crate::units::ATM_PA / self.sound_speed;
         let mach = (mass_flow / (rho_c * self.area_m2)).abs();
-        let alpha = crate::exhaust_fv::PIPE_FRICTION * mach / self.diameter_m;
+        let alpha = crate::exhaust_fv::PIPE_FRICTION * mach / (2.0 * self.diameter_m);
         self.gain = self.still_gain * (-alpha * self.length_m).exp();
     }
 
@@ -661,14 +662,15 @@ mod tests {
 
     #[test]
     fn a_longer_flowing_pipe_and_an_extra_loss_by_hand() {
-        // M = 0.2 in a 50 mm pipe: α = 0.025·0.2/0.05 = 0.1 Np/m, so 2 m keep e^(−0.2) = 0.818731
+        // M = 0.2 in a 50 mm pipe: α = f·M/(2D) = 0.025·0.2/0.1 = 0.05 Np/m, so 2 m keep
+        // e^(−0.1) = 0.904837
         // on top of the still loss (1 − 0.03)² = 0.9409
         let dt = 1.0 / 192_000.0;
         let a = std::f64::consts::PI * 0.25 * 0.05 * 0.05;
         let mut p = Pipe::new(2.0, 0.05, 500.0, dt, 0.03);
         p.set_mean_flow(0.2 * 283.71 * a);
         assert!(
-            (p.gain / 0.9409 - 0.818_731).abs() < 1e-5,
+            (p.gain / 0.9409 - 0.904_837).abs() < 1e-5,
             "{}",
             p.gain / 0.9409
         );
@@ -719,7 +721,7 @@ mod tests {
     #[test]
     fn a_flowing_pipe_wears_its_waves_down() {
         // D = 50 mm, 1 m, c = 500 m/s (ρc = γp/c = 283.71): 0.0557 kg/s is M = 0.2; f = 0.025
-        // → α = f·M/D = 0.1 Np/m: a wave keeps e^(−0.1) = 0.904837 of itself, on top of the
+        // → α = f·M/(2D) = 0.05 Np/m: a wave keeps e^(−0.05) = 0.951229 of itself, on top of the
         // still pipe's (1 − 0.03)¹
         let dt = 1.0 / 192_000.0;
         let mut p = Pipe::new(1.0, 0.05, 500.0, dt, 0.03);
@@ -734,13 +736,13 @@ mod tests {
             }
         }
         assert!(
-            (p.gain / still - 0.904_837).abs() < 1e-5,
+            (p.gain / still - 0.951_229).abs() < 1e-5,
             "{}",
             p.gain / still
         );
         // and the flow's direction does not matter
         p.set_mean_flow(-0.2 * 283.71 * a);
-        assert!((p.gain / still - 0.904_837).abs() < 1e-5);
+        assert!((p.gain / still - 0.951_229).abs() < 1e-5);
         p.set_mean_flow(0.0);
         assert_eq!(p.gain, still);
     }
@@ -942,8 +944,9 @@ mod tests {
             (near - 1.0).abs() < 1e-12 && (far - 1.0).abs() < 1e-12,
             "{near} {far}"
         );
-        // a mean flow of M = 0.2 through both pipes: α = 0.025·0.2/0.05 = 0.1 Np/m, so a pulse
-        // crossing the 2 m keeps e^(−0.2) = 0.818731 (the resistance aside: here a plain duct)
+        // a mean flow of M = 0.2 through both pipes: α = f·M/(2D) = 0.025·0.2/0.1 = 0.05 Np/m,
+        // so a pulse crossing the 2 m keeps e^(−0.1) = 0.904837 (the resistance aside: here a
+        // plain duct)
         let a = std::f64::consts::PI * 0.25 * 0.05 * 0.05;
         let mut d = Duct::new(vec![
             Pipe::new(1.0, 0.05, 500.0, dt, 0.0),
@@ -955,7 +958,7 @@ mod tests {
             got = got.max(d.at_far().abs());
             d.send(if k == 0 { 1.0 } else { 0.0 }, 0.0);
         }
-        assert!((got - 0.818_731).abs() < 1e-5, "{got}");
+        assert!((got - 0.904_837).abs() < 1e-5, "{got}");
     }
 
     #[test]
