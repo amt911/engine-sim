@@ -460,7 +460,8 @@ impl EngineDef {
                 collectors: vec![vec![1, 2, 3, 4, 5], vec![6, 7, 8, 9, 10]],
                 collector_length_m: 0.3,
                 collector_diameter_m: 0.065,
-                tail_length_m: 1.2,
+                // the bank line below, catalyst to muffler
+                tail_length_m: 0.50 + 0.38 + 1.10,
                 tail_diameter_m: 0.070,
                 // Sport muffler with bypass valves: less damping than a road car.
                 muffler_transmission: 1.0,
@@ -477,12 +478,6 @@ impl EngineDef {
                 // the sub muffler ≈ 0.38 m a third of the way); glass-wool packing as the
                 // default lining.
                 after_collector: vec![
-                    Segment::Catalyst {
-                        length_m: 0.13,
-                        diameter_m: 0.1534,
-                        cells_per_in2: 400.0,
-                        wall_m: 0.000165,
-                    },
                     Segment::Pipe {
                         length_m: 0.50,
                         diameter_m: 0.070,
@@ -621,7 +616,7 @@ impl EngineDef {
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::lfa_v10(),
         }
-        .with_tail_pipe()
+        // its own bank lines (above), the catalyst first
         .with_catalyst()
     }
 
