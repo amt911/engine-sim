@@ -84,6 +84,8 @@ pub struct Pipe {
     length_m: f64,
     diameter_m: f64,
     sound_speed: f64,
+    /// A silencer's transmission on each direction's waves as they enter (forward, backward).
+    filter: Option<Box<[crate::silencer2d::Cascade; 2]>>,
 }
 
 impl Pipe {
@@ -99,7 +101,14 @@ impl Pipe {
             length_m,
             diameter_m,
             sound_speed,
+            filter: None,
         }
+    }
+    /// The waves crossing this pipe, either way, pass `transmission` (a silencer's, as
+    /// [`crate::silencer2d::Silencer::transmission_eq`]).
+    pub fn with_filter(mut self, transmission: crate::silencer2d::Cascade) -> Self {
+        self.filter = Some(Box::new([transmission.clone(), transmission]));
+        self
     }
     /// Extra per-trip amplitude factor (e.g. a muffler in this pipe).
     pub fn with_extra_gain(mut self, g: f64) -> Self {
@@ -140,8 +149,16 @@ impl Pipe {
     }
     /// Send this step's outgoing waves: `from_near` into `fwd`, `from_far` into `bwd`.
     pub fn send(&mut self, from_near: f64, from_far: f64) {
-        self.fwd.push(from_near);
-        self.bwd.push(from_far);
+        match self.filter.as_deref_mut() {
+            None => {
+                self.fwd.push(from_near);
+                self.bwd.push(from_far);
+            }
+            Some([f, b]) => {
+                self.fwd.push(f.process(from_near));
+                self.bwd.push(b.process(from_far));
+            }
+        }
     }
 }
 

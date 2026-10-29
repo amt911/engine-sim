@@ -224,3 +224,10 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   H4 −17, half order 5 −20, 63/125 Hz +6. The 1D lining is under 2D below ~3 kHz and far over above
   (beaming): the lower tip's glass wool (Ø100 over 60 mm, 0.12 m) is 1.9 dB at 2 kHz in 1D, 12 dB in 2D, so
   it cancels the upper tips at f = c/(2ΔL) ≈ 2 kHz more than it should.
+- **Packed silencers by the 2D model (2026-10-29)**: `silencer2d.rs` ports `modal2d.py` (complex Bessel from the
+  `complex-bessel` crate) and matches it to 0.01 dB (0.4 m can at 1 kHz 17.34, 0.8 m 33.82). Backward chamber waves
+  must be referred to x = L or the evanescent modes overflow (the 0.8 m can failed everywhere, and 8 kHz+ on short
+  ones). Realised as 17 half-octave peaking biquads per direction (octave bands missed a 13 dB/half-octave slope by
+  4 dB); the fit must be kept passive (an overshoot of +1.6 dB at 62 Hz stalled the single) and its target clamped at
+  −50 dB. ~18 ms per frequency in release, 33 frequencies per packed silencer when the net is built. LFA held 6700 vs
+  the dyno clip: 13.3 → 13.4 dB (only its lower tip is packed).

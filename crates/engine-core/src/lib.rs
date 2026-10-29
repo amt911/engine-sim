@@ -19,6 +19,7 @@ pub mod layout;
 pub mod lining;
 pub mod listener;
 pub mod narrow_tube;
+pub mod silencer2d;
 pub mod sound;
 pub mod structure;
 pub mod thermo;

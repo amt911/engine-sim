@@ -753,13 +753,15 @@ pub(crate) fn after_collector(def: &ExhaustDef, dt: f64, lining_m: f64) -> Duct 
 }
 
 /// The duct of `path`'s segments, its last pipe carrying `transmission`; a lone pipe of
-/// `fallback` (length, diameter) if the path is empty.
+/// `fallback` (length, diameter) if the path is empty. The lining's segment length no longer
+/// applies here: a packed silencer is its 2D transmission ([`crate::silencer2d`]), not a lumped
+/// line.
 fn segments_duct(
     path: &[Segment],
     transmission: f64,
     fallback: (f64, f64),
     dt: f64,
-    lining_m: f64,
+    _lining_m: f64,
 ) -> Duct {
     let rho_c = crate::gas::GAMMA * crate::units::ATM_PA / C_TAIL;
     let pipe = |len: f64, d: f64| Pipe::new(len, d, C_TAIL, dt, LOSS_PER_M);
@@ -785,24 +787,26 @@ fn segments_duct(
                 diameter_m,
                 tube_diameter_m,
                 packing_resistivity,
-                packing_porosity,
+                packing_porosity: _,
             } => {
                 if tube_diameter_m > 0.0 && tube_diameter_m < diameter_m {
-                    let n = (length_m / lining_m).round().max(2.0) as usize;
-                    let pipes = (0..n)
-                        .map(|_| pipe(length_m / n as f64, tube_diameter_m))
-                        .collect();
-                    let packing = crate::lining::Packing {
-                        thickness_m: 0.5 * (diameter_m - tube_diameter_m),
-                        flow_resistivity: packing_resistivity,
-                        porosity: packing_porosity,
+                    // the packed (or empty) shell round the perforated tube, by the 2D model:
+                    // its transmission on the tube's waves both ways
+                    let silencer = crate::silencer2d::Silencer {
+                        r1: 0.5 * tube_diameter_m,
+                        r2: 0.5 * diameter_m,
+                        len: length_m,
+                        resistivity: (packing_resistivity > 0.0).then_some(packing_resistivity),
+                        perforate: crate::silencer2d::Perforate::default(),
                     };
-                    let per_node = length_m / (n - 1) as f64;
-                    let perimeter = std::f64::consts::PI * tube_diameter_m;
-                    Duct::with_shunts(
-                        pipes,
-                        Shunt::lining(packing, perimeter, per_node, rho_c, dt),
-                    )
+                    let gas = crate::silencer2d::Gas {
+                        c: C_TAIL,
+                        rho: crate::units::ATM_PA / (crate::gas::R_AIR * TAIL_T),
+                    };
+                    Duct::new(vec![
+                        pipe(length_m, tube_diameter_m)
+                            .with_filter(silencer.transmission_eq(gas, 1.0 / dt)),
+                    ])
                 } else {
                     Duct::new(vec![pipe(length_m, diameter_m)])
                 }
@@ -2067,23 +2071,24 @@ mod tests {
 
     #[test]
     fn a_designed_silencer_attenuates_as_its_packed_line() {
-        // the packing lines the tube over the can's length: 0.4 m more of it takes the
-        // transmission line's e^(−0.4·Re γ) off a 2 kHz tone, Re γ = 2.4839 Np/m (hand value of
-        // the waveguide test for this very passage): 8.63 dB
+        // the packed can by the 2D model, through the net: 0.4 m more of it takes 33.82 −
+        // 17.34 = 16.48 dB off a 1 kHz tone in tail gas (500 m/s, 0.56742 kg/m³) by the
+        // independent prototype (papers/silencers/lining-study/modal2d.py, scipy's Bessel
+        // functions; validated against JSV 262 Fig. 7), within the equalizer's 1.5 dB
         let tail = Segment::Pipe {
             length_m: 0.5,
             diameter_m: 0.05,
         };
         let short = tone_through(
             &with_path(vec![packed_can(0.4, 0.088_198), tail.clone()]),
-            2000.0,
+            1000.0,
         );
         let long = tone_through(
             &with_path(vec![packed_can(0.8, 0.088_198), tail.clone()]),
-            2000.0,
+            1000.0,
         );
         let db = 20.0 * (short / long).log10();
-        assert!((db - 8.63).abs() < 0.1 * 8.63, "{db} dB");
+        assert!((db - 16.48).abs() < 1.5, "{db} dB");
         // a tube as wide as the shell is no packing: an empty shell, as one with no tube
         let wide = tone_through(
             &with_path(vec![packed_can(0.4, 0.138_198), tail.clone()]),
