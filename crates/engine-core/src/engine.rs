@@ -532,6 +532,7 @@ impl EngineDef {
                             length_m: 0.25,
                             diameter_m: 0.060 * 3f64.sqrt(),
                         }],
+                        outlets: Vec::new(),
                         open_rpm: 3000.0,
                         // a vacuum diaphragm actuator: ESTIMATE
                         travel_s: 0.3,

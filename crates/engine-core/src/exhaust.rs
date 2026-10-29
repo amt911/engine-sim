@@ -28,6 +28,28 @@ pub(crate) fn tail_reference_density() -> f64 {
 /// *Fundamentals of Acoustics*, §9.4) gives 0.0295 Np/m in a 42 mm primary of 900 K gas (c 600
 /// m/s, ν 1e-4 m²/s) at 200 Hz, about the firing orders' band: 1 − e^(−0.0295) ≈ 0.03.
 pub const LOSS_PER_M: f64 = 0.03;
+/// Bore a path ends in, m (a silencer's tube if it has one, else its shell); 0 for none.
+fn exit_diameter(path: &[Segment]) -> f64 {
+    match path.last() {
+        Some(Segment::Pipe { diameter_m, .. } | Segment::Catalyst { diameter_m, .. }) => {
+            *diameter_m
+        }
+        Some(Segment::Muffler {
+            diameter_m,
+            tube_diameter_m,
+            ..
+        }) => {
+            if *tube_diameter_m > 0.0 {
+                *tube_diameter_m
+            } else {
+                *diameter_m
+            }
+        }
+        Some(Segment::Resonator { .. }) => exit_diameter(&path[..path.len() - 1]),
+        None => 0.0,
+    }
+}
+
 /// Clamp on the waves (strength, Pa: [`crate::valve_boundary::wave_pressure`]). Below: the
 /// rarefaction that, doubled where it meets its own echo, leaves vacuum (X = ½, X_s = 0:
 /// w = −3.5·p₀); a finite-amplitude wave reaches it only where the gas would cavitate. Above:
@@ -99,6 +121,11 @@ pub struct Bypass {
     pub closed: Vec<Segment>,
     pub open: Vec<Segment>,
     pub tips: Vec<Segment>,
+    /// Outlets after `tips` (its last chamber), each a pipe radiating from its own open end, side
+    /// by side at the car's tail: unequal lengths cancel some orders in the air (Torimoto &
+    /// Mabuchi, JP 2008-169751 A: the LFA's three tips, the lower one at least twice as long).
+    /// Empty: `tips` ends in the merge's outlet.
+    pub outlets: Vec<Vec<Segment>>,
     /// Engine speed the valve opens above, rpm.
     pub open_rpm: f64,
     /// Valve travel, closed to open, s.
@@ -111,6 +138,7 @@ impl Default for Bypass {
             closed: Vec::new(),
             open: Vec::new(),
             tips: Vec::new(),
+            outlets: Vec::new(),
             open_rpm: 3000.0,
             travel_s: 0.3,
         }
@@ -118,6 +146,35 @@ impl Default for Bypass {
 }
 
 impl Valved {
+    /// The tips' far end splits into the outlets, each radiating from its own end: returns
+    /// (the wave back into the tips, the outlets' summed volume velocity × ρc per unit of their
+    /// summed area — what one outlet of that area would radiate).
+    fn radiate_outlets(&mut self) -> (f64, f64) {
+        let [areas, arriving, leaving] = &mut self.scratch;
+        areas[0] = self.tips.end_areas().1;
+        arriving[0] = self.tips.at_far();
+        for (k, (d, _)) in self.outlets.iter().enumerate() {
+            areas[k + 1] = d.end_areas().0;
+            arriving[k + 1] = d.at_near();
+        }
+        junction(areas, arriving, leaving);
+        let (mut flow, mut area) = (0.0, 0.0);
+        for (k, (d, e)) in self.outlets.iter_mut().enumerate() {
+            let (reflected, out) = e.process(d.at_far());
+            let a = d.end_areas().1;
+            flow += out * a;
+            area += a;
+            d.send(clamp_wave(leaving[k + 1]), clamp_wave(reflected));
+        }
+        (leaving[0], flow / area)
+    }
+
+    fn set_outflow_mach(&mut self, mach: f64) {
+        for (_, e) in &mut self.outlets {
+            e.set_outflow_mach(mach);
+        }
+    }
+
     /// One step past the shared duct, whose far end sends `arriving` (area `duct_area`): the
     /// valve moves, the junction where the paths split (the valve's loss on `open`), the one
     /// where they meet, and the open end. Returns (the wave back into the shared duct, the
@@ -185,7 +242,11 @@ impl Valved {
             );
             to_tips_from_open = meet[1];
         }
-        let (reflected, out) = end.process(self.tips.at_far());
+        let (reflected, out) = if self.outlets.is_empty() {
+            end.process(self.tips.at_far())
+        } else {
+            self.radiate_outlets()
+        };
         self.closed.send(clamp_wave(split[1]), clamp_wave(meet[0]));
         self.open
             .send(clamp_wave(to_open), clamp_wave(to_tips_from_open));
@@ -540,7 +601,21 @@ impl ExhaustDef {
     }
 
     /// Bore the sound leaves through, m: the merged outlet when the banks join, else each tail's.
+    /// With outlets ([`Bypass::outlets`]), the bore of their summed area.
     pub fn radiating_diameter(&self) -> f64 {
+        let outlets = self
+            .merge
+            .as_ref()
+            .and_then(|m| m.bypass.as_ref())
+            .map(|b| b.outlets.as_slice())
+            .unwrap_or_default();
+        if !outlets.is_empty() {
+            return outlets
+                .iter()
+                .map(|o| exit_diameter(o).powi(2))
+                .sum::<f64>()
+                .sqrt();
+        }
         self.merge
             .as_ref()
             .map_or_else(|| self.outlet_diameter(), |m| m.outlet_diameter_m)
@@ -793,6 +868,10 @@ struct Valved {
     closed: Duct,
     open: Duct,
     tips: Duct,
+    /// [`Bypass::outlets`]: each pipe and its open end; and the junction's scratch (areas,
+    /// arriving, leaving: the tips' far end first).
+    outlets: Vec<(Duct, OpenEnd)>,
+    scratch: [Vec<f64>; 3],
     open_rpm: f64,
     travel_s: f64,
     /// Opening fraction, 0 shut … 1 open.
@@ -1008,6 +1087,12 @@ impl ExhaustNet {
                         closed: duct(&b.closed, 1.0),
                         open: duct(&b.open, 1.0),
                         tips: duct(&b.tips, def.muffler_transmission),
+                        outlets: b
+                            .outlets
+                            .iter()
+                            .map(|o| (duct(o, 1.0), OpenEnd::new(exit_diameter(o), dt)))
+                            .collect(),
+                        scratch: std::array::from_fn(|_| vec![0.0; b.outlets.len() + 1]),
                         open_rpm: b.open_rpm,
                         travel_s: b.travel_s,
                         x: 0.0,
@@ -1015,7 +1100,7 @@ impl ExhaustNet {
                     }
                 });
                 let tail_area = std::f64::consts::PI * 0.25 * def.tail_diameter_m.powi(2);
-                let outlet_area = std::f64::consts::PI * 0.25 * m.outlet_diameter_m.powi(2);
+                let outlet_area = std::f64::consts::PI * 0.25 * def.radiating_diameter().powi(2);
                 Shared {
                     duct,
                     end: OpenEnd::new(m.outlet_diameter_m, dt),
@@ -1066,8 +1151,11 @@ impl ExhaustNet {
     pub fn set_outflow_mach(&mut self, mach: &[f64]) {
         if let Some(sh) = &mut self.shared {
             // the tails' volume flows add up through the outlet
-            sh.end
-                .set_outflow_mach(mach.iter().sum::<f64>() * sh.tail_to_outlet);
+            let m = mach.iter().sum::<f64>() * sh.tail_to_outlet;
+            sh.end.set_outflow_mach(m);
+            if let Some(v) = &mut sh.valved {
+                v.set_outflow_mach(m);
+            }
         }
         for (b, m) in self.branches.iter_mut().zip(mach) {
             b.end.set_outflow_mach(*m);
@@ -1449,10 +1537,81 @@ mod tests {
             closed: vec![pipe(1.0, 0.05)],
             open: vec![pipe(0.1, 0.07)],
             tips: vec![pipe(0.1, 0.07)],
+            outlets: Vec::new(),
             open_rpm: 3000.0,
             travel_s: 0.3,
         });
         d
+    }
+
+    /// [`valved_banks`] whose final chamber feeds `outlets` 40 mm pipes of the given lengths.
+    fn outlet_banks(lengths: &[f64]) -> ExhaustDef {
+        let mut d = valved_banks();
+        let b = d.merge.as_mut().unwrap().bypass.as_mut().unwrap();
+        b.outlets = lengths
+            .iter()
+            .map(|&length_m| {
+                vec![Segment::Pipe {
+                    length_m,
+                    diameter_m: 0.04,
+                }]
+            })
+            .collect();
+        d
+    }
+
+    #[test]
+    fn outlets_round_trip_and_radiate_through_their_summed_bore() {
+        let d = outlet_banks(&[0.2, 0.6]);
+        let json: ExhaustDef = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+        let yaml: ExhaustDef =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&d).unwrap()).unwrap();
+        assert_eq!((json, yaml), (d.clone(), d.clone()));
+        // two 40 mm outlets carry the area of one √2·40 = 56.57 mm bore (π/4·2·0.04²)
+        assert!((d.radiating_diameter() - 0.056_569).abs() < 1e-6);
+        // a bypass without outlets still ends in the merge's outlet
+        assert_eq!(valved_banks().radiating_diameter(), 0.07);
+    }
+
+    #[test]
+    fn outlets_of_unequal_length_cancel_where_they_are_half_a_wave_apart() {
+        // A chamber feeds two open pipes of lengths L₁ = 0.2 m and L₂ = 0.6 m at one pressure
+        // p_J; each passes the volume velocity A·p_J/(ρc·sin kL) out of its open end (an open
+        // pipe's transfer, Kinsler et al. §10.3), so their sum vanishes where sin kL₂ = −sin kL₁:
+        // kL₂ = kL₁ + π, f = c/(2(L₂ − L₁)) = 500/0.8 = 625 Hz (c = C_TAIL). At 400 Hz the sum is
+        // 1/sin(1.005) + 1/sin(3.016) = 1.187 + 7.97 = 9.16 times one pipe's term: no cancelling.
+        // (The ends' radiation lag shifts the zero a little: the deepest point is sought near it.)
+        let dt = 1.0 / 96_000.0;
+        let level = |lengths: &[f64], f: f64| {
+            let mut net = ExhaustNet::new(&outlet_banks(lengths), 2, dt);
+            net.set_engine_speed(5000.0);
+            for _ in 0..(0.4 / dt) as usize {
+                net.step(&[0.0, 0.0]);
+            }
+            let mut peak: f64 = 0.0;
+            for k in 0..(0.25 / dt) as usize {
+                let q = 1e-4 * (2.0 * std::f64::consts::PI * f * k as f64 * dt).sin();
+                let out = net.step(&[q, 0.0]);
+                if k as f64 * dt > 0.15 {
+                    peak = peak.max(out.abs());
+                }
+            }
+            peak
+        };
+        let two = [0.2, 0.6];
+        let open = level(&two, 400.0);
+        let (deepest, at) = (540..=660)
+            .step_by(15)
+            .map(|f| (level(&two, f as f64), f))
+            .fold((f64::INFINITY, 0), |a, b| if b.0 < a.0 { b } else { a });
+        assert!(
+            20.0 * (deepest / open).log10() < -20.0,
+            "{} dB at {at} Hz",
+            20.0 * (deepest / open).log10()
+        );
+        // one outlet alone has no such zero there
+        let one = level(&[0.2], at as f64) / level(&[0.2], 400.0);
+        assert!(20.0 * one.log10() > -10.0, "{}", 20.0 * one.log10());
     }
 
     #[test]
