@@ -105,6 +105,7 @@ engine:
     - kind: pipe
       length_m: 1.5
       diameter_m: 0.05
+    merge: null
   intake:
     model: fv
     runner_length_m: 0.255
@@ -159,3 +160,4 @@ engine:
     clutch_capacity_nm: 350.0
     max_brake_decel_m_s2: 9.0
     shift_time_s: 0.0
+    engine_ahead_m: 3.4

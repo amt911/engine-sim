@@ -6,7 +6,7 @@
 
 use crate::combustion::{AFR_STOICH, LHV_GASOLINE, flame_angle_scale, laminar_flame_speed, wiebe};
 use crate::exhaust::{
-    ArrivalProbe, BlockIn, BlockOut, ExhaustDef, ExhaustLink, ExhaustModel, ExhaustNet,
+    ArrivalProbe, BlockIn, BlockOut, ExhaustDef, ExhaustLink, ExhaustModel, ExhaustNet, Segment,
 };
 use crate::exhaust_fv::ExhaustFv;
 use crate::gas::{Flow, GasVolume, Reservoir, exchange_with_reservoir, plan_exchange};
@@ -190,6 +190,7 @@ impl EngineDef {
                 // one tail: no spread
                 tail_spacing_m: 0.9,
                 after_collector: Vec::new(),
+                merge: None,
             },
             intake: IntakeDef::default(),
             redline_rpm: 7500.0,
@@ -460,15 +461,82 @@ impl EngineDef {
                 collector_length_m: 0.3,
                 collector_diameter_m: 0.065,
                 tail_length_m: 1.2,
-                tail_diameter_m: 0.060,
+                tail_diameter_m: 0.070,
                 // Sport muffler with bypass valves: less damping than a road car.
                 muffler_transmission: 1.0,
                 model: ExhaustModel::Waveguide,
                 muffler_volume_m3: 0.010,
                 muffler_packing: crate::lining::Packing::default(),
-                // the tips sit together in the centre of the rear diffuser
-                tail_spacing_m: 0.25,
+                // the tips sit together in the centre of the rear diffuser: one outlet
+                tail_spacing_m: 0.0,
                 after_collector: Vec::new(),
+                // Both banks run into one rear muffler and leave through three tips together
+                // (Okamoto et al., SAE 2011-01-2024, Fig. 19; Toyota EPC 17410/17430): a Y into
+                // an 85 mm pipe, a transverse titanium muffler whose valve opens above 3000 rpm
+                // (Lexus UK "Sounds Spectacular"; Torque.com.sg) so the gas goes straight from
+                // the centre chamber to the tips, else round the end chambers. Bank pipes 70 mm,
+                // centre pipe 85 mm, tips ≈ 105 mm outside (press summary the user found,
+                // 2026-10-28). Chamber and tube sizes: ESTIMATE from the Motor-Fan cutaway's
+                // proportions against the 85 mm inlet.
+                merge: Some(crate::exhaust::Merge {
+                    segments: vec![
+                        Segment::Pipe {
+                            length_m: 0.15,
+                            diameter_m: 0.085,
+                        },
+                        // centre chamber
+                        Segment::Muffler {
+                            length_m: 0.20,
+                            diameter_m: 0.22,
+                            tube_diameter_m: 0.0,
+                            packing_resistivity: 0.0,
+                            packing_porosity: 1.0,
+                        },
+                    ],
+                    // three tips of 60 mm bore inside the 105 mm trims: their area as one
+                    outlet_diameter_m: 0.060 * 3f64.sqrt(),
+                    bypass: Some(crate::exhaust::Bypass {
+                        closed: vec![
+                            Segment::Pipe {
+                                length_m: 0.30,
+                                diameter_m: 0.05,
+                            },
+                            Segment::Muffler {
+                                length_m: 0.12,
+                                diameter_m: 0.22,
+                                tube_diameter_m: 0.0,
+                                packing_resistivity: 0.0,
+                                packing_porosity: 1.0,
+                            },
+                            Segment::Pipe {
+                                length_m: 0.55,
+                                diameter_m: 0.05,
+                            },
+                            Segment::Muffler {
+                                length_m: 0.12,
+                                diameter_m: 0.22,
+                                tube_diameter_m: 0.0,
+                                packing_resistivity: 0.0,
+                                packing_porosity: 1.0,
+                            },
+                            Segment::Pipe {
+                                length_m: 0.30,
+                                diameter_m: 0.05,
+                            },
+                        ],
+                        open: vec![Segment::Pipe {
+                            length_m: 0.10,
+                            diameter_m: 0.085,
+                        }],
+                        tips: vec![Segment::Pipe {
+                            length_m: 0.25,
+                            diameter_m: 0.060 * 3f64.sqrt(),
+                        }],
+                        open_rpm: 3000.0,
+                        // a vacuum diaphragm actuator: ESTIMATE
+                        travel_s: 0.3,
+                    }),
+                }),
             },
             // Ten ITBs (Toyota). Runner length not published: Helmholtz-tuned to the torque peak
             // (Engelman: f = (a/2π)·√(A/(L·V)), V = V_d/2·(r + 1)/(r − 1), tuned at twice the
@@ -557,6 +625,7 @@ impl EngineDef {
                 // the tips sit together in the centre (458 Italia)
                 tail_spacing_m: 0.25,
                 after_collector: Vec::new(),
+                merge: None,
             },
             intake: IntakeDef::default(),
             redline_rpm: 9000.0,
@@ -635,6 +704,7 @@ impl EngineDef {
                 // two tips each side (C6 Corvette)
                 tail_spacing_m: 1.1,
                 after_collector: Vec::new(),
+                merge: None,
             },
             intake: IntakeDef::default(),
             redline_rpm: 6600.0,
@@ -2296,6 +2366,7 @@ impl Engine {
         }
         // Acoustic source: what the tail pipes radiate.
         // advance the exhaust; what each tail radiates is read below (`last_tails`)
+        let rpm = self.rpm();
         match (&mut self.net, &mut self.fv, &mut self.remote.0) {
             (_, Some(fv), _) => {
                 fv.set_outflow_mach(&self.tail_mach);
@@ -2313,7 +2384,7 @@ impl Engine {
                 if due {
                     self.friction_age = 0;
                 }
-                let mean = due.then_some((&self.cyl_mean_flow[..], &self.tail_mean_flow[..]));
+                let mean = due.then_some((&self.cyl_mean_flow[..], &self.tail_mean_flow[..], rpm));
                 net.prepare(&self.tail_mach, mean);
                 net.step(&self.flows);
             }
@@ -2332,6 +2403,7 @@ impl Engine {
                 if due {
                     r.stage.mean.extend_from_slice(&self.cyl_mean_flow);
                     r.stage.mean.extend_from_slice(&self.tail_mean_flow);
+                    r.stage.mean.push(rpm);
                     r.probe.set_mean_flow(&self.cyl_mean_flow);
                 }
                 r.taken += 1;
@@ -2350,11 +2422,12 @@ impl Engine {
                 ex.tail_spacing_m,
                 snd.listener_distance_m,
                 snd.listener_angle_deg,
-                PI * 0.25 * ex.outlet_diameter().powi(2),
+                PI * 0.25 * ex.radiating_diameter().powi(2),
                 dt,
                 snd.ground_heights(),
                 snd.street(),
-            );
+            )
+            .with_engine_ahead(self.def.vehicle.engine_ahead_m);
             self.listener = Some((dt, l));
         }
         let n_tails = match (&self.net, &self.fv, &self.remote.0) {
@@ -2465,7 +2538,7 @@ impl Engine {
                 None => 0.0,
             }
         };
-        // what does not wait for the tails: the intake mouth and the block. The mouth is a
+        // the engine's own sources, heard from where it sits: the intake mouth and the block. The mouth is a
         // runner's trumpet with individual throttles, else the throttle bore (the air box's
         // own inlet is not in the definition: an estimate).
         let mouth_d = if self.def.intake.individual_throttles {
@@ -2475,7 +2548,10 @@ impl Engine {
         };
         let mouth_area = PI * 0.25 * mouth_d * mouth_d;
         let rest = match &mut self.listener {
-            Some((_, l)) => l.radiate_mouth(intake_flow, mouth_area) + l.spread_from_1m(block),
+            Some((_, l)) => {
+                let at_engine = l.radiate_mouth(intake_flow, mouth_area) + l.spread_from_1m(block);
+                l.from_engine(at_engine)
+            }
             None => 0.0,
         };
         let audio = if let Some(r) = self.remote.0.as_mut() {
@@ -2555,7 +2631,7 @@ impl Engine {
             && let Some((_, l)) = &self.listener
         {
             let rho = crate::exhaust::tail_reference_density();
-            let d = self.def.exhaust.outlet_diameter();
+            let d = self.def.exhaust.radiating_diameter();
             for ((jet, u), r) in self.jets.iter_mut().zip(&self.tail_u).zip(l.distances()) {
                 jets += jet.step(*u, d, rho, *r, dt);
             }
@@ -4812,12 +4888,11 @@ mod tests {
 
     #[test]
     fn the_engine_is_heard_through_the_listener() {
-        // One tail: where you stand changes nothing (only the common path, which is dropped).
-        // (to rounding: √(sin² + cos²)·r is r in the last bit)
-        let (a, b) = (
-            heard_at(EngineDef::inline4(), 0.0),
-            heard_at(EngineDef::inline4(), 60.0),
-        );
+        // One tail and the engine at it: where you stand changes nothing (only the common
+        // path, which is dropped). (to rounding: √(sin² + cos²)·r is r in the last bit)
+        let mut at_tail = EngineDef::inline4();
+        at_tail.vehicle.engine_ahead_m = 0.0;
+        let (a, b) = (heard_at(at_tail.clone(), 0.0), heard_at(at_tail, 60.0));
         for (x, y) in a.iter().zip(&b) {
             assert_relative_eq!(x, y, max_relative = 1e-12, epsilon = 1e-15);
         }
@@ -4958,7 +5033,8 @@ mod tests {
             d.exhaust.tail_spacing_m,
             d.sound.listener_distance_m,
             90.0,
-            PI * 0.25 * d.exhaust.tail_diameter_m.powi(2),
+            // the LFA's banks leave through their merged outlet
+            PI * 0.25 * d.exhaust.merge.as_ref().unwrap().outlet_diameter_m.powi(2),
             DT,
             d.sound.ground_heights(),
         );
@@ -6554,6 +6630,8 @@ mod tests {
             let mut d = EngineDef::inline4();
             d.sound.block = block;
             d.sound.listener_distance_m = distance;
+            // heard from the tails' place, as the hand figures below assume
+            d.vehicle.engine_ahead_m = 0.0;
             let mut e = Engine::new(d, 5000.0, 1);
             let c = Controls {
                 throttle: 1.0,

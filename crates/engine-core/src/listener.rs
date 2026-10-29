@@ -112,7 +112,6 @@ pub struct Listener {
     /// For a signal radiated from all the tails alike (at their mean gain, no delay).
     shared_last: f64,
     flow_last: f64,
-    mean_distance: f64,
     dt: f64,
     /// The tails' radiation above ka ≈ 2: a one-pole low-pass on dQ/dt at ω_c = 2c/a, and its
     /// state.
@@ -122,6 +121,14 @@ pub struct Listener {
     mouth_area: f64,
     mouth_k: f64,
     mouth_radiated: f64,
+    /// Where the ear is: (across, along the car from the tails, height above the tails) and the
+    /// nearest tail's distance, m.
+    ear: (f64, f64, f64, f64),
+    /// The engine's sources (intake mouth, block): their distance to the listener, m, and the
+    /// delay line that holds them back by their path beyond the nearest tail's.
+    engine_distance: f64,
+    engine_line: Vec<f64>,
+    engine_pos: usize,
 }
 
 impl Listener {
@@ -245,14 +252,40 @@ impl Listener {
             pos: 0,
             shared_last: 0.0,
             flow_last: 0.0,
-            mean_distance,
             dt,
             radiation_k,
             radiated: 0.0,
             mouth_area: 0.0,
             mouth_k: 1.0,
             mouth_radiated: 0.0,
+            engine_distance: mean_distance,
+            engine_line: vec![0.0],
+            engine_pos: 0,
+            ear: (lx, ly, rise, r_min),
         }
+    }
+
+    /// The engine (intake mouth, block) `ahead_m` forward of the tails along the car's axis:
+    /// heard from there, farther ([`Listener::radiate_flow`], [`Listener::spread_from_1m`]) and
+    /// later ([`Listener::from_engine`]). 0 keeps them at the tails.
+    pub fn with_engine_ahead(mut self, ahead_m: f64) -> Self {
+        if ahead_m == 0.0 {
+            return self;
+        }
+        let (lx, ly, rise, r_min) = self.ear;
+        let r = (lx * lx + (ly - ahead_m).powi(2) + rise * rise).sqrt();
+        let steps = ((r - r_min) / C_AMBIENT / self.dt).round().max(0.0) as usize;
+        self.engine_distance = r;
+        self.engine_line = vec![0.0; steps + 1];
+        self
+    }
+
+    /// The engine's sources' pressure, as computed at their distance, delayed by their path.
+    pub fn from_engine(&mut self, p: f64) -> f64 {
+        let n = self.engine_line.len();
+        self.engine_line[self.engine_pos] = p;
+        self.engine_pos = (self.engine_pos + 1) % n;
+        self.engine_line[self.engine_pos]
     }
 
     /// Distance from each tail pipe to the listener, m.
@@ -273,10 +306,11 @@ impl Listener {
         p
     }
 
-    /// A volume flow `q` (m³/s, out of the source) from a point at the tails' mean distance:
+    /// A volume flow `q` (m³/s, out of the source) from the engine (at the tails' mean distance
+    /// unless [`Listener::with_engine_ahead`] moved it):
     /// the monopole's p = ρ₀/(4πr)·dQ/dt (Kinsler §7.2), Pa.
     pub fn radiate_flow(&mut self, q: f64) -> f64 {
-        let p = RHO_AMBIENT / (4.0 * std::f64::consts::PI * self.mean_distance)
+        let p = RHO_AMBIENT / (4.0 * std::f64::consts::PI * self.engine_distance)
             * (q - self.flow_last)
             / self.dt;
         self.flow_last = q;
@@ -297,10 +331,10 @@ impl Listener {
         self.mouth_radiated
     }
 
-    /// A sound pressure measured 1 m from a compact source (the block) heard at the tails'
-    /// mean distance: spherical spreading, p ∝ 1/r (Kinsler §7.2), Pa.
+    /// A sound pressure measured 1 m from a compact source (the block) heard from the engine's
+    /// place: spherical spreading, p ∝ 1/r (Kinsler §7.2), Pa.
     pub fn spread_from_1m(&self, p_1m: f64) -> f64 {
-        p_1m / self.mean_distance
+        p_1m / self.engine_distance
     }
 
     /// One step: the tails' outlet signals in, the sound pressure at the listener (Pa) out.
@@ -336,6 +370,26 @@ impl Listener {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_engine_is_heard_from_ahead_of_the_tails_farther_and_later() {
+        // ear 3 m straight behind one tail (no ground), engine 4 m ahead: 7 m away, so a source
+        // of 1 Pa at 1 m gives 1/7 Pa, after the 4 m extra path: 4/343 s = 0.011662 s = 1119.5
+        // → 1120 steps at 96 kHz
+        let dt = 1.0 / 96_000.0;
+        let mut l =
+            Listener::with_street(1, 0.0, 3.0, 0.0, 1e-3, dt, None, None).with_engine_ahead(4.0);
+        assert!((l.spread_from_1m(1.0) - 1.0 / 7.0).abs() < 1e-12);
+        let first = (0..2000)
+            .map(|k| l.from_engine(if k == 0 { 1.0 } else { 0.0 }))
+            .position(|p| p != 0.0);
+        assert_eq!(first, Some(1120));
+        // at the tails (0 m), as before: the tails' distance, no delay
+        let mut at =
+            Listener::with_street(1, 0.0, 3.0, 0.0, 1e-3, dt, None, None).with_engine_ahead(0.0);
+        assert!((at.spread_from_1m(1.0) - 1.0 / 3.0).abs() < 1e-12);
+        assert_eq!(at.from_engine(1.0), 1.0);
+    }
 
     #[test]
     fn a_flow_source_radiates_as_a_monopole() {
