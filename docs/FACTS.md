@@ -275,3 +275,10 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   TL of 15–22 dB from 100 to 1000 Hz (JP 2008-169751 A Fig. 6); the 1D cylinder model has a zero near c/2L.
 - Yamaha YZF-R1 (2009) service manual, "throttle body synchronization": vacuum difference between ITBs ≤ 1.33 kPa
   (10 mmHg) at warm idle 1150–1250 rpm (#2 set 1.6 kPa higher) — papers/engine-data/yamaha-r1/.
+- **Bypass muffler, valve open, against the patent (2026-10-29)**: linear IR of the LFA net (one cylinder, valve
+  open) re no bypass, third octaves 400/500/630/800/1000 Hz: full −22/−34/−49/−30/−35 dB; chamber path blocked
+  −14/−16/−17/−18/−20 (≈ the patent's spherical final chamber, Fig. 6: 15–22 dB flat). But the patent's outlet
+  orders at ≈ 4800 rpm (Fig. 8: H2 +4, H4 +8, H5 +1 re H1, from a nearly flat source, Fig. 7A) do not pick
+  either: full +5.3/+2.3/−12.7, blocked +8.1/−6.2/−1.1 (both 8.6 dB RMS). Blocking it by ear was not adopted.
+  The LFA's H3 at 6700 (−19…−24 dB vs the dyno clip) is not from the tips' length difference (two equal tips
+  keep the 1.6 kHz dip).
