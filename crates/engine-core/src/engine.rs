@@ -3659,7 +3659,8 @@ mod tests {
                     out.push(e.step(DT, &c));
                     let f = e.flows[0];
                     m.push(f);
-                    q.push(exhaust_source_flow(f, crate::gas::CP * e.cyl[0].port_t));
+                    // `flows` already is the volume source (exhaust_source_flow in step)
+                    q.push(f);
                     pevo = pevo.max(e.cylinder(0).pressure_pa);
                 }
                 (ac(&m), ac(&q), ac(&out), pevo, out, q, m)
