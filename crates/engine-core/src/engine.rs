@@ -590,6 +590,9 @@ impl EngineDef {
                                 },
                             ],
                         ],
+                        // the small holes into the side chambers: ESTIMATE, a typical
+                        // perforated baffle's open area
+                        baffle_open_area: 0.1,
                         open_rpm: 3000.0,
                         // a vacuum diaphragm actuator: ESTIMATE
                         travel_s: 0.3,

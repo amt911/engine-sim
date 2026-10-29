@@ -126,6 +126,9 @@ pub struct Bypass {
     /// Mabuchi, JP 2008-169751 A: the LFA's three tips, the lower one at least twice as long).
     /// Empty: `tips` ends in the merge's outlet.
     pub outlets: Vec<Vec<Segment>>,
+    /// Open-area ratio of the perforated baffle the chamber path starts through (the gas
+    /// passes small holes into the side chambers, JP 2008-169751 A); 1 for none.
+    pub baffle_open_area: f64,
     /// Engine speed the valve opens above, rpm.
     pub open_rpm: f64,
     /// Valve travel, closed to open, s.
@@ -139,6 +142,7 @@ impl Default for Bypass {
             open: Vec::new(),
             tips: Vec::new(),
             outlets: Vec::new(),
+            baffle_open_area: 1.0,
             open_rpm: 3000.0,
             travel_s: 0.3,
         }
@@ -193,14 +197,17 @@ impl Valved {
         let rho = tail_reference_density();
         let z = rho * C_TAIL;
         let shut = self.x <= 0.0;
+        let baffle = baffle_loss(self.baffle, rho);
         let (open_near, open_far) = (self.open.at_near(), self.open.at_far());
         // split: the shared duct, the closed path and (unless shut) the valve into the open path
         let mut split = [0.0; 3];
         let (to_open, to_tips_from_open);
         if shut {
-            junction(
+            crate::waveguide::lossy_junction(
                 &[duct_area, self.closed.end_areas().0],
                 &[arriving, self.closed.at_near()],
+                &[(0.0, 0.0), (baffle, baffle)],
+                z,
                 &mut split[..2],
             );
             to_open = open_near; // the shut valve reflects as a wall
@@ -213,7 +220,7 @@ impl Valved {
                     self.open.end_areas().0,
                 ],
                 &[arriving, self.closed.at_near(), open_near],
-                &[(0.0, 0.0), (0.0, 0.0), (loss, loss)],
+                &[(0.0, 0.0), (baffle, baffle), (loss, loss)],
                 z,
                 &mut split,
             );
@@ -265,6 +272,17 @@ fn valve_loss(x: f64, rho: f64) -> f64 {
         return f64::INFINITY;
     }
     0.5 * rho * (1.0 / (VALVE_CONTRACTION * x.min(1.0)) - 1.0).powi(2)
+}
+
+/// Pressure-loss factor s of a perforated baffle of `open_area` (its holes' share of the pipe),
+/// in gas of density `rho`: each hole an orifice, ½ρ(1/(C_c·σ) − 1)² (Idelchik, *Handbook of
+/// Hydraulic Resistance*, §8, thin perforated plates; the same jet as [`valve_loss`]). None
+/// (σ ≥ 1): no loss.
+fn baffle_loss(open_area: f64, rho: f64) -> f64 {
+    if open_area >= 1.0 {
+        return 0.0;
+    }
+    valve_loss(open_area, rho)
 }
 
 impl Default for Merge {
@@ -872,6 +890,8 @@ struct Valved {
     /// arriving, leaving: the tips' far end first).
     outlets: Vec<(Duct, OpenEnd)>,
     scratch: [Vec<f64>; 3],
+    /// [`Bypass::baffle_open_area`].
+    baffle: f64,
     open_rpm: f64,
     travel_s: f64,
     /// Opening fraction, 0 shut … 1 open.
@@ -1093,6 +1113,7 @@ impl ExhaustNet {
                             .map(|o| (duct(o, 1.0), OpenEnd::new(exit_diameter(o), dt)))
                             .collect(),
                         scratch: std::array::from_fn(|_| vec![0.0; b.outlets.len() + 1]),
+                        baffle: b.baffle_open_area,
                         open_rpm: b.open_rpm,
                         travel_s: b.travel_s,
                         x: 0.0,
@@ -1538,6 +1559,7 @@ mod tests {
             open: vec![pipe(0.1, 0.07)],
             tips: vec![pipe(0.1, 0.07)],
             outlets: Vec::new(),
+            baffle_open_area: 1.0,
             open_rpm: 3000.0,
             travel_s: 0.3,
         });
@@ -1612,6 +1634,57 @@ mod tests {
         // one outlet alone has no such zero there
         let one = level(&[0.2], at as f64) / level(&[0.2], 400.0);
         assert!(20.0 * one.log10() > -10.0, "{}", 20.0 * one.log10());
+    }
+
+    #[test]
+    fn a_baffle_loses_its_orifices_head_and_none_without_one() {
+        // a plate with 10 % open area: ½ρ(1/(0.61·0.1) − 1)² = ½ρ·15.393² = 236.95·½ρ (ρ = 2);
+        // a whole-area "baffle" is no baffle
+        assert!((baffle_loss(0.1, 2.0) - 236.95).abs() < 0.01);
+        assert_eq!(baffle_loss(1.0, 2.0), 0.0);
+    }
+
+    #[test]
+    fn a_perforated_baffle_damps_the_chamber_path_so_it_cancels_less() {
+        // Valve open, the chamber path (1.0 m) and the short one (0.1 m) meet again: a
+        // Herschel–Quincke tube, cancelling near where they are half a wave apart,
+        // c/(2·0.9 m) ≈ 278 Hz. A 5 %-open baffle on the chamber path drops its wave by the
+        // orifice's u|u| loss (Ingard & Ising 1967: a perforate's resistance at high amplitude),
+        // so the two no longer cancel as deeply.
+        let dt = 1.0 / 96_000.0;
+        let dip = |open_area: f64| {
+            let mut d = valved_banks();
+            d.merge
+                .as_mut()
+                .unwrap()
+                .bypass
+                .as_mut()
+                .unwrap()
+                .baffle_open_area = open_area;
+            let level = |f: f64| {
+                let mut net = ExhaustNet::new(&d, 2, dt);
+                net.set_engine_speed(5000.0);
+                for _ in 0..(0.4 / dt) as usize {
+                    net.step(&[0.0, 0.0]);
+                }
+                let mut peak: f64 = 0.0;
+                for k in 0..(0.3 / dt) as usize {
+                    let q = 0.02 * (2.0 * std::f64::consts::PI * f * k as f64 * dt).sin();
+                    let out = net.step(&[q, 0.0]);
+                    if k as f64 * dt > 0.2 {
+                        peak = peak.max(out.abs());
+                    }
+                }
+                peak
+            };
+            let deepest = (200..=360)
+                .step_by(20)
+                .map(|f| level(f as f64))
+                .fold(f64::INFINITY, f64::min);
+            20.0 * (deepest / level(150.0)).log10()
+        };
+        let (bare, baffled) = (dip(1.0), dip(0.05));
+        assert!(baffled > bare + 6.0, "bare {bare} dB, baffled {baffled} dB");
     }
 
     #[test]
