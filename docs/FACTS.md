@@ -231,3 +231,14 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   4 dB); the fit must be kept passive (an overshoot of +1.6 dB at 62 Hz stalled the single) and its target clamped at
   −50 dB. ~18 ms per frequency in release, 33 frequencies per packed silencer when the net is built. LFA held 6700 vs
   the dyno clip: 13.3 → 13.4 dB (only its lower tip is packed).
+- **"Sounds far" (2026-10-29, branch fix/sounds-far)**: at 91312d5 the held-6700 yardstick (`agent2/py/ruler.py`)
+  is 12.9 dB; listener variants (one change each): ground off 13.8, dyno-camera spot (2.5 m, 0°, ear 0.5 m) 17.2,
+  1 m on axis free field 15.4; no muffler chambers 14.4; textures off 19.8; `model: fv` 18.3; no catalyst 10.9
+  (the catalyst takes 7 / 12 dB at 4 / 8 kHz). With steepening merged: 7.6 (default listener), 8.5 (dyno spot).
+  The 2–8 kHz deficit is the exhaust's own (textures off: −25 / −43 / −55 re total), not the listener's.
+  *(verified: ran the renders, scratchpad `far/cmp*.txt`)*
+- The dyno clip `dyno-gears.wav` is YouTube WS5vCsgCFB0 ("Lexus LFA Runs Through Gears On A Dyno", 9.5 s, Opus
+  48 kHz stereo): a vertical phone on the dyno deck straight behind the tips, ≈ 2.5 m back and ≈ 0.5 m high, in a
+  concrete-block room; the screen shows 7919 rpm / 276 km/h. *(verified: ffmpeg frame at 8 s, 2026-10-29)*
+- `--render gears` of the LFA takes ≈ 8 min on 6 cores (both binaries, one render each in parallel), `held:…:3`
+  ≈ 30 s. *(verified: ran them, 2026-10-29)*

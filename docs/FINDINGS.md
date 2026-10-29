@@ -804,3 +804,91 @@ like a spectrum and periodicity survives — nothing flags it.
 
 **Fix.** Read the subformat's first two bytes when the tag is 0xFFFE (job script `wavio.py`), and
 check a reader's min/max/RMS on a known render (|x| ≤ 1) before trusting any number from it.
+
+## Steepening with the LFA's muffler: WOT right, lift-off still too loud (2026-10-29, branch feat/wave-steepening)
+
+Steepening (both directions, 0.2 m segments) on top of the as-built LFA exhaust (bypass muffler,
+engine sources ahead), `--render drive`, levels within one file (offline renders are normalized
+per file, so only in-file ratios compare): WOT 6.5–7.4 s, 2–8 kHz re total −8.9 dB (linear
+−24.6; real LFA blips −6…−8.5). Lift-off 7.6–8.5 s re WOT: −3.5 dB (linear −15.5; real LFA
+−8…−19). The muffler did not cure the overrun shock: at 7000+ rpm its bypass valve is open (rpm
+rule), so the shock takes the short way. Whether the real valve also closes on overrun (a vacuum
+actuator usually answers to load too) is not published — asked the user (PAPERS.md).
+
+Lead (coast_chain, LFA 6300 rpm held, overrun vs WOT, sound layers off = valve source → tail only):
+the valve's volume-flow source falls 14.8 dB but the radiated tail only 3.7 dB even with LINEAR
+pipes (orders 9–11 of the tail rise +2…+12 dB while the source's fall). With the layers on, WOT is
+carried by the intake and flow noise, which hides it (−14.3 dB). So the exhaust's own overrun
+excess is not steepening's: the pipes ring more when the mean flow stops (the open end's jet
+reflection (1−M)/(1+M) and the friction α = f·M/D both vanish at M → 0) and the valve flow reverses
+~4×/cycle with sharp edges. Steepening then lifts those edges' harmonics. Next: check the reverse
+flow's sharpness at the valve (Benson boundary on inflow) and the pipes' damping at zero mean flow
+(heat transfer, Kirchhoff walls on the linear pipes too) before touching steepening.
+
+## "Sounds far": the linear waveguide's pulses had no shock front, so 2–8 kHz was 15–24 dB short (2026-10-29)
+
+**Symptom.** The LFA's gear pull (`--render gears`) "suena muy lejos" (user). Held 6700 rpm WOT
+against the chassis-dyno clip (`ruler.py`, octave deltas model − real in dB re total, 63 Hz…8 kHz):
++8.9 +8.0 +2.9 +3.7 −1.8 −14.4 −23.4 −21.6, score 12.9 dB (at 91312d5, this branch's base — not the
+8.9 quoted from another branch); spectral tilt 250 Hz–8 kHz −2.2 dB/oct against the real clip's
++2.1; 2–8 kHz crest factor 18.8 dB (sparse clicks at the firing rate) against 11.5.
+**Not the cause (measured one variable at a time on the same held render).** Listener geometry:
+ground off 13.8 dB; on the dyno camera's spot (2.5 m, on axis, 0.5 m high, ground) 17.2; 1 m on
+axis in free field 15.4 — none moved 2–8 kHz by more than 1.5 dB. Muffler chambers removed: 4 k /
+8 k +5 / +10 dB, still −19. Catalyst removed: +7 / +12 dB (its viscothermal loss, Dokumaci), still
+−16. The FV exhaust (`model: fv`, 4 cm cells = 7.5 per wavelength at 2 kHz) is worse: 4 k −33, 8 k
+−36 (numerical dissipation of the shock it does form). Exhaust pulses alone (every `sound.*`
+texture at 0): 2–8 kHz at −25 / −43 / −55 re total — the exhaust delivered nothing above 2 kHz;
+what little there was came from the block and the valve jets.
+**Cause.** The waveguide was linear. A 0.3–0.5 bar blowdown pulse in a 900 K primary shocks within
+0.2–0.8 m (x_s = ρc³/(βωP), Hamilton & Blackstock, *Nonlinear Acoustics*, ch. 4), and a shock
+front's harmonics fall at −6 dB/oct where a smooth pulse's fall at −12 or faster: the real H3…H8
+sit at −7.6…−22 dB re H1, the model's at −19…−49. A dull, bass-heavy spectrum is heard as
+distance (Zahorik, Brungart & Bronkhorst, *Acta Acustica united with Acustica* 91, 2005: spectral
+tilt and high-frequency loss are distance cues; reverberation is the other, and there is none here).
+**Fix.** Merged branch `feat/wave-steepening` (simple-wave delay of Msallam et al. 2000, Burgers'
+entropy solution for the shocks, Kirchhoff walls; spec
+`docs/superpowers/specs/2026-10-26-wave-steepening.md`). Held 6700 after: deltas +5.4 +5.1 +2.6 +0.6
+−5.7 +1.6 −4.5 −5.2, score 7.6 dB (bands 13.2 → 4.2); tilt +1.9 dB/oct; 2–8 kHz crest 10.7 dB.
+Gear pull at 20–22 s: 2 / 4 / 8 kHz re total −14 / −20 / −33 → −5 / −9 / −14, tilt −0.9 → +4.1
+dB/oct. The packed silencers' perforated tubes stay linear (their loss is the packing's, by the 2D
+model), the smooth pipes steepen.
+**Why it isn't obvious.** "Finite-amplitude waves" was already on main (1089284: waves
+*superpose* as finite-amplitude waves) and read as "steepening done"; it is not. And an offline
+render is normalized per file, so the missing highs only show as band ratios, never as a level.
+**What it cost.** Three of the branch's tests had never been green (round trip 441 ≠ 447, the LFA
+refusing to detach, textures < 1.3× over a shocked exhaust) and two newer tests sent loud pulses
+(0.2 kg/s, which steepen and arrive early). Arrivals are now timed at the half-rise of the first
+lobe of a faint pulse (hand values 448 / 1038 / 68 steps met within a step); the detach test runs
+the LFA linear and asserts that a steepening net is never handed to the exhaust thread (by design:
+its waves arrive when their own speed says, not a fixed block later) — so a steepening engine
+keeps its exhaust on the sim thread, see FACTS for the real-time cost.
+**Open.** H3 (1.7 kHz) −19 dB before and after: the notch of the tips' length difference
+(c/2ΔL ≈ 1.8 kHz) in the muffler's estimated geometry, not the listener. 63–125 Hz +5 dB: 4.7 dB
+of it is the rigid ground's image (physics; free field +4.2 / +3.8), the rest cycle orders 1–3;
+the clip is a phone on the dyno deck (video frame at 8 s: vertical, on axis, ~2.5 m behind, ~0.5 m
+high, block-walled room) whose low-end response is unknown, so this band cannot be settled from it.
+
+Found: 2026-10-29 · physics
+
+## The LFA's bank order dominates below ~3000 rpm at full load: the 10 cm asymmetry through lossless chambers (2026-10-29)
+
+**Symptom.** `sim::tests::firing_orders_dominate_and_output_is_not_saturated` (LFA held 3000 rpm
+WOT, Ultra) went red when steepening was merged: cycle order 5 at 0.199 against the firing order
+10 at 0.139. The real car at 4110 rpm has order 5 at −15 dB re the firing order (`exhaust.wav`
+2.0–5.5 s).
+**It predates steepening.** Held renders (Reference, `ruler.py … RPM`, order 5 re order 10):
+2800 rpm linear +11.2 / steepening +10.6; 3000 rpm +5.4 / +8.5; 3200 rpm +0.7 / −1.5; with equal
+bank lines (`collector_extra_length_m` all 0) at 3000: −30. The test passed on the base only at
+its own point (3000 rpm, Ultra) and by a margin steepening's +3 dB there removes; at 2800 rpm or at
+Reference it was already false.
+**Mechanism (measured, not fixed).** The bank order survives the banks' meeting only by the 10 cm
+difference of the lines (0f38888), and below 3000 rpm the muffler valve is closed, so the sum goes
+round the end chambers: empty, lossless 1D chambers of 0.12–0.2 m on 50 mm pipes of 0.3–0.55 m,
+Helmholtz-like at 70–120 Hz — exactly order 5 at 1700–2900 rpm — ringing with no packing, no
+wall loss and no flow loss. Above 3000 rpm the valve's straight path has none of that and order 5
+falls to where the real car keeps it (6700 rpm: −11 against −14.5 real). The test is left red on
+purpose rather than weakened: the physics to fix is the chambered path's damping (and whether 10
+cm is the right bank asymmetry), not the assertion.
+
+Found: 2026-10-29 · physics

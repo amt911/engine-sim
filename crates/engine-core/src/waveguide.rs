@@ -13,7 +13,45 @@ pub struct DelayLine {
     /// the ring wraps by comparison — a modulo per read was most of a lined muffler's cost).
     whole: usize,
     frac: f64,
+    /// Each value's own arrival time, when the line is non-linear ([`DelayLine::nonlinear`]).
+    arrivals: Option<Box<Arrivals>>,
 }
+
+/// The values of a non-linear line in flight: `t[j]` is when `buf[j]` arrives, in steps of the
+/// line's clock `now`; `head` the newest value already arrived. A value is a cluster of the
+/// samples that merged into it (see [`DelayLine::push`]): `mass` samples, `speed` the sum of
+/// their speeds (relative to c) and `sent` the sum of speed × send time.
+#[derive(Debug, Clone)]
+struct Arrivals {
+    t: Vec<f64>,
+    mass: Vec<f64>,
+    speed: Vec<f64>,
+    sent: Vec<f64>,
+    now: f64,
+    head: usize,
+    delay: f64,
+    k: f64,
+}
+
+/// Shortest gap kept between two arrivals, steps, where a value would arrive with or before one
+/// already arrived (it cannot merge with it any more).
+const SHOCK_GAP: f64 = 1e-6;
+
+/// Narrowest tent a value is read with, steps ([`DelayLine::arrived`]): a shock is captured
+/// over about two steps, as finite volumes capture one over about two cells. A real exhaust
+/// shock is microseconds thick, under one 5.2 µs step, so this width is the grid's, not the
+/// gas's. It must not depend on how closely the values crowd (they crowd most where they merge),
+/// or a shock gathering one sample more or less would make the sound jump and a pipe's echoes
+/// would never settle. Its cost: the line smooths a little, −0.23 dB at 10 kHz.
+const MIN_KERNEL: f64 = 2.0;
+/// Widest tent, steps: where an expansion spreads the values further apart than this, they are
+/// read with their spacing.
+const MAX_KERNEL: f64 = 4.0;
+/// No value arrives sooner than this many steps after it is sent: the read a step ahead
+/// (`read_next`) must not depend on values not yet sent, nor on clusters still merging.
+const MIN_LINE_STEPS: f64 = 2.0 + MERGE_FREEZE;
+/// A value arriving within this many steps of the next read no longer merges ([`DelayLine::push`]).
+const MERGE_FREEZE: f64 = 2.0;
 
 impl DelayLine {
     /// `delay` in steps, ≥ 1.
@@ -25,10 +63,106 @@ impl DelayLine {
             pos: 0,
             whole: whole as usize,
             frac: delay - whole,
+            arrivals: None,
         }
+    }
+    /// A line on which each value rides at its own speed, c·(1 + k·x): a simple wave's value
+    /// moves at c + (γ+1)/2·u (Riemann; Msallam et al., *Acta Acustica* 86, 2000, eqs. 1–2), so
+    /// with u = x/ρc, k = (γ+1)/(2ρc·c). Loud compressions arrive early and a pulse steepens.
+    /// The speed stays within ½c–2c (the delay within 2× either way); a line shorter than 4
+    /// steps stays linear (its next read must not depend on the value about to be pushed).
+    pub fn nonlinear(delay: f64, k: f64) -> Self {
+        let delay = delay.max(1.0);
+        if delay < 2.0 * MIN_LINE_STEPS {
+            return Self::new(delay);
+        }
+        let cap = (2.0 * delay).ceil() as usize + 4;
+        // as if the line had always carried silence: value j was sent at step j − cap
+        let sent: Vec<f64> = (0..cap).map(|j| j as f64 - cap as f64).collect();
+        let t: Vec<f64> = sent.iter().map(|n| n + delay).collect();
+        let head = t.iter().rposition(|&x| x <= 0.0).unwrap_or(0);
+        Self {
+            buf: vec![0.0; cap],
+            pos: 0,
+            whole: delay.floor() as usize,
+            frac: delay - delay.floor(),
+            arrivals: Some(Box::new(Arrivals {
+                t,
+                mass: vec![1.0; cap],
+                speed: vec![1.0; cap],
+                sent,
+                now: 0.0,
+                head,
+                delay,
+                k,
+            })),
+        }
+    }
+    /// The delay when faint, steps.
+    fn delay(&self) -> f64 {
+        self.whole as f64 + self.frac
+    }
+    /// What a non-linear line holds at its clock time `time`: the mass-weighted average of the
+    /// values arriving near it, each weighted by a tent as wide as its spacing to its neighbours
+    /// (one step at least, [`MAX_KERNEL`] at most; a Nadaraya–Watson estimate). With evenly
+    /// spaced samples that is linear interpolation; and two samples about to merge into a
+    /// cluster (arriving together) weigh exactly as the cluster will, so a shock gathering one
+    /// sample more or less does not make the sound jump.
+    fn arrived(&self, a: &Arrivals, time: f64) -> f64 {
+        let n = self.buf.len();
+        let next = |j: usize| if j + 1 == n { 0 } else { j + 1 };
+        let prev = |j: usize| if j == 0 { n - 1 } else { j - 1 };
+        let mut j = a.head;
+        while next(j) != self.pos && a.t[next(j)] <= time {
+            j = next(j);
+        }
+        // from a few values ahead to a few behind
+        let mut first = j;
+        loop {
+            let p = prev(first);
+            if p == self.pos || a.t[p] <= time - MAX_KERNEL {
+                break;
+            }
+            first = p;
+        }
+        let (mut sum, mut weight) = (0.0, 0.0);
+        // slide over the values with their neighbours' times: a value's tent is half the gap
+        // between its two neighbours wide (MIN_KERNEL..MAX_KERNEL)
+        let (mut i, mut t_before) = (first, a.t[prev(first)]);
+        let mut ti = a.t[i];
+        loop {
+            if ti > time + MAX_KERNEL {
+                break;
+            }
+            let last = next(i) == self.pos;
+            let t_after = if last { ti + 1.0 } else { a.t[next(i)] };
+            let h = (0.5 * (t_after - t_before)).clamp(MIN_KERNEL, MAX_KERNEL);
+            let d = (time - ti).abs();
+            if d < h {
+                let w = a.mass[i] * (1.0 - d / h);
+                sum += w * self.buf[i];
+                weight += w;
+            }
+            if last {
+                break;
+            }
+            t_before = ti;
+            i = next(i);
+            ti = t_after;
+        }
+        if weight > 0.0 {
+            return sum / weight;
+        }
+        // a gap wider than the kernels (a strong expansion): between its two sides
+        let k = next(j);
+        let w = (time - a.t[j]) / (a.t[k] - a.t[j]);
+        self.buf[j] + (self.buf[k] - self.buf[j]) * w
     }
     /// The value pushed `delay` steps ago (interpolated). Call before `push` each step.
     pub fn read(&self) -> f64 {
+        if let Some(a) = &self.arrivals {
+            return self.arrived(a, a.now);
+        }
         let n = self.buf.len();
         // index of the value pushed k steps ago (k ≤ whole + 1 < n)
         let back = |k: usize| {
@@ -44,11 +178,14 @@ impl DelayLine {
         self.read_ahead(1)
     }
     /// What [`DelayLine::read`] will return after `ahead` more pushes, before them: known
-    /// while those pushes are not among the values it interpolates, `ahead < whole delay`
-    /// (`None` otherwise). The same arithmetic as `read`, so the same bits.
+    /// while those pushes cannot arrive by then, `ahead <` [`DelayLine::whole_steps`] (`None`
+    /// otherwise). The same arithmetic as `read`, so the same bits.
     pub fn read_ahead(&self, ahead: usize) -> Option<f64> {
-        if ahead >= self.whole {
+        if ahead >= self.whole_steps() {
             return None;
+        }
+        if let Some(a) = &self.arrivals {
+            return Some(self.arrived(a, a.now + ahead as f64));
         }
         let n = self.buf.len();
         let back = |k: usize| {
@@ -59,15 +196,67 @@ impl DelayLine {
             back(self.whole - ahead) * (1.0 - self.frac) + back(self.whole + 1 - ahead) * self.frac,
         )
     }
-    /// Whole steps of the delay (the fraction is interpolated past them).
-    pub fn whole_steps(&self) -> usize {
-        self.whole
+    /// Whether its values travel at their own speed ([`DelayLine::nonlinear`]).
+    pub fn is_nonlinear(&self) -> bool {
+        self.arrivals.is_some()
     }
+    /// Whole steps a value pushed now takes at least to arrive: the delay's, or on a non-linear
+    /// line half of it (its loudest values travel at most twice as fast).
+    pub fn whole_steps(&self) -> usize {
+        if self.arrivals.is_some() {
+            self.whole / 2
+        } else {
+            self.whole
+        }
+    }
+    /// Send `x` into the line. On a non-linear line, a value that would overtake the one ahead
+    /// of it before the far end (characteristics crossing: a shock) merges with it, as sticky
+    /// particles do: the cluster keeps the samples' sum and moves as their centre of mass, at the
+    /// mean of their speeds — the Rankine–Hugoniot speed of the simple wave's shock, which
+    /// gives the entropy solution of Burgers' equation (E, Rykov & Sinai, *Commun. Math. Phys.*
+    /// 177, 1996; Brenier & Grenier, *SIAM J. Numer. Anal.* 35, 1998). The crest a shock
+    /// overruns is dissipated, as in a real one; the wave's content ∫p dt is kept.
     pub fn push(&mut self, x: f64) {
-        self.buf[self.pos] = x;
-        self.pos += 1;
-        if self.pos == self.buf.len() {
-            self.pos = 0;
+        let n = self.buf.len();
+        let Some(a) = &mut self.arrivals else {
+            self.buf[self.pos] = x;
+            self.pos += 1;
+            if self.pos == n {
+                self.pos = 0;
+            }
+            return;
+        };
+        let prev = |j: usize| if j == 0 { n - 1 } else { j - 1 };
+        let next = |j: usize| if j + 1 == n { 0 } else { j + 1 };
+        let s = (1.0 + a.k * x).clamp(0.5, 2.0);
+        let (mut v, mut mass, mut speed, mut sent) = (x, 1.0, s, s * a.now);
+        let arrival = |mass: f64, speed: f64, sent: f64| (sent + a.delay * mass) / speed;
+        let mut t = arrival(mass, speed, sent);
+        // merge with the values ahead it would overtake, while they are still in flight (one
+        // arriving by the next step is already read: `read_next`)
+        loop {
+            let j = prev(self.pos);
+            if j == a.head || a.t[j] <= a.now + 1.0 + MERGE_FREEZE || a.t[j] < t {
+                break;
+            }
+            v = (v * mass + self.buf[j] * a.mass[j]) / (mass + a.mass[j]);
+            mass += a.mass[j];
+            speed += a.speed[j];
+            sent += a.sent[j];
+            t = arrival(mass, speed, sent);
+            self.pos = j;
+        }
+        let j = prev(self.pos);
+        t = t.max(a.t[j] + SHOCK_GAP);
+        self.buf[self.pos] = v;
+        a.t[self.pos] = t;
+        a.mass[self.pos] = mass;
+        a.speed[self.pos] = speed;
+        a.sent[self.pos] = sent;
+        self.pos = next(self.pos);
+        a.now += 1.0;
+        while next(a.head) != self.pos && a.t[next(a.head)] <= a.now {
+            a.head = next(a.head);
         }
     }
 }
@@ -84,8 +273,129 @@ pub struct Pipe {
     length_m: f64,
     diameter_m: f64,
     sound_speed: f64,
+    dt: f64,
+    /// The walls' loss above 200 Hz on each line ([`Pipe::viscothermal`]).
+    walls: Option<Box<[WallLoss; 2]>>,
+    /// Further segments after `fwd` and `bwd` ([`Pipe::steepening`]), each direction's in order.
+    chain: Option<Box<[Vec<Stage>; 2]>>,
     /// A silencer's transmission on each direction's waves as they enter (forward, backward).
     filter: Option<Box<[crate::silencer2d::Cascade; 2]>>,
+}
+
+/// A segment of a [`Pipe::steepening`] pipe: its share of the walls' loss, then its line.
+#[derive(Debug, Clone)]
+struct Stage {
+    wall: Option<WallLoss>,
+    line: DelayLine,
+}
+
+/// Longest segment of a steepening pipe, m. A full-load blowdown pulse forms a shock within about
+/// x̄ = c²/(βωu) (60 kPa rising in 1 ms in 900 K gas: 600²/(1.2·6283·254) = 0.19 m; Hamilton &
+/// Blackstock, *Nonlinear Acoustics*, ch. 4), so the walls act on a front every one or two
+/// formation distances. Measured on the LFA's exhaust driven periodically (2026-10-26): cycle to
+/// cycle it settles within 3.9 % unsegmented, 0.34 % at 0.2 m, under 1 % at 0.4 m, at half the
+/// cost of 0.2 m.
+const STEEPENING_SEGMENT_M: f64 = 0.2;
+
+/// Kirchhoff's wall loss, Np/m, of a plane wave at `f` Hz in a pipe of `radius_m` holding gas at
+/// an atmosphere whose speed of sound is `c`: α = √(πfν)·(1 + (γ−1)/√Pr)/(a·c) (Kinsler, Frey,
+/// Coppens & Sanders, *Fundamentals of Acoustics*, 4th ed., §9.9), ν from Sutherland's
+/// viscosity ([`crate::exhaust::gas_viscosity`]).
+pub(crate) fn kirchhoff_alpha(f: f64, radius_m: f64, c: f64) -> f64 {
+    let gamma = crate::gas::GAMMA;
+    let t = c * c / (gamma * crate::gas::R_AIR);
+    let rho = crate::units::ATM_PA / (crate::gas::R_AIR * t);
+    let nu = crate::exhaust::gas_viscosity(t) / rho;
+    let thermal = 1.0 + (gamma - 1.0) / crate::narrow_tube::PRANDTL.sqrt();
+    (std::f64::consts::PI * f * nu).sqrt() * thermal / (radius_m * c)
+}
+
+/// The frequency the pipes' flat loss ([`crate::exhaust::LOSS_PER_M`]) stands for, Hz.
+const WALL_REF_HZ: f64 = 200.0;
+/// Corner frequencies of the wall filter's shelves, Hz.
+const WALL_POLES_HZ: [f64; 4] = [250.0, 1000.0, 4000.0, 16_000.0];
+
+/// A pipe's wall loss above [`WALL_REF_HZ`] as four first-order shelves (bilinear), each
+/// (b0, b1, a1, state), their depths fitted to Kirchhoff's √f law once, when the pipe is built.
+#[derive(Debug, Clone)]
+struct WallLoss([(f64, f64, f64, f64); 4]);
+
+impl WallLoss {
+    fn new(length_m: f64, diameter_m: f64, c: f64, dt: f64) -> Option<Self> {
+        let radius = 0.5 * diameter_m;
+        let alpha_ref = kirchhoff_alpha(WALL_REF_HZ, radius, c);
+        // the extra log-magnitude to match, Np
+        let target = |f: f64| -(length_m * (kirchhoff_alpha(f, radius, c) - alpha_ref)).max(0.0);
+        let f_max = (0.4 / dt).min(20_000.0);
+        if target(f_max) > -1e-3 {
+            return None;
+        }
+        let freqs: Vec<f64> = (0..48)
+            .map(|i| 100.0 * (f_max / 100.0).powf(i as f64 / 47.0))
+            .collect();
+        let sections = |depth: &[f64; 4]| -> [(f64, f64, f64); 4] {
+            std::array::from_fn(|i| shelf(WALL_POLES_HZ[i], depth[i], dt))
+        };
+        let error = |depth: &[f64; 4]| -> f64 {
+            let s = sections(depth);
+            freqs
+                .iter()
+                .map(|&f| {
+                    let got: f64 = s.iter().map(|&c| shelf_log_mag(c, f, dt)).sum();
+                    (got - target(f)).powi(2)
+                })
+                .sum()
+        };
+        // coordinate descent, a golden-section search per depth (ln of the zero over the pole)
+        let mut depth = [0.0; 4];
+        let g = 0.5 * (5f64.sqrt() - 1.0);
+        for _ in 0..8 {
+            for i in 0..4 {
+                let (mut lo, mut hi) = (0.0, 6.0);
+                for _ in 0..30 {
+                    let (a, b) = (hi - g * (hi - lo), lo + g * (hi - lo));
+                    let mut da = depth;
+                    da[i] = a;
+                    let mut db = depth;
+                    db[i] = b;
+                    if error(&da) < error(&db) {
+                        hi = b;
+                    } else {
+                        lo = a;
+                    }
+                }
+                depth[i] = 0.5 * (lo + hi);
+            }
+        }
+        Some(Self(sections(&depth).map(|(b0, b1, a1)| (b0, b1, a1, 0.0))))
+    }
+    fn process(&mut self, mut x: f64) -> f64 {
+        for (b0, b1, a1, st) in &mut self.0 {
+            let y = *b0 * x + *st;
+            *st = *b1 * x - *a1 * y;
+            x = y;
+        }
+        x
+    }
+}
+
+/// A first-order low shelf, unity at DC, its zero `e^depth` above its pole at `pole_hz`:
+/// (1 + s/ω_z)/(1 + s/ω_p) by the bilinear transform. Returns (b0, b1, a1).
+fn shelf(pole_hz: f64, depth: f64, dt: f64) -> (f64, f64, f64) {
+    let k = 2.0 / dt;
+    let wp = 2.0 * std::f64::consts::PI * pole_hz;
+    let wz = wp * depth.exp();
+    let d = 1.0 + k / wp;
+    ((1.0 + k / wz) / d, (1.0 - k / wz) / d, (1.0 - k / wp) / d)
+}
+
+/// ln |H(e^{jωΔt})| of a first-order section (b0, b1, a1) at `f` Hz.
+fn shelf_log_mag((b0, b1, a1): (f64, f64, f64), f: f64, dt: f64) -> f64 {
+    let w = 2.0 * std::f64::consts::PI * f * dt;
+    let (c, s) = (w.cos(), w.sin());
+    let num = (b0 + b1 * c).powi(2) + (b1 * s).powi(2);
+    let den = (1.0 + a1 * c).powi(2) + (a1 * s).powi(2);
+    0.5 * (num / den).ln()
 }
 
 impl Pipe {
@@ -101,6 +411,9 @@ impl Pipe {
             length_m,
             diameter_m,
             sound_speed,
+            dt,
+            walls: None,
+            chain: None,
             filter: None,
         }
     }
@@ -109,6 +422,72 @@ impl Pipe {
     pub fn with_filter(mut self, transmission: crate::silencer2d::Cascade) -> Self {
         self.filter = Some(Box::new([transmission.clone(), transmission]));
         self
+    }
+    /// The pipe's waves steepen and its walls round them off together, as they do along a real
+    /// pipe: it is cut into segments of at most [`STEEPENING_SEGMENT_M`], each its share of the
+    /// walls' loss ([`Pipe::viscothermal`]) and then a non-linear line ([`Pipe::nonlinear`]) —
+    /// the operator splitting of Lee & Hamilton (*JASA* 97, 1995; Hamilton & Blackstock ch. 11).
+    /// A front never gets steeper than the walls let it: the shock has a thickness, where a
+    /// loss only at the pipe's mouth left it none.
+    pub fn steepening(self) -> Self {
+        let delay = self.fwd.delay();
+        let mut n = (self.length_m / STEEPENING_SEGMENT_M).ceil().max(1.0) as usize;
+        while n > 1 && delay / (n as f64) < 2.0 * MIN_LINE_STEPS {
+            n -= 1;
+        }
+        let mut pipe = self.nonlinear();
+        if n == 1 {
+            return pipe.viscothermal();
+        }
+        let gamma = crate::gas::GAMMA;
+        let rho_c = gamma * crate::units::ATM_PA / pipe.sound_speed;
+        let k = (gamma + 1.0) / (2.0 * rho_c * pipe.sound_speed);
+        let seg = delay / n as f64;
+        let wall = || {
+            WallLoss::new(
+                pipe.length_m / n as f64,
+                pipe.diameter_m,
+                pipe.sound_speed,
+                pipe.dt,
+            )
+        };
+        let stages = || -> Vec<Stage> {
+            (1..n)
+                .map(|_| Stage {
+                    wall: wall(),
+                    line: DelayLine::nonlinear(seg, k),
+                })
+                .collect()
+        };
+        let chain = Box::new([stages(), stages()]);
+        pipe.fwd = DelayLine::nonlinear(seg, k);
+        pipe.bwd = DelayLine::nonlinear(seg, k);
+        pipe.walls = wall().zip(wall()).map(|(a, b)| Box::new([a, b]));
+        pipe.chain = Some(chain);
+        pipe
+    }
+    /// The walls take the higher frequencies faster than the flat loss: Kirchhoff's √f law above
+    /// [`WALL_REF_HZ`], where the flat loss stands for it ([`kirchhoff_alpha`]). It rounds a
+    /// steepening pulse off as the walls round real ones (Msallam et al. 2000, §2.3.3).
+    pub fn viscothermal(mut self) -> Self {
+        let make = || WallLoss::new(self.length_m, self.diameter_m, self.sound_speed, self.dt);
+        self.walls = make().zip(make()).map(|(a, b)| Box::new([a, b]));
+        self
+    }
+    /// The pipe's waves steepen as they travel ([`DelayLine::nonlinear`]): k = (γ+1)/(2ρc·c),
+    /// ρc of the pipe's gas at an atmosphere.
+    pub fn nonlinear(mut self) -> Self {
+        let gamma = crate::gas::GAMMA;
+        let rho_c = gamma * crate::units::ATM_PA / self.sound_speed;
+        let k = (gamma + 1.0) / (2.0 * rho_c * self.sound_speed);
+        let delay = self.fwd.delay();
+        self.fwd = DelayLine::nonlinear(delay, k);
+        self.bwd = DelayLine::nonlinear(delay, k);
+        self
+    }
+    /// Whether its waves steepen ([`Pipe::nonlinear`], [`Pipe::steepening`]).
+    pub fn is_nonlinear(&self) -> bool {
+        self.chain.is_some() || self.fwd.is_nonlinear()
     }
     /// Extra per-trip amplitude factor (e.g. a muffler in this pipe).
     pub fn with_extra_gain(mut self, g: f64) -> Self {
@@ -131,16 +510,24 @@ impl Pipe {
 
     /// Wave arriving at the far end this step.
     pub fn at_far(&self) -> f64 {
-        self.fwd.read() * self.gain
+        self.last(0).read() * self.gain
     }
     /// Wave arriving back at the near end this step.
     pub fn at_near(&self) -> f64 {
-        self.bwd.read() * self.gain
+        self.last(1).read() * self.gain
+    }
+    /// The line a direction ends in (`0` away from the near end, `1` back to it).
+    fn last(&self, dir: usize) -> &DelayLine {
+        match self.chain.as_ref().and_then(|c| c[dir].last()) {
+            Some(stage) => &stage.line,
+            None if dir == 0 => &self.fwd,
+            None => &self.bwd,
+        }
     }
     /// [`Pipe::at_near`] as it will read after the next `send` (at the current gain), if the
     /// pipe is at least two steps long.
     pub fn at_near_next(&self) -> Option<f64> {
-        self.bwd.read_next().map(|x| x * self.gain)
+        self.last(1).read_next().map(|x| x * self.gain)
     }
     /// [`Pipe::at_near`] as it will read after `ahead` more `send`s (at the current gain), if
     /// those sends are not among the values it interpolates.
@@ -149,14 +536,37 @@ impl Pipe {
     }
     /// Send this step's outgoing waves: `from_near` into `fwd`, `from_far` into `bwd`.
     pub fn send(&mut self, from_near: f64, from_far: f64) {
+        if let Some(chain) = &mut self.chain {
+            // each segment takes what the one before it delivers this step (read before pushed)
+            for (dir, stages) in chain.iter_mut().enumerate() {
+                let first = if dir == 0 { &self.fwd } else { &self.bwd };
+                for i in (0..stages.len()).rev() {
+                    let x = if i == 0 {
+                        first.read()
+                    } else {
+                        stages[i - 1].line.read()
+                    };
+                    let st = &mut stages[i];
+                    let x = match &mut st.wall {
+                        Some(w) => w.process(x),
+                        None => x,
+                    };
+                    st.line.push(x);
+                }
+            }
+        }
+        let (near, far) = match &mut self.walls {
+            Some(w) => (w[0].process(from_near), w[1].process(from_far)),
+            None => (from_near, from_far),
+        };
         match self.filter.as_deref_mut() {
             None => {
-                self.fwd.push(from_near);
-                self.bwd.push(from_far);
+                self.fwd.push(near);
+                self.bwd.push(far);
             }
             Some([f, b]) => {
-                self.fwd.push(f.process(from_near));
-                self.bwd.push(b.process(from_far));
+                self.fwd.push(f.process(near));
+                self.bwd.push(b.process(far));
             }
         }
     }
@@ -619,6 +1029,149 @@ mod tests {
         assert!(
             (p - q).abs() < 1e-9 && plain.iter().zip(&lossy).all(|(a, b)| (a - b).abs() < 1e-9)
         );
+    }
+
+    #[test]
+    fn a_shock_moves_at_the_mean_of_its_two_sides() {
+        // Rankine–Hugoniot for a simple wave (Burgers): a jump from 0 to p moves at the mean of
+        // the two sides' speeds, c·(1 + k·p/2) (Whitham, *Linear and Nonlinear Waves*, §2.4).
+        // The step 0 → 20 kPa in 1 m of gas at c = 500 (k = 1.2/(283.71·500)) arrives
+        // 200/(1 + k·10⁴) = 184.401 steps after it is sent (hand); its middle, 10 kPa, then
+        let k = 1.2 / (283.71 * 500.0);
+        let mut line = DelayLine::nonlinear(200.0, k);
+        let (mut prev, mut crossed) = (0.0, None);
+        for n in 0..1000 {
+            let out = line.read();
+            if prev < 10_000.0 && out >= 10_000.0 {
+                crossed = Some(n as f64 - 1.0 + (10_000.0 - prev) / (out - prev) - 500.0);
+            }
+            prev = out;
+            line.push(if n >= 500 { 20_000.0 } else { 0.0 });
+        }
+        let t = crossed.unwrap();
+        assert!((t - 184.401).abs() < 1.0, "{t}");
+    }
+
+    #[test]
+    fn a_shock_keeps_the_waves_content() {
+        // what a line carries in is what comes out, ∫p dt, shocks or not: the merged samples keep
+        // their sum (Brenier & Grenier, SIAM J. Numer. Anal. 35, 1998). Reading the shock at the
+        // grid's scale (`MIN_KERNEL`) loses a little of the strongest ones — measured 1.9 % at
+        // 40 kPa and 3.5 % at 60 kPa — and none below 20 kPa
+        let content = |amp: f64| {
+            let k = 1.2 / (283.71 * 500.0);
+            let mut line = DelayLine::nonlinear(400.0, k);
+            let (mut sent, mut got) = (0.0, 0.0);
+            for n in 0..20_000 {
+                got += line.read();
+                let x = if n < 16_000 && n % 800 < 100 {
+                    amp * (std::f64::consts::PI * (n % 800) as f64 / 100.0).sin()
+                } else {
+                    0.0
+                };
+                sent += x;
+                line.push(x);
+            }
+            got / sent
+        };
+        let low = content(2e4);
+        assert!((low - 1.0).abs() < 1e-3, "{low}");
+        let high = content(6e4);
+        assert!((0.95..1.0).contains(&high), "{high}");
+    }
+
+    #[test]
+    fn a_faint_wave_crosses_a_nonlinear_line_as_a_linear_one() {
+        // amplitude → 0: the arrival times are the fixed delay's. The line reads its values
+        // with a tent two steps wide (`MIN_KERNEL`); on a whole-step delay that is the filter
+        // ¼, ½, ¼, |H| = ½ + ½·cos ω: 1 kHz at 192 kHz passes at 0.99973 and 10 kHz at 0.97347
+        // (−0.23 dB) (hand)
+        let tone = |f: f64, nonlinear: bool| {
+            let w = 2.0 * std::f64::consts::PI * f / 192_000.0;
+            let mut line = if nonlinear {
+                DelayLine::nonlinear(40.0, 8.46e-6)
+            } else {
+                DelayLine::new(40.0)
+            };
+            let (mut re, mut im) = (0.0, 0.0);
+            for n in 0..19_200 {
+                let out = line.read();
+                assert!(line.read_next().is_some());
+                line.push(1e-3 * (w * n as f64).sin());
+                if n >= 9_600 {
+                    re += out * (w * n as f64).cos();
+                    im += out * (w * n as f64).sin();
+                }
+            }
+            re.hypot(im)
+        };
+        for (f, gain) in [(1000.0, 0.999_73), (10_000.0, 0.973_47)] {
+            let ratio = tone(f, true) / tone(f, false);
+            assert!((ratio - gain).abs() < 2e-4, "{f} Hz: {ratio}");
+        }
+    }
+
+    #[test]
+    fn a_loud_sample_travels_at_c_plus_its_own_velocity() {
+        // Msallam et al. (Acta Acustica 86, 2000) eq. 1–2: a simple wave's value rides at
+        // c + (γ+1)/2·u, u = p/ρc. 1 m of gas at c = 500 m/s (ρc = 1.4·101325/500 = 283.71),
+        // steps of 10 µs: 200 steps when faint. A slow ramp of 1 Pa per step (no shock forms):
+        // the 10 kPa sample, pushed at step 10000, rides at 500·(1 + 1.2·10000/(283.71·500)) =
+        // 542.30 m/s and comes out 184.401 steps later (hand)
+        let k = 1.2 / (283.71 * 500.0);
+        let mut line = DelayLine::nonlinear(200.0, k);
+        let mut prev = 0.0;
+        let mut crossed = None;
+        for n in 0..12_000 {
+            let out = line.read();
+            if prev < 10_000.0 && out >= 10_000.0 {
+                // linear between the two reads
+                crossed = Some(n as f64 - 1.0 + (10_000.0 - prev) / (out - prev));
+            }
+            prev = out;
+            line.push(n as f64);
+        }
+        let t = crossed.unwrap();
+        assert!((t - 10_184.401).abs() < 0.05, "{t}");
+    }
+
+    #[test]
+    fn a_loud_tone_grows_harmonics_as_fubini_found() {
+        // Before a shock forms the simple wave's harmonics are Fubini's: B_n = 2J_n(nσ)/(nσ),
+        // σ = x/x̄, x̄ = c²/(βωu₀) (Hamilton & Blackstock, *Nonlinear Acoustics*, ch. 4). Air at
+        // c = 343 (ρc = 413.57), 2 kPa at 200 Hz: u₀ = 4.836 m/s, x̄ = 16.133 m; after 2 m σ =
+        // 0.12397: B₁ = 0.99808, B₂ = 0.061667, B₂/B₁ = 0.061786 (scipy's Bessel functions)
+        let dt = 1e-5;
+        let mut pipe = Pipe::new(2.0, 0.05, 343.0, dt, 0.0).nonlinear();
+        let w = 2.0 * std::f64::consts::PI * 200.0;
+        let (mut h1, mut h2) = ((0.0, 0.0), (0.0, 0.0));
+        for n in 0..40_000 {
+            let t = n as f64 * dt;
+            let out = pipe.at_far();
+            pipe.send(2000.0 * (w * t).sin(), 0.0);
+            // the last 0.2 s (40 periods), after the wave has crossed
+            if n >= 20_000 {
+                h1.0 += out * (w * t).cos();
+                h1.1 += out * (w * t).sin();
+                h2.0 += out * (2.0 * w * t).cos();
+                h2.1 += out * (2.0 * w * t).sin();
+            }
+        }
+        let ratio = h2.0.hypot(h2.1) / h1.0.hypot(h1.1);
+        assert!((ratio - 0.061_786).abs() < 0.003, "{ratio}");
+        // and a linear pipe makes none
+        let mut lin = Pipe::new(2.0, 0.05, 343.0, dt, 0.0);
+        let mut h = (0.0, 0.0);
+        for n in 0..40_000 {
+            let t = n as f64 * dt;
+            let out = lin.at_far();
+            lin.send(2000.0 * (w * t).sin(), 0.0);
+            if n >= 20_000 {
+                h.0 += out * (2.0 * w * t).cos();
+                h.1 += out * (2.0 * w * t).sin();
+            }
+        }
+        assert!(h.0.hypot(h.1) / h1.0.hypot(h1.1) < 1e-6);
     }
 
     /// Steady transmitted amplitude (re a unit incident sine at `f`) through `duct` with an

@@ -191,6 +191,7 @@ impl EngineDef {
                 // one tail: no spread
                 tail_spacing_m: 0.9,
                 after_collector: Vec::new(),
+                steepening: true,
                 merge: None,
             },
             intake: IntakeDef::default(),
@@ -487,6 +488,7 @@ impl EngineDef {
                 // Huff's measurements (JSV 262, 2003) — the real car's H2–H6 are not cut like
                 // that (FACTS, "The sub muffler"). One pipe of the three lengths, then.
                 after_collector: Vec::new(),
+                steepening: true,
                 // Both banks run into one rear muffler and leave through three tips together
                 // (Okamoto et al., SAE 2011-01-2024, Fig. 19; Toyota EPC 17410/17430): a Y into
                 // an 85 mm pipe, a transverse titanium muffler whose valve opens above 3000 rpm
@@ -682,6 +684,7 @@ impl EngineDef {
                 // the tips sit together in the centre (458 Italia)
                 tail_spacing_m: 0.25,
                 after_collector: Vec::new(),
+                steepening: true,
                 merge: None,
             },
             intake: IntakeDef::default(),
@@ -762,6 +765,7 @@ impl EngineDef {
                 // two tips each side (C6 Corvette)
                 tail_spacing_m: 1.1,
                 after_collector: Vec::new(),
+                steepening: true,
                 merge: None,
             },
             intake: IntakeDef::default(),
@@ -5512,6 +5516,9 @@ mod tests {
         let hf = |sound: crate::sound::SoundDef, throttle: f64| {
             let mut d = EngineDef::inline4();
             d.sound = sound;
+            // over linear pipes: a steepening exhaust's shocks carry highs of their own, and
+            // the textures' share of them is what this test is not about
+            d.exhaust.steepening = false;
             let mut e = Engine::new(d, 5000.0, 1);
             let c = Controls {
                 throttle,
@@ -5887,9 +5894,11 @@ mod tests {
                 .map(|w| (w[cycle] - w[0]).powi(2))
                 .sum::<f64>()
         };
-        // and at the same level: the same jets through the same pipes, within what the ports'
-        // gas states leave apart (FV computes them, the waveguide estimates a 0D primary
-        // temperature; measured −3.6 dB)
+        // and at about the same level: the same jets through the same pipes. ±6 dB: the ports'
+        // gas states differ between the models, and in the waveguide the hiss rides on pulses
+        // that steepen (`waveguide::DelayLine::nonlinear`), which squeeze it, while the FV
+        // exhaust carries its jets through a parallel linear net — measured 3.6 dB apart
+        // (2026-10-26; the waveguide without jets repeats to 5e-6 of that)
         let (wg, fv) = (
             aperiodic(ExhaustModel::Waveguide, 1.0),
             aperiodic(ExhaustModel::Fv, 1.0),
@@ -6396,6 +6405,9 @@ mod tests {
         // the rest. A blip midway moves the mean flows the pipes' friction follows; the run ends
         // in the middle of a block.
         for def in [EngineDef::lfa_v10(), EngineDef::inline4()] {
+            // linear pipes: a steepening exhaust is never handed off (max_block)
+            let mut def = def;
+            def.exhaust.steepening = false;
             let mut a = Engine::new(def.clone(), 3000.0, 1);
             let mut b = Engine::new(def.clone(), 3000.0, 1);
             let n = (0.15 / DT) as usize + 7;
@@ -6473,13 +6485,25 @@ mod tests {
     fn an_engine_detached_and_taken_back_runs_as_one_never_detached() {
         // the net and half the runners handed out and straight back (a render block's start and
         // end with nothing in between): the same samples as an engine that kept them
-        let def = EngineDef::lfa_v10();
-        let mut a = Engine::new(def.clone(), 3000.0, 1);
-        let mut b = Engine::new(def, 3000.0, 1);
+        // a steepening net is never handed off (its waves arrive when their own speed says,
+        // not a fixed block later), so the LFA's exhaust goes to the thread only linear
+        let mut def = EngineDef::lfa_v10();
         let c = Controls {
             throttle: 0.3,
             ..Controls::default()
         };
+        let mut steep = Engine::new(def.clone(), 3000.0, 1);
+        for _ in 0..10 {
+            steep.step(DT, &c);
+        }
+        assert!(
+            !steep.detach_exhaust(|n, max| {
+                Box::new(crate::exhaust::LocalLink::new(n, max.min(16)))
+            })
+        );
+        def.exhaust.steepening = false;
+        let mut a = Engine::new(def.clone(), 3000.0, 1);
+        let mut b = Engine::new(def, 3000.0, 1);
         for _ in 0..10 {
             a.step(DT, &c);
             b.step(DT, &c);
