@@ -914,3 +914,38 @@ trumpets in the open air (`lfa_v10`), and the tank is an estimate ready to wire 
 dyno barely moves (−2 % at 6000–8000 rpm, one dynamic head lost at the duct's exit into the box).
 
 Found: 2026-10-29 · physics
+
+## The exhaust net's transfer swings ±20 dB between neighbouring orders; the firing order at 6000–7400 rpm sits in a trough (2026-10-29)
+
+**Symptom.** With the surge tank in the LFA preset (the trumpets no longer open to the air) the
+held 6700 rpm WOT render loses the firing order: order 10 (558 Hz) −4.2 → −24.0 dB re total, every
+other line within 1 dB; guard `the_lfa_at_full_throttle_keeps_the_real_cars_orders` 20.0 dB RMS
+(≤ 12 required), ruler 7.6 → 24.9. The real car on the dyno has H1 as its top line (FACTS).
+**Cause (measured, not fixed).** The exhaust net's transfer from the valves' flow to the radiated
+tails, by cycle order (`engine::probe::probe_lfa_orders`): at 6700 rpm 65 dB at the firing order
+against 74–96 at the others; at 6000 rpm order 20 (1 kHz) is at 52 against 105 for order 25; at
+4800 order 15 (600 Hz) at 51 against 66–83. A fixed trough near 560–600 Hz and 1 kHz, i.e. a
+nearly lossless 1D line ringing: the merge + bypass muffler takes 38 dB at 558 Hz (12–38 at the
+other orders) where the patent measures ≈ 10–11 per order with the valve open (JP 2008-169751 A
+Fig. 7A); the bare line (no merge, no catalyst) already has the firing order 13–16 dB under its
+neighbours, and goes flat only with 0.5 m primaries. The source is right: both banks' valve flow
+has H1 on top (H2 −15, order 5 −19). Blocking the chamber path (baffle 0.01), removing the final
+chamber or equalising the tips does not bring H1 back at WOT amplitude (FACTS); only removing the
+merge (+9 dB) or the whole line's tuning does. The real line is flat to ±5 dB across the orders
+(Fig. 7A dashed: H2/H4/H5 −2/+2/−3 re H1 at the muffler inlet; Fig. 8 radiated +3/+9/+2) — what
+damps it (temperature gradient along the pipes, losses at every bend, cone and area change with a
+M ≈ 0.2 mean flow, the sub muffler, two catalysts per bank) the net does not have; its junctions
+are lossless and its pipes lose 0.03 Np/m.
+**What was ruled out (numbers in FACTS).** Any surge-tank geometry: the ducts pass −17…−26 dB at
+558 Hz (−42 with the air-cleaner case), the "400 Hz" of Okamoto's Fig. 18 being the duct's own
+half-wave; only a 0.25 m duct (half-wave at 555 Hz, half the drawing's length) passes it.
+**Status.** The preset keeps the trumpets open to the air; the tank stays an estimate ready to
+wire in. The physics to fix before it goes in: the exhaust line's damping (flow losses at area
+changes and bends, Munjal ch. 2 / Idelchik, c(T) along the line) and the bank stub that rings at
+2.5 kHz (order 45 the top line of every render at 6700) — validated against the patent's Fig. 7A/8
+orders at 4800 rpm, not by ear.
+**Why it isn't obvious.** Every band and order test passed because the open trumpets, by the
+runners' half-wave coinciding with the firing frequency at 6700 rpm, put the firing order back
+in the air; the exhaust had been without it all along.
+
+Found: 2026-10-29 · physics

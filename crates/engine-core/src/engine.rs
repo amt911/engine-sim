@@ -601,8 +601,10 @@ impl EngineDef {
             // The ten trumpets really draw from one surge tank on top of the V
             // (`AirboxDef::lfa_v10_estimate`); not wired in: with only its inlet ducts
             // radiating, the render loses the firing order at 6700 rpm WOT that the trumpets
-            // carried (docs/FINDINGS.md, 2026-10-29) until the tank's walls radiate as Yamaha
-            // tuned them to.
+            // carried (docs/FINDINGS.md, 2026-10-29). No tank geometry gives it back (the ducts
+            // pass −24 dB at 558 Hz whatever their tuning): the exhaust net itself has to carry
+            // it, and its transfer sits 10–30 dB down at the firing order against the other
+            // orders (FINDINGS, "The exhaust net's transfer swings ±20 dB", 2026-10-29).
             intake: IntakeDef {
                 model: IntakeModel::Fv,
                 runner_length_m: 0.325,
@@ -7033,5 +7035,124 @@ mod tests {
             let ve = (e.inducted_kg() - m0) / ideal;
             assert!((0.6..1.15).contains(&ve), "{rpm} rpm: VE {ve:.2}");
         }
+    }
+}
+
+#[cfg(test)]
+mod probe {
+    //! Scratch probe (ignored): the LFA held at 6700 rpm WOT — cycle orders of the banks' valve
+    //! flows, of the exhaust net's radiated tails and of the whole output.
+    //! `cargo test -p engine-core --release probe_lfa_orders -- --ignored --nocapture`
+    use super::*;
+    const DT: f64 = 1.0 / 192_000.0;
+
+    fn orders(x: &[f64], rpm: f64, ks: &[f64]) -> Vec<f64> {
+        ks.iter()
+            .map(|k| {
+                let w = 2.0 * std::f64::consts::PI * rpm / 120.0 * k * DT;
+                let (mut re, mut im) = (0.0, 0.0);
+                for (n, s) in x.iter().enumerate() {
+                    re += s * (w * n as f64).cos();
+                    im += s * (w * n as f64).sin();
+                }
+                re * re + im * im
+            })
+            .collect()
+    }
+
+    fn report(name: &str, def: EngineDef, rpm: f64) {
+        let mut e = Engine::new(def, rpm, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(rpm),
+            ..Controls::default()
+        };
+        for _ in 0..(1.5 / DT) as usize {
+            e.step(DT, &c);
+        }
+        let cycle = (120.0 / rpm / DT).round() as usize;
+        let n = 100 * cycle;
+        let (mut fa, mut fb, mut tails, mut out) =
+            (vec![0.0; n], vec![0.0; n], vec![0.0; n], vec![0.0; n]);
+        for i in 0..n {
+            out[i] = e.step(DT, &c);
+            fa[i] = e.flows[..5].iter().sum();
+            fb[i] = e.flows[5..].iter().sum();
+            tails[i] = e
+                .net
+                .as_ref()
+                .map_or(0.0, |net| net.last_tails().iter().sum());
+        }
+        let ks = [5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 40.0, 50.0];
+        let db = |v: &[f64]| -> String {
+            v.iter()
+                .map(|p| format!("{:6.1}", 10.0 * (p / v[1]).log10()))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let sum: Vec<f64> = fa.iter().zip(&fb).map(|(a, b)| a + b).collect();
+        println!("{name}: orders 5 10 15 20 25 30 40 50, dB re order 10");
+        println!("  bank A flow  {}", db(&orders(&fa, rpm, &ks)));
+        println!("  both flows   {}", db(&orders(&sum, rpm, &ks)));
+        println!("  tails        {}", db(&orders(&tails, rpm, &ks)));
+        println!("  output       {}", db(&orders(&out, rpm, &ks)));
+        let t = orders(&tails, rpm, &ks);
+        let s = orders(&sum, rpm, &ks);
+        let tf: Vec<String> = t
+            .iter()
+            .zip(&s)
+            .map(|(a, b)| format!("{:6.1}", 10.0 * (a / b).log10()))
+            .collect();
+        println!("  tails/flows  {}", tf.join(" "));
+    }
+
+    #[test]
+    #[ignore]
+    fn probe_lfa_orders() {
+        let mut d = EngineDef::lfa_v10();
+        d.intake.airbox = Some(crate::intake_fv::AirboxDef::lfa_v10_estimate());
+        report("LFA + tank", d.clone(), 6700.0);
+        let mut nm = d.clone();
+        nm.exhaust.merge = None;
+        report("LFA + tank, no merge", nm, 6700.0);
+        let mut nc = d.clone();
+        nc.exhaust.merge = None;
+        nc.exhaust.after_collector = vec![Segment::Pipe {
+            length_m: 1.98,
+            diameter_m: 0.07,
+        }];
+        report("LFA + tank, no merge, no cat", nc, 6700.0);
+        report("LFA + tank, 4800", d, 4800.0);
+    }
+
+    #[test]
+    #[ignore]
+    fn probe_lfa_bare_line() {
+        let mut d = EngineDef::lfa_v10();
+        d.intake.airbox = Some(crate::intake_fv::AirboxDef::lfa_v10_estimate());
+        for rpm in [6000.0, 7400.0] {
+            report(&format!("LFA + tank, {rpm}"), d.clone(), rpm);
+        }
+        let mut bare = d.clone();
+        bare.exhaust.merge = None;
+        bare.exhaust.after_collector = vec![Segment::Pipe {
+            length_m: 1.98,
+            diameter_m: 0.07,
+        }];
+        let mut v = bare.clone();
+        v.exhaust.after_collector = vec![Segment::Pipe {
+            length_m: 1.5,
+            diameter_m: 0.07,
+        }];
+        report("bare, tail 1.5", v, 6700.0);
+        let mut v = bare.clone();
+        v.exhaust.collector_length_m = 0.1;
+        report("bare, collector 0.1", v, 6700.0);
+        let mut v = bare.clone();
+        v.exhaust.primary_length_m = 0.5;
+        report("bare, primaries 0.5", v, 6700.0);
+        let mut v = bare.clone();
+        v.exhaust.steepening = false;
+        report("bare, linear", v, 6700.0);
     }
 }

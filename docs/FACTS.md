@@ -282,3 +282,33 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   either: full +5.3/+2.3/−12.7, blocked +8.1/−6.2/−1.1 (both 8.6 dB RMS). Blocking it by ear was not adopted.
   The LFA's H3 at 6700 (−19…−24 dB vs the dyno clip) is not from the tips' length difference (two equal tips
   keep the 1.6 kHz dip).
+- **Surge tank, lead "400 Hz tuned by surge tank" (2026-10-29)**: by transfer matrices (`scratchpad/tank/py/tank_tf.py`:
+  box compliance + duct line with Kinsler §10.8 end corrections, mouth p = 0; |U_mouth/U_in| = 1/|cos kL' − (kV/A) sin kL'|)
+  every tank consistent with the EPC drawing passes the 6700 rpm firing order (558 Hz) at −17…−26 dB: today's 20 L /
+  2 × Ø90 × 0.40 m −24 dB (its duct line rings at 379 Hz — Okamoto's "400 Hz" is the duct's half-wave, and it does
+  nothing at 558); per bank 10 L / Ø90 × 0.20…0.60 m −17…−24; 4…15 L −16…−27; the air-cleaner case (Fig. 18) plus a
+  Ø70 × 0.2–0.3 m snorkel in series −42…−45. Only a Ø90 duct of 0.25 m (half-wave at 555 Hz) passes it (+10 dB): twice
+  shorter than the drawing's, off Okamoto's 400 Hz, and a tune by ear — not adopted. The exterior firing order at high
+  rpm is the exhaust's. *(verified: ran the script)*
+- **The LFA exhaust net's transfer by cycle order at full load (2026-10-29)**: `engine::probe::probe_lfa_orders` (ignored,
+  `--release -- --ignored --nocapture`): the engine held WOT, orders of the banks' valve flows (both banks summed), of
+  the net's radiated tails and of the output; tails/flows = the net's transfer, dB. Both banks' flow at 6700 rpm:
+  order 10 (558 Hz) 0, 20 −15, 5 −19, 15 −23, 25 −27, 30 −25, 40 −31, 50 −26: an H1-rich source. Transfer at 6700:
+  orders 5/10/15/20/25/30/40/50 = 96/**65**/86/74/79/75/88/84; at 6000 (500 Hz): 96/80/87/**52**/105/60/57/82; at
+  7400: 104/70/83/98/77/67/96/81; at 4800: 116/76/**51**/71/74/83/59/66. Neighbouring orders differ by up to 52 dB
+  (6000 rpm, orders 20 vs 25): the net is a high-Q line, and the firing order sits in a trough at 6000–7400. The
+  patent's measured line is flat: at ≈ 4800 rpm the sound at the main muffler's inlet has H2/H4/H5 at −2/+2/−3 dB
+  re H1 (JP 2008-169751 A Fig. 7A, dashed) and the radiated sum +3/+9/+2 (Fig. 8); ours radiates −16/−32/−42.
+  Insertion of the merge + bypass muffler at 6700 (no-merge transfer minus full): 21/38/26/31/35/38/17/12 dB by
+  order — 38 at the firing order against the patent's ≈ 10–11 per order (Fig. 7A solid vs dashed). The bare line
+  (no merge, no catalyst) still has order 10 at 116 against 128–132 for orders 15–25; tail 1.5 m 113 vs 127–135;
+  collector 0.1 m 115 vs 116–128; primaries 0.5 m 114 vs 107–117 (flat); linear (no steepening) 103 vs 122–128.
+  *(verified: `scratchpad/tank/probe3.log`, `probe4.log`)*
+- **The tank in the preset, measured (2026-10-29)**: held 6700 WOT, lines re total (`scratchpad/tank/py/peaks.py`):
+  without the tank order 10 (558 Hz) −4.2 dB, order 45 (2512 Hz) −5.3; with it order 10 −24.0, order 45 −3.5, the rest
+  within 1 dB: the trumpets carried 20 dB of H1 and nothing else. Ruler 7.6 → 24.9 (its tracker locks on 7538 rpm);
+  guard RMS 20.0. Exhaust variants with the tank (held 6700, H1 re total): baffle 0.01 −23.7, 0.03 −23.5 (blocking the
+  chamber path does nothing at WOT amplitude), no final chamber −21.2, equal tips −27.2, no bypass −20.2, no merge
+  −15.4, primaries 0.45 m −25.6. Order 45 (2.5 kHz, 9 × the bank order) is the top line of every variant that keeps
+  the merge (−3.5…−7.8): bank B's extra 0.10 m collector stub between the collector and the catalyst, c/2L ≈ 2.5–2.8
+  kHz. Lead "blips" (`yam/cmp.py`) unchanged from the entry above. *(verified: `scratchpad/tank/r-*.txt`)*

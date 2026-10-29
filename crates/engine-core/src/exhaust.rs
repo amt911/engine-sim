@@ -2519,3 +2519,132 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod probe {
+    //! Scratch probe (ignored): the LFA line's linear transfer, one cylinder's tone to the
+    //! radiated sum, at the bank orders of 6700 rpm. `cargo test -p engine-core probe -- --ignored --nocapture`.
+    use super::*;
+    use crate::engine::EngineDef;
+    const DT: f64 = 1.0 / 192_000.0;
+
+    fn tone(def: &ExhaustDef, f: f64, rpm: f64) -> f64 {
+        let mut net = ExhaustNet::new(def, 10, DT);
+        net.set_engine_speed(rpm);
+        let mut flows = [0.0; 10];
+        let warm = (0.35 / DT) as usize;
+        let n = (0.25 / DT) as usize;
+        let mut peak: f64 = 0.0;
+        for k in 0..warm + n {
+            flows[0] = if k >= warm {
+                0.01 * (2.0 * std::f64::consts::PI * f * (k - warm) as f64 * DT).sin()
+            } else {
+                0.0
+            };
+            let y = net.step(&flows);
+            if k > warm + n / 2 {
+                peak = peak.max(y.abs());
+            }
+        }
+        20.0 * peak.log10()
+    }
+
+    fn report(name: &str, def: &ExhaustDef) {
+        let f0 = 6700.0 / 120.0 * 5.0;
+        let v: Vec<String> = (1..=8)
+            .map(|n| format!("{:6.1}", tone(def, f0 * n as f64, 6700.0)))
+            .collect();
+        println!("{name:28} bank orders 1..8 (279 Hz..): {}", v.join(" "));
+    }
+
+    fn sweep(name: &str, def: &ExhaustDef) {
+        let mut s = String::new();
+        let mut f = 200.0;
+        while f <= 1300.0 {
+            s.push_str(&format!("{f:.0}:{:.0} ", tone(def, f, 6700.0)));
+            f += 25.0;
+        }
+        println!("{name:28} {s}");
+    }
+
+    #[test]
+    #[ignore]
+    fn print_lfa_line_sweeps() {
+        let mut lin = EngineDef::lfa_v10().exhaust;
+        lin.steepening = false;
+        lin.merge = None;
+        let pipe = |l: f64| Segment::Pipe {
+            length_m: l,
+            diameter_m: 0.07,
+        };
+        sweep("no merge", &lin);
+        let mut d = lin.clone();
+        d.after_collector = vec![pipe(1.98)];
+        sweep("no cat", &d);
+        let mut d = lin.clone();
+        d.after_collector[0] = Segment::Muffler {
+            length_m: 0.13,
+            diameter_m: 0.1534,
+            tube_diameter_m: 0.0,
+            packing_resistivity: 0.0,
+            packing_porosity: 1.0,
+        };
+        sweep("cat as empty chamber", &d);
+        for l in [1.5, 2.5] {
+            let mut d = lin.clone();
+            d.after_collector[1] = pipe(l);
+            sweep(&format!("tail {l}"), &d);
+        }
+        let mut d = lin.clone();
+        d.after_collector = vec![pipe(2.11)];
+        sweep("no cat, tail 2.11", &d);
+    }
+    #[test]
+    #[ignore]
+    fn print_lfa_line_transfer() {
+        let base = EngineDef::lfa_v10().exhaust;
+        let mut lin = base.clone();
+        lin.steepening = false;
+        report("full (steepening)", &base);
+        report("full linear", &lin);
+        let mut d = lin.clone();
+        d.merge = None;
+        report("no merge", &d);
+        let mut d = lin.clone();
+        d.merge.as_mut().unwrap().bypass = None;
+        report("no bypass", &d);
+        let mut d = lin.clone();
+        d.after_collector = vec![Segment::Pipe {
+            length_m: 1.98,
+            diameter_m: 0.07,
+        }];
+        report("no catalyst", &d);
+        let mut d = lin.clone();
+        d.merge = None;
+        d.after_collector = vec![Segment::Pipe {
+            length_m: 1.98,
+            diameter_m: 0.07,
+        }];
+        report("no merge, no catalyst", &d);
+        for l in [0.45, 0.55, 0.675, 0.8] {
+            let mut d = lin.clone();
+            d.merge = None;
+            d.primary_length_m = l;
+            report(&format!("no merge, primaries {l}"), &d);
+        }
+        for l in [0.1, 0.3, 0.6] {
+            let mut d = lin.clone();
+            d.merge = None;
+            d.collector_length_m = l;
+            report(&format!("no merge, collector {l}"), &d);
+        }
+        // sweep of the full linear net
+        let mut s = String::new();
+        let mut f = 100.0;
+        while f <= 1500.0 {
+            s.push_str(&format!("{f:.0}:{:.1} ", tone(&lin, f, 6700.0)));
+            f += 50.0;
+        }
+        println!("full linear sweep {s}");
+    }
+}
