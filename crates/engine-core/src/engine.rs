@@ -461,7 +461,10 @@ impl EngineDef {
                 collectors: vec![vec![1, 2, 3, 4, 5], vec![6, 7, 8, 9, 10]],
                 collector_length_m: 0.3,
                 collector_diameter_m: 0.065,
-                collector_extra_length_m: Vec::new(),
+                // the banks' lines are equal "within 500 mm" (JP 2008-180136 A): 10 cm is an ESTIMATE
+                // inside that bound. Identical lines cancel the half orders where the banks meet
+                // (held 6700 WOT: order 5 at −35 dB vs the dyno clip's −14.5; with 10 cm −11 dB)
+                collector_extra_length_m: vec![0.0, 0.10],
                 // the bank line below, catalyst to muffler
                 tail_length_m: 0.50 + 0.38 + 1.10,
                 tail_diameter_m: 0.070,
