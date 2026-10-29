@@ -264,3 +264,14 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   under the CPU lock, audio seconds per wall second with and without `lfa_v10_estimate()`: High 0.344 → 0.327,
   Ultra 0.238 → 0.248 (±5 %, noise either way: two 12-cell ducts beside ten 8-cell runners and the exhaust).
   *(verified: scratchpad `airbox/rt.sh`)*
+- **Surge tank wall radiation does not carry the LFA's exterior firing order (2026-10-29)**: a (1,1) panel mode
+  (Fahy & Gardonio §2.6) at 400 Hz (Okamoto JSAE 2011 Fig. 18), η = 0.3 (Battistoni SAE 2006-01-0705, PA6-GF30,
+  ASTM E756), 3 mm (Aydemir SAE 2009-01-0345: 2.4–4 mm), 0.175 m², driven by the 20 L box's pressure and radiated at
+  the intake's place: blips' 500 Hz band −21.0 → −20.9 dB, held 6700 unchanged. The box's pulsation is too small;
+  Yamaha's tuned walls feed the cabin duct, not the exterior. The exterior firing order at high rpm must come from
+  the exhaust, which (with the airbox) has none at 6700: next suspect, the bypass muffler's transfer at the firing
+  frequency (its assembly cut the steady pulses ~15 dB at 6000 rpm WOT vs no bypass; isolating the chamber path,
+  the baffle's open area or the outlets alone changed nothing). The patent's spherical final chamber has a flat
+  TL of 15–22 dB from 100 to 1000 Hz (JP 2008-169751 A Fig. 6); the 1D cylinder model has a zero near c/2L.
+- Yamaha YZF-R1 (2009) service manual, "throttle body synchronization": vacuum difference between ITBs ≤ 1.33 kPa
+  (10 mmHg) at warm idle 1150–1250 rpm (#2 set 1.6 kPa higher) — papers/engine-data/yamaha-r1/.
