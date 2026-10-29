@@ -37,6 +37,44 @@ Found: <YYYY-MM-DD> · <area: build | tests | db | ci | deploy | env>
 
 ## Findings
 
+### The V10's "mosquito": its two banks were heard from one point, so their orders cancelled
+
+**Symptom.** The LFA at full load sounds like a pure tone on the firing order (user: "muy agudo y
+sintético, como un mosquito"). Held 6700 rpm WOT (`--render held:6700:1.0:3`, `ang.py`): the
+half-firing orders (cycle orders 5, 15, 25, 35: 279, 837, 1395, 1953 Hz) at −40.6/−42.8/−42.7/
+−52.1 dB re the firing line against a real LFA on a chassis dyno at 6060–7300 rpm at
+−14.5/−15.3/−24.0/−18.8; the 250–500 Hz octave −30.6 dB re total against −17.5 real.
+**Cause.** Exact symmetry at one point: the block was driven by the mean of all ten cylinders'
+pressures and heard from one place (`structure::combustion_drive`), and the two bank exhausts are
+identical into one junction. Two banks firing in turn cancel every odd multiple of the bank order
+when summed at one point; only the 2 % cylinder imbalance was left.
+**Fix / workaround.** `Listener::with_engine_at(ahead, across)`: one source per bank
+(`Engine::engine_sources_across`, the head's offset (rod + stroke/2 + bore)·sin(θ/2), 0.157 m for
+the LFA, a geometric estimate), the intake mouth on the centre line; each bank's side of the block
+radiates 1/n of Anderton's whole-engine response driven by its own cylinders. Held 6700 after:
+half orders −38.4/−24.5/−25.2/−34.2 (orders 15 and 25 within 10 dB of real; order 5 still −38:
+the block passes little at 279 Hz).
+**What was tried and left out, with numbers.** Splitting the ITB trumpets per bank too puts the
+5th order at **+1.8 dB** re the firing line (real −14.5) and the 250–500 Hz octave at −2.9 (real
+−17.5): without the surge tank between the trumpets and the air (Okamoto, SAE 2011-01-2024, Fig.
+18: each bank's ITBs breathe from its own tank, "400 Hz tuned") the bank order of ten open
+trumpets is 16 dB too loud, and one point hides that by cancelling it. Per-bank mouths belong
+behind the surge tank model (needs `IntakeFv` per-runner drawn rates: `inducted_each` per runner,
+~20 lines; the texture test `the_texture_radiates_like_a_monopole_from_the_tails` then needs the
+texture per source).
+**What remains (measured, same held comparison).** Firing harmonics H3–H8 at −27…−39 dB re H1
+against −8…−22 real (2–8 kHz 19–21 dB short): neither the catalyst (plain pipe instead: H3 −19)
+nor the merge muffler (pipe instead: H4 −19) nor the listener (ISO 362 position) changes the
+trend — the pulse front itself (non-linear steepening, branch feat/wave-steepening) or the valve
+pulse. Order 5 (279 Hz) needs the real bank asymmetry of the exhaust (Fig. 19: two separate systems
+of different routing, no lengths published).
+**Why it isn't obvious.** Each source was placed physically (engine ahead of the tails, 1/r,
+delayed) and each cylinder differs by the measured few percent; nothing in the code says the sum
+of identical banks at one point is a cancellation. Dyno clips carry roller/tyre noise: the
+broadband share (periodic 0.30 at 4–8 kHz) is not all engine; the lines are.
+
+Found: 2026-10-29 · physics
+
 ### cargo-mutants with a shared CARGO_TARGET_DIR gives meaningless verdicts
 
 **Symptom.** Impossible survivors (`white() -> -1.0` survived statistical tests of `white`).

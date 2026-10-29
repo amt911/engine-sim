@@ -28,10 +28,12 @@ pub(crate) fn tail_reference_density() -> f64 {
 /// *Fundamentals of Acoustics*, §9.4) gives 0.0295 Np/m in a 42 mm primary of 900 K gas (c 600
 /// m/s, ν 1e-4 m²/s) at 200 Hz, about the firing orders' band: 1 − e^(−0.0295) ≈ 0.03.
 pub const LOSS_PER_M: f64 = 0.03;
-/// Clamp on the waves (Pa): the linear model is meaningless beyond a few bar, and two
-/// superposed rarefactions must never take the absolute pressure below vacuum.
+/// Clamp on the waves (strength, Pa: [`crate::valve_boundary::wave_pressure`]). Below: the
+/// rarefaction that, doubled where it meets its own echo, leaves vacuum (X = ½, X_s = 0:
+/// w = −3.5·p₀); a finite-amplitude wave reaches it only where the gas would cavitate. Above:
+/// 3 bar of strength is a pressure ratio of 12, past any exhaust pulse.
 const WAVE_LIMIT_PA: f64 = 3.0e5;
-const WAVE_MIN_PA: f64 = -0.45 * crate::units::ATM_PA;
+const WAVE_MIN_PA: f64 = -3.5 * crate::units::ATM_PA;
 
 fn clamp_wave(p: f64) -> f64 {
     p.clamp(WAVE_MIN_PA, WAVE_LIMIT_PA)
@@ -1086,9 +1088,11 @@ impl ExhaustNet {
         self.primaries[i].at_near()
     }
 
-    /// Gauge pressure at cylinder `i`'s valve end now (p⁺ + p⁻).
+    /// Gauge pressure at cylinder `i`'s valve end now (p⁺ + p⁻, finite-amplitude:
+    /// [`crate::valve_boundary::wave_pressure`]).
     pub fn valve_pressure(&self, i: usize) -> f64 {
-        self.primaries[i].at_near() + self.sent[i]
+        let atm = crate::units::ATM_PA;
+        crate::valve_boundary::wave_pressure(self.primaries[i].at_near() + self.sent[i], atm) - atm
     }
 
     /// How many valves (cylinders) feed the net.
@@ -1284,6 +1288,22 @@ mod tests {
             duct.send(x, 0.0);
         }
         peak
+    }
+
+    #[test]
+    fn the_clamp_spares_every_wave_the_gas_can_carry() {
+        use crate::units::ATM_PA;
+        use crate::valve_boundary::wave_pressure;
+        // a blowdown's echo off an open end, −0.9 atm of strength, is a real wave (it stands at
+        // p₀·(1 − 0.9/7)^7 = 0.3816 atm on quiet gas): it passes untouched
+        assert_eq!(super::clamp_wave(-0.9 * ATM_PA), -0.9 * ATM_PA);
+        assert!((wave_pressure(-0.9 * ATM_PA, ATM_PA) / ATM_PA - 0.3816).abs() < 1e-4);
+        // the floor is the wave whose meeting with its own echo leaves vacuum: X = 1 − 3.5/7 = ½,
+        // X_s = ½ + ½ − 1 = 0
+        let floor = super::clamp_wave(-10.0 * ATM_PA);
+        assert_eq!(floor, -3.5 * ATM_PA);
+        assert_eq!(wave_pressure(2.0 * floor, ATM_PA), 0.0);
+        assert!(wave_pressure(floor, ATM_PA) > 0.0);
     }
 
     #[test]
@@ -2095,9 +2115,10 @@ mod tests {
     fn outflow_raises_valve_pressure_and_closed_valve_reflects() {
         let mut net = ExhaustNet::new(&ExhaustDef::default(), 1, DT);
         net.step(&[0.1]);
-        // p⁺ = c·ṁ/A = 600 · 0.1 / (π/4 · 0.04²) = 47 746 Pa (hand)
+        // p⁺ = c·ṁ/A = 600 · 0.1 / (π/4 · 0.04²) = 47 746 Pa of strength (hand), standing at
+        // 1 atm·((1 + 47 746/(7·101 325))^7 − 1) = 58 547 Pa gauge (finite amplitude)
         let p = net.valve_pressure(0);
-        assert!((47_000.0..48_500.0).contains(&p), "{p}");
+        assert!((58_000.0..59_000.0).contains(&p), "{p}");
         // no flow afterwards: nothing comes back before the round trip, pressure stays bounded
         for _ in 0..50_000 {
             net.step(&[0.0]);

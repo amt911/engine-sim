@@ -202,3 +202,16 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   - Cycle-to-cycle combustion already matches Soltau's WOT data (COV p_max 7–10 %, IMEP
     1.5–1.9 %).
   - Non-linear FV exhaust is not less periodic (7740 WOT, 1 kHz 0.76 vs waveguide 0.67).
+- **Real LFA at load, clean reference (2026-10-29)**: chassis-dyno clip `dyno-gears.wav` 7.0–9.4 s
+  (6060→7300 rpm, `scratchpad/opus-overrun/mosq/real/`, local only; `agent2/py/ang.py FILE 7.0 9.4 6600`):
+  bands re total 63/125/250/500/1k/2k/4k/8k = −26.3/−22.7/−17.5/−4.7/−8.5/−5.1/−7.9/−16.9 dB, periodic share
+  0.18/0.67/0.82/0.97/0.75/0.54/0.30/0.05, firing H1..H8 0/−9.6/−7.6/−12.1/−9.7/−13.9/−20.7/−22.0 dB,
+  half orders (5, 15, 25, 35) −14.5/−15.3/−24.0/−18.8, other cycle orders −20.3. The other clips
+  (`exhaust.wav`, `dyno-f1.wav`) sweep too fast for the tracker above 1 kHz. *(verified: ran it)*
+- **Model held 6700 WOT, Reference, default listener** (`--render held:6700:1.0:3`): before per-bank
+  block: bands −23.5/−16.6/−30.6/−1.4/−6.5/−23.9/−28.9/−33.1, H1..H8 0/−5.1/−26.6/−26.9/−29.2/−30.8/
+  −37.8/−39.2, half orders −40.6/−42.8/−42.7/−52.1; after (feat/realism-fable): half orders
+  −38.4/−24.5/−25.2/−34.2, bands and harmonics within 1 dB of before. *(verified: 2026-10-29)*
+- **The drive scene's full-throttle window rides the limiter** (8750–9035 rpm, cycle orders 1–3 at
+  −3/−8/−15 dB re firing from the fuel cut): compare load against recordings with `held:`, not with
+  `drive`'s 5.8–7.4 s. *(verified: `track.py` on the render, 2026-10-29)*

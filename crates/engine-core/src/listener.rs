@@ -111,24 +111,45 @@ pub struct Listener {
     pos: usize,
     /// For a signal radiated from all the tails alike (at their mean gain, no delay).
     shared_last: f64,
-    flow_last: f64,
     dt: f64,
     /// The tails' radiation above ka ≈ 2: a one-pole low-pass on dQ/dt at ω_c = 2c/a, and its
     /// state.
     radiation_k: f64,
     radiated: f64,
-    /// The same for the intake mouth ([`Listener::radiate_mouth`]): its area, corner and state.
+    /// The same for the intake mouths ([`Listener::radiate_mouth_at`]): their area and corner.
     mouth_area: f64,
     mouth_k: f64,
-    mouth_radiated: f64,
     /// Where the ear is: (across, along the car from the tails, height above the tails) and the
     /// nearest tail's distance, m.
     ear: (f64, f64, f64, f64),
-    /// The engine's sources (intake mouth, block): their distance to the listener, m, and the
-    /// delay line that holds them back by their path beyond the nearest tail's.
-    engine_distance: f64,
-    engine_line: Vec<f64>,
-    engine_pos: usize,
+    /// The engine's own sources (a bank's side of the block with its intake mouths; a common
+    /// throttle's mouth), each heard from where it sits. One at the tails' mean distance until
+    /// [`Listener::with_engine_at`] places them.
+    engine: Vec<EngineSource>,
+}
+
+/// One place on the engine that radiates (a bank, a common mouth): its distance to the
+/// listener, m, the delay line that holds it back by its path beyond the nearest tail's, and
+/// the states of its monopole ([`Listener::radiate_flow_at`]) and its mouth's radiation corner.
+#[derive(Debug, Clone)]
+struct EngineSource {
+    distance: f64,
+    line: Vec<f64>,
+    pos: usize,
+    flow_last: f64,
+    mouth_radiated: f64,
+}
+
+impl EngineSource {
+    fn at(distance: f64, delay_steps: usize) -> Self {
+        Self {
+            distance,
+            line: vec![0.0; delay_steps + 1],
+            pos: 0,
+            flow_last: 0.0,
+            mouth_radiated: 0.0,
+        }
+    }
 }
 
 impl Listener {
@@ -251,41 +272,63 @@ impl Listener {
             images,
             pos: 0,
             shared_last: 0.0,
-            flow_last: 0.0,
             dt,
             radiation_k,
             radiated: 0.0,
             mouth_area: 0.0,
             mouth_k: 1.0,
-            mouth_radiated: 0.0,
-            engine_distance: mean_distance,
-            engine_line: vec![0.0],
-            engine_pos: 0,
+            engine: vec![EngineSource::at(mean_distance, 0)],
             ear: (lx, ly, rise, r_min),
         }
     }
 
-    /// The engine (intake mouth, block) `ahead_m` forward of the tails along the car's axis:
-    /// heard from there, farther ([`Listener::radiate_flow`], [`Listener::spread_from_1m`]) and
-    /// later ([`Listener::from_engine`]). 0 keeps them at the tails.
-    pub fn with_engine_ahead(mut self, ahead_m: f64) -> Self {
-        if ahead_m == 0.0 {
+    /// The engine (intake mouth, block) as one source `ahead_m` forward of the tails along the
+    /// car's axis: heard from there, farther ([`Listener::radiate_flow`],
+    /// [`Listener::spread_from_1m`]) and later ([`Listener::from_engine`]). 0 keeps it at the
+    /// tails.
+    pub fn with_engine_ahead(self, ahead_m: f64) -> Self {
+        self.with_engine_at(ahead_m, &[0.0])
+    }
+
+    /// The engine's sources `ahead_m` forward of the tails, each `across_m` (positive towards
+    /// the listener's side at positive angles) from the car's axis: a V engine's two banks on
+    /// either side, heard each from its own distance and after its own path (so what cancels
+    /// between identical banks at one point — the half-firing orders — survives). Every source
+    /// on the axis at the tails (all 0) keeps them at the tails' mean distance, undelayed.
+    pub fn with_engine_at(mut self, ahead_m: f64, across_m: &[f64]) -> Self {
+        if ahead_m == 0.0 && across_m.iter().all(|&x| x == 0.0) {
+            self.engine = vec![self.engine[0].clone(); across_m.len().max(1)];
             return self;
         }
         let (lx, ly, rise, r_min) = self.ear;
-        let r = (lx * lx + (ly - ahead_m).powi(2) + rise * rise).sqrt();
-        let steps = ((r - r_min) / C_AMBIENT / self.dt).round().max(0.0) as usize;
-        self.engine_distance = r;
-        self.engine_line = vec![0.0; steps + 1];
+        self.engine = across_m
+            .iter()
+            .map(|&x| {
+                let r = ((lx - x).powi(2) + (ly - ahead_m).powi(2) + rise * rise).sqrt();
+                let steps = ((r - r_min) / C_AMBIENT / self.dt).round().max(0.0) as usize;
+                EngineSource::at(r, steps)
+            })
+            .collect();
         self
     }
 
-    /// The engine's sources' pressure, as computed at their distance, delayed by their path.
+    /// How many places the engine is heard from ([`Listener::with_engine_at`]).
+    pub fn engine_sources(&self) -> usize {
+        self.engine.len()
+    }
+
+    /// The engine's first source's pressure, as computed at its distance, delayed by its path.
     pub fn from_engine(&mut self, p: f64) -> f64 {
-        let n = self.engine_line.len();
-        self.engine_line[self.engine_pos] = p;
-        self.engine_pos = (self.engine_pos + 1) % n;
-        self.engine_line[self.engine_pos]
+        self.from_engine_at(0, p)
+    }
+
+    /// Source `k`'s pressure, as computed at its distance, delayed by its path.
+    pub fn from_engine_at(&mut self, k: usize, p: f64) -> f64 {
+        let s = &mut self.engine[k];
+        let n = s.line.len();
+        s.line[s.pos] = p;
+        s.pos = (s.pos + 1) % n;
+        s.line[s.pos]
     }
 
     /// Distance from each tail pipe to the listener, m.
@@ -310,10 +353,15 @@ impl Listener {
     /// unless [`Listener::with_engine_ahead`] moved it):
     /// the monopole's p = ρ₀/(4πr)·dQ/dt (Kinsler §7.2), Pa.
     pub fn radiate_flow(&mut self, q: f64) -> f64 {
-        let p = RHO_AMBIENT / (4.0 * std::f64::consts::PI * self.engine_distance)
-            * (q - self.flow_last)
-            / self.dt;
-        self.flow_last = q;
+        self.radiate_flow_at(0, q)
+    }
+
+    /// [`Listener::radiate_flow`] from the engine's source `k`.
+    pub fn radiate_flow_at(&mut self, k: usize, q: f64) -> f64 {
+        let s = &mut self.engine[k];
+        let p =
+            RHO_AMBIENT / (4.0 * std::f64::consts::PI * s.distance) * (q - s.flow_last) / self.dt;
+        s.flow_last = q;
         p
     }
 
@@ -321,20 +369,31 @@ impl Listener {
     /// tail ([`Listener::radiate`]), it radiates as a monopole only below ka ≈ 2, flat above
     /// (Levine & Schwinger 1948): H(s) = s/(1 + s/ω_c), ω_c = 2c/a. Pa.
     pub fn radiate_mouth(&mut self, q: f64, mouth_area_m2: f64) -> f64 {
-        let p = self.radiate_flow(q);
+        self.radiate_mouth_at(0, q, mouth_area_m2)
+    }
+
+    /// [`Listener::radiate_mouth`] from the engine's source `k` (the mouths share one area).
+    pub fn radiate_mouth_at(&mut self, k: usize, q: f64, mouth_area_m2: f64) -> f64 {
+        let p = self.radiate_flow_at(k, q);
         if mouth_area_m2 != self.mouth_area {
             let radius = (mouth_area_m2 / std::f64::consts::PI).sqrt().max(1e-3);
             self.mouth_k = 1.0 - (-2.0 * C_AMBIENT / radius * self.dt).exp();
             self.mouth_area = mouth_area_m2;
         }
-        self.mouth_radiated += self.mouth_k * (p - self.mouth_radiated);
-        self.mouth_radiated
+        let s = &mut self.engine[k];
+        s.mouth_radiated += self.mouth_k * (p - s.mouth_radiated);
+        s.mouth_radiated
     }
 
     /// A sound pressure measured 1 m from a compact source (the block) heard from the engine's
-    /// place: spherical spreading, p ∝ 1/r (Kinsler §7.2), Pa.
+    /// first source's place: spherical spreading, p ∝ 1/r (Kinsler §7.2), Pa.
     pub fn spread_from_1m(&self, p_1m: f64) -> f64 {
-        p_1m / self.engine_distance
+        self.spread_from_1m_at(0, p_1m)
+    }
+
+    /// [`Listener::spread_from_1m`] from the engine's source `k`.
+    pub fn spread_from_1m_at(&self, k: usize, p_1m: f64) -> f64 {
+        p_1m / self.engine[k].distance
     }
 
     /// One step: the tails' outlet signals in, the sound pressure at the listener (Pa) out.
@@ -389,6 +448,41 @@ mod tests {
             Listener::with_street(1, 0.0, 3.0, 0.0, 1e-3, dt, None, None).with_engine_ahead(0.0);
         assert!((at.spread_from_1m(1.0) - 1.0 / 3.0).abs() < 1e-12);
         assert_eq!(at.from_engine(1.0), 1.0);
+    }
+
+    #[test]
+    fn each_bank_is_heard_from_its_own_side() {
+        // ear 3 m to the side of one tail (90°: across 3 m, along 0; no ground), the engine at
+        // the tails' station with its banks 0.5 m either side of the car's axis: the near bank
+        // 2.5 m away, the far one 3.5 m. A 1 Pa source at 1 m: 1/2.5 and 1/3.5 Pa. The near
+        // bank is nearer than the tail (no delay: the common path is dropped); the far one's
+        // extra 0.5 m is 0.5/343 s = 1.4577 ms = 139.9 → 140 steps at 96 kHz.
+        let dt = 1.0 / 96_000.0;
+        let mut l = Listener::with_street(1, 0.0, 3.0, 90.0, 1e-3, dt, None, None)
+            .with_engine_at(0.0, &[0.5, -0.5]);
+        assert_eq!(l.engine_sources(), 2);
+        assert!((l.spread_from_1m_at(0, 1.0) - 1.0 / 2.5).abs() < 1e-12);
+        assert!((l.spread_from_1m_at(1, 1.0) - 1.0 / 3.5).abs() < 1e-12);
+        let first = |l: &mut Listener, k: usize| {
+            (0..2000)
+                .map(|i| l.from_engine_at(k, if i == 0 { 1.0 } else { 0.0 }))
+                .position(|p| p != 0.0)
+        };
+        assert_eq!(first(&mut l, 0), Some(0));
+        assert_eq!(first(&mut l, 1), Some(140));
+        // each bank's mouth is its own monopole: ρ₀/(4πr)·dQ/dt, 1e-3 m³/s in one 10 µs step
+        // at 2.5 m: 1.204/(4π·2.5)·1e-3/1e-5 = 3.8324 Pa; at 3.5 m: 2.7374 Pa; each holds its
+        // own last flow (a second equal flow at the same source adds nothing)
+        let mut l = Listener::with_street(1, 0.0, 3.0, 90.0, 1e-3, 1e-5, None, None)
+            .with_engine_at(0.0, &[0.5, -0.5]);
+        assert!((l.radiate_flow_at(0, 1e-3) - 3.8324).abs() < 1e-4);
+        assert!((l.radiate_flow_at(1, 1e-3) - 2.7374).abs() < 1e-4);
+        assert_eq!(l.radiate_flow_at(0, 1e-3), 0.0);
+        // one source on the axis, ahead: the single-source calls, as before
+        let one = Listener::with_street(1, 0.0, 3.0, 0.0, 1e-3, dt, None, None)
+            .with_engine_at(4.0, &[0.0]);
+        assert_eq!(one.engine_sources(), 1);
+        assert!((one.spread_from_1m(1.0) - 1.0 / 7.0).abs() < 1e-12);
     }
 
     #[test]
