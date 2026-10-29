@@ -598,6 +598,11 @@ impl EngineDef {
             // Ten ITBs (Toyota). Runner length not published: Helmholtz-tuned to the torque peak
             // (Engelman: f = (a/2π)·√(A/(L·V)), V = V_d/2·(r + 1)/(r − 1), tuned at twice the
             // revolution frequency at 6800 rpm, 226.7 Hz; 45 mm bore): L = 0.325 m.
+            // The ten trumpets really draw from one surge tank on top of the V
+            // (`AirboxDef::lfa_v10_estimate`); not wired in: with only its inlet ducts
+            // radiating, the render loses the firing order at 6700 rpm WOT that the trumpets
+            // carried (docs/FINDINGS.md, 2026-10-29) until the tank's walls radiate as Yamaha
+            // tuned them to.
             intake: IntakeDef {
                 model: IntakeModel::Fv,
                 runner_length_m: 0.325,
@@ -2636,18 +2641,23 @@ impl Engine {
             }
         };
         // the engine's own sources, heard from where it sits: each bank's side of the block, and
-        // the intake mouth on the centre line. The mouth is a runner's trumpet with individual
-        // throttles, else the throttle bore (the air box's own inlet is not in the definition:
-        // an estimate). The trumpets are not split by bank: without the surge tank between them
-        // and the air, a bank's five trumpets heard apart put the LFA's 5th cycle order 16 dB
-        // over a real one's (docs/FINDINGS.md, 2026-10-29); one point cancels it as the tank
-        // would damp it.
-        let mouth_d = if self.def.intake.individual_throttles {
-            self.def.intake.runner_diameter_m
-        } else {
-            self.def.throttle_diameter_m
+        // the intake mouth on the centre line. The mouth is the air box's inlet ducts if there
+        // is one (their total area), else a runner's trumpet with individual throttles, else
+        // the throttle bore. The trumpets are not split by bank: without the surge tank between
+        // them and the air, a bank's five trumpets heard apart put the LFA's 5th cycle order
+        // 16 dB over a real one's (docs/FINDINGS.md, 2026-10-29); one point cancels it as the
+        // tank would damp it.
+        let mouth_area = match &self.def.intake.airbox {
+            Some(b) => b.ducts.max(1) as f64 * PI * 0.25 * b.duct_diameter_m.powi(2),
+            None => {
+                let d = if self.def.intake.individual_throttles {
+                    self.def.intake.runner_diameter_m
+                } else {
+                    self.def.throttle_diameter_m
+                };
+                PI * 0.25 * d * d
+            }
         };
-        let mouth_area = PI * 0.25 * mouth_d * mouth_d;
         let rest = match &mut self.listener {
             Some((_, l)) => {
                 let mut rest = 0.0;
@@ -4883,6 +4893,8 @@ mod tests {
         // throttle_diameter_m is the total bore the ten share: wide open, each throttle body
         // is at least as wide as its runner (√10 · 45 mm = 142.3 mm), so the runner sets the flow
         assert!(d.throttle_diameter_m.powi(2) / 10.0 >= d.intake.runner_diameter_m.powi(2));
+        // the surge tank stays out of the preset until its walls radiate (see the preset)
+        assert_eq!(d.intake.airbox, None);
     }
 
     /// Firing intervals (deg) between consecutive pulses into each exhaust bank, sorted.

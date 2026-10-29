@@ -151,6 +151,7 @@ engine:
         baffle_open_area: 0.1
         open_rpm: 3000.0
         travel_s: 0.3
+    steepening: true
   intake:
     model: fv
     runner_length_m: 0.325
@@ -159,6 +160,7 @@ engine:
     trumpet_loss: 0.1
     film_fraction: 0.18
     film_tau_s: 1.0
+    airbox: null
   redline_rpm: 9000.0
   starter_torque_nm: 150.0
   friction:
