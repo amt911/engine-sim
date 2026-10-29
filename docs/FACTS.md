@@ -242,3 +242,8 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   concrete-block room; the screen shows 7919 rpm / 276 km/h. *(verified: ffmpeg frame at 8 s, 2026-10-29)*
 - `--render gears` of the LFA takes ≈ 8 min on 6 cores (both binaries, one render each in parallel), `held:…:3`
   ≈ 30 s. *(verified: ran them, 2026-10-29)*
+- **Steepening's real-time cost (2026-10-29)**: LFA, `--headless --seconds 5 --throttle 1`, cores 0–5, under the CPU
+  lock, audio seconds per wall second including start-up (the 2D silencer fit): Ultra 0.45 linear → 0.28 steepening,
+  High 0.57 → 0.32 (−40 %: the +28 % of the spec plus the exhaust thread, which a steepening net never takes).
+  Absolute values are far below the table above (start-up and the 6-core pin); the ratio is the fact.
+  *(verified: `scratchpad/far/rt.sh`)*
