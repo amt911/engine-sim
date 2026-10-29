@@ -566,7 +566,8 @@ impl EngineDef {
                             packing_porosity: 1.0,
                         }],
                         // L₁ = 0.08 m above, L₂ = 0.23 m below (Fig. 1's proportion, ≈ 2.9·L₁;
-                        // the claim: L₂ ≥ 2·L₁), 60 mm bores; the lower one's first 70 mm packed
+                        // the claim: L₂ ≥ 2·L₁), 60 mm bores; the lower one packed along its
+                        // part inside the final chamber (56, 58: about half of it in Fig. 1)
                         outlets: vec![
                             vec![Segment::Pipe {
                                 length_m: 0.08,
@@ -578,14 +579,14 @@ impl EngineDef {
                             }],
                             vec![
                                 Segment::Muffler {
-                                    length_m: 0.07,
-                                    diameter_m: 0.09,
+                                    length_m: 0.12,
+                                    diameter_m: 0.10,
                                     tube_diameter_m: 0.060,
                                     packing_resistivity: 16_000.0,
                                     packing_porosity: 0.95,
                                 },
                                 Segment::Pipe {
-                                    length_m: 0.16,
+                                    length_m: 0.11,
                                     diameter_m: 0.060,
                                 },
                             ],
