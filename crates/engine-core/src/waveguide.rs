@@ -578,6 +578,9 @@ impl Pipe {
 #[derive(Debug, Clone)]
 pub struct Duct {
     pipes: Vec<Pipe>,
+    /// The gas's mean mass flow from the first pipe to the last, kg/s: what its plain area
+    /// changes lose ([`area_change_resistance`]).
+    mean_flow: f64,
     /// What happens at each inner node, between pipe k and k + 1.
     nodes: Vec<Node>,
 }
@@ -796,6 +799,7 @@ impl Duct {
         assert!(!pipes.is_empty(), "a duct needs a pipe");
         Self {
             pipes,
+            mean_flow: 0.0,
             nodes: Vec::new(),
         }
     }
@@ -848,6 +852,7 @@ impl Duct {
     }
     /// The mean mass flow through every pipe of the duct, kg/s ([`Pipe::set_mean_flow`]).
     pub fn set_mean_flow(&mut self, mass_flow: f64) {
+        self.mean_flow = mass_flow;
         for p in &mut self.pipes {
             p.set_mean_flow(mass_flow);
         }
@@ -870,6 +875,15 @@ impl Duct {
                         // Q = 2(p₁ − p₂)/(z₁ + z₂ + R), z = ρc/A: each side loses z·Q
                         let (z1, z2) = (*rho_c / areas[0], *rho_c / areas[1]);
                         let q = 2.0 * (incoming[0] - incoming[1]) / (z1 + z2 + *r);
+                        out = [incoming[0] - z1 * q, incoming[1] + z2 * q];
+                    }
+                    _ if self.mean_flow != 0.0 && areas[0] != areas[1] => {
+                        // the mean flow loses pressure crossing the change: a resistance
+                        let c = self.pipes[k].sound_speed;
+                        let r = area_change_resistance(areas[0], areas[1], self.mean_flow, c);
+                        let rho_c = crate::gas::GAMMA * crate::units::ATM_PA / c;
+                        let (z1, z2) = (rho_c / areas[0], rho_c / areas[1]);
+                        let q = 2.0 * (incoming[0] - incoming[1]) / (z1 + z2 + r);
                         out = [incoming[0] - z1 * q, incoming[1] + z2 * q];
                     }
                     _ => {
@@ -895,6 +909,35 @@ pub fn junction(areas: &[f64], incoming: &[f64], outgoing: &mut [f64]) -> f64 {
         *o = pj - p;
     }
     pj
+}
+
+/// Acoustic resistance, Pa·s/m³ (pressure drop over volume flow), of a sudden change of area
+/// from `a_from` to `a_to` (m², along the flow) crossed by a mean mass flow `mass_flow` (kg/s,
+/// negative: the other way) of gas whose speed of sound is `c`, at an atmosphere. The flow loses
+/// ½ρKU² there (Borda–Carnot for an expansion, K = (1 − σ)² on the upstream velocity; a
+/// contraction K = 0.42(1 − σ) on the downstream one, White, *Fluid Mechanics*, §6.9; σ the area
+/// ratio, < 1): a sound wave riding on it changes that loss by ρKU·u, a resistance ρKU/A on its
+/// volume flow — the quasi-steady loss of area changes in flow ducts that damps their resonances
+/// (Ronneberger 1967; Davies, *JSV* 124 (1988) §3; Munjal, *Acoustics of Ducts and Mufflers*,
+/// 2nd ed., §2.13).
+pub fn area_change_resistance(a_from: f64, a_to: f64, mass_flow: f64, c: f64) -> f64 {
+    let (up, down) = if mass_flow >= 0.0 {
+        (a_from, a_to)
+    } else {
+        (a_to, a_from)
+    };
+    if up <= 0.0 || down <= 0.0 || up == down {
+        return 0.0;
+    }
+    let rho = crate::gas::GAMMA * crate::units::ATM_PA / (c * c);
+    let m = mass_flow.abs();
+    // K and the area its velocity is taken in
+    let (k, a) = if down > up {
+        ((1.0 - up / down).powi(2), up)
+    } else {
+        (0.42 * (1.0 - down / up), down)
+    };
+    rho * k * (m / (rho * a)) / a
 }
 
 /// Newton iterations of [`lossy_junction`].
@@ -1207,6 +1250,47 @@ mod tests {
             dt,
         );
         Duct::with_shunts(pipes, shunt)
+    }
+
+    #[test]
+    fn an_area_change_in_flow_resists_by_its_loss() {
+        // 0.05 kg/s from 0.002 m² into 0.008 m² of 500 m/s gas: ρ = 1.4·101325/500² = 0.567420,
+        // U = 0.05/(0.56742·0.002) = 44.059 m/s, K = (1 − 0.25)² = 0.5625, R = ρKU/A =
+        // 0.56742·0.5625·44.059/0.002 = 7031.3 Pa·s/m³ (hand). The other way it contracts:
+        // K = 0.42·0.75 = 0.315 on the narrow side's U, R = 0.56742·0.315·44.059/0.002 = 3937.5.
+        let r = area_change_resistance(0.002, 0.008, 0.05, 500.0);
+        assert!((r - 7031.3).abs() < 0.5, "{r}");
+        let back = area_change_resistance(0.002, 0.008, -0.05, 500.0);
+        assert!((back - 3937.5).abs() < 0.5, "{back}");
+        assert_eq!(area_change_resistance(0.002, 0.002, 0.05, 500.0), 0.0);
+        assert_eq!(area_change_resistance(0.002, 0.008, 0.0, 500.0), 0.0);
+    }
+
+    #[test]
+    fn a_duct_in_flow_passes_less_across_its_area_change() {
+        // A wave from a 0.002 m² pipe into a 0.008 m² one: lossless it passes 2z₂/(z₁ + z₂) =
+        // 0.4; with R = 7031.3 (above; z₁ = ρc/A₁ = 141855, z₂ = 35464) it passes
+        // 2·35464/(141855 + 35464 + 7031) = 0.38475 (hand). Each pipe 1 step long at 500 m/s.
+        let dt = 1.0 / 192_000.0;
+        let len = 500.0 * dt * 8.0;
+        let d1 = (4.0 * 0.002 / std::f64::consts::PI).sqrt();
+        let d2 = (4.0 * 0.008 / std::f64::consts::PI).sqrt();
+        let passed = |flow: f64| {
+            let mut duct = Duct::new(vec![
+                Pipe::new(len, d1, 500.0, dt, 0.0),
+                Pipe::new(len, d2, 500.0, dt, 0.0),
+            ]);
+            duct.set_mean_flow(flow);
+            let gains = duct.pipes[0].gain * duct.pipes[1].gain;
+            let mut peak: f64 = 0.0;
+            for k in 0..64 {
+                duct.send(if k == 0 { 1.0 } else { 0.0 }, 0.0);
+                peak = peak.max(duct.pipes[1].at_far().abs());
+            }
+            peak / gains
+        };
+        assert!((passed(0.0) - 0.4).abs() < 1e-9, "{}", passed(0.0));
+        assert!((passed(0.05) - 0.38475).abs() < 1e-4, "{}", passed(0.05));
     }
 
     #[test]
