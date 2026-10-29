@@ -471,29 +471,17 @@ impl EngineDef {
                 // the tips sit together in the centre of the rear diffuser: one outlet
                 tail_spacing_m: 0.0,
                 // Each bank keeps its own line to the main muffler: close-coupled catalyst, pipe,
-                // sub muffler (straight-through, packed: it takes the highs, order 6 and up),
-                // pipe (Torimoto & Mabuchi, JP 2008-180136 A; Lexus' "full dual pipes" drawing;
-                // EPC 17410: two parallel pipes in one part). Lengths: ESTIMATE, scaled off the
-                // Lexus drawing against the engine-to-tail distance (≈ 2.1 m catalyst to muffler,
-                // the sub muffler ≈ 0.38 m a third of the way); glass-wool packing as the
-                // default lining.
-                after_collector: vec![
-                    Segment::Pipe {
-                        length_m: 0.50,
-                        diameter_m: 0.070,
-                    },
-                    Segment::Muffler {
-                        length_m: 0.38,
-                        diameter_m: 0.12,
-                        tube_diameter_m: 0.070,
-                        packing_resistivity: 16_000.0,
-                        packing_porosity: 0.95,
-                    },
-                    Segment::Pipe {
-                        length_m: 1.10,
-                        diameter_m: 0.070,
-                    },
-                ],
+                // sub muffler, pipe (Torimoto & Mabuchi, JP 2008-180136 A; Lexus' "full dual
+                // pipes" drawing; EPC 17410: two parallel pipes in one part). Lengths: ESTIMATE,
+                // scaled off the Lexus drawing against the engine-to-tail distance (≈ 2.1 m
+                // catalyst to muffler, the sub muffler ≈ 0.38 m a third of the way). The sub
+                // muffler is a plain pipe here: its size and packing are not published, and the
+                // sound measured after it is still flat from 400 Hz to 5 kHz (JP 2008-169751 A,
+                // Fig. 7A, dashed). A packed can of 120 mm over the 70 mm pipe would take 16 dB
+                // at 1 kHz and 38 dB at 2 kHz even by the 2D model that matches Selamet, Lee &
+                // Huff's measurements (JSV 262, 2003) — the real car's H2–H6 are not cut like
+                // that (FACTS, "The sub muffler"). One pipe of the three lengths, then.
+                after_collector: Vec::new(),
                 // Both banks run into one rear muffler and leave through three tips together
                 // (Okamoto et al., SAE 2011-01-2024, Fig. 19; Toyota EPC 17410/17430): a Y into
                 // an 85 mm pipe, a transverse titanium muffler whose valve opens above 3000 rpm
@@ -621,6 +609,7 @@ impl EngineDef {
             vehicle: crate::drivetrain::VehicleDef::lfa_v10(),
         }
         // its own bank lines (above), the catalyst first
+        .with_tail_pipe()
         .with_catalyst()
     }
 
@@ -6772,7 +6761,8 @@ mod tests {
             );
         }
         assert_eq!(EngineDef::inline4().exhaust.tail_length_m, 1.5);
-        assert_eq!(EngineDef::lfa_v10().exhaust.tail_length_m, 1.2);
+        // the LFA's bank line, catalyst to muffler: 0.50 + 0.38 (sub muffler) + 1.10 m
+        assert_eq!(EngineDef::lfa_v10().exhaust.tail_length_m, 1.98);
     }
 
     #[test]

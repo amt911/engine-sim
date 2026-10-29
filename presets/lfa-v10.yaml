@@ -64,7 +64,7 @@ engine:
       - 10
     collector_length_m: 0.3
     collector_diameter_m: 0.065
-    tail_length_m: 1.2
+    tail_length_m: 1.98
     tail_diameter_m: 0.07
     muffler_transmission: 1.0
     model: waveguide
@@ -81,22 +81,22 @@ engine:
       cells_per_in2: 400.0
       wall_m: 0.000165
     - kind: pipe
-      length_m: 1.2
+      length_m: 1.98
       diameter_m: 0.07
     merge:
       segments:
       - kind: pipe
         length_m: 0.15
         diameter_m: 0.085
-      - kind: muffler
-        length_m: 0.2
-        diameter_m: 0.22
-        tube_diameter_m: 0.0
-        packing_resistivity: 0.0
-        packing_porosity: 1.0
       outlet_diameter_m: 0.10392304845413262
       bypass:
         closed:
+        - kind: muffler
+          length_m: 0.2
+          diameter_m: 0.22
+          tube_diameter_m: 0.0
+          packing_resistivity: 0.0
+          packing_porosity: 1.0
         - kind: pipe
           length_m: 0.3
           diameter_m: 0.05
@@ -123,9 +123,29 @@ engine:
           length_m: 0.1
           diameter_m: 0.085
         tips:
-        - kind: pipe
-          length_m: 0.25
-          diameter_m: 0.10392304845413262
+        - kind: muffler
+          length_m: 0.2
+          diameter_m: 0.3
+          tube_diameter_m: 0.0
+          packing_resistivity: 0.0
+          packing_porosity: 1.0
+        outlets:
+        - - kind: pipe
+            length_m: 0.08
+            diameter_m: 0.06
+        - - kind: pipe
+            length_m: 0.08
+            diameter_m: 0.06
+        - - kind: muffler
+            length_m: 0.12
+            diameter_m: 0.1
+            tube_diameter_m: 0.06
+            packing_resistivity: 16000.0
+            packing_porosity: 0.95
+          - kind: pipe
+            length_m: 0.11
+            diameter_m: 0.06
+        baffle_open_area: 0.1
         open_rpm: 3000.0
         travel_s: 0.3
   intake:

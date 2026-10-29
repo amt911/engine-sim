@@ -681,10 +681,65 @@ pub(crate) mod tests {
         }
     }
 
+    /// Power of cycle order `k` (k · rpm/120 Hz) in `x`, by one DFT bin.
+    fn order_power(x: &[f32], rpm: f64, k: f64) -> f64 {
+        let w = 2.0 * std::f64::consts::PI * rpm / 120.0 * k / FS;
+        let (mut re, mut im) = (0.0, 0.0);
+        for (n, s) in x.iter().enumerate() {
+            re += *s as f64 * (w * n as f64).cos();
+            im += *s as f64 * (w * n as f64).sin();
+        }
+        re * re + im * im
+    }
+
+    #[test]
+    fn the_lfa_at_full_throttle_keeps_the_real_cars_orders() {
+        // The guard of the sound the user approved (2026-10-29): the real LFA on a chassis dyno
+        // at 6060–7300 rpm (FACTS, "Real LFA at load"; measured, not modelled) has its firing
+        // harmonics 2..8 at −9.6/−7.6/−12.1/−9.7/−13.9/−20.7/−22.0 dB and the half orders
+        // (cycle orders 5, 15, 25, 35) at −14.5/−15.3/−24.0/−18.8 dB of the first. Held at
+        // 6700 rpm (a whole cycle in 860 samples), the render may not drift further from them
+        // than it stands: RMS 13.3 dB (2026-10-29). A ratchet: lower it as the sound comes
+        // closer, never raise it.
+        let rpm = 120.0 * FS / 860.0;
+        let mut sim = Simulation::new(EngineDef::lfa_v10(), FS, 1);
+        sim.controls = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(rpm),
+            ..Controls::default()
+        };
+        render_secs(&mut sim, 1.5);
+        let x = render_secs(&mut sim, 860.0 * 112.0 / FS);
+        // ten firings a cycle: the firing order is cycle order 10
+        let h1 = order_power(&x, rpm, 10.0);
+        let db = |k: f64| 10.0 * (order_power(&x, rpm, k) / h1).log10();
+        // (cycle order, dB re the firing order): firing harmonics 2..8, then half orders
+        let real = [
+            (20.0, -9.6),
+            (30.0, -7.6),
+            (40.0, -12.1),
+            (50.0, -9.7),
+            (60.0, -13.9),
+            (70.0, -20.7),
+            (80.0, -22.0),
+            (5.0, -14.5),
+            (15.0, -15.3),
+            (25.0, -24.0),
+            (35.0, -18.8),
+        ];
+        let errs: Vec<(f64, f64)> = real.iter().map(|&(k, r)| (k, db(k) - r)).collect();
+        let rms = (errs.iter().map(|e| e.1 * e.1).sum::<f64>() / errs.len() as f64).sqrt();
+        assert!(rms <= 13.5, "RMS {rms:.1} dB off the real car: {errs:?}");
+    }
+
     #[test]
     fn a_screaming_lfa_is_engine_orders_not_air() {
         // User report (2026-10-22): at high rpm a background "air" noise covered the engine.
-        // Flow noise is texture: at 8000 rpm WOT it must stay well under the firing orders.
+        // Flow noise is texture: at 8000 rpm WOT it must stay well under the firing orders —
+        // but no more than in the real car: the chassis-dyno clip at 6060–7300 rpm (FACTS, "Real
+        // LFA at load") carries 0.18/0.67/0.82/0.97/0.75/0.54/0.30/0.05 of its octave bands'
+        // energy (63 Hz–8 kHz, at −26.3/−22.7/−17.5/−4.7/−8.5/−5.1/−7.9/−16.9 dB of the total) on
+        // the cycle orders: 0.67 of the whole. A floor above that asks for a synthetic engine.
         let mut sim = Simulation::new(EngineDef::lfa_v10(), FS, 1);
         sim.controls = Controls {
             throttle: 1.0,
@@ -694,7 +749,7 @@ pub(crate) mod tests {
         render_secs(&mut sim, 1.5);
         let x = render_secs(&mut sim, 1.0);
         let share = harmonic_share(&x, 8000.0);
-        assert!(share >= 0.85, "harmonic share {share}");
+        assert!(share >= 0.67, "harmonic share {share}");
     }
 
     /// Share of the energy in cycle orders 1–3 (below the firing order of a V8) at `rpm` WOT.

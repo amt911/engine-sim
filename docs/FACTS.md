@@ -215,3 +215,12 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
 - **The drive scene's full-throttle window rides the limiter** (8750–9035 rpm, cycle orders 1–3 at
   −3/−8/−15 dB re firing from the fuel cut): compare load against recordings with `held:`, not with
   `drive`'s 5.8–7.4 s. *(verified: `track.py` on the render, 2026-10-29)*
+- **The sub muffler (2026-10-29)**: a packed straight-through can of 0.38 m, Ø120 over a 70 mm pipe, 16 kPa·s/m²,
+  hot gas 900 K — our 1D lining TL 2.3/8.4/17/28/51/72 dB at 1/2/3/4/6/8 kHz, the 2D mode-matching model
+  (`papers/silencers/lining-study/modal2d.py`, needs scipy: `uv venv` in the scratchpad) 16/38/39/25/13/9. Either
+  way it cuts the LFA's H2–H6, which the dyno clip keeps; the patent's sound after the sub muffler is flat to
+  5 kHz. The preset carries it as a plain pipe. Held 6700 WOT against the dyno clip (`ruler.py`, RMS dB over
+  bands + H2..H8 + half orders): packed 12.3, plain 8.9, plain without catalyst 8.4. What remains: H3 −13,
+  H4 −17, half order 5 −20, 63/125 Hz +6. The 1D lining is under 2D below ~3 kHz and far over above
+  (beaming): the lower tip's glass wool (Ø100 over 60 mm, 0.12 m) is 1.9 dB at 2 kHz in 1D, 12 dB in 2D, so
+  it cancels the upper tips at f = c/(2ΔL) ≈ 2 kHz more than it should.
