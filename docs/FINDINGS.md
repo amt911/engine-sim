@@ -970,3 +970,68 @@ gives the cut's share; the crank-synchronous channel retards the spark on the ch
 full cut is a zero-torque request — closed throttle at speed — which the overrun cut-off answers by
 cutting every injection at once. No single charge is blanked out. Per shift the LF peak over the
 steady level went 8.6/8.3/11.2/12.6/12.8 → 1.2/1.6/0.9/3.7/5.4 dB.
+
+## The gear-change thump, second pass: the limiter, the muffler's 1D ripple and a cut that reached every cylinder at once (2026-10-30)
+
+**Symptom.** After the torque cut moved to the air channel and the spark (entry above), the user
+still heard a dry thump at every upshift of the LFA gears render (`ecu.wav`). The 20 ms band
+metric that had passed was the wrong ruler: a 5 ms one finds a single pulse per shift, 10–60 Hz
++33…+35 dB and 60–200 Hz +21 dB over the 300 ms before it, a negative lobe of −0.4 FS (1 ms
+mean) for 6 ms then a positive one — a step in the tail's mean flow radiated as dQ/dt. The real
+LFA on a dyno (`real/dynogears.wav`, four upshifts found by their pitch drop) has its < 200 Hz
+5 ms peak at −11…−15 dB *under* the steady full-band level (+7…+13 dB over the steady LF level);
+the render had it +6…+9 dB *over* (+28…+31 over the steady LF).
+**Causes (measured, per-step diagnostic through the first shift).**
+1. The pulse starts the moment the engine crosses 9000 rpm: the Shift phase ramped the cut 0 → 1
+   open-loop while the clutch opened in the same 0.1 s, the clutch's capacity (∝ clutch²) fell
+   faster than the air channel took the torque (plate 10/s), and the engine flared 8760 → 9007 rpm
+   into the limiter, whose all-cylinder injection cut silenced ten cylinders within 3 ms. Shifting
+   at 93 % of the redline instead (no limiter) kept the thump: the overrun cut-off, reached when the
+   air trim hit 0.01, did the same thing 20 ms later.
+2. Neither layer ablation moved it (block, intake, flow noise, valve jet: identical pulse): it is
+   the exhaust line's DC. The tails' outgoing wave sat at ρc·u ≈ 19 kPa (u ≈ 82 m/s hot) at WOT
+   and fell to −3 kPa in 6 ms once the charges stopped burning (the waveguide's source counts a
+   charge's volume at its own temperature, and a motored charge is half a burnt one's).
+3. The line passes that step whole and buries the firing order: a linear tone sweep of the fitted
+   LFA line (one cylinder's flow → radiated sum) gave 50–200 Hz at 55–61 dB and 400–950 Hz at
+   15–31 dB; without the bypass muffler 43–66 dB flat. The 1D transfer-matrix of pipe → final
+   chamber (Ø0.22 × 0.25 m) → three Ø60 outlets reproduces the ripple (−28…−7 dB), so the net
+   was right for its geometry: a 1D expansion chamber is 0 dB at every half-wave and 20 dB between.
+   The LFA's final chamber is a sphere precisely so that its loss is flat: JP 2008-169751 A, Fig. 6
+   measures ≈ 15 dB at 100 Hz and 20–21 dB from 300 Hz to 1 kHz, against the flat chamber it is
+   compared with swinging 10–33 dB. H1..H8 of `ecu.wav` at 7000–9000 rpm: 0/−11/−2/−7/−7/−18/
+   −15/−10 dB; the real dyno run 0/−10/−12/−15/−11/−16/−16/−16.
+**Fix.** (a) `Segment::Measured`: a silencer element carried as its published transmission loss
+(graphic EQ on a straight bore, as the packed silencers' 2D transmission already is); the user's
+fitted engine file takes Fig. 6 for its final chamber. The preset does **not**: with it the guard
+`the_lfa_at_full_throttle_keeps_the_real_cars_orders` (held 6700 rpm, orders re the firing order
+against the dyno clip) reads 14.1 dB RMS against its 12 dB ratchet — H1 up 15 dB, H3–H8 unmoved
+at −24…−42 dB (real −8…−22), the half orders −14 dB off; extending Fig. 6 above 1 kHz with Fig. 7A's
+shape (14/17/23/28 dB at 1.5/2.5/4/8 kHz) made it 16.6. The exhaust's highs are short by that
+much; until they are found the preset keeps its 1D chamber and the ratchet its number. (b) The shift's torque cut is the slipping-opening speed loop of
+Glielmo et al. 2006 §III.D (reference held at the request speed; 1 % band, ESTIMATE): the flare
+stays at 8920–8990 rpm, under the limiter. (c) Port injection: a cut-off reaches a cylinder at its
+next exhaust opening (the injection is made onto the closed valve during the exhaust stroke,
+Bosch *Automotive Handbook*), so the cylinders stop one by one over a cycle (3.1 of 4 still burn),
+not within a quarter cycle.
+**Result (`thump/final.wav`, same engine file with the measured chamber).** H1..H8
+0/−11/−11/−9/−14/−21/−22/−15 dB (real 0/−10/−12/−15/−11/−16/−16/−16): the firing order is the top
+line again. The thump is **not gone**: the 5 ms LF peak is +9…+13 dB over the steady full-band
+level (real −11…−15), +34 dB over the steady LF; the pulse is now a −0.18 FS plateau of ≈ 15 ms
+(the tail DC falling 15 kPa → 0 over 20 ms) instead of −0.4 FS for 6 ms.
+**Ruled out, with numbers.** Counting the source as mass flow alone (the gas's temperature riding
+the path lines, Benson vol. 1 §5.1) took the LF peak to −3…+6 dB over steady and +24…+33 over the
+steady LF — but it is wrong: at low Mach the column is incompressible, the outlet's volume flow
+follows the inlet's at once, so a colder charge of the same mass *does* slow the tail (and it put
+H2–H4 at −4/−5/−3, the orders the real car has at −10…−15). Reverted. A slow line temperature
+(τ = 1 s) is the same error spread out. The injection latency alone changed the LF peak < 1 dB
+(the plateau lengthens, its height stays: the tail's volume flow still falls by the burnt/motored
+temperature ratio within a cycle).
+**What is left (not done).** The thermal step itself is physical; what the real car does not have
+is the full all-cylinder cut: a 0.2 s ASG shift asks the ECU for a torque *reduction* and Bosch's
+fast path is spark retard and blanking individual cylinders, not the overrun cut-off's complete
+stop with the throttle closing behind it — the air channel of the entry above is the wrong path
+for a 0.2 s cut. And the muffler's total compliance (the shell, ≈ 70 L by Fig. 1) is 26 L in the
+fitted file.
+
+Found: 2026-10-30 · physics

@@ -312,3 +312,23 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   −15.4, primaries 0.45 m −25.6. Order 45 (2.5 kHz, 9 × the bank order) is the top line of every variant that keeps
   the merge (−3.5…−7.8): bank B's extra 0.10 m collector stub between the collector and the catalyst, c/2L ≈ 2.5–2.8
   kHz. Lead "blips" (`yam/cmp.py`) unchanged from the entry above. *(verified: `scratchpad/tank/r-*.txt`)*
+
+## Gear-change thump and the LFA final chamber (2026-10-30, branch fix/gear-thump)
+
+- **Real LFA upshifts (dyno, `real/dynogears.wav`, 4 shifts at 3.95/5.50/6.35/8.45 s):** the < 200 Hz
+  5 ms RMS peak within ±0.1 s of the shift is −11…−15 dB under the median full-band RMS of the
+  0.5 s before, and +7…+13 dB over the median LF RMS there. A render's shift must meet those two numbers.
+- **Fitted LFA line, linear sweep (one cylinder's 0.01 flow tone → radiated sum, 7000 rpm, dB):**
+  full 50–200 Hz 55–61, 400–950 Hz 15–31; no bypass muffler 43–66 (flat ±8); open path only (no
+  closed chambers) 26–54 at 400–950; with the final chamber as `Segment::Measured` (Fig. 6) full
+  33–51 / 10–24, open path only 37 / 16–24 — the listener's dQ/dt adds +6 dB/oct on top.
+- **JP 2008-169751 A read-outs:** Fig. 6 (spherical final chamber TL): 15 dB at 100 Hz, 18.5 at 200,
+  20–21 from 300 Hz to 1 kHz; the flat chamber 10–33 dB with dips at ≈ 300/500/800 Hz. Fig. 7A
+  (4800 rpm, engine original dashed vs upper tip): 1次/2次/4次/5次 118/122/125/122 → 110/110/112/113 dB.
+  Fig. 5A: with the valve open the gas goes straight into the final chamber; the chamber path enters
+  through holes 20A/22A and short pipes 36, not long pipes. ¶0035: path A's flow resistance ≫ path B's.
+- **Shift flare:** open-loop cut ramp + clutch release at 10/s: 8760 → 9007 rpm (limiter at 9000) at
+  every shift; with the speed loop (1 % band) 8920–8990. The LFA's `shift_time_s` 0.2.
+- **Thump per build (5 ms LF peak over steady full-band / over steady LF, five shifts):** `ecu.wav`
+  +6…+9 / +28…+31; measured chamber +9…+13 / +35; + injection latency +9…+13 / +34…+35; mass-flow
+  source (reverted, see FINDINGS) −3…+6 / +24…+33.

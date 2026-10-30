@@ -190,7 +190,14 @@ pub struct GearPull {
     shift_time: f64,
     /// The torque cut the gearbox asks of the ECU this step, 0..=1.
     cut: f64,
+    /// Engine speed when the shift was requested, rpm: held while the clutch opens.
+    hold: f64,
 }
+
+/// The speed loop's proportional band while the clutch opens, as a share of the held speed: the
+/// torque is all out when the engine runs this far ahead of it. ESTIMATE (Glielmo et al. 2006
+/// give the loop, not its gains): 1 % is 90 rpm on the LFA, under its limiter's hysteresis.
+const SHIFT_SPEED_BAND: f64 = 0.01;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum PullPhase {
@@ -219,13 +226,18 @@ impl GearPull {
             takeup: 0.0,
             shift_time: shift_time_s.max(0.0),
             cut: 0.0,
+            hold: 0.0,
         }
     }
 
     /// The share of the engine's torque an automated gearbox has the ECU take away this step
-    /// ([`engine_core::engine::Controls::torque_cut`]): ramped out while its clutch opens, held
-    /// out while it closes, ramped back in once it has locked (Glielmo et al. 2006, Fig. 10).
-    /// A driver's shift lifts the pedal instead: 0.
+    /// ([`engine_core::engine::Controls::torque_cut`]): ramped out while its clutch opens —
+    /// and taken out entirely as soon as the engine runs ahead of the speed it was requested
+    /// at, the engine speed loop of the slipping-opening phase whose reference is held
+    /// constant (Glielmo et al. 2006, §III.D; the ramp alone let the LFA flare 250 rpm into
+    /// its limiter, whose all-cylinder cut was the thump of every shift) — held out while it
+    /// closes, ramped back in once it has locked (Fig. 10). A driver's shift lifts the pedal
+    /// instead: 0.
     pub fn torque_cut(&self) -> f64 {
         self.cut
     }
@@ -275,6 +287,7 @@ impl GearPull {
                     PullPhase::Lift
                 };
                 to(self, next);
+                self.hold = rpm;
             }
             PullPhase::Shift if self.t >= self.open_s() - 1e-9 => {
                 self.gear += 1;
@@ -313,7 +326,11 @@ impl GearPull {
         let ramp = dt / self.open_s();
         self.cut = match self.phase {
             _ if self.shift_time <= 0.0 => 0.0,
-            PullPhase::Shift => ((self.t + dt) / self.open_s()).min(1.0),
+            PullPhase::Shift => {
+                let ramp = (self.t + dt) / self.open_s();
+                let loop_ = (rpm - self.hold) / (SHIFT_SPEED_BAND * self.hold.max(1.0));
+                ramp.max(loop_).min(1.0)
+            }
             PullPhase::Pull if !locked && self.gear > 1 => 1.0,
             PullPhase::Pull => (self.cut - ramp).max(0.0),
             _ => 0.0,
@@ -615,6 +632,47 @@ mod tests {
             p.next(4000.0, true, dt);
         }
         assert_eq!(p.torque_cut(), 0.0);
+    }
+
+    #[test]
+    fn a_shift_holds_the_engine_speed_while_the_clutch_opens() {
+        // Glielmo et al. 2006, §III.D: while the clutch opens, the engine torque reference is
+        // the output of an engine speed loop whose reference is held constant (the speed at the
+        // request). The bearing ramp alone let the LFA flare 250 rpm through its 9000 rpm
+        // limiter at every flat-out shift, and the limiter's all-cylinder fuel cut was heard as
+        // a thump (measured 2026-10-30: +35 dB in 10-60 Hz for 10 ms at each shift).
+        let dt = 0.01;
+        let mut p = GearPull::new(6, 9000.0, 0.2);
+        for _ in 0..131 {
+            p.next(900.0, true, dt);
+        }
+        p.next(1500.0, false, dt);
+        p.next(4100.0, false, dt);
+        // requested at 97 % of the redline
+        let (_, d) = p.next(8760.0, true, dt);
+        assert!(d.clutch_pedal);
+        let ramp = p.torque_cut();
+        assert!(ramp > 0.0 && ramp < 0.2, "{ramp}");
+        // the engine holds its speed: the ramp is all the gearbox asks
+        p.next(8760.0, false, dt);
+        assert!(
+            (p.torque_cut() - 2.0 * ramp).abs() < 1e-9,
+            "{}",
+            p.torque_cut()
+        );
+        // it runs 1 % ahead of the request: the speed loop takes the torque out entirely
+        p.next(8760.0 + 90.0, false, dt);
+        assert_eq!(p.torque_cut(), 1.0);
+        // half-way there, half the torque at least
+        p.next(8760.0 + 45.0, false, dt);
+        assert!(p.torque_cut() >= 0.5, "{}", p.torque_cut());
+        // back on the reference, the ramp again (never below the gearbox's own ramp)
+        p.next(8700.0, false, dt);
+        assert!(
+            (p.torque_cut() - 5.0 * ramp).abs() < 1e-9,
+            "{}",
+            p.torque_cut()
+        );
     }
 
     #[test]

@@ -1260,6 +1260,13 @@ struct CylinderState {
     /// The charge trapped at intake closing still awaits its spark: one spark per charge,
     /// whatever the ECU does with the timing meanwhile.
     armed: bool,
+    /// The injection for the next charge was made: port injection puts a charge's fuel on
+    /// the closed valve during the exhaust stroke before its intake (sequential injection,
+    /// timed to end before the intake valve opens: Bosch, *Automotive Handbook*, "manifold
+    /// injection, injection timing"; it starts as the exhaust valve opens — at full load the
+    /// injector is open most of the stroke), so a cut-off reaches a cylinder at its next
+    /// exhaust opening, up to a cycle after the cut, and the charges already injected burn.
+    injected: bool,
     /// Gas temperature in this cylinder's exhaust primary, and the primary's wall temperature,
     /// K: what reversion pushes back, and how much volume it is.
     port_t: f64,
@@ -1677,6 +1684,7 @@ impl Engine {
                     flame: 1.0,
                     charge_bias: 1.0,
                     armed: false,
+                    injected: true,
                     port_t: PIPE_COLD_K,
                     port_flow: 0.0,
                     valve_hint: f64::NAN,
@@ -2002,9 +2010,11 @@ impl Engine {
         self.dashpot_step(self.plate, dt);
         self.valve_control(rpm_now, demand, dt);
         let (intake_valve, exhaust_valve) = self.valves();
+        let evo = crate::units::wrap(exhaust_valve.open_deg, 720.0);
         let ivc = crate::units::wrap(intake_valve.open_deg + intake_valve.duration_deg, 720.0);
         let evc = crate::units::wrap(exhaust_valve.open_deg + exhaust_valve.duration_deg, 720.0);
-        // the cut-offs stop the injection; the port film still feeds the cylinders
+        // the cut-offs stop the injections to come (each cylinder's at its exhaust opening,
+        // `injected`); the port film still feeds the cylinders
         let inject = !self.overrun_cut && !self.limiter_cut;
         let (film_x, film_tau) = (self.def.intake.film_fraction, self.def.intake.film_tau_s);
         let film_x = if film_tau > 0.0 { film_x } else { 0.0 };
@@ -2087,6 +2097,12 @@ impl Engine {
             let prev = self.cyl[i].cycle_deg;
             let cur = crate::units::wrap(crank_deg - self.cyl[i].offset_deg, 720.0);
             let theta_c = deg_to_rad(cur);
+            // the injection for the charge to come is made during the exhaust stroke, onto the
+            // closed valve: it starts as the exhaust valve opens and is done before the intake
+            // opens; a cut decided after it started no longer reaches this charge
+            if crossed(prev, cur, evo) {
+                self.cyl[i].injected = inject;
+            }
 
             // Piston motion: adiabatic work p·dV.
             let v_new = g.volume(theta_c);
@@ -2176,10 +2192,10 @@ impl Engine {
                         self.plenum.energy_j -= f.dm * f.h;
                     }
                 }
-                // port injection: the charge carries fuel unless the ECU cuts it
+                // port injection: the charge carries fuel unless the ECU cut its injection
                 let fresh = Composition {
                     burned: 0.0,
-                    fuelled: if inject { 1.0 } else { 0.0 },
+                    fuelled: if cs.injected { 1.0 } else { 0.0 },
                 };
                 cylinder_flow(cs, &th, into_cyl, fresh);
             }
@@ -2308,7 +2324,7 @@ impl Engine {
                 let air = fresh * AFR_STOICH / (1.0 + AFR_STOICH);
                 let film_x =
                     crate::fuel::deposit_fraction(film_x, cs.gas.pressure(), self.omega.abs());
-                let fuel = if inject {
+                let fuel = if cs.injected {
                     cs.film.meter(air / AFR_STOICH, film_x, film_share).1
                 } else {
                     cs.film.intake(0.0, film_x, film_share)
@@ -4505,6 +4521,43 @@ mod tests {
         run(&mut e, 1.5, &c);
         let t = e.torque_nm();
         assert!((15.0..80.0).contains(&t), "torque {t}");
+    }
+
+    #[test]
+    fn an_injection_cut_reaches_each_cylinder_a_cycle_later() {
+        // Port injection puts a charge's fuel on the closed valve during the exhaust stroke
+        // before its intake (sequential injection, from exhaust opening, done before the intake
+        // valve opens: Bosch, *Automotive Handbook*, "manifold injection, injection timing"):
+        // a cut-off stops the injections still to come, and every cylinder whose injection
+        // has started burns once more: from exhaust opening (≈ 140°) to the spark (≈ 700°)
+        // is 560° of the 720° cycle, 3.1 of the four.
+        // Through an inline four at 4000 rpm the fuel cut-off's pulses thus stop one by one over
+        // a cycle, not within the quarter cycle between intake closing and the spark (measured
+        // 2026-10-30: the LFA's limiter and overrun cut-offs silenced all ten within 3 ms at
+        // 9000 rpm, and their tail's mean flow collapsing that fast was heard as a thump at
+        // every gear change).
+        let mut e = Engine::new(EngineDef::inline4(), 4000.0, 1);
+        let on = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(4000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.5, &on);
+        let off = Controls {
+            throttle: 0.0,
+            ..on
+        };
+        // 4000 rpm: a cycle is 0.03 s
+        let before = e.combustions();
+        run(&mut e, 0.03, &off);
+        let first = e.combustions() - before;
+        run(&mut e, 0.03, &off);
+        let second = e.combustions() - before - first;
+        assert!(
+            first >= 3,
+            "{first} of 4 charges already injected burnt in the cycle after the cut"
+        );
+        assert_eq!(second, 0, "the cycle after that is fuelless");
     }
 
     #[test]

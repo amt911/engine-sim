@@ -533,35 +533,81 @@ impl Silencer {
                 t[i] = t[i + 1];
             }
         }
-        // octave bands cannot follow a notch deeper than ~50 dB without spoiling its
-        // neighbours, and a wave 50 dB down is gone against the rest of the sound
-        let mut t: Vec<f64> = t
-            .iter()
-            .map(|v| v.unwrap_or(0.0).clamp(-MAX_EQ_CUT_DB, 0.0))
-            .collect();
-        // a silencer gives no energy: where the fit overshoots 0 dB (between bands, or below
-        // the lowest) the target is lowered by the excess and fitted again
-        let check: Vec<f64> = (0..=200)
-            .map(|i| 5.0 * 9000f64.powf(i as f64 / 200.0))
-            .filter(|&f| f < 0.45 * fs)
-            .collect();
-        let mut eq = graphic_eq(&t, fs);
-        for _ in 0..6 {
-            let over = check
-                .iter()
-                .map(|&f| eq.response_db(f, fs))
-                .fold(f64::MIN, f64::max);
-            if over <= 0.0 {
-                break;
-            }
-            let pts = eq_points(fs);
-            for (ti, f) in t.iter_mut().zip(&pts) {
-                *ti -= eq.response_db(*f, fs).max(0.0) + 0.5 * over;
-            }
-            eq = graphic_eq(&t, fs);
-        }
-        eq
+        loss_eq(t.iter().map(|v| v.unwrap_or(0.0)).collect(), fs)
     }
+}
+
+/// The equalizer of a transmission `target_db` (≤ 0) at [`eq_points`]: octave bands cannot
+/// follow a notch deeper than ~50 dB without spoiling its neighbours, and a wave 50 dB down is
+/// gone against the rest of the sound. A silencer gives no energy: where the fit overshoots
+/// 0 dB (between bands, or below the lowest) the target is lowered by the excess and fitted
+/// again.
+fn loss_eq(target_db: Vec<f64>, fs: f64) -> Cascade {
+    let mut t: Vec<f64> = target_db
+        .iter()
+        .map(|v| v.clamp(-MAX_EQ_CUT_DB, 0.0))
+        .collect();
+    let check: Vec<f64> = (0..=200)
+        .map(|i| 5.0 * 9000f64.powf(i as f64 / 200.0))
+        .filter(|&f| f < 0.45 * fs)
+        .collect();
+    let mut eq = graphic_eq(&t, fs);
+    for _ in 0..6 {
+        let over = check
+            .iter()
+            .map(|&f| eq.response_db(f, fs))
+            .fold(f64::MIN, f64::max);
+        if over <= 0.0 {
+            break;
+        }
+        let pts = eq_points(fs);
+        for (ti, f) in t.iter_mut().zip(&pts) {
+            *ti -= eq.response_db(*f, fs).max(0.0) + 0.5 * over;
+        }
+        eq = graphic_eq(&t, fs);
+    }
+    eq
+}
+
+/// A published transmission loss, `points` of (frequency Hz, dB) in rising frequency, as an
+/// equalizer at `fs` ([`loss_eq`]): linear in log-frequency between points; below the first
+/// the loss falls in proportion to frequency to 0 at 0 Hz (a chamber is a compliance there:
+/// its loss grows with ω·V/(2·c·S), Munjal, *Acoustics of Ducts and Mufflers*, ch. 2); above
+/// the last it holds. No points: no loss.
+pub fn measured_eq(points: &[[f64; 2]], fs: f64) -> Cascade {
+    let target: Vec<f64> = eq_points(fs)
+        .iter()
+        .map(|&f| -measured_loss_db(points, f))
+        .collect();
+    loss_eq(target, fs)
+}
+
+/// The loss of `points` ([`measured_eq`]) at `f` Hz.
+pub fn measured_loss_db(points: &[[f64; 2]], f: f64) -> f64 {
+    let (Some(first), Some(last)) = (points.first(), points.last()) else {
+        return 0.0;
+    };
+    if f <= first[0] {
+        return if first[0] > 0.0 {
+            first[1] * f / first[0]
+        } else {
+            first[1]
+        };
+    }
+    if f >= last[0] {
+        return last[1];
+    }
+    for w in points.windows(2) {
+        let ([f0, l0], [f1, l1]) = (w[0], w[1]);
+        if f >= f0 && f <= f1 {
+            if f1 <= f0 || f0 <= 0.0 {
+                return l1;
+            }
+            let x = (f / f0).ln() / (f1 / f0).ln();
+            return l0 + (l1 - l0) * x;
+        }
+    }
+    last[1]
 }
 
 #[cfg(test)]

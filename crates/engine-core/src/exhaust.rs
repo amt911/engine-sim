@@ -34,6 +34,7 @@ fn exit_diameter(path: &[Segment]) -> f64 {
         Some(Segment::Pipe { diameter_m, .. } | Segment::Catalyst { diameter_m, .. }) => {
             *diameter_m
         }
+        Some(Segment::Measured { bore_m, .. }) => *bore_m,
         Some(Segment::Muffler {
             diameter_m,
             tube_diameter_m,
@@ -347,6 +348,19 @@ pub enum Segment {
         neck_length_m: f64,
         volume_m3: f64,
     },
+    /// A silencer element whose maker published its transmission loss, `transmission_loss_db`
+    /// as (frequency Hz, dB) points in rising frequency, carried on a straight bore of `bore_m`
+    /// × `length_m` ([`crate::silencer2d::measured_eq`]: linear between points in log frequency,
+    /// falling to 0 at 0 Hz below the first, held above the last). For a chamber whose shape
+    /// makes its loss flat across the orders: the LFA's spherical final chamber (Torimoto &
+    /// Mabuchi, JP 2008-169751 A, Fig. 6: ≈ 15 dB at 100 Hz, 20 dB from 200 Hz to 1 kHz, where
+    /// the flat chamber it is compared with swings 10–33 dB), which no 1D chamber gives: an
+    /// expansion chamber in 1D ripples with its axial standing waves, 0 dB at every half-wave.
+    Measured {
+        length_m: f64,
+        bore_m: f64,
+        transmission_loss_db: Vec<[f64; 2]>,
+    },
 }
 
 /// A road car's exhaust after one collector, from sizing rules rather than one car's drawings
@@ -597,6 +611,9 @@ impl ExhaustDef {
                         catalyst_resistance(length_m, diameter_m, cells_per_in2, wall_m, TAIL_T).0
                 }
                 Segment::Resonator { .. } => {}
+                Segment::Measured {
+                    length_m, bore_m, ..
+                } => friction += f * length_m / (bore_m * area(bore_m).powi(2)),
             }
         }
         ExitLosses {
@@ -624,6 +641,7 @@ impl ExhaustDef {
             Some(Segment::Pipe { diameter_m, .. })
             | Some(Segment::Muffler { diameter_m, .. })
             | Some(Segment::Catalyst { diameter_m, .. }) => *diameter_m,
+            Some(Segment::Measured { bore_m, .. }) => *bore_m,
             Some(Segment::Resonator { .. }) | None => self.tail_diameter_m,
         }
     }
@@ -856,6 +874,16 @@ fn segments_duct(
                     p,
                 };
                 catalyst_brick(length_m, diameter_m, cells_per_in2, wall_m, gas, dt)
+            }
+            Segment::Measured {
+                length_m,
+                bore_m,
+                ref transmission_loss_db,
+            } => {
+                // the published loss on the waves both ways, like a packed silencer's
+                Duct::new(vec![plain(length_m, bore_m).with_filter(
+                    crate::silencer2d::measured_eq(transmission_loss_db, 1.0 / dt),
+                )])
             }
             Segment::Resonator {
                 neck_diameter_m,
@@ -2036,6 +2064,89 @@ mod tests {
         assert!(
             matches!(path.last(), Some(Segment::Pipe { diameter_m, .. }) if *diameter_m == 0.05)
         );
+    }
+
+    #[test]
+    fn a_measured_chamber_takes_its_published_loss() {
+        // a chamber whose maker measured its transmission loss (JP 2008-169751 A, Fig. 6: the
+        // LFA's spherical final chamber, 15 dB at 100 Hz, ≈ 20 dB flat from 200 Hz to 1 kHz)
+        // takes that loss off a tone, where a 1D chamber of its size ripples ±10 dB with its
+        // axial standing waves (the flat chamber's dips the figure contrasts the sphere with)
+        let tail = Segment::Pipe {
+            length_m: 0.5,
+            diameter_m: 0.05,
+        };
+        let plain = with_path(vec![
+            Segment::Pipe {
+                length_m: 0.2,
+                diameter_m: 0.05,
+            },
+            tail.clone(),
+        ]);
+        let measured = with_path(vec![
+            Segment::Measured {
+                length_m: 0.2,
+                bore_m: 0.05,
+                transmission_loss_db: vec![
+                    [100.0, 15.0],
+                    [200.0, 19.0],
+                    [300.0, 20.0],
+                    [1000.0, 19.0],
+                ],
+            },
+            tail,
+        ]);
+        // the element itself: its published loss within the equalizer's fit, never a gain
+        let fs = 1.0 / DT;
+        let eq = crate::silencer2d::measured_eq(
+            &[[100.0, 15.0], [200.0, 19.0], [300.0, 20.0], [1000.0, 19.0]],
+            fs,
+        );
+        for (f, want) in [(100.0, 15.0), (300.0, 20.0), (1000.0, 19.0), (2000.0, 19.0)] {
+            let db = eq.response_db(f, fs);
+            assert!(
+                (db + want).abs() < 2.0,
+                "{f} Hz: {db:.1} dB, published −{want}"
+            );
+        }
+        // below the first point the loss falls away: a compliance passes the lowest orders
+        let db = eq.response_db(50.0, fs);
+        assert!(db > -12.0 && db < -4.0, "50 Hz: {db:.1} dB");
+        let mut f = 20.0;
+        while f < 0.45 * fs {
+            assert!(eq.response_db(f, fs) <= 0.1, "{f} Hz: gain");
+            f *= 1.1;
+        }
+        // through the net, between the open end's echoes: the measured line is the quieter
+        for f in [300.0, 1000.0] {
+            let db = 20.0 * (tone_through(&measured, f) / tone_through(&plain, f)).log10();
+            assert!(
+                db < -12.0 && db > -32.0,
+                "{f} Hz: {db:.1} dB through the line"
+            );
+        }
+    }
+
+    #[test]
+    fn a_measured_chamber_round_trips() {
+        let def = with_path(vec![
+            Segment::Measured {
+                length_m: 0.2,
+                bore_m: 0.085,
+                transmission_loss_db: vec![[100.0, 15.0], [1000.0, 19.0]],
+            },
+            Segment::Pipe {
+                length_m: 0.1,
+                diameter_m: 0.06,
+            },
+        ]);
+        let json: ExhaustDef = serde_json::from_str(&serde_json::to_string(&def).unwrap()).unwrap();
+        assert_eq!(json, def);
+        let yaml: ExhaustDef =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&def).unwrap()).unwrap();
+        assert_eq!(yaml, def);
+        assert_eq!(def.outlet_diameter(), 0.06);
+        assert_eq!(exit_diameter(&def.after_collector[..1]), 0.085);
     }
 
     #[test]

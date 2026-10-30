@@ -61,6 +61,7 @@ fn segments_editor(ui: &mut egui::Ui, x: &mut engine_core::exhaust::ExhaustDef) 
                             Segment::Muffler { .. } => "Silencer",
                             Segment::Catalyst { .. } => "Catalyst",
                             Segment::Resonator { .. } => "Resonator",
+                            Segment::Measured { .. } => "Measured silencer",
                         };
                         ui.strong(format!("{tag} {name}"));
                         if ui
@@ -135,6 +136,18 @@ fn segments_editor(ui: &mut egui::Ui, x: &mut engine_core::exhaust::ExhaustDef) 
                                 0.1,
                                 &format!("{tag} cavity (L)"),
                             );
+                        }
+                        Segment::Measured {
+                            length_m,
+                            bore_m,
+                            transmission_loss_db,
+                        } => {
+                            mm(ui, length_m, 50.0..=1200.0, "length");
+                            mm(ui, bore_m, 15.0..=150.0, "bore Ø");
+                            ui.label(format!(
+                                "{tag} published loss: {} points (from the engine file)",
+                                transmission_loss_db.len()
+                            ));
                         }
                     }
                 });
