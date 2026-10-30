@@ -949,3 +949,24 @@ runners' half-wave coinciding with the firing frequency at 6700 rpm, put the fir
 in the air; the exhaust had been without it all along.
 
 Found: 2026-10-29 · physics
+
+## The gear-change thump was the torque cut blanking single charges out (2026-10-30)
+
+**Symptom.** Every upshift of the gears render had a dull LF thump: 20–200 Hz 8–13 dB over the steady
+mid/high bands for ≈ 80 ms, once as the cut ramped in and once as it ramped out (peak 117–234 Hz).
+**Cause (measured).** The ECU took a cut past the spark's reach (31 %) by blanking out charges,
+an accumulator spreading them evenly: as the share swept 0 → 1 in 70 ms the skip pattern swept a
+tone of f_firing × share through 0–333 Hz. The exhaust net carries the sub-firing orders far better
+than the firing order (FINDINGS above, 2026-10-29): held at 6000 rpm with a quarter of the charges
+blanked out, the 125 Hz line came out 7 dB *over* the whole engine's firing order (an ideal train
+gives −12 dB); half blanked out kills one bank (they alternate) and its 250 Hz line is 9 dB over.
+Spark retard alone left no thump, but with the pedal down the clutch-open engine flared into the
+limiter, whose cut-off made the same thump. Ruled out: nonlinear quasi-steady losses at the duct
+area changes, a second catalyst per bank, the Rao–Munjal grazing-flow resistance of the baffle
+(each moved the orders < 1.5 dB with the fitted geometry).
+**Fix.** The ECU's two channels (Bosch, *Gasoline Engine Management*, torque structure): the air
+channel trims the electronic throttle on a charge loop to the charge whose most retarded burn
+gives the cut's share; the crank-synchronous channel retards the spark on the charge it has. A
+full cut is a zero-torque request — closed throttle at speed — which the overrun cut-off answers by
+cutting every injection at once. No single charge is blanked out. Per shift the LF peak over the
+steady level went 8.6/8.3/11.2/12.6/12.8 → 1.2/1.6/0.9/3.7/5.4 dB.

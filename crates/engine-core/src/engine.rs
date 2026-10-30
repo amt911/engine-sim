@@ -889,8 +889,11 @@ pub struct Controls {
     /// through a locked clutch, see `drivetrain`). Default 0.
     pub extra_inertia_kgm2: f64,
     /// Share of the engine's torque the gearbox asks the ECU to take away, 0..=1 (a shift's
-    /// torque intervention): the ECU retards the spark, then blanks out injections
-    /// ([`retard_for`], [`MAX_RETARD_DEG`]). Default 0.
+    /// torque intervention), on both of its channels (Bosch, *Gasoline Engine Management*,
+    /// torque structure): the air channel closes the electronic throttle to the pedal less
+    /// that share, and the crank-synchronous one retards the spark meanwhile ([`retard_for`],
+    /// [`MAX_RETARD_DEG`]). A full cut asks for no torque: a closed throttle at speed, which
+    /// the overrun cut-off answers by cutting the fuel. Default 0.
     pub torque_cut: f64,
 }
 
@@ -1197,23 +1200,29 @@ pub fn retard_for(efficiency: f64) -> f64 {
 }
 
 /// The most spark retard a torque cut takes, ° crank: the end of the data behind Heywood's
-/// fit (Fig. 9.16, combustion retard to 40°). Below what it leaves, the ECU blanks out
-/// injections, whose efficiency is the share of charges still fired (Bosch, *Gasoline Engine
-/// Management*, "torque structure": ignition-timing and blank-out efficiencies).
+/// fit (Fig. 9.16, combustion retard to 40°). What it cannot take the air channel does
+/// ([`Controls::torque_cut`]).
 pub const MAX_RETARD_DEG: f64 = 40.0;
 
-/// A torque cut as the ECU carries it out: (spark retard, ° crank; share of charges blanked
-/// out). The retard alone takes it down to `ignition_efficiency(MAX_RETARD_DEG)`; the rest is
-/// blank-out at that retard.
-fn torque_intervention(cut: f64) -> (f64, f64) {
+/// The crank-synchronous channel of a torque cut: the spark retard, ° crank, that takes away
+/// what the charge left (`charge_share` of the charge before the cut) holds above the cut's
+/// share, down to `ignition_efficiency(MAX_RETARD_DEG)` (Bosch: it "uses the cylinder charge
+/// currently available"). The air channel closes the throttle on the rest
+/// ([`Controls::torque_cut`]), so no charge is ever blanked out on its own:
+/// skipping single charges at speed would beat the firing pattern into the sub-firing orders
+/// the exhaust carries best (measured: a quarter blanked out at 6000 rpm put its 125 Hz line
+/// 7 dB over the whole engine's firing order).
+fn torque_intervention(cut: f64, charge_share: f64) -> f64 {
     let keep = 1.0 - cut.clamp(0.0, 1.0);
     let floor = ignition_efficiency(MAX_RETARD_DEG);
-    if keep >= floor {
-        (retard_for(keep), 0.0)
-    } else {
-        (MAX_RETARD_DEG, 1.0 - keep / floor)
-    }
+    retard_for((keep / charge_share.max(f64::MIN_POSITIVE)).clamp(floor, 1.0))
 }
+
+/// The air channel's charge loop: the throttle trim's rate per unit of charge-share error, 1/s.
+/// ESTIMATE: as fast as the charge answers (one intake stroke, ≈ 20 ms at 6000 rpm) allows.
+const AIR_TRIM_GAIN: f64 = 25.0;
+/// Weight of each new charge in the air channel's pre-cut reference.
+const CHARGE_REF_WEIGHT: f64 = 0.1;
 
 fn mean_piston_speed(stroke_m: f64, omega: f64) -> f64 {
     2.0 * stroke_m * omega.abs() / (2.0 * PI)
@@ -1251,8 +1260,6 @@ struct CylinderState {
     /// The charge trapped at intake closing still awaits its spark: one spark per charge,
     /// whatever the ECU does with the timing meanwhile.
     armed: bool,
-    /// This cycle's charge blanked out by a torque cut: no injection.
-    blanked: bool,
     /// Gas temperature in this cylinder's exhaust primary, and the primary's wall temperature,
     /// K: what reversion pushes back, and how much volume it is.
     port_t: f64,
@@ -1482,9 +1489,12 @@ pub struct Engine {
     /// The ECU's injection cut-offs, each with its hysteresis: overrun (pedal released at
     /// speed) and the speed limiter.
     overrun_cut: bool,
-    /// Blank-out owed by a torque cut, in charges: each charge adds the cut's share and is
-    /// blanked out when a whole one is owed, so the blanked charges spread evenly.
-    blank_owed: f64,
+    /// The ECU's air channel during a torque cut: the trapped charge it last saw, as a share
+    /// of the charge before the cut (`charge_ref`, kg), and the trim on the pedal's throttle
+    /// its charge loop holds.
+    charge_ref: f64,
+    charge_share: f64,
+    air_trim: f64,
     limiter_cut: bool,
     /// The idle-speed control's spark trim, degrees (negative = retarded); 0 off idle.
     idle_spark_deg: f64,
@@ -1667,7 +1677,6 @@ impl Engine {
                     flame: 1.0,
                     charge_bias: 1.0,
                     armed: false,
-                    blanked: false,
                     port_t: PIPE_COLD_K,
                     port_flow: 0.0,
                     valve_hint: f64::NAN,
@@ -1722,7 +1731,9 @@ impl Engine {
             plate: 0.0,
             iac_last_rpm: initial_rpm,
             overrun_cut: false,
-            blank_owed: 0.0,
+            charge_ref: 0.0,
+            charge_share: 1.0,
+            air_trim: 1.0,
             limiter_cut: false,
             combustions: 0,
             wall_heat_j: 0.0,
@@ -1974,12 +1985,22 @@ impl Engine {
         let g = self.def.geometry;
         let crank_deg = self.theta.to_degrees();
         let rpm_now = self.rpm();
+        // the ECU's throttle demand: the pedal, trimmed by a torque cut's air channel towards
+        // the charge whose most retarded burn gives the cut's share
+        let cut = c.torque_cut.clamp(0.0, 1.0);
+        self.air_trim = if cut > 0.0 {
+            let want = ((1.0 - cut) / ignition_efficiency(MAX_RETARD_DEG)).min(1.0);
+            (self.air_trim + AIR_TRIM_GAIN * dt * (want - self.charge_share)).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let demand = c.throttle * self.air_trim;
         // the ECU first decides whether it injects, then trims the idle accordingly
-        self.fuel_cutoffs(c.throttle);
+        self.fuel_cutoffs(demand);
         self.idle_control(dt, c);
-        self.plate_step(c.throttle, dt);
+        self.plate_step(demand, dt);
         self.dashpot_step(self.plate, dt);
-        self.valve_control(rpm_now, c.throttle, dt);
+        self.valve_control(rpm_now, demand, dt);
         let (intake_valve, exhaust_valve) = self.valves();
         let ivc = crate::units::wrap(intake_valve.open_deg + intake_valve.duration_deg, 720.0);
         let evc = crate::units::wrap(exhaust_valve.open_deg + exhaust_valve.duration_deg, 720.0);
@@ -2048,10 +2069,7 @@ impl Engine {
 
         let mut gas_torque = 0.0;
         let reserve = idle_reserve(self.rpm());
-        let (retard, blank_share) = torque_intervention(c.torque_cut);
-        if blank_share <= 0.0 {
-            self.blank_owed = 0.0;
-        }
+        let retard = torque_intervention(c.torque_cut, self.charge_share);
         let n_cyl = self.cyl.len();
         for i in 0..n_cyl {
             let arriving = match (&self.net, &self.remote.0) {
@@ -2161,7 +2179,7 @@ impl Engine {
                 // port injection: the charge carries fuel unless the ECU cuts it
                 let fresh = Composition {
                     burned: 0.0,
-                    fuelled: if inject && !cs.blanked { 1.0 } else { 0.0 },
+                    fuelled: if inject { 1.0 } else { 0.0 },
                 };
                 cylinder_flow(cs, &th, into_cyl, fresh);
             }
@@ -2269,15 +2287,19 @@ impl Engine {
             }
             if crossed(prev, cur, evc) {
                 cs.residual_kg = cs.gas.mass_kg;
-                // the next charge: fired, or blanked out by a torque cut
-                self.blank_owed += blank_share;
-                cs.blanked = self.blank_owed >= 1.0;
-                if cs.blanked {
-                    self.blank_owed -= 1.0;
-                }
             }
             if crossed(prev, cur, ivc) {
                 cs.trapped_kg = cs.gas.mass_kg;
+                // the air channel's measure: this charge against the charges before the cut
+                if cut > 0.0 && self.charge_ref > 0.0 {
+                    self.charge_share = cs.trapped_kg / self.charge_ref;
+                } else if cut > 0.0 {
+                    // cut from the start: the first charge, still at the pedal's throttle
+                    self.charge_ref = cs.trapped_kg;
+                } else {
+                    self.charge_ref += (cs.trapped_kg - self.charge_ref) * CHARGE_REF_WEIGHT;
+                    self.charge_share = 1.0;
+                }
                 cs.armed = true;
                 // The ECU meters the fuel for a stoichiometric charge of the fresh air it
                 // finds, compensating the port film (Aquino); a cut injects nothing and the film
@@ -2286,7 +2308,7 @@ impl Engine {
                 let air = fresh * AFR_STOICH / (1.0 + AFR_STOICH);
                 let film_x =
                     crate::fuel::deposit_fraction(film_x, cs.gas.pressure(), self.omega.abs());
-                let fuel = if inject && !cs.blanked {
+                let fuel = if inject {
                     cs.film.meter(air / AFR_STOICH, film_x, film_share).1
                 } else {
                     cs.film.intake(0.0, film_x, film_share)
@@ -3307,11 +3329,11 @@ mod tests {
     }
 
     #[test]
-    fn a_torque_cut_retards_the_spark_then_blanks_out_cylinders() {
+    fn a_torque_cut_closes_the_throttle_and_retards_the_spark() {
         // what the engine gives at a cut is the share of the way from motoring (every charge
-        // blanked out) to full power that the cut leaves: 20 % by spark retard alone, 70 % by
-        // the most retard plus blanking out the charges left over (Bosch, *Gasoline Engine
-        // Management*, torque structure: ignition-timing and blank-out efficiencies)
+        // cut off) to full power that the cut leaves: the ECU's air channel closes the
+        // electronic throttle and its crank-synchronous channel retards the spark (Bosch,
+        // *Gasoline Engine Management*, torque structure), never blanking single charges out
         let torque = |cut: f64| {
             let mut e = Engine::new(EngineDef::lfa_v10(), 6000.0, 1);
             let c = Controls {
@@ -3357,6 +3379,38 @@ mod tests {
             }
             at
         };
+        // the air channel: the plate follows the pedal less the cut
+        let mut e = Engine::new(EngineDef::lfa_v10(), 6000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(6000.0),
+            torque_cut: 0.7,
+            ..Controls::default()
+        };
+        run(&mut e, 0.4, &c);
+        // the charge settles where the most retarded burn gives the cut's share: 0.3/0.69
+        let want = 0.3 / ignition_efficiency(MAX_RETARD_DEG);
+        assert!(e.plate < 0.9, "plate {}", e.plate);
+        assert!(
+            (e.charge_share - want).abs() < 0.1 * want,
+            "{} vs {want}",
+            e.charge_share
+        );
+        assert!(!e.overrun_cut, "a partial cut keeps the fuel on");
+        // a full cut is a zero torque request: closed throttle at speed, the overrun fuel cut
+        let c = Controls {
+            torque_cut: 1.0,
+            ..c
+        };
+        run(&mut e, 0.4, &c);
+        assert!(
+            e.overrun_cut,
+            "a full cut at 6000 rpm cuts the fuel as overrun"
+        );
+        // the spark takes what the charge holds over the cut's share, no more than its most
+        assert!((torque_intervention(0.7, 1.0) - MAX_RETARD_DEG).abs() < 1e-9);
+        assert!((torque_intervention(0.2, 1.0) - retard_for(0.8)).abs() < 1e-9);
+        assert_eq!(torque_intervention(0.5, 0.5), 0.0, "the air took it all");
         let (early, late) = (peak_deg(0.0), peak_deg(0.2));
         assert!(late - early > 10.0, "peak at {early:.1}° → {late:.1}°");
         let (full, motoring) = (torque(0.0), torque(1.0));
