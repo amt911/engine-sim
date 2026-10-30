@@ -1084,3 +1084,13 @@ gives order 20 −8 dB and leaves the rest. A real body leaks round its sides (z
 its open floor, which one top edge does not model; the remaining order-20 excess is the exhaust's
 own (exhaust alone at 8000 rpm: H2 −11.5 dB, still over). Patch kept out of tree:
 `body-screen.patch` (Listener::with_body_edge, VehicleDef::rear_height_m) in the session scratchpad.
+
+## The dyno recordings' level between the LFA's firing orders is the dyno cell, not the engine (2026-10-30)
+
+Fitting orders 1–40 to the two dyno clips left cycle orders 11–29 10–15 dB under the recordings
+(median −33 against −19…−23 re H1), and no exhaust geometry moved them. In those clips the level
+at the half orders between (o + ½) is only 1.5–3 dB under the integer orders (−25/−20 against
+−23/−19): a broadband floor (rollers, tyres, the cell's reverb), not engine orders. The two road
+clips (`accel`, `flight`) give −32/−29 at the orders and −36/−33 between, where the render sits
+(−33/−39). Fit inter-harmonic orders against road clips only; from the dyno clips take the firing
+harmonics alone. Tool: `offord.py` beside `ord40.py` in the session scratchpad.
