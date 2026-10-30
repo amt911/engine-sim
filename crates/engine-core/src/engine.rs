@@ -461,20 +461,27 @@ impl EngineDef {
             // Primary length not published: the second return of the blowdown's reflection
             // reaches the port at the overlap at the 8700 rpm power peak — 2·(2L)/c = (360° −
             // EVO)/(6N) with c ≈ 600 m/s in ~900 K gas (Blair, Design and Simulation of
-            // Four-Stroke Engines, ch. 6): L = 0.675 m. Bores estimated.
+            // Four-Stroke Engines, ch. 6): L = 0.675 m, a first guess; 0.8 m from the fit to the recordings (2026-10-30: the dyno and onboard clips' harmonics, half orders and bands, and the patent's Fig. 8; every unknown kept inside its physical range).
+            // Bores estimated.
             exhaust: ExhaustDef {
-                primary_length_m: 0.675,
+                primary_length_m: 0.8,
                 primary_diameter_m: 0.042,
                 collectors: vec![vec![1, 2, 3, 4, 5], vec![6, 7, 8, 9, 10]],
-                collector_length_m: 0.3,
+                collector_length_m: 0.4125,
                 collector_diameter_m: 0.065,
-                // the banks' lines are equal "within 500 mm" (JP 2008-180136 A): 10 cm is an ESTIMATE
-                // inside that bound. Identical lines cancel the half orders where the banks meet
-                // (held 6700 WOT: order 5 at −35 dB vs the dyno clip's −14.5; with 10 cm −11 dB)
-                collector_extra_length_m: vec![0.0, 0.10],
-                primary_length_deviation_m: Vec::new(),
+                // the banks' lines are equal "within 500 mm" (JP 2008-180136 A): 7 cm is an ESTIMATE
+                // inside that bound, from the fit. Identical lines cancel the half orders where
+                // the banks meet (held 6700 WOT: order 5 at −35 dB vs the dyno clip's −14.5)
+                collector_extra_length_m: vec![0.0, 0.07],
+                // the equal-length primaries as built: ±3 cm (σ 1.8 cm), an ESTIMATE. Identical
+                // ones leave the cycle orders between the firing harmonics 8–12 dB under the dyno
+                // clip's (−19…−26 dB re H1) and its half orders 6 dB over; these bring both to it
+                // (held through the gears: half orders −7 dB, floor −21 dB) and were picked by ear
+                primary_length_deviation_m: vec![
+                    0.016, -0.024, 0.006, 0.030, -0.012, -0.018, 0.022, -0.004, 0.010, -0.026,
+                ],
                 // the bank line below, catalyst to muffler
-                tail_length_m: 0.50 + 0.38 + 1.10,
+                tail_length_m: 0.50 + 0.38 + 0.80,
                 tail_diameter_m: 0.070,
                 // Sport muffler with bypass valves: less damping than a road car.
                 muffler_transmission: 1.0,
@@ -512,7 +519,7 @@ impl EngineDef {
                 // the chamber is wrapped in glass wool (cutting it above ≈ 1 kHz).
                 merge: Some(crate::exhaust::Merge {
                     segments: vec![Segment::Pipe {
-                        length_m: 0.15,
+                        length_m: 0.0625,
                         diameter_m: 0.085,
                     }],
                     // three tips of 60 mm bore inside the 105 mm trims: their area as one
@@ -529,7 +536,7 @@ impl EngineDef {
                             },
                             Segment::Pipe {
                                 length_m: 0.30,
-                                diameter_m: 0.05,
+                                diameter_m: 0.04125,
                             },
                             Segment::Muffler {
                                 length_m: 0.12,
@@ -540,7 +547,7 @@ impl EngineDef {
                             },
                             Segment::Pipe {
                                 length_m: 0.55,
-                                diameter_m: 0.05,
+                                diameter_m: 0.04125,
                             },
                             Segment::Muffler {
                                 length_m: 0.12,
@@ -551,32 +558,41 @@ impl EngineDef {
                             },
                             Segment::Pipe {
                                 length_m: 0.30,
-                                diameter_m: 0.05,
+                                diameter_m: 0.04125,
                             },
                         ],
                         open: vec![Segment::Pipe {
-                            length_m: 0.10,
+                            length_m: 0.1625,
                             diameter_m: 0.085,
                         }],
                         // final chamber (30): a sphere of ≈ 0.30 m (ESTIMATE, the patent's Fig. 1
                         // against the 60 mm tips) as a cylinder of its volume
-                        tips: vec![Segment::Muffler {
-                            length_m: 0.20,
-                            diameter_m: 0.30,
-                            tube_diameter_m: 0.0,
-                            packing_resistivity: 0.0,
-                            packing_porosity: 1.0,
+                        // carried as its published loss (JP 2008-169751 A, Fig. 6), which no 1D
+                        // chamber gives (`Segment::Measured`)
+                        tips: vec![Segment::Measured {
+                            length_m: 0.25,
+                            bore_m: 0.085,
+                            transmission_loss_db: vec![
+                                [50.0, 8.0],
+                                [100.0, 15.0],
+                                [150.0, 17.5],
+                                [200.0, 18.5],
+                                [300.0, 20.0],
+                                [500.0, 21.0],
+                                [700.0, 20.5],
+                                [1000.0, 19.0],
+                            ],
                         }],
                         // L₁ = 0.08 m above, L₂ = 0.23 m below (Fig. 1's proportion, ≈ 2.9·L₁;
                         // the claim: L₂ ≥ 2·L₁), 60 mm bores; the lower one packed along its
                         // part inside the final chamber (56, 58: about half of it in Fig. 1)
                         outlets: vec![
                             vec![Segment::Pipe {
-                                length_m: 0.08,
+                                length_m: 0.13,
                                 diameter_m: 0.060,
                             }],
                             vec![Segment::Pipe {
-                                length_m: 0.08,
+                                length_m: 0.13,
                                 diameter_m: 0.060,
                             }],
                             vec![
@@ -588,14 +604,14 @@ impl EngineDef {
                                     packing_porosity: 0.95,
                                 },
                                 Segment::Pipe {
-                                    length_m: 0.11,
+                                    length_m: 0.235,
                                     diameter_m: 0.060,
                                 },
                             ],
                         ],
                         // the small holes into the side chambers: ESTIMATE, a typical
                         // perforated baffle's open area
-                        baffle_open_area: 0.1,
+                        baffle_open_area: 0.03,
                         open_rpm: 3000.0,
                         // a vacuum diaphragm actuator: ESTIMATE
                         travel_s: 0.3,
@@ -604,14 +620,12 @@ impl EngineDef {
             },
             // Ten ITBs (Toyota). Runner length not published: Helmholtz-tuned to the torque peak
             // (Engelman: f = (a/2π)·√(A/(L·V)), V = V_d/2·(r + 1)/(r − 1), tuned at twice the
-            // revolution frequency at 6800 rpm, 226.7 Hz; 45 mm bore): L = 0.325 m.
-            // The ten trumpets really draw from one surge tank on top of the V
-            // (`AirboxDef::lfa_v10_estimate`); not wired in: with only its inlet ducts
-            // radiating, the render loses the firing order at 6700 rpm WOT that the trumpets
-            // carried (docs/FINDINGS.md, 2026-10-29). No tank geometry gives it back (the ducts
-            // pass −24 dB at 558 Hz whatever their tuning): the exhaust net itself has to carry
-            // it, and its transfer sits 10–30 dB down at the firing order against the other
-            // orders (FINDINGS, "The exhaust net's transfer swings ±20 dB", 2026-10-29).
+            // revolution frequency at 6800 rpm, 226.7 Hz; 45 mm bore): L = 0.325 m. (The fit to
+            // the recordings liked 0.45 m, which tunes the peak to 5000 rpm and the power to
+            // 6500: not the published curve.) The ten trumpets draw from
+            // one surge tank on top of the V (`AirboxDef::lfa_v10_estimate`); not wired in: it costs 12 hp at the top (476 hp against the published 552), and the fit's
+            // render sounds the same without it (2026-10-30). Its ducts alone pass little of
+            // the firing order (−24 dB at 558 Hz, FINDINGS 2026-10-29).
             intake: IntakeDef {
                 model: IntakeModel::Fv,
                 runner_length_m: 0.325,
@@ -6944,8 +6958,11 @@ mod tests {
             );
         }
         assert_eq!(EngineDef::inline4().exhaust.tail_length_m, 1.5);
-        // the LFA's bank line, catalyst to muffler: 0.50 + 0.38 (sub muffler) + 1.10 m
-        assert_eq!(EngineDef::lfa_v10().exhaust.tail_length_m, 1.98);
+        // the LFA's bank line, catalyst to muffler: 0.50 + 0.38 (sub muffler) + 0.80 m
+        assert_eq!(
+            EngineDef::lfa_v10().exhaust.tail_length_m,
+            0.50 + 0.38 + 0.80
+        );
     }
 
     #[test]

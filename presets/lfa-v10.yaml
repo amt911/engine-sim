@@ -49,7 +49,7 @@ engine:
   idle_throttle: 0.0021333333333333334
   idle_rpm: 900.0
   exhaust:
-    primary_length_m: 0.675
+    primary_length_m: 0.8
     primary_diameter_m: 0.042
     collectors:
     - - 1
@@ -62,12 +62,23 @@ engine:
       - 8
       - 9
       - 10
-    collector_length_m: 0.3
+    collector_length_m: 0.4125
     collector_diameter_m: 0.065
     collector_extra_length_m:
     - 0.0
-    - 0.1
-    tail_length_m: 1.98
+    - 0.07
+    primary_length_deviation_m:
+    - 0.016
+    - -0.024
+    - 0.006
+    - 0.03
+    - -0.012
+    - -0.018
+    - 0.022
+    - -0.004
+    - 0.01
+    - -0.026
+    tail_length_m: 1.6800000000000002
     tail_diameter_m: 0.07
     muffler_transmission: 1.0
     model: waveguide
@@ -84,12 +95,12 @@ engine:
       cells_per_in2: 400.0
       wall_m: 0.000165
     - kind: pipe
-      length_m: 1.98
+      length_m: 1.6800000000000002
       diameter_m: 0.07
     merge:
       segments:
       - kind: pipe
-        length_m: 0.15
+        length_m: 0.0625
         diameter_m: 0.085
       outlet_diameter_m: 0.10392304845413262
       bypass:
@@ -102,7 +113,7 @@ engine:
           packing_porosity: 1.0
         - kind: pipe
           length_m: 0.3
-          diameter_m: 0.05
+          diameter_m: 0.04125
         - kind: muffler
           length_m: 0.12
           diameter_m: 0.22
@@ -111,7 +122,7 @@ engine:
           packing_porosity: 1.0
         - kind: pipe
           length_m: 0.55
-          diameter_m: 0.05
+          diameter_m: 0.04125
         - kind: muffler
           length_m: 0.12
           diameter_m: 0.22
@@ -120,24 +131,38 @@ engine:
           packing_porosity: 1.0
         - kind: pipe
           length_m: 0.3
-          diameter_m: 0.05
+          diameter_m: 0.04125
         open:
         - kind: pipe
-          length_m: 0.1
+          length_m: 0.1625
           diameter_m: 0.085
         tips:
-        - kind: muffler
-          length_m: 0.2
-          diameter_m: 0.3
-          tube_diameter_m: 0.0
-          packing_resistivity: 0.0
-          packing_porosity: 1.0
+        - kind: measured
+          length_m: 0.25
+          bore_m: 0.085
+          transmission_loss_db:
+          - - 50.0
+            - 8.0
+          - - 100.0
+            - 15.0
+          - - 150.0
+            - 17.5
+          - - 200.0
+            - 18.5
+          - - 300.0
+            - 20.0
+          - - 500.0
+            - 21.0
+          - - 700.0
+            - 20.5
+          - - 1000.0
+            - 19.0
         outlets:
         - - kind: pipe
-            length_m: 0.08
+            length_m: 0.13
             diameter_m: 0.06
         - - kind: pipe
-            length_m: 0.08
+            length_m: 0.13
             diameter_m: 0.06
         - - kind: muffler
             length_m: 0.12
@@ -146,9 +171,9 @@ engine:
             packing_resistivity: 16000.0
             packing_porosity: 0.95
           - kind: pipe
-            length_m: 0.11
+            length_m: 0.235
             diameter_m: 0.06
-        baffle_open_area: 0.1
+        baffle_open_area: 0.03
         open_rpm: 3000.0
         travel_s: 0.3
     steepening: true
