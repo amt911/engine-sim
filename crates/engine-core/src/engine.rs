@@ -427,7 +427,9 @@ impl EngineDef {
             // area): 41.2 mm. Lift: a quarter of each valve's diameter, where the curtain area
             // reaches the port's (8.8 mm per intake valve; the equivalent valve's lift keeps the
             // two valves' curtain area). Timing: Heywood's typical high-output values
-            // (IVO 20° BTDC, IVC 70° ABDC, EVO 55° BBDC, EVC 30° ATDC).
+            // (IVO 20° BTDC, IVC 70° ABDC); the exhaust's EVO 49° BBDC, EVC 23° ATDC fitted
+            // within the usual 40–70° / 10–45° to the recordings' firing harmonics and the
+            // patent's muffler response, the power held in the published range.
             intake_valve: ValveTiming {
                 open_deg: 340.0,
                 duration_deg: 270.0,
@@ -436,8 +438,8 @@ impl EngineDef {
                 high: None,
             },
             exhaust_valve: ValveTiming {
-                open_deg: 125.0,
-                duration_deg: 265.0,
+                open_deg: 131.0,
+                duration_deg: 252.0,
                 max_lift_m: 0.0103,
                 diameter_m: 0.0412,
                 high: None,

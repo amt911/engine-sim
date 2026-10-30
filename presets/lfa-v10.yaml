@@ -37,8 +37,8 @@ engine:
     max_lift_m: 0.0124
     diameter_m: 0.0496
   exhaust_valve:
-    open_deg: 125.0
-    duration_deg: 265.0
+    open_deg: 131.0
+    duration_deg: 252.0
     max_lift_m: 0.0103
     diameter_m: 0.0412
   spark_advance_deg: 28.0
