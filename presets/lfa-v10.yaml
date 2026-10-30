@@ -100,7 +100,7 @@ engine:
     merge:
       segments:
       - kind: pipe
-        length_m: 0.0625
+        length_m: 0.15625
         diameter_m: 0.085
       outlet_diameter_m: 0.10392304845413262
       bypass:
@@ -171,7 +171,7 @@ engine:
             packing_resistivity: 16000.0
             packing_porosity: 0.95
           - kind: pipe
-            length_m: 0.235
+            length_m: 0.185
             diameter_m: 0.06
         baffle_open_area: 0.03
         open_rpm: 3000.0

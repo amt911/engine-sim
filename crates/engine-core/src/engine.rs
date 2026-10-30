@@ -519,7 +519,7 @@ impl EngineDef {
                 // the chamber is wrapped in glass wool (cutting it above ≈ 1 kHz).
                 merge: Some(crate::exhaust::Merge {
                     segments: vec![Segment::Pipe {
-                        length_m: 0.0625,
+                        length_m: 0.15625,
                         diameter_m: 0.085,
                     }],
                     // three tips of 60 mm bore inside the 105 mm trims: their area as one
@@ -604,7 +604,7 @@ impl EngineDef {
                                     packing_porosity: 0.95,
                                 },
                                 Segment::Pipe {
-                                    length_m: 0.235,
+                                    length_m: 0.185,
                                     diameter_m: 0.060,
                                 },
                             ],
