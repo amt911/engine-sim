@@ -1071,3 +1071,16 @@ structure: blank-out "when the engine is overrunning"): the cut-off reads the pe
 cut closes the plate and keeps the charges burning, retarded. LF peak at the cut-in re the steady
 level, `shiftlf.py` on the fitted LFA, upshifts: +11.5/+2.8/+5.8/+6.8 → +2.2/−7.8/−9.9/−15.9 dB
 (real car on its dyno: −14…−17).
+
+## The car's body as a screen makes the LFA heard from behind worse, not better (2026-10-30)
+
+The LFA's 2nd firing harmonic (cycle order 20) is 6–12 dB over the recordings' through the gears
+(−5 dB re H1 against −11/−17), and the block carries part of it (block off: −3 dB). The rear body
+as one diffracting edge (ISO 9613-2 eq. (14), D_z = 10·lg(3 + 20z/λ); rear edge 1.0 m, engine
+3.2 m ahead, ear 2.5 m behind: z ≈ 0.12 m, 6–15 dB from 125 Hz to 4 kHz) on the block *and* the
+intake mouth moved order 20 by 1 dB and took H1 with it: the intake mouth carries much of H1, the
+half orders rose −10.7 → −5.9 dB and H3/H4 rose to −3 dB re H1. Screening only the block (−10 dB)
+gives order 20 −8 dB and leaves the rest. A real body leaks round its sides (z ≈ 0.31 m) and under
+its open floor, which one top edge does not model; the remaining order-20 excess is the exhaust's
+own (exhaust alone at 8000 rpm: H2 −11.5 dB, still over). Patch kept out of tree:
+`body-screen.patch` (Listener::with_body_edge, VehicleDef::rear_height_m) in the session scratchpad.
