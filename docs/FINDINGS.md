@@ -1035,3 +1035,24 @@ for a 0.2 s cut. And the muffler's total compliance (the shell, ≈ 70 L by Fig.
 fitted file.
 
 Found: 2026-10-30 · physics
+
+### The two candidates after it, measured against the real car's shifts (2026-10-30, later)
+
+Per-band 5 ms peaks at the cut-in, dB re the steady full-band level before the shift (real dyno
+clip, four upshifts, in the same brackets): 10–60 Hz / 60–200 Hz / 200–800 Hz.
+- As committed (measured final chamber, speed loop, injection latency): +8…+12 / −4…−9 / −7…0.
+- Real: −11…−24 / −14…−17 / −7…0.
+- (1) The muffler shell at the patent's ≈ 70 L (chambers 7/32/12 L, Ø0.30, short connections
+  for the plates' holes and pipes 36) instead of the fitted 16.7 L + sphere: +10…+13 / −5…−18 /
+  −5…+1 — no change on the thump, H2/H3 up to −7.7/−8.8 (real −10/−12). Not kept.
+- (2) The torque request answered by 40° retard + Bosch's injection blank-out (even accumulator)
+  with the throttle at the pedal, the air channel of c856392 removed: −3…+5 / +1…+3 / +2…+13.
+  Ten dB less infrasound (the throttle stays open, only the burnt→motored volume step is left),
+  but 8–10 dB more at 60–200 Hz and 5–13 at 200–800, the sub-firing beat of the skip pattern that
+  c856392 had measured: louder exactly where the ear is, 15–20 dB over the real car. Not kept;
+  the air channel stays. (1)+(2): the same as (2). Clips: `thump/shell.wav`, `blank.wav`,
+  `blank-shell.wav`; `target/tgt-thump/gears-blanking-rejected.mp3`.
+- What would meet the real numbers is a cut whose exhaust volume flow does not step within a
+  cycle: neither a complete fuel stop (any path) nor a skip pattern does that. The real 0.2 s
+  shift's torque trace (Glielmo Fig. 10c) is the next thing to match, with the exhaust mean
+  flow's time constant measured on the real clip at a shift (its 10–60 Hz stays 20 dB under).

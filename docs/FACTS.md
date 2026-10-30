@@ -332,3 +332,6 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
 - **Thump per build (5 ms LF peak over steady full-band / over steady LF, five shifts):** `ecu.wav`
   +6…+9 / +28…+31; measured chamber +9…+13 / +35; + injection latency +9…+13 / +34…+35; mass-flow
   source (reverted, see FINDINGS) −3…+6 / +24…+33.
+- **Real LFA shift, per band (5 ms peak at the cut-in re the steady full-band level, four dyno
+  upshifts):** 10–60 Hz −11…−24, 60–200 Hz −14…−17, 200–800 Hz −7…0 dB. Committed render +8…+12 /
+  −4…−9 / −7…0; blank-out torque cut −3…+5 / +1…+3 / +2…+13; 70 L shell +10…+13 / −5…−18 / −5…+1.
