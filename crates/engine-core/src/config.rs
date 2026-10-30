@@ -206,6 +206,9 @@ pub fn validate(def: &EngineDef) -> Result<(), ConfigError> {
             && x.collector_extra_length_m
                 .iter()
                 .all(|e| within(*e, 0.0, 5.0))
+            && x.primary_length_deviation_m
+                .iter()
+                .all(|e| e.abs() <= 0.25 * x.primary_length_m)
             && within(x.tail_length_m, 0.05, 20.0)
             && [
                 x.primary_diameter_m,
@@ -461,6 +464,10 @@ mod tests {
             (
                 "exhaust",
                 Box::new(|d| d.exhaust.collector_extra_length_m = vec![0.0, -0.5]),
+            ),
+            (
+                "exhaust",
+                Box::new(|d| d.exhaust.primary_length_deviation_m = vec![0.0, -0.4]),
             ),
             (
                 "exhaust",

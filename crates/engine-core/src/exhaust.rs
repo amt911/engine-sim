@@ -75,6 +75,11 @@ pub struct ExhaustDef {
     /// (missing: none). Two banks are never exactly alike: their pulses meet a little apart, and
     /// a V engine's half orders come from that.
     pub collector_extra_length_m: Vec<f64>,
+    /// Each primary's length off `primary_length_m` as built, m, in cylinder order (missing:
+    /// none). Equal-length headers are equal only to their fabrication: pulses that reach the
+    /// collector a few tens of microseconds apart put energy in the cycle orders between the
+    /// firing harmonics and take it off their highs.
+    pub primary_length_deviation_m: Vec<f64>,
     pub tail_length_m: f64,
     pub tail_diameter_m: f64,
     /// Extra lumped loss on the tail pipe, amplitude kept per pass (1 = none). The muffler
@@ -527,6 +532,7 @@ impl Default for ExhaustDef {
             collector_length_m: 0.25,
             collector_diameter_m: 0.055,
             collector_extra_length_m: Vec::new(),
+            primary_length_deviation_m: Vec::new(),
             tail_length_m: 1.5,
             tail_diameter_m: 0.050,
             muffler_transmission: 1.0,
@@ -665,6 +671,17 @@ impl ExhaustDef {
         self.merge
             .as_ref()
             .map_or_else(|| self.outlet_diameter(), |m| m.outlet_diameter_m)
+    }
+
+    /// Length of cylinder `i`'s (0-based) primary, m: `primary_length_m` and its deviation,
+    /// if any.
+    pub fn primary_length(&self, i: usize) -> f64 {
+        self.primary_length_m
+            + self
+                .primary_length_deviation_m
+                .get(i)
+                .copied()
+                .unwrap_or(0.0)
     }
 
     /// Length of collector `branch`'s line, m: `collector_length_m` and its extra, if any.
@@ -1112,9 +1129,9 @@ impl ExhaustNet {
     /// [`ExhaustNet::new`] with the silencers' packing cut into `lining_m` segments.
     pub fn with_lining(def: &ExhaustDef, cylinders: usize, dt: f64, lining_m: f64) -> Self {
         let primaries = (0..cylinders)
-            .map(|_| {
+            .map(|i| {
                 Pipe::new(
-                    def.primary_length_m,
+                    def.primary_length(i),
                     def.primary_diameter_m,
                     C_PRIMARY,
                     dt,
@@ -2406,6 +2423,51 @@ mod tests {
         assert_eq!(arrival(&def, 0), arrival(&even, 0));
         let late = arrival(&def, 1) - arrival(&even, 1);
         assert!((late - 68.57).abs() <= 1.0, "{late} steps");
+    }
+
+    #[test]
+    fn a_primary_built_long_delays_its_own_pulses_only() {
+        // cylinder 2's primary 0.1 m long of the drawing: its pulses reach the open end
+        // 0.1/600 s later, 32 steps at 192 kHz (C_PRIMARY = 600 m/s); cylinder 1's are unchanged
+        let def = ExhaustDef {
+            collectors: vec![vec![1, 2]],
+            primary_length_deviation_m: vec![0.0, 0.1],
+            ..ExhaustDef::default()
+        };
+        let arrival = |d: &ExhaustDef, cyl: usize| {
+            let mut net = ExhaustNet::new(d, 2, DT);
+            let out: Vec<f64> = (0..20_000)
+                .map(|k| {
+                    let mut f = [0.0; 2];
+                    if k < 20 {
+                        f[cyl] = 2e-4;
+                    }
+                    net.step(&f)
+                })
+                .collect();
+            half_rise(&out, 1e-3).unwrap() as f64
+        };
+        let drawn = ExhaustDef {
+            primary_length_deviation_m: Vec::new(),
+            ..def.clone()
+        };
+        assert_eq!(arrival(&def, 0), arrival(&drawn, 0));
+        let late = arrival(&def, 1) - arrival(&drawn, 1);
+        assert!((late - 32.0).abs() <= 1.0, "{late} steps");
+    }
+
+    #[test]
+    fn primary_deviations_round_trip_and_default_to_none() {
+        let old: ExhaustDef = serde_yaml_ng::from_str("tail_length_m: 1.0\n").unwrap();
+        assert!(old.primary_length_deviation_m.is_empty());
+        let d = ExhaustDef {
+            primary_length_deviation_m: vec![0.016, -0.024],
+            ..ExhaustDef::default()
+        };
+        let j: ExhaustDef = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+        let y: ExhaustDef =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&d).unwrap()).unwrap();
+        assert_eq!((j, y), (d.clone(), d));
     }
 
     #[test]
