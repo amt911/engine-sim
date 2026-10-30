@@ -67,6 +67,10 @@ pub struct EngineDef {
     /// Intake system (0D plenum, or 1D runners with ITBs / plenum).
     pub intake: IntakeDef,
     pub redline_rpm: f64,
+    /// Speed at which the ECU shuts the fuel off (its rev limiter), rpm; 0: at the redline.
+    /// Files written before it existed limit at their redline.
+    #[serde(default)]
+    pub shutoff_rpm: f64,
     pub starter_torque_nm: f64,
     /// How the engine is built, for its friction by components (Patton–Nitschke–Heywood as
     /// improved by Sandoval & Heywood): valvetrain, followers, valves, crankpins, rings, oil.
@@ -201,6 +205,7 @@ impl EngineDef {
             friction: crate::friction::FrictionDef::default(),
             sound: SoundDef::default(),
             overrun_fuel_cut_rpm: 1500.0,
+            shutoff_rpm: 0.0,
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::single(),
         }
@@ -619,6 +624,8 @@ impl EngineDef {
             friction: crate::friction::FrictionDef::default(),
             sound: SoundDef::default(),
             overrun_fuel_cut_rpm: 1500.0,
+            // Okamoto et al., SAE 2011-01-2024, Table 1: red zone 9000 rpm, shutoff 9500
+            shutoff_rpm: 9500.0,
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::lfa_v10(),
         }
@@ -701,6 +708,7 @@ impl EngineDef {
             friction: crate::friction::FrictionDef::default(),
             sound: SoundDef::default(),
             overrun_fuel_cut_rpm: 1500.0,
+            shutoff_rpm: 0.0,
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::flatplane_v8(),
         }
@@ -787,6 +795,7 @@ impl EngineDef {
             },
             sound: SoundDef::default(),
             overrun_fuel_cut_rpm: 1300.0,
+            shutoff_rpm: 0.0,
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::crossplane_v8(),
         }
@@ -1916,7 +1925,11 @@ impl Engine {
             .min(cut - FUEL_CUT_HYSTERESIS_RPM);
         self.overrun_cut =
             cut > 0.0 && throttle <= 0.01 && (rpm > cut || (self.overrun_cut && rpm > resume));
-        let red = self.def.redline_rpm;
+        let red = if self.def.shutoff_rpm > 0.0 {
+            self.def.shutoff_rpm
+        } else {
+            self.def.redline_rpm
+        };
         self.limiter_cut = rpm >= red || (self.limiter_cut && rpm > red - LIMITER_HYSTERESIS_RPM);
     }
 
@@ -2004,7 +2017,7 @@ impl Engine {
         };
         let demand = c.throttle * self.air_trim;
         // the ECU first decides whether it injects, then trims the idle accordingly
-        self.fuel_cutoffs(demand);
+        self.fuel_cutoffs(c.throttle);
         self.idle_control(dt, c);
         self.plate_step(demand, dt);
         self.dashpot_step(self.plate, dt);
@@ -3413,15 +3426,18 @@ mod tests {
             e.charge_share
         );
         assert!(!e.overrun_cut, "a partial cut keeps the fuel on");
-        // a full cut is a zero torque request: closed throttle at speed, the overrun fuel cut
+        // a full cut closes the throttle but the pedal stays down: no overrun (that is the
+        // driver's lift; Bosch, torque structure: blank-out "when the engine is overrunning"),
+        // the charges keep burning, retarded, on what air the closed plate passes
         let c = Controls {
             torque_cut: 1.0,
             ..c
         };
         run(&mut e, 0.4, &c);
+        assert!(e.plate < 0.05, "plate {}", e.plate);
         assert!(
-            e.overrun_cut,
-            "a full cut at 6000 rpm cuts the fuel as overrun"
+            !e.overrun_cut,
+            "a full cut with the pedal down keeps the fuel on"
         );
         // the spark takes what the charge holds over the cut's share, no more than its most
         assert!((torque_intervention(0.7, 1.0) - MAX_RETARD_DEG).abs() < 1e-9);
@@ -4127,6 +4143,15 @@ mod tests {
         assert_eq!(at(&mut e, 1600.0, 0.0), (true, false));
         assert_eq!(at(&mut e, 1450.0, 0.0), (true, false));
         assert_eq!(at(&mut e, 1390.0, 0.0), (false, false));
+        // the LFA shuts its fuel off at its published shutoff speed, over its red zone
+        // (Okamoto et al., SAE 2011-01-2024, Table 1: red zone 9000 rpm, shutoff 9500 rpm)
+        let mut e = Engine::new(EngineDef::lfa_v10(), 9000.0, 1);
+        assert_eq!(
+            at(&mut e, 9300.0, 1.0),
+            (false, false),
+            "in the red zone, fuelled"
+        );
+        assert_eq!(at(&mut e, 9500.0, 1.0), (false, true));
     }
 
     #[test]

@@ -1056,3 +1056,18 @@ clip, four upshifts, in the same brackets): 10–60 Hz / 60–200 Hz / 200–800
   cycle: neither a complete fuel stop (any path) nor a skip pattern does that. The real 0.2 s
   shift's torque trace (Glielmo Fig. 10c) is the next thing to match, with the exhaust mean
   flow's time constant measured on the real clip at a shift (its 10–60 Hz stays 20 dB under).
+
+## The shift thump was the LFA's limiter at its red zone and an overrun cut on the ECU's own throttle (2026-10-30)
+
+**Measured** (ECU timeline per step through the first upshift): the cut ramps in while the clutch
+opens, the plate slews 0.1 s to close, the engine flares 8740 → 9046 rpm. The limiter sat at the
+redline (9000) and cut every injection; before it, the overrun cut-off read the ECU's trimmed
+throttle (the cut's air channel, c856392), not the pedal, and cut every injection as soon as a full
+cut closed the plate. Either way ten cylinders stopped burning within a cycle and the tails' mean
+flow stepped (39 → 2 kPa in 50 ms).
+**Fix.** `shutoff_rpm` (the ECU's fuel shutoff, 0 = at the redline): the LFA's is 9500 over a 9000
+red zone (Okamoto et al., SAE 2011-01-2024, Table 1). Overrun is the driver's lift (Bosch, torque
+structure: blank-out "when the engine is overrunning"): the cut-off reads the pedal; a shift's full
+cut closes the plate and keeps the charges burning, retarded. LF peak at the cut-in re the steady
+level, `shiftlf.py` on the fitted LFA, upshifts: +11.5/+2.8/+5.8/+6.8 → +2.2/−7.8/−9.9/−15.9 dB
+(real car on its dyno: −14…−17).
