@@ -183,17 +183,18 @@ impl ExhaustLink for ThreadLink {
 }
 
 use engine_core::fv::Cons;
-use engine_core::intake_fv::{MAX_SUBCYCLES, RunnerLink, RunnerResult, RunnerSet};
+use engine_core::intake_fv::{MAX_SUBCYCLES, RunnerLink, RunnerResult, RunnerSet, Upstream};
 
-/// A job for the runners: k, dt, the throttle area, each runner's valve flow (mass, energy).
+/// A job for the runners: k, dt, the throttle area, the upstream state (p, ρ), each runner's
+/// valve flow (mass, energy).
 fn runner_job_len(r: usize) -> usize {
-    3 + 2 * r
+    5 + 2 * r
 }
 
-/// A result: the largest stable step, the fluxes (room for the most substeps), each runner's
-/// last cell (3 values) and middle pressure.
+/// A result: the largest stable step, the mass fluxes then the energy fluxes (room for the
+/// most substeps), each runner's last cell (3 values) and middle pressure.
 fn runner_result_len(r: usize) -> usize {
-    1 + MAX_SUBCYCLES * r + 3 * r + r
+    1 + 2 * MAX_SUBCYCLES * r + 3 * r + r
 }
 
 struct RunnerBlock {
@@ -238,13 +239,19 @@ impl RunnerThread {
                             break;
                         }
                         let (k, dt, area) = (job[0] as usize, job[1], job[2]);
+                        let up = Upstream {
+                            p: job[3],
+                            rho: job[4],
+                        };
                         for (i, a) in acc.iter_mut().enumerate() {
-                            *a = (job[3 + 2 * i], job[4 + 2 * i]);
+                            *a = (job[5 + 2 * i], job[6 + 2 * i]);
                         }
-                        b.set.fv_step(k, dt, area, &acc, &mut res);
+                        b.set.fv_step(k, dt, area, up, &acc, &mut res);
                         msg[0] = res.min_dt;
                         msg[1..1 + res.flux.len()].copy_from_slice(&res.flux);
-                        let at = 1 + MAX_SUBCYCLES * r;
+                        let at_e = 1 + MAX_SUBCYCLES * r;
+                        msg[at_e..at_e + res.eflux.len()].copy_from_slice(&res.eflux);
+                        let at = 1 + 2 * MAX_SUBCYCLES * r;
                         for (i, c) in res.last.iter().enumerate() {
                             msg[at + 3 * i] = c.rho;
                             msg[at + 3 * i + 1] = c.mom;
@@ -313,14 +320,16 @@ struct RunnerThreadLink {
 }
 
 impl RunnerLink for RunnerThreadLink {
-    fn submit(&mut self, k: usize, dt: f64, throttle_area: f64, acc: &[(f64, f64)]) {
+    fn submit(&mut self, k: usize, dt: f64, throttle_area: f64, up: Upstream, acc: &[(f64, f64)]) {
         self.k = k;
         self.job[0] = k as f64;
         self.job[1] = dt;
         self.job[2] = throttle_area;
+        self.job[3] = up.p;
+        self.job[4] = up.rho;
         for (i, &(m, e)) in acc.iter().enumerate() {
-            self.job[3 + 2 * i] = m;
-            self.job[4 + 2 * i] = e;
+            self.job[5 + 2 * i] = m;
+            self.job[6 + 2 * i] = e;
         }
         send(&mut self.jobs, &self.job);
     }
@@ -330,7 +339,10 @@ impl RunnerLink for RunnerThreadLink {
         out.min_dt = self.msg[0];
         out.flux.clear();
         out.flux.extend_from_slice(&self.msg[1..1 + r * k]);
-        let at = 1 + MAX_SUBCYCLES * r;
+        let at_e = 1 + MAX_SUBCYCLES * r;
+        out.eflux.clear();
+        out.eflux.extend_from_slice(&self.msg[at_e..at_e + r * k]);
+        let at = 1 + 2 * MAX_SUBCYCLES * r;
         out.last.clear();
         out.last.extend((0..r).map(|i| Cons {
             rho: self.msg[at + 3 * i],

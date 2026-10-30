@@ -28,6 +28,29 @@ pub(crate) fn tail_reference_density() -> f64 {
 /// *Fundamentals of Acoustics*, §9.4) gives 0.0295 Np/m in a 42 mm primary of 900 K gas (c 600
 /// m/s, ν 1e-4 m²/s) at 200 Hz, about the firing orders' band: 1 − e^(−0.0295) ≈ 0.03.
 pub const LOSS_PER_M: f64 = 0.03;
+/// Bore a path ends in, m (a silencer's tube if it has one, else its shell); 0 for none.
+fn exit_diameter(path: &[Segment]) -> f64 {
+    match path.last() {
+        Some(Segment::Pipe { diameter_m, .. } | Segment::Catalyst { diameter_m, .. }) => {
+            *diameter_m
+        }
+        Some(Segment::Measured { bore_m, .. }) => *bore_m,
+        Some(Segment::Muffler {
+            diameter_m,
+            tube_diameter_m,
+            ..
+        }) => {
+            if *tube_diameter_m > 0.0 {
+                *tube_diameter_m
+            } else {
+                *diameter_m
+            }
+        }
+        Some(Segment::Resonator { .. }) => exit_diameter(&path[..path.len() - 1]),
+        None => 0.0,
+    }
+}
+
 /// Clamp on the waves (strength, Pa: [`crate::valve_boundary::wave_pressure`]). Below: the
 /// rarefaction that, doubled where it meets its own echo, leaves vacuum (X = ½, X_s = 0:
 /// w = −3.5·p₀); a finite-amplitude wave reaches it only where the gas would cavitate. Above:
@@ -48,6 +71,15 @@ pub struct ExhaustDef {
     pub collectors: Vec<Vec<usize>>,
     pub collector_length_m: f64,
     pub collector_diameter_m: f64,
+    /// Extra length of each collector's line over `collector_length_m`, m, in collector order
+    /// (missing: none). Two banks are never exactly alike: their pulses meet a little apart, and
+    /// a V engine's half orders come from that.
+    pub collector_extra_length_m: Vec<f64>,
+    /// Each primary's length off `primary_length_m` as built, m, in cylinder order (missing:
+    /// none). Equal-length headers are equal only to their fabrication: pulses that reach the
+    /// collector a few tens of microseconds apart put energy in the cycle orders between the
+    /// firing harmonics and take it off their highs.
+    pub primary_length_deviation_m: Vec<f64>,
     pub tail_length_m: f64,
     pub tail_diameter_m: f64,
     /// Extra lumped loss on the tail pipe, amplitude kept per pass (1 = none). The muffler
@@ -71,6 +103,10 @@ pub struct ExhaustDef {
     /// collector has its own tail. The waveguide exhaust only; the finite-volume one keeps the
     /// paths apart.
     pub merge: Option<Merge>,
+    /// The waveguide's smooth pipes steepen their waves into shocks and their walls take the
+    /// highs (Msallam et al., *Acta Acustica* 86, 2000; Kirchhoff, Kinsler §9.9): see
+    /// [`Pipe::steepening`]. Off: linear pipes (cheaper; what lower quality levels run).
+    pub steepening: bool,
 }
 
 /// Where the collectors' paths meet: each path ends in a junction with this shared duct, which
@@ -99,6 +135,14 @@ pub struct Bypass {
     pub closed: Vec<Segment>,
     pub open: Vec<Segment>,
     pub tips: Vec<Segment>,
+    /// Outlets after `tips` (its last chamber), each a pipe radiating from its own open end, side
+    /// by side at the car's tail: unequal lengths cancel some orders in the air (Torimoto &
+    /// Mabuchi, JP 2008-169751 A: the LFA's three tips, the lower one at least twice as long).
+    /// Empty: `tips` ends in the merge's outlet.
+    pub outlets: Vec<Vec<Segment>>,
+    /// Open-area ratio of the perforated baffle the chamber path starts through (the gas
+    /// passes small holes into the side chambers, JP 2008-169751 A); 1 for none.
+    pub baffle_open_area: f64,
     /// Engine speed the valve opens above, rpm.
     pub open_rpm: f64,
     /// Valve travel, closed to open, s.
@@ -111,6 +155,8 @@ impl Default for Bypass {
             closed: Vec::new(),
             open: Vec::new(),
             tips: Vec::new(),
+            outlets: Vec::new(),
+            baffle_open_area: 1.0,
             open_rpm: 3000.0,
             travel_s: 0.3,
         }
@@ -118,6 +164,35 @@ impl Default for Bypass {
 }
 
 impl Valved {
+    /// The tips' far end splits into the outlets, each radiating from its own end: returns
+    /// (the wave back into the tips, the outlets' summed volume velocity × ρc per unit of their
+    /// summed area — what one outlet of that area would radiate).
+    fn radiate_outlets(&mut self) -> (f64, f64) {
+        let [areas, arriving, leaving] = &mut self.scratch;
+        areas[0] = self.tips.end_areas().1;
+        arriving[0] = self.tips.at_far();
+        for (k, (d, _)) in self.outlets.iter().enumerate() {
+            areas[k + 1] = d.end_areas().0;
+            arriving[k + 1] = d.at_near();
+        }
+        junction(areas, arriving, leaving);
+        let (mut flow, mut area) = (0.0, 0.0);
+        for (k, (d, e)) in self.outlets.iter_mut().enumerate() {
+            let (reflected, out) = e.process(d.at_far());
+            let a = d.end_areas().1;
+            flow += out * a;
+            area += a;
+            d.send(clamp_wave(leaving[k + 1]), clamp_wave(reflected));
+        }
+        (leaving[0], flow / area)
+    }
+
+    fn set_outflow_mach(&mut self, mach: f64) {
+        for (_, e) in &mut self.outlets {
+            e.set_outflow_mach(mach);
+        }
+    }
+
     /// One step past the shared duct, whose far end sends `arriving` (area `duct_area`): the
     /// valve moves, the junction where the paths split (the valve's loss on `open`), the one
     /// where they meet, and the open end. Returns (the wave back into the shared duct, the
@@ -136,14 +211,17 @@ impl Valved {
         let rho = tail_reference_density();
         let z = rho * C_TAIL;
         let shut = self.x <= 0.0;
+        let baffle = baffle_loss(self.baffle, rho);
         let (open_near, open_far) = (self.open.at_near(), self.open.at_far());
         // split: the shared duct, the closed path and (unless shut) the valve into the open path
         let mut split = [0.0; 3];
         let (to_open, to_tips_from_open);
         if shut {
-            junction(
+            crate::waveguide::lossy_junction(
                 &[duct_area, self.closed.end_areas().0],
                 &[arriving, self.closed.at_near()],
+                &[(0.0, 0.0), (baffle, baffle)],
+                z,
                 &mut split[..2],
             );
             to_open = open_near; // the shut valve reflects as a wall
@@ -156,7 +234,7 @@ impl Valved {
                     self.open.end_areas().0,
                 ],
                 &[arriving, self.closed.at_near(), open_near],
-                &[(0.0, 0.0), (0.0, 0.0), (loss, loss)],
+                &[(0.0, 0.0), (baffle, baffle), (loss, loss)],
                 z,
                 &mut split,
             );
@@ -185,7 +263,11 @@ impl Valved {
             );
             to_tips_from_open = meet[1];
         }
-        let (reflected, out) = end.process(self.tips.at_far());
+        let (reflected, out) = if self.outlets.is_empty() {
+            end.process(self.tips.at_far())
+        } else {
+            self.radiate_outlets()
+        };
         self.closed.send(clamp_wave(split[1]), clamp_wave(meet[0]));
         self.open
             .send(clamp_wave(to_open), clamp_wave(to_tips_from_open));
@@ -204,6 +286,17 @@ fn valve_loss(x: f64, rho: f64) -> f64 {
         return f64::INFINITY;
     }
     0.5 * rho * (1.0 / (VALVE_CONTRACTION * x.min(1.0)) - 1.0).powi(2)
+}
+
+/// Pressure-loss factor s of a perforated baffle of `open_area` (its holes' share of the pipe),
+/// in gas of density `rho`: each hole an orifice, ½ρ(1/(C_c·σ) − 1)² (Idelchik, *Handbook of
+/// Hydraulic Resistance*, §8, thin perforated plates; the same jet as [`valve_loss`]). None
+/// (σ ≥ 1): no loss.
+fn baffle_loss(open_area: f64, rho: f64) -> f64 {
+    if open_area >= 1.0 {
+        return 0.0;
+    }
+    valve_loss(open_area, rho)
 }
 
 impl Default for Merge {
@@ -259,6 +352,19 @@ pub enum Segment {
         neck_diameter_m: f64,
         neck_length_m: f64,
         volume_m3: f64,
+    },
+    /// A silencer element whose maker published its transmission loss, `transmission_loss_db`
+    /// as (frequency Hz, dB) points in rising frequency, carried on a straight bore of `bore_m`
+    /// × `length_m` ([`crate::silencer2d::measured_eq`]: linear between points in log frequency,
+    /// falling to 0 at 0 Hz below the first, held above the last). For a chamber whose shape
+    /// makes its loss flat across the orders: the LFA's spherical final chamber (Torimoto &
+    /// Mabuchi, JP 2008-169751 A, Fig. 6: ≈ 15 dB at 100 Hz, 20 dB from 200 Hz to 1 kHz, where
+    /// the flat chamber it is compared with swings 10–33 dB), which no 1D chamber gives: an
+    /// expansion chamber in 1D ripples with its axial standing waves, 0 dB at every half-wave.
+    Measured {
+        length_m: f64,
+        bore_m: f64,
+        transmission_loss_db: Vec<[f64; 2]>,
     },
 }
 
@@ -425,6 +531,8 @@ impl Default for ExhaustDef {
             collectors: Vec::new(),
             collector_length_m: 0.25,
             collector_diameter_m: 0.055,
+            collector_extra_length_m: Vec::new(),
+            primary_length_deviation_m: Vec::new(),
             tail_length_m: 1.5,
             tail_diameter_m: 0.050,
             muffler_transmission: 1.0,
@@ -434,6 +542,7 @@ impl Default for ExhaustDef {
             tail_spacing_m: 0.9,
             after_collector: Vec::new(),
             merge: None,
+            steepening: true,
         }
     }
 }
@@ -508,6 +617,9 @@ impl ExhaustDef {
                         catalyst_resistance(length_m, diameter_m, cells_per_in2, wall_m, TAIL_T).0
                 }
                 Segment::Resonator { .. } => {}
+                Segment::Measured {
+                    length_m, bore_m, ..
+                } => friction += f * length_m / (bore_m * area(bore_m).powi(2)),
             }
         }
         ExitLosses {
@@ -535,15 +647,51 @@ impl ExhaustDef {
             Some(Segment::Pipe { diameter_m, .. })
             | Some(Segment::Muffler { diameter_m, .. })
             | Some(Segment::Catalyst { diameter_m, .. }) => *diameter_m,
+            Some(Segment::Measured { bore_m, .. }) => *bore_m,
             Some(Segment::Resonator { .. }) | None => self.tail_diameter_m,
         }
     }
 
     /// Bore the sound leaves through, m: the merged outlet when the banks join, else each tail's.
+    /// With outlets ([`Bypass::outlets`]), the bore of their summed area.
     pub fn radiating_diameter(&self) -> f64 {
+        let outlets = self
+            .merge
+            .as_ref()
+            .and_then(|m| m.bypass.as_ref())
+            .map(|b| b.outlets.as_slice())
+            .unwrap_or_default();
+        if !outlets.is_empty() {
+            return outlets
+                .iter()
+                .map(|o| exit_diameter(o).powi(2))
+                .sum::<f64>()
+                .sqrt();
+        }
         self.merge
             .as_ref()
             .map_or_else(|| self.outlet_diameter(), |m| m.outlet_diameter_m)
+    }
+
+    /// Length of cylinder `i`'s (0-based) primary, m: `primary_length_m` and its deviation,
+    /// if any.
+    pub fn primary_length(&self, i: usize) -> f64 {
+        self.primary_length_m
+            + self
+                .primary_length_deviation_m
+                .get(i)
+                .copied()
+                .unwrap_or(0.0)
+    }
+
+    /// Length of collector `branch`'s line, m: `collector_length_m` and its extra, if any.
+    pub fn collector_length(&self, branch: usize) -> f64 {
+        self.collector_length_m
+            + self
+                .collector_extra_length_m
+                .get(branch)
+                .copied()
+                .unwrap_or(0.0)
     }
 
     /// Collector groups as 0-based cylinder indices (empty → all cylinders in one).
@@ -656,20 +804,31 @@ pub(crate) fn after_collector(def: &ExhaustDef, dt: f64, lining_m: f64) -> Duct 
         (def.tail_length_m, def.tail_diameter_m),
         dt,
         lining_m,
+        def.steepening,
     )
 }
 
 /// The duct of `path`'s segments, its last pipe carrying `transmission`; a lone pipe of
-/// `fallback` (length, diameter) if the path is empty.
+/// `fallback` (length, diameter) if the path is empty. The lining's segment length no longer
+/// applies here: a packed silencer is its 2D transmission ([`crate::silencer2d`]), not a lumped
+/// line.
+/// `pipe` steepening ([`Pipe::steepening`]) when `steep`, else as it is.
+fn shaped(pipe: Pipe, steep: bool) -> Pipe {
+    if steep { pipe.steepening() } else { pipe }
+}
+
 fn segments_duct(
     path: &[Segment],
     transmission: f64,
     fallback: (f64, f64),
     dt: f64,
-    lining_m: f64,
+    _lining_m: f64,
+    steep: bool,
 ) -> Duct {
     let rho_c = crate::gas::GAMMA * crate::units::ATM_PA / C_TAIL;
-    let pipe = |len: f64, d: f64| Pipe::new(len, d, C_TAIL, dt, LOSS_PER_M);
+    let plain = |len: f64, d: f64| Pipe::new(len, d, C_TAIL, dt, LOSS_PER_M);
+    // a smooth-walled pipe: its waves steepen and its walls take the highs (Kirchhoff)
+    let pipe = |len: f64, d: f64| shaped(plain(len, d), steep);
     let mut duct: Option<Duct> = None;
     let mut pending = Node::Plain;
     let last_pipe = path
@@ -692,24 +851,27 @@ fn segments_duct(
                 diameter_m,
                 tube_diameter_m,
                 packing_resistivity,
-                packing_porosity,
+                packing_porosity: _,
             } => {
                 if tube_diameter_m > 0.0 && tube_diameter_m < diameter_m {
-                    let n = (length_m / lining_m).round().max(2.0) as usize;
-                    let pipes = (0..n)
-                        .map(|_| pipe(length_m / n as f64, tube_diameter_m))
-                        .collect();
-                    let packing = crate::lining::Packing {
-                        thickness_m: 0.5 * (diameter_m - tube_diameter_m),
-                        flow_resistivity: packing_resistivity,
-                        porosity: packing_porosity,
+                    // the packed (or empty) shell round the perforated tube, by the 2D model:
+                    // its transmission on the tube's waves both ways
+                    let silencer = crate::silencer2d::Silencer {
+                        r1: 0.5 * tube_diameter_m,
+                        r2: 0.5 * diameter_m,
+                        len: length_m,
+                        resistivity: (packing_resistivity > 0.0).then_some(packing_resistivity),
+                        perforate: crate::silencer2d::Perforate::default(),
                     };
-                    let per_node = length_m / (n - 1) as f64;
-                    let perimeter = std::f64::consts::PI * tube_diameter_m;
-                    Duct::with_shunts(
-                        pipes,
-                        Shunt::lining(packing, perimeter, per_node, rho_c, dt),
-                    )
+                    let gas = crate::silencer2d::Gas {
+                        c: C_TAIL,
+                        rho: crate::units::ATM_PA / (crate::gas::R_AIR * TAIL_T),
+                    };
+                    // the perforated tube is no smooth wall: linear, its loss the packing's
+                    Duct::new(vec![
+                        plain(length_m, tube_diameter_m)
+                            .with_filter(silencer.transmission_eq(gas, 1.0 / dt)),
+                    ])
                 } else {
                     Duct::new(vec![pipe(length_m, diameter_m)])
                 }
@@ -729,6 +891,16 @@ fn segments_duct(
                     p,
                 };
                 catalyst_brick(length_m, diameter_m, cells_per_in2, wall_m, gas, dt)
+            }
+            Segment::Measured {
+                length_m,
+                bore_m,
+                ref transmission_loss_db,
+            } => {
+                // the published loss on the waves both ways, like a packed silencer's
+                Duct::new(vec![plain(length_m, bore_m).with_filter(
+                    crate::silencer2d::measured_eq(transmission_loss_db, 1.0 / dt),
+                )])
             }
             Segment::Resonator {
                 neck_diameter_m,
@@ -793,6 +965,12 @@ struct Valved {
     closed: Duct,
     open: Duct,
     tips: Duct,
+    /// [`Bypass::outlets`]: each pipe and its open end; and the junction's scratch (areas,
+    /// arriving, leaving: the tips' far end first).
+    outlets: Vec<(Duct, OpenEnd)>,
+    scratch: [Vec<f64>; 3],
+    /// [`Bypass::baffle_open_area`].
+    baffle: f64,
     open_rpm: f64,
     travel_s: f64,
     /// Opening fraction, 0 shut … 1 open.
@@ -951,28 +1129,33 @@ impl ExhaustNet {
     /// [`ExhaustNet::new`] with the silencers' packing cut into `lining_m` segments.
     pub fn with_lining(def: &ExhaustDef, cylinders: usize, dt: f64, lining_m: f64) -> Self {
         let primaries = (0..cylinders)
-            .map(|_| {
+            .map(|i| {
                 Pipe::new(
-                    def.primary_length_m,
+                    def.primary_length(i),
                     def.primary_diameter_m,
                     C_PRIMARY,
                     dt,
                     LOSS_PER_M,
                 )
             })
+            .map(|p| shaped(p, def.steepening))
             .collect();
         let branches: Vec<Branch> = def
             .groups(cylinders)
             .into_iter()
-            .map(|members| Branch {
+            .enumerate()
+            .map(|(bi, members)| Branch {
                 losses: collector_losses(def, members.len()),
                 members,
-                collector: Pipe::new(
-                    def.collector_length_m,
-                    def.collector_diameter_m,
-                    C_COLLECTOR,
-                    dt,
-                    LOSS_PER_M,
+                collector: shaped(
+                    Pipe::new(
+                        def.collector_length(bi),
+                        def.collector_diameter_m,
+                        C_COLLECTOR,
+                        dt,
+                        LOSS_PER_M,
+                    ),
+                    def.steepening,
                 ),
                 tail: after_collector(def, dt, lining_m),
                 end: OpenEnd::new(def.tail_diameter_m, dt),
@@ -1000,14 +1183,23 @@ impl ExhaustNet {
                     fallback,
                     dt,
                     lining_m,
+                    def.steepening,
                 );
                 let valved = m.bypass.as_ref().map(|b| {
-                    let duct =
-                        |path: &[Segment], t: f64| segments_duct(path, t, fallback, dt, lining_m);
+                    let duct = |path: &[Segment], t: f64| {
+                        segments_duct(path, t, fallback, dt, lining_m, def.steepening)
+                    };
                     Valved {
                         closed: duct(&b.closed, 1.0),
                         open: duct(&b.open, 1.0),
                         tips: duct(&b.tips, def.muffler_transmission),
+                        outlets: b
+                            .outlets
+                            .iter()
+                            .map(|o| (duct(o, 1.0), OpenEnd::new(exit_diameter(o), dt)))
+                            .collect(),
+                        scratch: std::array::from_fn(|_| vec![0.0; b.outlets.len() + 1]),
+                        baffle: b.baffle_open_area,
                         open_rpm: b.open_rpm,
                         travel_s: b.travel_s,
                         x: 0.0,
@@ -1015,7 +1207,7 @@ impl ExhaustNet {
                     }
                 });
                 let tail_area = std::f64::consts::PI * 0.25 * def.tail_diameter_m.powi(2);
-                let outlet_area = std::f64::consts::PI * 0.25 * m.outlet_diameter_m.powi(2);
+                let outlet_area = std::f64::consts::PI * 0.25 * def.radiating_diameter().powi(2);
                 Shared {
                     duct,
                     end: OpenEnd::new(m.outlet_diameter_m, dt),
@@ -1066,8 +1258,11 @@ impl ExhaustNet {
     pub fn set_outflow_mach(&mut self, mach: &[f64]) {
         if let Some(sh) = &mut self.shared {
             // the tails' volume flows add up through the outlet
-            sh.end
-                .set_outflow_mach(mach.iter().sum::<f64>() * sh.tail_to_outlet);
+            let m = mach.iter().sum::<f64>() * sh.tail_to_outlet;
+            sh.end.set_outflow_mach(m);
+            if let Some(v) = &mut sh.valved {
+                v.set_outflow_mach(m);
+            }
         }
         for (b, m) in self.branches.iter_mut().zip(mach) {
             b.end.set_outflow_mach(*m);
@@ -1134,6 +1329,11 @@ impl ExhaustNet {
     /// primaries' lines as they stood when the oldest block's results were back), capped at
     /// [`MAX_BLOCK`]. Under [`MIN_BLOCK`] it is 0: not worth handing off.
     pub fn max_block(&self) -> usize {
+        // a steepening primary's waves arrive when their own speed says, through its segments:
+        // the copy the probe keeps of the lines cannot run ahead of the net
+        if self.primaries.iter().any(Pipe::is_nonlinear) {
+            return 0;
+        }
         let whole = self
             .primaries
             .iter()
@@ -1449,10 +1649,133 @@ mod tests {
             closed: vec![pipe(1.0, 0.05)],
             open: vec![pipe(0.1, 0.07)],
             tips: vec![pipe(0.1, 0.07)],
+            outlets: Vec::new(),
+            baffle_open_area: 1.0,
             open_rpm: 3000.0,
             travel_s: 0.3,
         });
         d
+    }
+
+    /// [`valved_banks`] whose final chamber feeds `outlets` 40 mm pipes of the given lengths.
+    fn outlet_banks(lengths: &[f64]) -> ExhaustDef {
+        let mut d = valved_banks();
+        let b = d.merge.as_mut().unwrap().bypass.as_mut().unwrap();
+        b.outlets = lengths
+            .iter()
+            .map(|&length_m| {
+                vec![Segment::Pipe {
+                    length_m,
+                    diameter_m: 0.04,
+                }]
+            })
+            .collect();
+        d
+    }
+
+    #[test]
+    fn outlets_round_trip_and_radiate_through_their_summed_bore() {
+        let d = outlet_banks(&[0.2, 0.6]);
+        let json: ExhaustDef = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+        let yaml: ExhaustDef =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&d).unwrap()).unwrap();
+        assert_eq!((json, yaml), (d.clone(), d.clone()));
+        // two 40 mm outlets carry the area of one √2·40 = 56.57 mm bore (π/4·2·0.04²)
+        assert!((d.radiating_diameter() - 0.056_569).abs() < 1e-6);
+        // a bypass without outlets still ends in the merge's outlet
+        assert_eq!(valved_banks().radiating_diameter(), 0.07);
+    }
+
+    #[test]
+    fn outlets_of_unequal_length_cancel_where_they_are_half_a_wave_apart() {
+        // A chamber feeds two open pipes of lengths L₁ = 0.2 m and L₂ = 0.6 m at one pressure
+        // p_J; each passes the volume velocity A·p_J/(ρc·sin kL) out of its open end (an open
+        // pipe's transfer, Kinsler et al. §10.3), so their sum vanishes where sin kL₂ = −sin kL₁:
+        // kL₂ = kL₁ + π, f = c/(2(L₂ − L₁)) = 500/0.8 = 625 Hz (c = C_TAIL). At 400 Hz the sum is
+        // 1/sin(1.005) + 1/sin(3.016) = 1.187 + 7.97 = 9.16 times one pipe's term: no cancelling.
+        // (The ends' radiation lag shifts the zero a little: the deepest point is sought near it.)
+        let dt = 1.0 / 96_000.0;
+        let level = |lengths: &[f64], f: f64| {
+            let mut net = ExhaustNet::new(&outlet_banks(lengths), 2, dt);
+            net.set_engine_speed(5000.0);
+            for _ in 0..(0.4 / dt) as usize {
+                net.step(&[0.0, 0.0]);
+            }
+            let mut peak: f64 = 0.0;
+            for k in 0..(0.25 / dt) as usize {
+                let q = 1e-4 * (2.0 * std::f64::consts::PI * f * k as f64 * dt).sin();
+                let out = net.step(&[q, 0.0]);
+                if k as f64 * dt > 0.15 {
+                    peak = peak.max(out.abs());
+                }
+            }
+            peak
+        };
+        let two = [0.2, 0.6];
+        let open = level(&two, 400.0);
+        let (deepest, at) = (540..=660)
+            .step_by(15)
+            .map(|f| (level(&two, f as f64), f))
+            .fold((f64::INFINITY, 0), |a, b| if b.0 < a.0 { b } else { a });
+        assert!(
+            20.0 * (deepest / open).log10() < -20.0,
+            "{} dB at {at} Hz",
+            20.0 * (deepest / open).log10()
+        );
+        // one outlet alone has no such zero there
+        let one = level(&[0.2], at as f64) / level(&[0.2], 400.0);
+        assert!(20.0 * one.log10() > -10.0, "{}", 20.0 * one.log10());
+    }
+
+    #[test]
+    fn a_baffle_loses_its_orifices_head_and_none_without_one() {
+        // a plate with 10 % open area: ½ρ(1/(0.61·0.1) − 1)² = ½ρ·15.393² = 236.95·½ρ (ρ = 2);
+        // a whole-area "baffle" is no baffle
+        assert!((baffle_loss(0.1, 2.0) - 236.95).abs() < 0.01);
+        assert_eq!(baffle_loss(1.0, 2.0), 0.0);
+    }
+
+    #[test]
+    fn a_perforated_baffle_damps_the_chamber_path_so_it_cancels_less() {
+        // Valve open, the chamber path (1.0 m) and the short one (0.1 m) meet again: a
+        // Herschel–Quincke tube, cancelling near where they are half a wave apart,
+        // c/(2·0.9 m) ≈ 278 Hz. A 5 %-open baffle on the chamber path drops its wave by the
+        // orifice's u|u| loss (Ingard & Ising 1967: a perforate's resistance at high amplitude),
+        // so the two no longer cancel as deeply.
+        let dt = 1.0 / 96_000.0;
+        let dip = |open_area: f64| {
+            let mut d = valved_banks();
+            d.merge
+                .as_mut()
+                .unwrap()
+                .bypass
+                .as_mut()
+                .unwrap()
+                .baffle_open_area = open_area;
+            let level = |f: f64| {
+                let mut net = ExhaustNet::new(&d, 2, dt);
+                net.set_engine_speed(5000.0);
+                for _ in 0..(0.4 / dt) as usize {
+                    net.step(&[0.0, 0.0]);
+                }
+                let mut peak: f64 = 0.0;
+                for k in 0..(0.3 / dt) as usize {
+                    let q = 0.02 * (2.0 * std::f64::consts::PI * f * k as f64 * dt).sin();
+                    let out = net.step(&[q, 0.0]);
+                    if k as f64 * dt > 0.2 {
+                        peak = peak.max(out.abs());
+                    }
+                }
+                peak
+            };
+            let deepest = (200..=360)
+                .step_by(20)
+                .map(|f| level(f as f64))
+                .fold(f64::INFINITY, f64::min);
+            20.0 * (deepest / level(150.0)).log10()
+        };
+        let (bare, baffled) = (dip(1.0), dip(0.05));
+        assert!(baffled > bare + 6.0, "bare {bare} dB, baffled {baffled} dB");
     }
 
     #[test]
@@ -1539,6 +1862,8 @@ mod tests {
         let block = |length_m: f64, fs: f64| {
             let def = ExhaustDef {
                 primary_length_m: length_m,
+                // linear primaries: a steepening one is never run ahead (max_block)
+                steepening: false,
                 ..ExhaustDef::default()
             };
             ExhaustNet::new(&def, 4, 1.0 / fs).max_block()
@@ -1548,6 +1873,11 @@ mod tests {
         assert_eq!(block(0.205, 48_000.0), 8);
         assert_eq!(block(0.19, 48_000.0), 0);
         assert_eq!(block(0.05, 48_000.0), 0);
+        // steepening primaries: never handed off
+        assert_eq!(
+            ExhaustNet::new(&ExhaustDef::default(), 4, 1.0 / 192_000.0).max_block(),
+            0
+        );
     }
 
     #[test]
@@ -1555,7 +1885,11 @@ mod tests {
         // the net steps on its own; the probe is given each step's result only when it is
         // `late − 1` steps old, and a change of the mean flows at step 300: at every step it
         // reads, with its results that late, the very bits the net reads
-        let def = ExhaustDef::default();
+        // the probe runs linear primaries ahead (a steepening net is never handed off)
+        let def = ExhaustDef {
+            steepening: false,
+            ..ExhaustDef::default()
+        };
         let mut net = ExhaustNet::new(&def, 4, 1.0 / 96_000.0);
         let mut probe = ArrivalProbe::new(&net);
         let late = 2 * net.max_block();
@@ -1750,6 +2084,89 @@ mod tests {
     }
 
     #[test]
+    fn a_measured_chamber_takes_its_published_loss() {
+        // a chamber whose maker measured its transmission loss (JP 2008-169751 A, Fig. 6: the
+        // LFA's spherical final chamber, 15 dB at 100 Hz, ≈ 20 dB flat from 200 Hz to 1 kHz)
+        // takes that loss off a tone, where a 1D chamber of its size ripples ±10 dB with its
+        // axial standing waves (the flat chamber's dips the figure contrasts the sphere with)
+        let tail = Segment::Pipe {
+            length_m: 0.5,
+            diameter_m: 0.05,
+        };
+        let plain = with_path(vec![
+            Segment::Pipe {
+                length_m: 0.2,
+                diameter_m: 0.05,
+            },
+            tail.clone(),
+        ]);
+        let measured = with_path(vec![
+            Segment::Measured {
+                length_m: 0.2,
+                bore_m: 0.05,
+                transmission_loss_db: vec![
+                    [100.0, 15.0],
+                    [200.0, 19.0],
+                    [300.0, 20.0],
+                    [1000.0, 19.0],
+                ],
+            },
+            tail,
+        ]);
+        // the element itself: its published loss within the equalizer's fit, never a gain
+        let fs = 1.0 / DT;
+        let eq = crate::silencer2d::measured_eq(
+            &[[100.0, 15.0], [200.0, 19.0], [300.0, 20.0], [1000.0, 19.0]],
+            fs,
+        );
+        for (f, want) in [(100.0, 15.0), (300.0, 20.0), (1000.0, 19.0), (2000.0, 19.0)] {
+            let db = eq.response_db(f, fs);
+            assert!(
+                (db + want).abs() < 2.0,
+                "{f} Hz: {db:.1} dB, published −{want}"
+            );
+        }
+        // below the first point the loss falls away: a compliance passes the lowest orders
+        let db = eq.response_db(50.0, fs);
+        assert!(db > -12.0 && db < -4.0, "50 Hz: {db:.1} dB");
+        let mut f = 20.0;
+        while f < 0.45 * fs {
+            assert!(eq.response_db(f, fs) <= 0.1, "{f} Hz: gain");
+            f *= 1.1;
+        }
+        // through the net, between the open end's echoes: the measured line is the quieter
+        for f in [300.0, 1000.0] {
+            let db = 20.0 * (tone_through(&measured, f) / tone_through(&plain, f)).log10();
+            assert!(
+                db < -12.0 && db > -32.0,
+                "{f} Hz: {db:.1} dB through the line"
+            );
+        }
+    }
+
+    #[test]
+    fn a_measured_chamber_round_trips() {
+        let def = with_path(vec![
+            Segment::Measured {
+                length_m: 0.2,
+                bore_m: 0.085,
+                transmission_loss_db: vec![[100.0, 15.0], [1000.0, 19.0]],
+            },
+            Segment::Pipe {
+                length_m: 0.1,
+                diameter_m: 0.06,
+            },
+        ]);
+        let json: ExhaustDef = serde_json::from_str(&serde_json::to_string(&def).unwrap()).unwrap();
+        assert_eq!(json, def);
+        let yaml: ExhaustDef =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&def).unwrap()).unwrap();
+        assert_eq!(yaml, def);
+        assert_eq!(def.outlet_diameter(), 0.06);
+        assert_eq!(exit_diameter(&def.after_collector[..1]), 0.085);
+    }
+
+    #[test]
     fn a_designed_path_wins_and_round_trips() {
         let def = ExhaustDef {
             after_collector: vec![
@@ -1789,15 +2206,35 @@ mod tests {
     const DT: f64 = 1.0 / 192_000.0;
 
     fn first_arrival(def: &ExhaustDef, n: usize) -> usize {
+        // a faint pulse (0.2 g/s, a few hundred pascals): it travels at c, where a loud one
+        // steepens and arrives sooner (`waveguide::DelayLine::nonlinear`)
         let mut net = ExhaustNet::new(def, n, DT);
         let mut flows = vec![0.0; n];
-        for k in 0..20_000 {
-            flows[0] = if k < 20 { 0.2 } else { 0.0 };
-            if net.step(&flows).abs() > 1.0 {
-                return k;
-            }
-        }
-        panic!("nothing radiated");
+        let out: Vec<f64> = (0..20_000)
+            .map(|k| {
+                flows[0] = if k < 20 { 2e-4 } else { 0.0 };
+                net.step(&flows)
+            })
+            .collect();
+        half_rise(&out, 1e-3).expect("nothing radiated")
+    }
+
+    /// When a pulse arrives: the step its first lobe (the first run of one sign past `floor`)
+    /// reaches half its own extreme. A line's reading spreads a pulse by a step or two either
+    /// way (`waveguide::MIN_KERNEL`); the half-rise of the lobe is where its edge is, where
+    /// the first step over a floor would move with the spreading.
+    fn half_rise(x: &[f64], floor: f64) -> Option<usize> {
+        let i0 = x.iter().position(|v| v.abs() > floor)?;
+        let sign = x[i0].signum();
+        let lobe = x[i0..]
+            .iter()
+            .take_while(|v| v.signum() == sign || v.abs() <= floor)
+            .map(|v| v.abs())
+            .fold(0.0_f64, f64::max);
+        x[i0..]
+            .iter()
+            .position(|v| v.abs() >= 0.5 * lobe)
+            .map(|i| i0 + i)
     }
 
     /// Peak radiated pressure once settled, a cylinder blowing a tone of `f` Hz into `def`.
@@ -1835,23 +2272,24 @@ mod tests {
 
     #[test]
     fn a_designed_silencer_attenuates_as_its_packed_line() {
-        // the packing lines the tube over the can's length: 0.4 m more of it takes the
-        // transmission line's e^(−0.4·Re γ) off a 2 kHz tone, Re γ = 2.4839 Np/m (hand value of
-        // the waveguide test for this very passage): 8.63 dB
+        // the packed can by the 2D model, through the net: 0.4 m more of it takes 33.82 −
+        // 17.34 = 16.48 dB off a 1 kHz tone in tail gas (500 m/s, 0.56742 kg/m³) by the
+        // independent prototype (papers/silencers/lining-study/modal2d.py, scipy's Bessel
+        // functions; validated against JSV 262 Fig. 7), within the equalizer's 1.5 dB
         let tail = Segment::Pipe {
             length_m: 0.5,
             diameter_m: 0.05,
         };
         let short = tone_through(
             &with_path(vec![packed_can(0.4, 0.088_198), tail.clone()]),
-            2000.0,
+            1000.0,
         );
         let long = tone_through(
             &with_path(vec![packed_can(0.8, 0.088_198), tail.clone()]),
-            2000.0,
+            1000.0,
         );
         let db = 20.0 * (short / long).log10();
-        assert!((db - 8.63).abs() < 0.1 * 8.63, "{db} dB");
+        assert!((db - 16.48).abs() < 1.5, "{db} dB");
         // a tube as wide as the shell is no packing: an empty shell, as one with no tube
         let wide = tone_through(
             &with_path(vec![packed_can(0.4, 0.138_198), tail.clone()]),
@@ -1900,6 +2338,41 @@ mod tests {
     }
 
     #[test]
+    fn a_loud_periodic_drive_gives_a_periodic_exhaust() {
+        // The LFA's exhaust driven by the same blowdown every cycle (0.15 kg/s peaks, 8000 rpm:
+        // 2880 steps a cycle) must answer with the same sound every cycle. Its waves steepen
+        // into shocks in the primaries. Shocks read with no width made the sound jump whenever a
+        // sample more or less joined one, and the echoes between valve and junction never
+        // settled (15 % from cycle to cycle). The finite-volume exhaust, driven the same way,
+        // settles within 0.15 %; this within 0.34 % (both measured 2026-10-26)
+        let def = crate::engine::EngineDef::lfa_v10().exhaust;
+        let dt = 1.0 / 192_000.0;
+        let mut net = ExhaustNet::new(&def, 10, dt);
+        let period = 2880;
+        let mut prev = vec![0.0; period];
+        let (mut diff, mut peak) = (0.0f64, 0.0f64);
+        let mut flows = [0.0; 10];
+        for n in 0..period * 60 {
+            for (c, f) in flows.iter_mut().enumerate() {
+                let ph = ((n + c * period / 10) % period) as f64 / period as f64;
+                *f = if ph < 0.25 {
+                    0.15 * (std::f64::consts::PI * ph / 0.25).sin().powi(2)
+                } else {
+                    0.0
+                };
+            }
+            let r = net.step(&flows);
+            let k = n % period;
+            if n >= period * 59 {
+                diff = diff.max((r - prev[k]).abs());
+                peak = peak.max(r.abs());
+            }
+            prev[k] = r;
+        }
+        assert!(diff < 0.01 * peak, "cycle to cycle {diff} of {peak}");
+    }
+
+    #[test]
     fn each_tail_reports_its_own_signal_and_they_sum_to_the_radiated() {
         let def = ExhaustDef {
             collectors: vec![vec![1, 3], vec![2, 4]],
@@ -1918,6 +2391,97 @@ mod tests {
             seen += t[0].abs();
         }
         assert!(seen > 0.0);
+    }
+
+    #[test]
+    fn a_longer_bank_line_delays_its_pulses_by_its_extra_length() {
+        // 0.2 m more collector on the second bank: its pulses reach the open end 0.2/560 s
+        // later, 68.57 steps at 192 kHz (C_COLLECTOR = 560 m/s); the first bank's are unchanged
+        let def = ExhaustDef {
+            collectors: vec![vec![1], vec![2]],
+            collector_extra_length_m: vec![0.0, 0.2],
+            ..ExhaustDef::default()
+        };
+        // a faint pulse: it travels at c (a loud one steepens and arrives sooner)
+        let arrival = |d: &ExhaustDef, cyl: usize| {
+            let mut net = ExhaustNet::new(d, 2, DT);
+            let out: Vec<f64> = (0..20_000)
+                .map(|k| {
+                    let mut f = [0.0; 2];
+                    if k < 20 {
+                        f[cyl] = 2e-4;
+                    }
+                    net.step(&f)
+                })
+                .collect();
+            half_rise(&out, 1e-3).unwrap() as f64
+        };
+        let even = ExhaustDef {
+            collector_extra_length_m: Vec::new(),
+            ..def.clone()
+        };
+        assert_eq!(arrival(&def, 0), arrival(&even, 0));
+        let late = arrival(&def, 1) - arrival(&even, 1);
+        assert!((late - 68.57).abs() <= 1.0, "{late} steps");
+    }
+
+    #[test]
+    fn a_primary_built_long_delays_its_own_pulses_only() {
+        // cylinder 2's primary 0.1 m long of the drawing: its pulses reach the open end
+        // 0.1/600 s later, 32 steps at 192 kHz (C_PRIMARY = 600 m/s); cylinder 1's are unchanged
+        let def = ExhaustDef {
+            collectors: vec![vec![1, 2]],
+            primary_length_deviation_m: vec![0.0, 0.1],
+            ..ExhaustDef::default()
+        };
+        let arrival = |d: &ExhaustDef, cyl: usize| {
+            let mut net = ExhaustNet::new(d, 2, DT);
+            let out: Vec<f64> = (0..20_000)
+                .map(|k| {
+                    let mut f = [0.0; 2];
+                    if k < 20 {
+                        f[cyl] = 2e-4;
+                    }
+                    net.step(&f)
+                })
+                .collect();
+            half_rise(&out, 1e-3).unwrap() as f64
+        };
+        let drawn = ExhaustDef {
+            primary_length_deviation_m: Vec::new(),
+            ..def.clone()
+        };
+        assert_eq!(arrival(&def, 0), arrival(&drawn, 0));
+        let late = arrival(&def, 1) - arrival(&drawn, 1);
+        assert!((late - 32.0).abs() <= 1.0, "{late} steps");
+    }
+
+    #[test]
+    fn primary_deviations_round_trip_and_default_to_none() {
+        let old: ExhaustDef = serde_yaml_ng::from_str("tail_length_m: 1.0\n").unwrap();
+        assert!(old.primary_length_deviation_m.is_empty());
+        let d = ExhaustDef {
+            primary_length_deviation_m: vec![0.016, -0.024],
+            ..ExhaustDef::default()
+        };
+        let j: ExhaustDef = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+        let y: ExhaustDef =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&d).unwrap()).unwrap();
+        assert_eq!((j, y), (d.clone(), d));
+    }
+
+    #[test]
+    fn bank_extra_lengths_round_trip_and_default_to_none() {
+        let old: ExhaustDef = serde_yaml_ng::from_str("tail_length_m: 1.0\n").unwrap();
+        assert!(old.collector_extra_length_m.is_empty());
+        let d = ExhaustDef {
+            collector_extra_length_m: vec![0.0, 0.1],
+            ..ExhaustDef::default()
+        };
+        let j: ExhaustDef = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+        let y: ExhaustDef =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&d).unwrap()).unwrap();
+        assert_eq!((j, y), (d.clone(), d));
     }
 
     #[test]
@@ -1999,16 +2563,18 @@ mod tests {
         let d = ExhaustDef::default();
         let mut net = ExhaustNet::new(&d, 2, DT);
         let round_trip = (2.0 * d.primary_length_m / C_PRIMARY / DT) as usize; // 0.7·2/600 s = 448 steps
-        let mut first = None;
-        for k in 0..2000usize {
-            if net.arriving(0).abs() > 1.0 && first.is_none() {
-                first = Some((k, net.arriving(0)));
-            }
-            net.step(&[if k < 5 { 0.1 } else { 0.0 }, 0.0]);
-        }
-        let (k, p) = first.expect("reflection never arrived");
+        // faint, so it travels at c (a loud pulse steepens and comes back sooner)
+        let back: Vec<f64> = (0..2000usize)
+            .map(|k| {
+                let p = net.arriving(0);
+                net.step(&[if k < 5 { 1e-4 } else { 0.0 }, 0.0]);
+                p
+            })
+            .collect();
+        let k = half_rise(&back, 1e-3).expect("reflection never arrived");
+        let p = back[k];
         assert!(
-            k.abs_diff(round_trip) <= 2,
+            k.abs_diff(round_trip) <= 4,
             "arrived at {k}, expected {round_trip}"
         );
         assert!(
@@ -2124,5 +2690,134 @@ mod tests {
             net.step(&[0.0]);
             assert!(net.valve_pressure(0).abs() < 1.0e5);
         }
+    }
+}
+
+#[cfg(test)]
+mod probe {
+    //! Scratch probe (ignored): the LFA line's linear transfer, one cylinder's tone to the
+    //! radiated sum, at the bank orders of 6700 rpm. `cargo test -p engine-core probe -- --ignored --nocapture`.
+    use super::*;
+    use crate::engine::EngineDef;
+    const DT: f64 = 1.0 / 192_000.0;
+
+    fn tone(def: &ExhaustDef, f: f64, rpm: f64) -> f64 {
+        let mut net = ExhaustNet::new(def, 10, DT);
+        net.set_engine_speed(rpm);
+        let mut flows = [0.0; 10];
+        let warm = (0.35 / DT) as usize;
+        let n = (0.25 / DT) as usize;
+        let mut peak: f64 = 0.0;
+        for k in 0..warm + n {
+            flows[0] = if k >= warm {
+                0.01 * (2.0 * std::f64::consts::PI * f * (k - warm) as f64 * DT).sin()
+            } else {
+                0.0
+            };
+            let y = net.step(&flows);
+            if k > warm + n / 2 {
+                peak = peak.max(y.abs());
+            }
+        }
+        20.0 * peak.log10()
+    }
+
+    fn report(name: &str, def: &ExhaustDef) {
+        let f0 = 6700.0 / 120.0 * 5.0;
+        let v: Vec<String> = (1..=8)
+            .map(|n| format!("{:6.1}", tone(def, f0 * n as f64, 6700.0)))
+            .collect();
+        println!("{name:28} bank orders 1..8 (279 Hz..): {}", v.join(" "));
+    }
+
+    fn sweep(name: &str, def: &ExhaustDef) {
+        let mut s = String::new();
+        let mut f = 200.0;
+        while f <= 1300.0 {
+            s.push_str(&format!("{f:.0}:{:.0} ", tone(def, f, 6700.0)));
+            f += 25.0;
+        }
+        println!("{name:28} {s}");
+    }
+
+    #[test]
+    #[ignore]
+    fn print_lfa_line_sweeps() {
+        let mut lin = EngineDef::lfa_v10().exhaust;
+        lin.steepening = false;
+        lin.merge = None;
+        let pipe = |l: f64| Segment::Pipe {
+            length_m: l,
+            diameter_m: 0.07,
+        };
+        sweep("no merge", &lin);
+        let mut d = lin.clone();
+        d.after_collector = vec![pipe(1.98)];
+        sweep("no cat", &d);
+        let mut d = lin.clone();
+        d.after_collector[0] = Segment::Muffler {
+            length_m: 0.13,
+            diameter_m: 0.1534,
+            tube_diameter_m: 0.0,
+            packing_resistivity: 0.0,
+            packing_porosity: 1.0,
+        };
+        sweep("cat as empty chamber", &d);
+        for l in [1.5, 2.5] {
+            let mut d = lin.clone();
+            d.after_collector[1] = pipe(l);
+            sweep(&format!("tail {l}"), &d);
+        }
+        let mut d = lin.clone();
+        d.after_collector = vec![pipe(2.11)];
+        sweep("no cat, tail 2.11", &d);
+    }
+    #[test]
+    #[ignore]
+    fn print_lfa_line_transfer() {
+        let base = EngineDef::lfa_v10().exhaust;
+        let mut lin = base.clone();
+        lin.steepening = false;
+        report("full (steepening)", &base);
+        report("full linear", &lin);
+        let mut d = lin.clone();
+        d.merge = None;
+        report("no merge", &d);
+        let mut d = lin.clone();
+        d.merge.as_mut().unwrap().bypass = None;
+        report("no bypass", &d);
+        let mut d = lin.clone();
+        d.after_collector = vec![Segment::Pipe {
+            length_m: 1.98,
+            diameter_m: 0.07,
+        }];
+        report("no catalyst", &d);
+        let mut d = lin.clone();
+        d.merge = None;
+        d.after_collector = vec![Segment::Pipe {
+            length_m: 1.98,
+            diameter_m: 0.07,
+        }];
+        report("no merge, no catalyst", &d);
+        for l in [0.45, 0.55, 0.675, 0.8] {
+            let mut d = lin.clone();
+            d.merge = None;
+            d.primary_length_m = l;
+            report(&format!("no merge, primaries {l}"), &d);
+        }
+        for l in [0.1, 0.3, 0.6] {
+            let mut d = lin.clone();
+            d.merge = None;
+            d.collector_length_m = l;
+            report(&format!("no merge, collector {l}"), &d);
+        }
+        // sweep of the full linear net
+        let mut s = String::new();
+        let mut f = 100.0;
+        while f <= 1500.0 {
+            s.push_str(&format!("{f:.0}:{:.1} ", tone(&lin, f, 6700.0)));
+            f += 50.0;
+        }
+        println!("full linear sweep {s}");
     }
 }

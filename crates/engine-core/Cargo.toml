@@ -6,6 +6,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+complex-bessel = "0.3.0"
+num-complex = "0.4.6"
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml_ng.workspace = true

@@ -67,6 +67,10 @@ pub struct EngineDef {
     /// Intake system (0D plenum, or 1D runners with ITBs / plenum).
     pub intake: IntakeDef,
     pub redline_rpm: f64,
+    /// Speed at which the ECU shuts the fuel off (its rev limiter), rpm; 0: at the redline.
+    /// Files written before it existed limit at their redline.
+    #[serde(default)]
+    pub shutoff_rpm: f64,
     pub starter_torque_nm: f64,
     /// How the engine is built, for its friction by components (Patton–Nitschke–Heywood as
     /// improved by Sandoval & Heywood): valvetrain, followers, valves, crankpins, rings, oil.
@@ -181,6 +185,8 @@ impl EngineDef {
                 collectors: vec![],
                 collector_length_m: 0.05,
                 collector_diameter_m: 0.040,
+                collector_extra_length_m: Vec::new(),
+                primary_length_deviation_m: Vec::new(),
                 tail_length_m: 1.0,
                 tail_diameter_m: 0.045,
                 muffler_transmission: 1.0,
@@ -190,6 +196,7 @@ impl EngineDef {
                 // one tail: no spread
                 tail_spacing_m: 0.9,
                 after_collector: Vec::new(),
+                steepening: true,
                 merge: None,
             },
             intake: IntakeDef::default(),
@@ -199,6 +206,7 @@ impl EngineDef {
             friction: crate::friction::FrictionDef::default(),
             sound: SoundDef::default(),
             overrun_fuel_cut_rpm: 1500.0,
+            shutoff_rpm: 0.0,
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::single(),
         }
@@ -419,7 +427,9 @@ impl EngineDef {
             // area): 41.2 mm. Lift: a quarter of each valve's diameter, where the curtain area
             // reaches the port's (8.8 mm per intake valve; the equivalent valve's lift keeps the
             // two valves' curtain area). Timing: Heywood's typical high-output values
-            // (IVO 20° BTDC, IVC 70° ABDC, EVO 55° BBDC, EVC 30° ATDC).
+            // (IVO 20° BTDC, IVC 70° ABDC); the exhaust's EVO 49° BBDC, EVC 23° ATDC fitted
+            // within the usual 40–70° / 10–45° to the recordings' firing harmonics and the
+            // patent's muffler response, the power held in the published range.
             intake_valve: ValveTiming {
                 open_deg: 340.0,
                 duration_deg: 270.0,
@@ -428,8 +438,8 @@ impl EngineDef {
                 high: None,
             },
             exhaust_valve: ValveTiming {
-                open_deg: 125.0,
-                duration_deg: 265.0,
+                open_deg: 131.0,
+                duration_deg: 252.0,
                 max_lift_m: 0.0103,
                 diameter_m: 0.0412,
                 high: None,
@@ -453,14 +463,27 @@ impl EngineDef {
             // Primary length not published: the second return of the blowdown's reflection
             // reaches the port at the overlap at the 8700 rpm power peak — 2·(2L)/c = (360° −
             // EVO)/(6N) with c ≈ 600 m/s in ~900 K gas (Blair, Design and Simulation of
-            // Four-Stroke Engines, ch. 6): L = 0.675 m. Bores estimated.
+            // Four-Stroke Engines, ch. 6): L = 0.675 m, a first guess; 0.8 m from the fit to the recordings (2026-10-30: the dyno and onboard clips' harmonics, half orders and bands, and the patent's Fig. 8; every unknown kept inside its physical range).
+            // Bores estimated.
             exhaust: ExhaustDef {
-                primary_length_m: 0.675,
+                primary_length_m: 0.8,
                 primary_diameter_m: 0.042,
                 collectors: vec![vec![1, 2, 3, 4, 5], vec![6, 7, 8, 9, 10]],
-                collector_length_m: 0.3,
+                collector_length_m: 0.4125,
                 collector_diameter_m: 0.065,
-                tail_length_m: 1.2,
+                // the banks' lines are equal "within 500 mm" (JP 2008-180136 A): 7 cm is an ESTIMATE
+                // inside that bound, from the fit. Identical lines cancel the half orders where
+                // the banks meet (held 6700 WOT: order 5 at −35 dB vs the dyno clip's −14.5)
+                collector_extra_length_m: vec![0.0, 0.07],
+                // the equal-length primaries as built: ±3 cm (σ 1.8 cm), an ESTIMATE. Identical
+                // ones leave the cycle orders between the firing harmonics 8–12 dB under the dyno
+                // clip's (−19…−26 dB re H1) and its half orders 6 dB over; these bring both to it
+                // (held through the gears: half orders −7 dB, floor −21 dB) and were picked by ear
+                primary_length_deviation_m: vec![
+                    0.016, -0.024, 0.006, 0.030, -0.012, -0.018, 0.022, -0.004, 0.010, -0.026,
+                ],
+                // the bank line below, catalyst to muffler
+                tail_length_m: 0.50 + 0.38 + 0.80,
                 tail_diameter_m: 0.070,
                 // Sport muffler with bypass valves: less damping than a road car.
                 muffler_transmission: 1.0,
@@ -469,7 +492,19 @@ impl EngineDef {
                 muffler_packing: crate::lining::Packing::default(),
                 // the tips sit together in the centre of the rear diffuser: one outlet
                 tail_spacing_m: 0.0,
+                // Each bank keeps its own line to the main muffler: close-coupled catalyst, pipe,
+                // sub muffler, pipe (Torimoto & Mabuchi, JP 2008-180136 A; Lexus' "full dual
+                // pipes" drawing; EPC 17410: two parallel pipes in one part). Lengths: ESTIMATE,
+                // scaled off the Lexus drawing against the engine-to-tail distance (≈ 2.1 m
+                // catalyst to muffler, the sub muffler ≈ 0.38 m a third of the way). The sub
+                // muffler is a plain pipe here: its size and packing are not published, and the
+                // sound measured after it is still flat from 400 Hz to 5 kHz (JP 2008-169751 A,
+                // Fig. 7A, dashed). A packed can of 120 mm over the 70 mm pipe would take 16 dB
+                // at 1 kHz and 38 dB at 2 kHz even by the 2D model that matches Selamet, Lee &
+                // Huff's measurements (JSV 262, 2003) — the real car's H2–H6 are not cut like
+                // that (FACTS, "The sub muffler"). One pipe of the three lengths, then.
                 after_collector: Vec::new(),
+                steepening: true,
                 // Both banks run into one rear muffler and leave through three tips together
                 // (Okamoto et al., SAE 2011-01-2024, Fig. 19; Toyota EPC 17410/17430): a Y into
                 // an 85 mm pipe, a transverse titanium muffler whose valve opens above 3000 rpm
@@ -478,28 +513,32 @@ impl EngineDef {
                 // centre pipe 85 mm, tips ≈ 105 mm outside (press summary the user found,
                 // 2026-10-28). Chamber and tube sizes: ESTIMATE from the Motor-Fan cutaway's
                 // proportions against the 85 mm inlet.
+                // The muffler as patented (JP 2008-169751 A, Figs. 1–5): the banks' two inlets
+                // join (38); the valve (46) opens a straight pipe (44) into a spherical final
+                // chamber (30), else the gas goes round the inlet chamber (28), the side
+                // chambers (32, 34) and their tubes (36) into it; the final chamber feeds three
+                // tips, two short above and a lower one at least twice as long whose part inside
+                // the chamber is wrapped in glass wool (cutting it above ≈ 1 kHz).
                 merge: Some(crate::exhaust::Merge {
-                    segments: vec![
-                        Segment::Pipe {
-                            length_m: 0.15,
-                            diameter_m: 0.085,
-                        },
-                        // centre chamber
-                        Segment::Muffler {
-                            length_m: 0.20,
-                            diameter_m: 0.22,
-                            tube_diameter_m: 0.0,
-                            packing_resistivity: 0.0,
-                            packing_porosity: 1.0,
-                        },
-                    ],
+                    segments: vec![Segment::Pipe {
+                        length_m: 0.15625,
+                        diameter_m: 0.085,
+                    }],
                     // three tips of 60 mm bore inside the 105 mm trims: their area as one
                     outlet_diameter_m: 0.060 * 3f64.sqrt(),
                     bypass: Some(crate::exhaust::Bypass {
                         closed: vec![
+                            // inlet chamber (28)
+                            Segment::Muffler {
+                                length_m: 0.20,
+                                diameter_m: 0.22,
+                                tube_diameter_m: 0.0,
+                                packing_resistivity: 0.0,
+                                packing_porosity: 1.0,
+                            },
                             Segment::Pipe {
                                 length_m: 0.30,
-                                diameter_m: 0.05,
+                                diameter_m: 0.04125,
                             },
                             Segment::Muffler {
                                 length_m: 0.12,
@@ -510,7 +549,7 @@ impl EngineDef {
                             },
                             Segment::Pipe {
                                 length_m: 0.55,
-                                diameter_m: 0.05,
+                                diameter_m: 0.04125,
                             },
                             Segment::Muffler {
                                 length_m: 0.12,
@@ -521,17 +560,60 @@ impl EngineDef {
                             },
                             Segment::Pipe {
                                 length_m: 0.30,
-                                diameter_m: 0.05,
+                                diameter_m: 0.04125,
                             },
                         ],
                         open: vec![Segment::Pipe {
-                            length_m: 0.10,
+                            length_m: 0.1625,
                             diameter_m: 0.085,
                         }],
-                        tips: vec![Segment::Pipe {
+                        // final chamber (30): a sphere of ≈ 0.30 m (ESTIMATE, the patent's Fig. 1
+                        // against the 60 mm tips) as a cylinder of its volume
+                        // carried as its published loss (JP 2008-169751 A, Fig. 6), which no 1D
+                        // chamber gives (`Segment::Measured`)
+                        tips: vec![Segment::Measured {
                             length_m: 0.25,
-                            diameter_m: 0.060 * 3f64.sqrt(),
+                            bore_m: 0.085,
+                            transmission_loss_db: vec![
+                                [50.0, 8.0],
+                                [100.0, 15.0],
+                                [150.0, 17.5],
+                                [200.0, 18.5],
+                                [300.0, 20.0],
+                                [500.0, 21.0],
+                                [700.0, 20.5],
+                                [1000.0, 19.0],
+                            ],
                         }],
+                        // L₁ = 0.08 m above, L₂ = 0.23 m below (Fig. 1's proportion, ≈ 2.9·L₁;
+                        // the claim: L₂ ≥ 2·L₁), 60 mm bores; the lower one packed along its
+                        // part inside the final chamber (56, 58: about half of it in Fig. 1)
+                        outlets: vec![
+                            vec![Segment::Pipe {
+                                length_m: 0.13,
+                                diameter_m: 0.060,
+                            }],
+                            vec![Segment::Pipe {
+                                length_m: 0.13,
+                                diameter_m: 0.060,
+                            }],
+                            vec![
+                                Segment::Muffler {
+                                    length_m: 0.12,
+                                    diameter_m: 0.10,
+                                    tube_diameter_m: 0.060,
+                                    packing_resistivity: 16_000.0,
+                                    packing_porosity: 0.95,
+                                },
+                                Segment::Pipe {
+                                    length_m: 0.185,
+                                    diameter_m: 0.060,
+                                },
+                            ],
+                        ],
+                        // the small holes into the side chambers: ESTIMATE, a typical
+                        // perforated baffle's open area
+                        baffle_open_area: 0.03,
                         open_rpm: 3000.0,
                         // a vacuum diaphragm actuator: ESTIMATE
                         travel_s: 0.3,
@@ -540,7 +622,12 @@ impl EngineDef {
             },
             // Ten ITBs (Toyota). Runner length not published: Helmholtz-tuned to the torque peak
             // (Engelman: f = (a/2π)·√(A/(L·V)), V = V_d/2·(r + 1)/(r − 1), tuned at twice the
-            // revolution frequency at 6800 rpm, 226.7 Hz; 45 mm bore): L = 0.325 m.
+            // revolution frequency at 6800 rpm, 226.7 Hz; 45 mm bore): L = 0.325 m. (The fit to
+            // the recordings liked 0.45 m, which tunes the peak to 5000 rpm and the power to
+            // 6500: not the published curve.) The ten trumpets draw from
+            // one surge tank on top of the V (`AirboxDef::lfa_v10_estimate`); not wired in: it costs 12 hp at the top (476 hp against the published 552), and the fit's
+            // render sounds the same without it (2026-10-30). Its ducts alone pass little of
+            // the firing order (−24 dB at 558 Hz, FINDINGS 2026-10-29).
             intake: IntakeDef {
                 model: IntakeModel::Fv,
                 runner_length_m: 0.325,
@@ -555,9 +642,12 @@ impl EngineDef {
             friction: crate::friction::FrictionDef::default(),
             sound: SoundDef::default(),
             overrun_fuel_cut_rpm: 1500.0,
+            // Okamoto et al., SAE 2011-01-2024, Table 1: red zone 9000 rpm, shutoff 9500
+            shutoff_rpm: 9500.0,
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::lfa_v10(),
         }
+        // its own bank lines (above), the catalyst first
         .with_tail_pipe()
         .with_catalyst()
     }
@@ -616,6 +706,8 @@ impl EngineDef {
                 collectors: vec![vec![1, 2, 3, 4], vec![5, 6, 7, 8]],
                 collector_length_m: 0.3,
                 collector_diameter_m: 0.065,
+                collector_extra_length_m: Vec::new(),
+                primary_length_deviation_m: Vec::new(),
                 tail_length_m: 1.3,
                 tail_diameter_m: 0.065,
                 muffler_transmission: 1.0,
@@ -625,6 +717,7 @@ impl EngineDef {
                 // the tips sit together in the centre (458 Italia)
                 tail_spacing_m: 0.25,
                 after_collector: Vec::new(),
+                steepening: true,
                 merge: None,
             },
             intake: IntakeDef::default(),
@@ -634,6 +727,7 @@ impl EngineDef {
             friction: crate::friction::FrictionDef::default(),
             sound: SoundDef::default(),
             overrun_fuel_cut_rpm: 1500.0,
+            shutoff_rpm: 0.0,
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::flatplane_v8(),
         }
@@ -695,6 +789,8 @@ impl EngineDef {
                 collectors: vec![vec![1, 3, 5, 7], vec![2, 4, 6, 8]],
                 collector_length_m: 0.3,
                 collector_diameter_m: 0.075,
+                collector_extra_length_m: Vec::new(),
+                primary_length_deviation_m: Vec::new(),
                 tail_length_m: 2.0,
                 tail_diameter_m: 0.065,
                 muffler_transmission: 1.0,
@@ -704,6 +800,7 @@ impl EngineDef {
                 // two tips each side (C6 Corvette)
                 tail_spacing_m: 1.1,
                 after_collector: Vec::new(),
+                steepening: true,
                 merge: None,
             },
             intake: IntakeDef::default(),
@@ -718,6 +815,7 @@ impl EngineDef {
             },
             sound: SoundDef::default(),
             overrun_fuel_cut_rpm: 1300.0,
+            shutoff_rpm: 0.0,
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::crossplane_v8(),
         }
@@ -820,8 +918,11 @@ pub struct Controls {
     /// through a locked clutch, see `drivetrain`). Default 0.
     pub extra_inertia_kgm2: f64,
     /// Share of the engine's torque the gearbox asks the ECU to take away, 0..=1 (a shift's
-    /// torque intervention): the ECU retards the spark, then blanks out injections
-    /// ([`retard_for`], [`MAX_RETARD_DEG`]). Default 0.
+    /// torque intervention), on both of its channels (Bosch, *Gasoline Engine Management*,
+    /// torque structure): the air channel closes the electronic throttle to the pedal less
+    /// that share, and the crank-synchronous one retards the spark meanwhile ([`retard_for`],
+    /// [`MAX_RETARD_DEG`]). A full cut asks for no torque: a closed throttle at speed, which
+    /// the overrun cut-off answers by cutting the fuel. Default 0.
     pub torque_cut: f64,
 }
 
@@ -1128,23 +1229,29 @@ pub fn retard_for(efficiency: f64) -> f64 {
 }
 
 /// The most spark retard a torque cut takes, ° crank: the end of the data behind Heywood's
-/// fit (Fig. 9.16, combustion retard to 40°). Below what it leaves, the ECU blanks out
-/// injections, whose efficiency is the share of charges still fired (Bosch, *Gasoline Engine
-/// Management*, "torque structure": ignition-timing and blank-out efficiencies).
+/// fit (Fig. 9.16, combustion retard to 40°). What it cannot take the air channel does
+/// ([`Controls::torque_cut`]).
 pub const MAX_RETARD_DEG: f64 = 40.0;
 
-/// A torque cut as the ECU carries it out: (spark retard, ° crank; share of charges blanked
-/// out). The retard alone takes it down to `ignition_efficiency(MAX_RETARD_DEG)`; the rest is
-/// blank-out at that retard.
-fn torque_intervention(cut: f64) -> (f64, f64) {
+/// The crank-synchronous channel of a torque cut: the spark retard, ° crank, that takes away
+/// what the charge left (`charge_share` of the charge before the cut) holds above the cut's
+/// share, down to `ignition_efficiency(MAX_RETARD_DEG)` (Bosch: it "uses the cylinder charge
+/// currently available"). The air channel closes the throttle on the rest
+/// ([`Controls::torque_cut`]), so no charge is ever blanked out on its own:
+/// skipping single charges at speed would beat the firing pattern into the sub-firing orders
+/// the exhaust carries best (measured: a quarter blanked out at 6000 rpm put its 125 Hz line
+/// 7 dB over the whole engine's firing order).
+fn torque_intervention(cut: f64, charge_share: f64) -> f64 {
     let keep = 1.0 - cut.clamp(0.0, 1.0);
     let floor = ignition_efficiency(MAX_RETARD_DEG);
-    if keep >= floor {
-        (retard_for(keep), 0.0)
-    } else {
-        (MAX_RETARD_DEG, 1.0 - keep / floor)
-    }
+    retard_for((keep / charge_share.max(f64::MIN_POSITIVE)).clamp(floor, 1.0))
 }
+
+/// The air channel's charge loop: the throttle trim's rate per unit of charge-share error, 1/s.
+/// ESTIMATE: as fast as the charge answers (one intake stroke, ≈ 20 ms at 6000 rpm) allows.
+const AIR_TRIM_GAIN: f64 = 25.0;
+/// Weight of each new charge in the air channel's pre-cut reference.
+const CHARGE_REF_WEIGHT: f64 = 0.1;
 
 fn mean_piston_speed(stroke_m: f64, omega: f64) -> f64 {
     2.0 * stroke_m * omega.abs() / (2.0 * PI)
@@ -1182,8 +1289,13 @@ struct CylinderState {
     /// The charge trapped at intake closing still awaits its spark: one spark per charge,
     /// whatever the ECU does with the timing meanwhile.
     armed: bool,
-    /// This cycle's charge blanked out by a torque cut: no injection.
-    blanked: bool,
+    /// The injection for the next charge was made: port injection puts a charge's fuel on
+    /// the closed valve during the exhaust stroke before its intake (sequential injection,
+    /// timed to end before the intake valve opens: Bosch, *Automotive Handbook*, "manifold
+    /// injection, injection timing"; it starts as the exhaust valve opens — at full load the
+    /// injector is open most of the stroke), so a cut-off reaches a cylinder at its next
+    /// exhaust opening, up to a cycle after the cut, and the charges already injected burn.
+    injected: bool,
     /// Gas temperature in this cylinder's exhaust primary, and the primary's wall temperature,
     /// K: what reversion pushes back, and how much volume it is.
     port_t: f64,
@@ -1413,9 +1525,12 @@ pub struct Engine {
     /// The ECU's injection cut-offs, each with its hysteresis: overrun (pedal released at
     /// speed) and the speed limiter.
     overrun_cut: bool,
-    /// Blank-out owed by a torque cut, in charges: each charge adds the cut's share and is
-    /// blanked out when a whole one is owed, so the blanked charges spread evenly.
-    blank_owed: f64,
+    /// The ECU's air channel during a torque cut: the trapped charge it last saw, as a share
+    /// of the charge before the cut (`charge_ref`, kg), and the trim on the pedal's throttle
+    /// its charge loop holds.
+    charge_ref: f64,
+    charge_share: f64,
+    air_trim: f64,
     limiter_cut: bool,
     /// The idle-speed control's spark trim, degrees (negative = retarded); 0 off idle.
     idle_spark_deg: f64,
@@ -1598,7 +1713,7 @@ impl Engine {
                     flame: 1.0,
                     charge_bias: 1.0,
                     armed: false,
-                    blanked: false,
+                    injected: true,
                     port_t: PIPE_COLD_K,
                     port_flow: 0.0,
                     valve_hint: f64::NAN,
@@ -1653,7 +1768,9 @@ impl Engine {
             plate: 0.0,
             iac_last_rpm: initial_rpm,
             overrun_cut: false,
-            blank_owed: 0.0,
+            charge_ref: 0.0,
+            charge_share: 1.0,
+            air_trim: 1.0,
             limiter_cut: false,
             combustions: 0,
             wall_heat_j: 0.0,
@@ -1828,7 +1945,11 @@ impl Engine {
             .min(cut - FUEL_CUT_HYSTERESIS_RPM);
         self.overrun_cut =
             cut > 0.0 && throttle <= 0.01 && (rpm > cut || (self.overrun_cut && rpm > resume));
-        let red = self.def.redline_rpm;
+        let red = if self.def.shutoff_rpm > 0.0 {
+            self.def.shutoff_rpm
+        } else {
+            self.def.redline_rpm
+        };
         self.limiter_cut = rpm >= red || (self.limiter_cut && rpm > red - LIMITER_HYSTERESIS_RPM);
     }
 
@@ -1905,16 +2026,28 @@ impl Engine {
         let g = self.def.geometry;
         let crank_deg = self.theta.to_degrees();
         let rpm_now = self.rpm();
+        // the ECU's throttle demand: the pedal, trimmed by a torque cut's air channel towards
+        // the charge whose most retarded burn gives the cut's share
+        let cut = c.torque_cut.clamp(0.0, 1.0);
+        self.air_trim = if cut > 0.0 {
+            let want = ((1.0 - cut) / ignition_efficiency(MAX_RETARD_DEG)).min(1.0);
+            (self.air_trim + AIR_TRIM_GAIN * dt * (want - self.charge_share)).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let demand = c.throttle * self.air_trim;
         // the ECU first decides whether it injects, then trims the idle accordingly
         self.fuel_cutoffs(c.throttle);
         self.idle_control(dt, c);
-        self.plate_step(c.throttle, dt);
+        self.plate_step(demand, dt);
         self.dashpot_step(self.plate, dt);
-        self.valve_control(rpm_now, c.throttle, dt);
+        self.valve_control(rpm_now, demand, dt);
         let (intake_valve, exhaust_valve) = self.valves();
+        let evo = crate::units::wrap(exhaust_valve.open_deg, 720.0);
         let ivc = crate::units::wrap(intake_valve.open_deg + intake_valve.duration_deg, 720.0);
         let evc = crate::units::wrap(exhaust_valve.open_deg + exhaust_valve.duration_deg, 720.0);
-        // the cut-offs stop the injection; the port film still feeds the cylinders
+        // the cut-offs stop the injections to come (each cylinder's at its exhaust opening,
+        // `injected`); the port film still feeds the cylinders
         let inject = !self.overrun_cut && !self.limiter_cut;
         let (film_x, film_tau) = (self.def.intake.film_fraction, self.def.intake.film_tau_s);
         let film_x = if film_tau > 0.0 { film_x } else { 0.0 };
@@ -1979,10 +2112,7 @@ impl Engine {
 
         let mut gas_torque = 0.0;
         let reserve = idle_reserve(self.rpm());
-        let (retard, blank_share) = torque_intervention(c.torque_cut);
-        if blank_share <= 0.0 {
-            self.blank_owed = 0.0;
-        }
+        let retard = torque_intervention(c.torque_cut, self.charge_share);
         let n_cyl = self.cyl.len();
         for i in 0..n_cyl {
             let arriving = match (&self.net, &self.remote.0) {
@@ -2000,6 +2130,12 @@ impl Engine {
             let prev = self.cyl[i].cycle_deg;
             let cur = crate::units::wrap(crank_deg - self.cyl[i].offset_deg, 720.0);
             let theta_c = deg_to_rad(cur);
+            // the injection for the charge to come is made during the exhaust stroke, onto the
+            // closed valve: it starts as the exhaust valve opens and is done before the intake
+            // opens; a cut decided after it started no longer reaches this charge
+            if crossed(prev, cur, evo) {
+                self.cyl[i].injected = inject;
+            }
 
             // Piston motion: adiabatic work p·dV.
             let v_new = g.volume(theta_c);
@@ -2089,10 +2225,10 @@ impl Engine {
                         self.plenum.energy_j -= f.dm * f.h;
                     }
                 }
-                // port injection: the charge carries fuel unless the ECU cuts it
+                // port injection: the charge carries fuel unless the ECU cut its injection
                 let fresh = Composition {
                     burned: 0.0,
-                    fuelled: if inject && !cs.blanked { 1.0 } else { 0.0 },
+                    fuelled: if cs.injected { 1.0 } else { 0.0 },
                 };
                 cylinder_flow(cs, &th, into_cyl, fresh);
             }
@@ -2200,15 +2336,19 @@ impl Engine {
             }
             if crossed(prev, cur, evc) {
                 cs.residual_kg = cs.gas.mass_kg;
-                // the next charge: fired, or blanked out by a torque cut
-                self.blank_owed += blank_share;
-                cs.blanked = self.blank_owed >= 1.0;
-                if cs.blanked {
-                    self.blank_owed -= 1.0;
-                }
             }
             if crossed(prev, cur, ivc) {
                 cs.trapped_kg = cs.gas.mass_kg;
+                // the air channel's measure: this charge against the charges before the cut
+                if cut > 0.0 && self.charge_ref > 0.0 {
+                    self.charge_share = cs.trapped_kg / self.charge_ref;
+                } else if cut > 0.0 {
+                    // cut from the start: the first charge, still at the pedal's throttle
+                    self.charge_ref = cs.trapped_kg;
+                } else {
+                    self.charge_ref += (cs.trapped_kg - self.charge_ref) * CHARGE_REF_WEIGHT;
+                    self.charge_share = 1.0;
+                }
                 cs.armed = true;
                 // The ECU meters the fuel for a stoichiometric charge of the fresh air it
                 // finds, compensating the port film (Aquino); a cut injects nothing and the film
@@ -2217,7 +2357,7 @@ impl Engine {
                 let air = fresh * AFR_STOICH / (1.0 + AFR_STOICH);
                 let film_x =
                     crate::fuel::deposit_fraction(film_x, cs.gas.pressure(), self.omega.abs());
-                let fuel = if inject && !cs.blanked {
+                let fuel = if cs.injected {
                     cs.film.meter(air / AFR_STOICH, film_x, film_share).1
                 } else {
                     cs.film.intake(0.0, film_x, film_share)
@@ -2574,18 +2714,23 @@ impl Engine {
             }
         };
         // the engine's own sources, heard from where it sits: each bank's side of the block, and
-        // the intake mouth on the centre line. The mouth is a runner's trumpet with individual
-        // throttles, else the throttle bore (the air box's own inlet is not in the definition:
-        // an estimate). The trumpets are not split by bank: without the surge tank between them
-        // and the air, a bank's five trumpets heard apart put the LFA's 5th cycle order 16 dB
-        // over a real one's (docs/FINDINGS.md, 2026-10-29); one point cancels it as the tank
-        // would damp it.
-        let mouth_d = if self.def.intake.individual_throttles {
-            self.def.intake.runner_diameter_m
-        } else {
-            self.def.throttle_diameter_m
+        // the intake mouth on the centre line. The mouth is the air box's inlet ducts if there
+        // is one (their total area), else a runner's trumpet with individual throttles, else
+        // the throttle bore. The trumpets are not split by bank: without the surge tank between
+        // them and the air, a bank's five trumpets heard apart put the LFA's 5th cycle order
+        // 16 dB over a real one's (docs/FINDINGS.md, 2026-10-29); one point cancels it as the
+        // tank would damp it.
+        let mouth_area = match &self.def.intake.airbox {
+            Some(b) => b.ducts.max(1) as f64 * PI * 0.25 * b.duct_diameter_m.powi(2),
+            None => {
+                let d = if self.def.intake.individual_throttles {
+                    self.def.intake.runner_diameter_m
+                } else {
+                    self.def.throttle_diameter_m
+                };
+                PI * 0.25 * d * d
+            }
         };
-        let mouth_area = PI * 0.25 * mouth_d * mouth_d;
         let rest = match &mut self.listener {
             Some((_, l)) => {
                 let mut rest = 0.0;
@@ -3233,11 +3378,11 @@ mod tests {
     }
 
     #[test]
-    fn a_torque_cut_retards_the_spark_then_blanks_out_cylinders() {
+    fn a_torque_cut_closes_the_throttle_and_retards_the_spark() {
         // what the engine gives at a cut is the share of the way from motoring (every charge
-        // blanked out) to full power that the cut leaves: 20 % by spark retard alone, 70 % by
-        // the most retard plus blanking out the charges left over (Bosch, *Gasoline Engine
-        // Management*, torque structure: ignition-timing and blank-out efficiencies)
+        // cut off) to full power that the cut leaves: the ECU's air channel closes the
+        // electronic throttle and its crank-synchronous channel retards the spark (Bosch,
+        // *Gasoline Engine Management*, torque structure), never blanking single charges out
         let torque = |cut: f64| {
             let mut e = Engine::new(EngineDef::lfa_v10(), 6000.0, 1);
             let c = Controls {
@@ -3283,6 +3428,41 @@ mod tests {
             }
             at
         };
+        // the air channel: the plate follows the pedal less the cut
+        let mut e = Engine::new(EngineDef::lfa_v10(), 6000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(6000.0),
+            torque_cut: 0.7,
+            ..Controls::default()
+        };
+        run(&mut e, 0.4, &c);
+        // the charge settles where the most retarded burn gives the cut's share: 0.3/0.69
+        let want = 0.3 / ignition_efficiency(MAX_RETARD_DEG);
+        assert!(e.plate < 0.9, "plate {}", e.plate);
+        assert!(
+            (e.charge_share - want).abs() < 0.1 * want,
+            "{} vs {want}",
+            e.charge_share
+        );
+        assert!(!e.overrun_cut, "a partial cut keeps the fuel on");
+        // a full cut closes the throttle but the pedal stays down: no overrun (that is the
+        // driver's lift; Bosch, torque structure: blank-out "when the engine is overrunning"),
+        // the charges keep burning, retarded, on what air the closed plate passes
+        let c = Controls {
+            torque_cut: 1.0,
+            ..c
+        };
+        run(&mut e, 0.4, &c);
+        assert!(e.plate < 0.05, "plate {}", e.plate);
+        assert!(
+            !e.overrun_cut,
+            "a full cut with the pedal down keeps the fuel on"
+        );
+        // the spark takes what the charge holds over the cut's share, no more than its most
+        assert!((torque_intervention(0.7, 1.0) - MAX_RETARD_DEG).abs() < 1e-9);
+        assert!((torque_intervention(0.2, 1.0) - retard_for(0.8)).abs() < 1e-9);
+        assert_eq!(torque_intervention(0.5, 0.5), 0.0, "the air took it all");
         let (early, late) = (peak_deg(0.0), peak_deg(0.2));
         assert!(late - early > 10.0, "peak at {early:.1}° → {late:.1}°");
         let (full, motoring) = (torque(0.0), torque(1.0));
@@ -3983,6 +4163,15 @@ mod tests {
         assert_eq!(at(&mut e, 1600.0, 0.0), (true, false));
         assert_eq!(at(&mut e, 1450.0, 0.0), (true, false));
         assert_eq!(at(&mut e, 1390.0, 0.0), (false, false));
+        // the LFA shuts its fuel off at its published shutoff speed, over its red zone
+        // (Okamoto et al., SAE 2011-01-2024, Table 1: red zone 9000 rpm, shutoff 9500 rpm)
+        let mut e = Engine::new(EngineDef::lfa_v10(), 9000.0, 1);
+        assert_eq!(
+            at(&mut e, 9300.0, 1.0),
+            (false, false),
+            "in the red zone, fuelled"
+        );
+        assert_eq!(at(&mut e, 9500.0, 1.0), (false, true));
     }
 
     #[test]
@@ -4377,6 +4566,43 @@ mod tests {
         run(&mut e, 1.5, &c);
         let t = e.torque_nm();
         assert!((15.0..80.0).contains(&t), "torque {t}");
+    }
+
+    #[test]
+    fn an_injection_cut_reaches_each_cylinder_a_cycle_later() {
+        // Port injection puts a charge's fuel on the closed valve during the exhaust stroke
+        // before its intake (sequential injection, from exhaust opening, done before the intake
+        // valve opens: Bosch, *Automotive Handbook*, "manifold injection, injection timing"):
+        // a cut-off stops the injections still to come, and every cylinder whose injection
+        // has started burns once more: from exhaust opening (≈ 140°) to the spark (≈ 700°)
+        // is 560° of the 720° cycle, 3.1 of the four.
+        // Through an inline four at 4000 rpm the fuel cut-off's pulses thus stop one by one over
+        // a cycle, not within the quarter cycle between intake closing and the spark (measured
+        // 2026-10-30: the LFA's limiter and overrun cut-offs silenced all ten within 3 ms at
+        // 9000 rpm, and their tail's mean flow collapsing that fast was heard as a thump at
+        // every gear change).
+        let mut e = Engine::new(EngineDef::inline4(), 4000.0, 1);
+        let on = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(4000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.5, &on);
+        let off = Controls {
+            throttle: 0.0,
+            ..on
+        };
+        // 4000 rpm: a cycle is 0.03 s
+        let before = e.combustions();
+        run(&mut e, 0.03, &off);
+        let first = e.combustions() - before;
+        run(&mut e, 0.03, &off);
+        let second = e.combustions() - before - first;
+        assert!(
+            first >= 3,
+            "{first} of 4 charges already injected burnt in the cycle after the cut"
+        );
+        assert_eq!(second, 0, "the cycle after that is fuelless");
     }
 
     #[test]
@@ -4821,6 +5047,8 @@ mod tests {
         // throttle_diameter_m is the total bore the ten share: wide open, each throttle body
         // is at least as wide as its runner (√10 · 45 mm = 142.3 mm), so the runner sets the flow
         assert!(d.throttle_diameter_m.powi(2) / 10.0 >= d.intake.runner_diameter_m.powi(2));
+        // the surge tank stays out of the preset until its walls radiate (see the preset)
+        assert_eq!(d.intake.airbox, None);
     }
 
     /// Firing intervals (deg) between consecutive pulses into each exhaust bank, sorted.
@@ -5013,6 +5241,8 @@ mod tests {
         let heard = |bank_angle: f64| {
             let mut d = EngineDef::lfa_v10();
             d.layout.bank_angle_deg = bank_angle;
+            // equal bank lines: the exhaust's own half orders (its banks 10 cm apart) aside
+            d.exhaust.collector_extra_length_m.clear();
             d.sound.combustion_jitter = 0.0;
             d.sound.intake = 0.0;
             d.sound.listener_angle_deg = 90.0;
@@ -5452,6 +5682,9 @@ mod tests {
         let hf = |sound: crate::sound::SoundDef, throttle: f64| {
             let mut d = EngineDef::inline4();
             d.sound = sound;
+            // over linear pipes: a steepening exhaust's shocks carry highs of their own, and
+            // the textures' share of them is what this test is not about
+            d.exhaust.steepening = false;
             let mut e = Engine::new(d, 5000.0, 1);
             let c = Controls {
                 throttle,
@@ -5827,9 +6060,11 @@ mod tests {
                 .map(|w| (w[cycle] - w[0]).powi(2))
                 .sum::<f64>()
         };
-        // and at the same level: the same jets through the same pipes, within what the ports'
-        // gas states leave apart (FV computes them, the waveguide estimates a 0D primary
-        // temperature; measured −3.6 dB)
+        // and at about the same level: the same jets through the same pipes. ±6 dB: the ports'
+        // gas states differ between the models, and in the waveguide the hiss rides on pulses
+        // that steepen (`waveguide::DelayLine::nonlinear`), which squeeze it, while the FV
+        // exhaust carries its jets through a parallel linear net — measured 3.6 dB apart
+        // (2026-10-26; the waveguide without jets repeats to 5e-6 of that)
         let (wg, fv) = (
             aperiodic(ExhaustModel::Waveguide, 1.0),
             aperiodic(ExhaustModel::Fv, 1.0),
@@ -6336,6 +6571,9 @@ mod tests {
         // the rest. A blip midway moves the mean flows the pipes' friction follows; the run ends
         // in the middle of a block.
         for def in [EngineDef::lfa_v10(), EngineDef::inline4()] {
+            // linear pipes: a steepening exhaust is never handed off (max_block)
+            let mut def = def;
+            def.exhaust.steepening = false;
             let mut a = Engine::new(def.clone(), 3000.0, 1);
             let mut b = Engine::new(def.clone(), 3000.0, 1);
             let n = (0.15 / DT) as usize + 7;
@@ -6413,13 +6651,25 @@ mod tests {
     fn an_engine_detached_and_taken_back_runs_as_one_never_detached() {
         // the net and half the runners handed out and straight back (a render block's start and
         // end with nothing in between): the same samples as an engine that kept them
-        let def = EngineDef::lfa_v10();
-        let mut a = Engine::new(def.clone(), 3000.0, 1);
-        let mut b = Engine::new(def, 3000.0, 1);
+        // a steepening net is never handed off (its waves arrive when their own speed says,
+        // not a fixed block later), so the LFA's exhaust goes to the thread only linear
+        let mut def = EngineDef::lfa_v10();
         let c = Controls {
             throttle: 0.3,
             ..Controls::default()
         };
+        let mut steep = Engine::new(def.clone(), 3000.0, 1);
+        for _ in 0..10 {
+            steep.step(DT, &c);
+        }
+        assert!(
+            !steep.detach_exhaust(|n, max| {
+                Box::new(crate::exhaust::LocalLink::new(n, max.min(16)))
+            })
+        );
+        def.exhaust.steepening = false;
+        let mut a = Engine::new(def.clone(), 3000.0, 1);
+        let mut b = Engine::new(def, 3000.0, 1);
         for _ in 0..10 {
             a.step(DT, &c);
             b.step(DT, &c);
@@ -6710,7 +6960,11 @@ mod tests {
             );
         }
         assert_eq!(EngineDef::inline4().exhaust.tail_length_m, 1.5);
-        assert_eq!(EngineDef::lfa_v10().exhaust.tail_length_m, 1.2);
+        // the LFA's bank line, catalyst to muffler: 0.50 + 0.38 (sub muffler) + 0.80 m
+        assert_eq!(
+            EngineDef::lfa_v10().exhaust.tail_length_m,
+            0.50 + 0.38 + 0.80
+        );
     }
 
     #[test]
@@ -6936,5 +7190,124 @@ mod tests {
             let ve = (e.inducted_kg() - m0) / ideal;
             assert!((0.6..1.15).contains(&ve), "{rpm} rpm: VE {ve:.2}");
         }
+    }
+}
+
+#[cfg(test)]
+mod probe {
+    //! Scratch probe (ignored): the LFA held at 6700 rpm WOT — cycle orders of the banks' valve
+    //! flows, of the exhaust net's radiated tails and of the whole output.
+    //! `cargo test -p engine-core --release probe_lfa_orders -- --ignored --nocapture`
+    use super::*;
+    const DT: f64 = 1.0 / 192_000.0;
+
+    fn orders(x: &[f64], rpm: f64, ks: &[f64]) -> Vec<f64> {
+        ks.iter()
+            .map(|k| {
+                let w = 2.0 * std::f64::consts::PI * rpm / 120.0 * k * DT;
+                let (mut re, mut im) = (0.0, 0.0);
+                for (n, s) in x.iter().enumerate() {
+                    re += s * (w * n as f64).cos();
+                    im += s * (w * n as f64).sin();
+                }
+                re * re + im * im
+            })
+            .collect()
+    }
+
+    fn report(name: &str, def: EngineDef, rpm: f64) {
+        let mut e = Engine::new(def, rpm, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(rpm),
+            ..Controls::default()
+        };
+        for _ in 0..(1.5 / DT) as usize {
+            e.step(DT, &c);
+        }
+        let cycle = (120.0 / rpm / DT).round() as usize;
+        let n = 100 * cycle;
+        let (mut fa, mut fb, mut tails, mut out) =
+            (vec![0.0; n], vec![0.0; n], vec![0.0; n], vec![0.0; n]);
+        for i in 0..n {
+            out[i] = e.step(DT, &c);
+            fa[i] = e.flows[..5].iter().sum();
+            fb[i] = e.flows[5..].iter().sum();
+            tails[i] = e
+                .net
+                .as_ref()
+                .map_or(0.0, |net| net.last_tails().iter().sum());
+        }
+        let ks = [5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 40.0, 50.0];
+        let db = |v: &[f64]| -> String {
+            v.iter()
+                .map(|p| format!("{:6.1}", 10.0 * (p / v[1]).log10()))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let sum: Vec<f64> = fa.iter().zip(&fb).map(|(a, b)| a + b).collect();
+        println!("{name}: orders 5 10 15 20 25 30 40 50, dB re order 10");
+        println!("  bank A flow  {}", db(&orders(&fa, rpm, &ks)));
+        println!("  both flows   {}", db(&orders(&sum, rpm, &ks)));
+        println!("  tails        {}", db(&orders(&tails, rpm, &ks)));
+        println!("  output       {}", db(&orders(&out, rpm, &ks)));
+        let t = orders(&tails, rpm, &ks);
+        let s = orders(&sum, rpm, &ks);
+        let tf: Vec<String> = t
+            .iter()
+            .zip(&s)
+            .map(|(a, b)| format!("{:6.1}", 10.0 * (a / b).log10()))
+            .collect();
+        println!("  tails/flows  {}", tf.join(" "));
+    }
+
+    #[test]
+    #[ignore]
+    fn probe_lfa_orders() {
+        let mut d = EngineDef::lfa_v10();
+        d.intake.airbox = Some(crate::intake_fv::AirboxDef::lfa_v10_estimate());
+        report("LFA + tank", d.clone(), 6700.0);
+        let mut nm = d.clone();
+        nm.exhaust.merge = None;
+        report("LFA + tank, no merge", nm, 6700.0);
+        let mut nc = d.clone();
+        nc.exhaust.merge = None;
+        nc.exhaust.after_collector = vec![Segment::Pipe {
+            length_m: 1.98,
+            diameter_m: 0.07,
+        }];
+        report("LFA + tank, no merge, no cat", nc, 6700.0);
+        report("LFA + tank, 4800", d, 4800.0);
+    }
+
+    #[test]
+    #[ignore]
+    fn probe_lfa_bare_line() {
+        let mut d = EngineDef::lfa_v10();
+        d.intake.airbox = Some(crate::intake_fv::AirboxDef::lfa_v10_estimate());
+        for rpm in [6000.0, 7400.0] {
+            report(&format!("LFA + tank, {rpm}"), d.clone(), rpm);
+        }
+        let mut bare = d.clone();
+        bare.exhaust.merge = None;
+        bare.exhaust.after_collector = vec![Segment::Pipe {
+            length_m: 1.98,
+            diameter_m: 0.07,
+        }];
+        let mut v = bare.clone();
+        v.exhaust.after_collector = vec![Segment::Pipe {
+            length_m: 1.5,
+            diameter_m: 0.07,
+        }];
+        report("bare, tail 1.5", v, 6700.0);
+        let mut v = bare.clone();
+        v.exhaust.collector_length_m = 0.1;
+        report("bare, collector 0.1", v, 6700.0);
+        let mut v = bare.clone();
+        v.exhaust.primary_length_m = 0.5;
+        report("bare, primaries 0.5", v, 6700.0);
+        let mut v = bare.clone();
+        v.exhaust.steepening = false;
+        report("bare, linear", v, 6700.0);
     }
 }

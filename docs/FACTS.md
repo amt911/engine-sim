@@ -215,3 +215,123 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
 - **The drive scene's full-throttle window rides the limiter** (8750–9035 rpm, cycle orders 1–3 at
   −3/−8/−15 dB re firing from the fuel cut): compare load against recordings with `held:`, not with
   `drive`'s 5.8–7.4 s. *(verified: `track.py` on the render, 2026-10-29)*
+- **The sub muffler (2026-10-29)**: a packed straight-through can of 0.38 m, Ø120 over a 70 mm pipe, 16 kPa·s/m²,
+  hot gas 900 K — our 1D lining TL 2.3/8.4/17/28/51/72 dB at 1/2/3/4/6/8 kHz, the 2D mode-matching model
+  (`papers/silencers/lining-study/modal2d.py`, needs scipy: `uv venv` in the scratchpad) 16/38/39/25/13/9. Either
+  way it cuts the LFA's H2–H6, which the dyno clip keeps; the patent's sound after the sub muffler is flat to
+  5 kHz. The preset carries it as a plain pipe. Held 6700 WOT against the dyno clip (`ruler.py`, RMS dB over
+  bands + H2..H8 + half orders): packed 12.3, plain 8.9, plain without catalyst 8.4. What remains: H3 −13,
+  H4 −17, half order 5 −20, 63/125 Hz +6. The 1D lining is under 2D below ~3 kHz and far over above
+  (beaming): the lower tip's glass wool (Ø100 over 60 mm, 0.12 m) is 1.9 dB at 2 kHz in 1D, 12 dB in 2D, so
+  it cancels the upper tips at f = c/(2ΔL) ≈ 2 kHz more than it should.
+- **Packed silencers by the 2D model (2026-10-29)**: `silencer2d.rs` ports `modal2d.py` (complex Bessel from the
+  `complex-bessel` crate) and matches it to 0.01 dB (0.4 m can at 1 kHz 17.34, 0.8 m 33.82). Backward chamber waves
+  must be referred to x = L or the evanescent modes overflow (the 0.8 m can failed everywhere, and 8 kHz+ on short
+  ones). Realised as 17 half-octave peaking biquads per direction (octave bands missed a 13 dB/half-octave slope by
+  4 dB); the fit must be kept passive (an overshoot of +1.6 dB at 62 Hz stalled the single) and its target clamped at
+  −50 dB. ~18 ms per frequency in release, 33 frequencies per packed silencer when the net is built. LFA held 6700 vs
+  the dyno clip: 13.3 → 13.4 dB (only its lower tip is packed).
+- **"Sounds far" (2026-10-29, branch fix/sounds-far)**: at 91312d5 the held-6700 yardstick (`agent2/py/ruler.py`)
+  is 12.9 dB; listener variants (one change each): ground off 13.8, dyno-camera spot (2.5 m, 0°, ear 0.5 m) 17.2,
+  1 m on axis free field 15.4; no muffler chambers 14.4; textures off 19.8; `model: fv` 18.3; no catalyst 10.9
+  (the catalyst takes 7 / 12 dB at 4 / 8 kHz). With steepening merged: 7.6 (default listener), 8.5 (dyno spot).
+  The 2–8 kHz deficit is the exhaust's own (textures off: −25 / −43 / −55 re total), not the listener's.
+  *(verified: ran the renders, scratchpad `far/cmp*.txt`)*
+- The dyno clip `dyno-gears.wav` is YouTube WS5vCsgCFB0 ("Lexus LFA Runs Through Gears On A Dyno", 9.5 s, Opus
+  48 kHz stereo): a vertical phone on the dyno deck straight behind the tips, ≈ 2.5 m back and ≈ 0.5 m high, in a
+  concrete-block room; the screen shows 7919 rpm / 276 km/h. *(verified: ffmpeg frame at 8 s, 2026-10-29)*
+- `--render gears` of the LFA takes ≈ 8 min on 6 cores (both binaries, one render each in parallel), `held:…:3`
+  ≈ 30 s. *(verified: ran them, 2026-10-29)*
+- **Steepening's real-time cost (2026-10-29)**: LFA, `--headless --seconds 5 --throttle 1`, cores 0–5, under the CPU
+  lock, audio seconds per wall second including start-up (the 2D silencer fit): Ultra 0.45 linear → 0.28 steepening,
+  High 0.57 → 0.32 (−40 %: the +28 % of the spec plus the exhaust thread, which a steepening net never takes).
+  Absolute values are far below the table above (start-up and the 6-core pin); the ratio is the fact.
+  *(verified: `scratchpad/far/rt.sh`)*
+- **Surge tank (air box) on the intake (2026-10-29)**: `IntakeDef.airbox: Option<AirboxDef>` (volume, n ducts,
+  duct length and Ø). ITB trumpets draw from the box (`throttled_ghost` on the box's state, held over an FV step),
+  the box breathes through its ducts as 1D pipes of L + 0.85a + 0.6a (Kinsler §10.8 end corrections), the sound
+  source is c·Σρu at the duct mouths; with a common throttle the throttle draws from the box. Verified against hand
+  values: the 20 L / 2 × Ø90 × 0.40 m box rings at 61.6 Hz (x·tan x = A_t L'/V, within 4 %) and passes a 2 f_H
+  pulsation at |H| = 0.513 (runner line + duct line + box by transfer matrices, within 3 %). LFA with
+  `AirboxDef::lfa_v10_estimate()` (not in the preset — FINDINGS 2026-10-29): `--render drive` blips octave bands
+  re total 31/63/125/250/500/1k/2k/4k −15.0 −9.6 −3.3 −15.8 −21.0 −14.2 −8.7 −18.2 (before −15.9 −10.9 −3.8 −15.8
+  −8.3 −14.1 −9.8 −19.5; real blips −12.3 −6.4 −3.3 −13.2 −17.2 −11.7 −14.1 −14.8): the 500 Hz band goes from
+  +8.9 dB over the real car to −3.8 under it; idle's 31 Hz band −23.8 → −9.3 (real −9.2: the box's 62 Hz mode
+  under the 54 Hz idle firing). Held 6700 WOT ruler 7.6 → 24.9 dB (firing order gone, see FINDINGS). Dyno: −0.1 %
+  at 1000 rpm to −2.6 % at 8000 (489 → 476 hp), one dynamic head at the ducts' exit. *(verified: scratchpad
+  `airbox/`, 2026-10-29)*
+- **The surge tank's real-time cost is nil (2026-10-29)**: LFA `--headless --seconds 5 --throttle 1`, cores 0–5,
+  under the CPU lock, audio seconds per wall second with and without `lfa_v10_estimate()`: High 0.344 → 0.327,
+  Ultra 0.238 → 0.248 (±5 %, noise either way: two 12-cell ducts beside ten 8-cell runners and the exhaust).
+  *(verified: scratchpad `airbox/rt.sh`)*
+- **Surge tank wall radiation does not carry the LFA's exterior firing order (2026-10-29)**: a (1,1) panel mode
+  (Fahy & Gardonio §2.6) at 400 Hz (Okamoto JSAE 2011 Fig. 18), η = 0.3 (Battistoni SAE 2006-01-0705, PA6-GF30,
+  ASTM E756), 3 mm (Aydemir SAE 2009-01-0345: 2.4–4 mm), 0.175 m², driven by the 20 L box's pressure and radiated at
+  the intake's place: blips' 500 Hz band −21.0 → −20.9 dB, held 6700 unchanged. The box's pulsation is too small;
+  Yamaha's tuned walls feed the cabin duct, not the exterior. The exterior firing order at high rpm must come from
+  the exhaust, which (with the airbox) has none at 6700: next suspect, the bypass muffler's transfer at the firing
+  frequency (its assembly cut the steady pulses ~15 dB at 6000 rpm WOT vs no bypass; isolating the chamber path,
+  the baffle's open area or the outlets alone changed nothing). The patent's spherical final chamber has a flat
+  TL of 15–22 dB from 100 to 1000 Hz (JP 2008-169751 A Fig. 6); the 1D cylinder model has a zero near c/2L.
+- Yamaha YZF-R1 (2009) service manual, "throttle body synchronization": vacuum difference between ITBs ≤ 1.33 kPa
+  (10 mmHg) at warm idle 1150–1250 rpm (#2 set 1.6 kPa higher) — papers/engine-data/yamaha-r1/.
+- **Bypass muffler, valve open, against the patent (2026-10-29)**: linear IR of the LFA net (one cylinder, valve
+  open) re no bypass, third octaves 400/500/630/800/1000 Hz: full −22/−34/−49/−30/−35 dB; chamber path blocked
+  −14/−16/−17/−18/−20 (≈ the patent's spherical final chamber, Fig. 6: 15–22 dB flat). But the patent's outlet
+  orders at ≈ 4800 rpm (Fig. 8: H2 +4, H4 +8, H5 +1 re H1, from a nearly flat source, Fig. 7A) do not pick
+  either: full +5.3/+2.3/−12.7, blocked +8.1/−6.2/−1.1 (both 8.6 dB RMS). Blocking it by ear was not adopted.
+  The LFA's H3 at 6700 (−19…−24 dB vs the dyno clip) is not from the tips' length difference (two equal tips
+  keep the 1.6 kHz dip).
+- **Surge tank, lead "400 Hz tuned by surge tank" (2026-10-29)**: by transfer matrices (`scratchpad/tank/py/tank_tf.py`:
+  box compliance + duct line with Kinsler §10.8 end corrections, mouth p = 0; |U_mouth/U_in| = 1/|cos kL' − (kV/A) sin kL'|)
+  every tank consistent with the EPC drawing passes the 6700 rpm firing order (558 Hz) at −17…−26 dB: today's 20 L /
+  2 × Ø90 × 0.40 m −24 dB (its duct line rings at 379 Hz — Okamoto's "400 Hz" is the duct's half-wave, and it does
+  nothing at 558); per bank 10 L / Ø90 × 0.20…0.60 m −17…−24; 4…15 L −16…−27; the air-cleaner case (Fig. 18) plus a
+  Ø70 × 0.2–0.3 m snorkel in series −42…−45. Only a Ø90 duct of 0.25 m (half-wave at 555 Hz) passes it (+10 dB): twice
+  shorter than the drawing's, off Okamoto's 400 Hz, and a tune by ear — not adopted. The exterior firing order at high
+  rpm is the exhaust's. *(verified: ran the script)*
+- **The LFA exhaust net's transfer by cycle order at full load (2026-10-29)**: `engine::probe::probe_lfa_orders` (ignored,
+  `--release -- --ignored --nocapture`): the engine held WOT, orders of the banks' valve flows (both banks summed), of
+  the net's radiated tails and of the output; tails/flows = the net's transfer, dB. Both banks' flow at 6700 rpm:
+  order 10 (558 Hz) 0, 20 −15, 5 −19, 15 −23, 25 −27, 30 −25, 40 −31, 50 −26: an H1-rich source. Transfer at 6700:
+  orders 5/10/15/20/25/30/40/50 = 96/**65**/86/74/79/75/88/84; at 6000 (500 Hz): 96/80/87/**52**/105/60/57/82; at
+  7400: 104/70/83/98/77/67/96/81; at 4800: 116/76/**51**/71/74/83/59/66. Neighbouring orders differ by up to 52 dB
+  (6000 rpm, orders 20 vs 25): the net is a high-Q line, and the firing order sits in a trough at 6000–7400. The
+  patent's measured line is flat: at ≈ 4800 rpm the sound at the main muffler's inlet has H2/H4/H5 at −2/+2/−3 dB
+  re H1 (JP 2008-169751 A Fig. 7A, dashed) and the radiated sum +3/+9/+2 (Fig. 8); ours radiates −16/−32/−42.
+  Insertion of the merge + bypass muffler at 6700 (no-merge transfer minus full): 21/38/26/31/35/38/17/12 dB by
+  order — 38 at the firing order against the patent's ≈ 10–11 per order (Fig. 7A solid vs dashed). The bare line
+  (no merge, no catalyst) still has order 10 at 116 against 128–132 for orders 15–25; tail 1.5 m 113 vs 127–135;
+  collector 0.1 m 115 vs 116–128; primaries 0.5 m 114 vs 107–117 (flat); linear (no steepening) 103 vs 122–128.
+  *(verified: `scratchpad/tank/probe3.log`, `probe4.log`)*
+- **The tank in the preset, measured (2026-10-29)**: held 6700 WOT, lines re total (`scratchpad/tank/py/peaks.py`):
+  without the tank order 10 (558 Hz) −4.2 dB, order 45 (2512 Hz) −5.3; with it order 10 −24.0, order 45 −3.5, the rest
+  within 1 dB: the trumpets carried 20 dB of H1 and nothing else. Ruler 7.6 → 24.9 (its tracker locks on 7538 rpm);
+  guard RMS 20.0. Exhaust variants with the tank (held 6700, H1 re total): baffle 0.01 −23.7, 0.03 −23.5 (blocking the
+  chamber path does nothing at WOT amplitude), no final chamber −21.2, equal tips −27.2, no bypass −20.2, no merge
+  −15.4, primaries 0.45 m −25.6. Order 45 (2.5 kHz, 9 × the bank order) is the top line of every variant that keeps
+  the merge (−3.5…−7.8): bank B's extra 0.10 m collector stub between the collector and the catalyst, c/2L ≈ 2.5–2.8
+  kHz. Lead "blips" (`yam/cmp.py`) unchanged from the entry above. *(verified: `scratchpad/tank/r-*.txt`)*
+
+## Gear-change thump and the LFA final chamber (2026-10-30, branch fix/gear-thump)
+
+- **Real LFA upshifts (dyno, `real/dynogears.wav`, 4 shifts at 3.95/5.50/6.35/8.45 s):** the < 200 Hz
+  5 ms RMS peak within ±0.1 s of the shift is −11…−15 dB under the median full-band RMS of the
+  0.5 s before, and +7…+13 dB over the median LF RMS there. A render's shift must meet those two numbers.
+- **Fitted LFA line, linear sweep (one cylinder's 0.01 flow tone → radiated sum, 7000 rpm, dB):**
+  full 50–200 Hz 55–61, 400–950 Hz 15–31; no bypass muffler 43–66 (flat ±8); open path only (no
+  closed chambers) 26–54 at 400–950; with the final chamber as `Segment::Measured` (Fig. 6) full
+  33–51 / 10–24, open path only 37 / 16–24 — the listener's dQ/dt adds +6 dB/oct on top.
+- **JP 2008-169751 A read-outs:** Fig. 6 (spherical final chamber TL): 15 dB at 100 Hz, 18.5 at 200,
+  20–21 from 300 Hz to 1 kHz; the flat chamber 10–33 dB with dips at ≈ 300/500/800 Hz. Fig. 7A
+  (4800 rpm, engine original dashed vs upper tip): 1次/2次/4次/5次 118/122/125/122 → 110/110/112/113 dB.
+  Fig. 5A: with the valve open the gas goes straight into the final chamber; the chamber path enters
+  through holes 20A/22A and short pipes 36, not long pipes. ¶0035: path A's flow resistance ≫ path B's.
+- **Shift flare:** open-loop cut ramp + clutch release at 10/s: 8760 → 9007 rpm (limiter at 9000) at
+  every shift; with the speed loop (1 % band) 8920–8990. The LFA's `shift_time_s` 0.2.
+- **Thump per build (5 ms LF peak over steady full-band / over steady LF, five shifts):** `ecu.wav`
+  +6…+9 / +28…+31; measured chamber +9…+13 / +35; + injection latency +9…+13 / +34…+35; mass-flow
+  source (reverted, see FINDINGS) −3…+6 / +24…+33.
+- **Real LFA shift, per band (5 ms peak at the cut-in re the steady full-band level, four dyno
+  upshifts):** 10–60 Hz −11…−24, 60–200 Hz −14…−17, 200–800 Hz −7…0 dB. Committed render +8…+12 /
+  −4…−9 / −7…0; blank-out torque cut −3…+5 / +1…+3 / +2…+13; 70 L shell +10…+13 / −5…−18 / −5…+1.

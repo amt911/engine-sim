@@ -203,6 +203,12 @@ pub fn validate(def: &EngineDef) -> Result<(), ConfigError> {
     check(
         within(x.primary_length_m, 0.05, 10.0)
             && within(x.collector_length_m, 0.01, 10.0)
+            && x.collector_extra_length_m
+                .iter()
+                .all(|e| within(*e, 0.0, 5.0))
+            && x.primary_length_deviation_m
+                .iter()
+                .all(|e| e.abs() <= 0.25 * x.primary_length_m)
             && within(x.tail_length_m, 0.05, 20.0)
             && [
                 x.primary_diameter_m,
@@ -211,7 +217,7 @@ pub fn validate(def: &EngineDef) -> Result<(), ConfigError> {
             ]
             .iter()
             .all(|d| within(*d, 0.005, 0.3)),
-        "exhaust pipes: lengths 0.01–20 m, Ø 5–300 mm",
+        "exhaust pipes: lengths 0.01–20 m (a bank's extra 0–5 m), Ø 5–300 mm",
     );
     check(
         within(x.muffler_transmission, 0.05, 1.0),
@@ -373,6 +379,8 @@ mod tests {
         assert_eq!(def.phase_offsets_deg(), vec![0.0, 360.0]);
         // written before idle speed control: a generic car idle, not the single's 1200
         assert_eq!(def.idle_rpm, 900.0);
+        // written before the shutoff speed: its limiter cuts at the redline
+        assert_eq!(def.shutoff_rpm, 0.0);
         // written before engine files carried their vehicle: a generic car
         assert_eq!(def.vehicle, crate::drivetrain::VehicleDef::default());
     }
@@ -453,6 +461,14 @@ mod tests {
             ),
             ("burn", Box::new(|d| d.burn_duration_deg = 1e9)),
             ("exhaust", Box::new(|d| d.exhaust.primary_length_m = 1e7)),
+            (
+                "exhaust",
+                Box::new(|d| d.exhaust.collector_extra_length_m = vec![0.0, -0.5]),
+            ),
+            (
+                "exhaust",
+                Box::new(|d| d.exhaust.primary_length_deviation_m = vec![0.0, -0.4]),
+            ),
             (
                 "exhaust",
                 Box::new(|d| d.exhaust.tail_diameter_m = f64::NAN),

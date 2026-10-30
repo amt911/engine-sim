@@ -44,6 +44,76 @@ pub struct IntakeDef {
     /// 11–13, warm port injection: ≈ 1 s from 20 to 40 rev/s, a little less at full load
     /// (Heywood §7.6.3: of order 1 s for a manifold film). 0 disables the film.
     pub film_tau_s: f64,
+    /// The surge tank (air box) the trumpets draw from, breathing through its inlet ducts;
+    /// none: the trumpets (or the throttle) open straight to the air.
+    pub airbox: Option<AirboxDef>,
+}
+
+/// A surge tank: a 0D volume fed by `ducts` equal inlet ducts from the atmosphere. With
+/// individual throttles the trumpets draw from it; with a common throttle, the throttle does.
+/// The induction sound then radiates from the duct mouths, filtered by the box: a Helmholtz
+/// resonator of f = (c/2π)·√(n·A/(L'·V)) that passes the pulsation below f and holds it back
+/// above (Kinsler, Frey, Coppens & Sanders, Fundamentals of Acoustics 4th ed., §10.8–10.9;
+/// Munjal, Acoustics of Ducts and Mufflers, ch. 2). Each duct is a 1D pipe of the effective
+/// length L' = L + 0.85a + 0.6a: the end corrections of a flanged end at the box (Rayleigh) and
+/// an unflanged mouth (Levine & Schwinger), Kinsler §10.8.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AirboxDef {
+    pub volume_m3: f64,
+    pub ducts: usize,
+    pub duct_length_m: f64,
+    pub duct_diameter_m: f64,
+}
+
+impl Default for AirboxDef {
+    fn default() -> Self {
+        Self {
+            volume_m3: 0.010,
+            ducts: 1,
+            duct_length_m: 0.3,
+            duct_diameter_m: 0.07,
+        }
+    }
+}
+
+impl AirboxDef {
+    /// Length of each duct's 1D pipe: the geometric length plus both end corrections.
+    pub fn effective_duct_length(&self) -> f64 {
+        self.duct_length_m + (0.85 + 0.6) * 0.5 * self.duct_diameter_m
+    }
+
+    /// The Lexus LFA's surge tank: the ten trumpets draw from one air-cleaner case on top of
+    /// the V, fed by two inlet ducts (Toyota EPC 176966A: case 17190, ducts 17861F/17862D).
+    /// Toyota has not published its size; every number is an ESTIMATE from that drawing's
+    /// proportions against the engine: the case spans the banks (≈ 0.5 × 0.35 m) by ≈ 0.12 m
+    /// deep → ≈ 20 L (4 × the 4.8 L swept); each duct's mouth is as wide as the drawing's
+    /// bank spacing over five cylinders → Ø 90 mm, ≈ 0.40 m along its curve. Helmholtz with
+    /// both end corrections (L' = 0.465 m): (c/2π)√(2A/(L'V)) = 65 Hz lumped, 62 Hz as a
+    /// line. Yamaha tuned the case's walls to radiate the firing tone (250–500 Hz) — a path
+    /// this model does not have yet, which is why the preset does not use it (2026-10-29).
+    pub fn lfa_v10_estimate() -> Self {
+        Self {
+            volume_m3: 0.020,
+            ducts: 2,
+            duct_length_m: 0.40,
+            duct_diameter_m: 0.09,
+        }
+    }
+}
+
+/// The state a runner's trumpet (or the throttle) draws from: the atmosphere, or the air box.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Upstream {
+    pub p: f64,
+    pub rho: f64,
+}
+
+impl Upstream {
+    pub const ATMOSPHERE: Upstream = Upstream {
+        p: ATM_PA,
+        rho: ATM_PA / (R_AIR * AMBIENT_T_K),
+    };
 }
 
 impl Default for IntakeDef {
@@ -56,6 +126,7 @@ impl Default for IntakeDef {
             trumpet_loss: 0.1,
             film_fraction: 0.18,
             film_tau_s: 1.0,
+            airbox: None,
         }
     }
 }
@@ -67,6 +138,8 @@ pub struct IntakeFv {
     individual: bool,
     /// Common plenum (unused with individual throttles).
     plenum: GasVolume,
+    /// The surge tank and its ducts, if the engine has one.
+    airbox: Option<Airbox>,
     /// Discharge-coefficient factor of the trumpet entry, 1/√(1 + k).
     trumpet_cd: f64,
     pub substeps: usize,
@@ -85,7 +158,77 @@ pub struct IntakeFv {
     /// This step's left-end mass flux of every runner, per substep, and the local runners'
     /// valve flows (scratch, kept: no allocation per FV step).
     flux: Vec<f64>,
+    /// The energy fluxes that go with `flux` (what the box loses with the mass).
+    eflux: Vec<f64>,
     acc: Vec<(f64, f64)>,
+}
+
+/// A surge tank as a 0D volume with its inlet ducts as 1D pipes ([`AirboxDef`]).
+#[derive(Debug, Clone)]
+struct Airbox {
+    gas: GasVolume,
+    ducts: Vec<Pipe1d>,
+    a_duct: f64,
+}
+
+impl Airbox {
+    fn new(def: &AirboxDef, init: Prim) -> Self {
+        let a_duct = area(def.duct_diameter_m.max(1e-3));
+        let length = def.effective_duct_length().max(2.0 * CELL_M);
+        let n = (length / CELL_M).round().max(2.0);
+        let ducts = (0..def.ducts.max(1))
+            .map(|_| {
+                let mut p = Pipe1d::segmented(&[(length, a_duct)], length / n, init);
+                p.floors = (1e-3, 500.0);
+                p.friction = PIPE_FRICTION;
+                p
+            })
+            .collect();
+        Self {
+            gas: GasVolume::at(ATM_PA, AMBIENT_T_K, def.volume_m3.max(1e-4)),
+            ducts,
+            a_duct,
+        }
+    }
+
+    fn upstream(&self) -> Upstream {
+        Upstream {
+            p: self.gas.pressure(),
+            rho: self.gas.mass_kg / self.gas.volume_m3,
+        }
+    }
+
+    /// One substep of the ducts: each breathes between the atmosphere at its mouth and the box
+    /// at its other end (both Benson junction ends), and the box takes what they bring.
+    /// Returns the air that came in at the mouths, kg (negative: blown out), and the mouths'
+    /// sound source c·Σρu.
+    fn breathe(&mut self, h: f64) -> (f64, f64) {
+        let up = self.upstream();
+        let rho_atm = Upstream::ATMOSPHERE.rho;
+        let (mut inducted, mut at_mouths) = (0.0, 0.0);
+        for duct in &mut self.ducts {
+            let n = duct.cells.len();
+            duct.left = Boundary::State(junction_ghost(duct.prim(0), ATM_PA, rho_atm, -1.0));
+            duct.right = Boundary::State(junction_ghost(duct.prim(n - 1), up.p, up.rho, 1.0));
+            duct.step(h);
+            let (mouth, into) = duct.end_flux;
+            inducted += mouth.rho * self.a_duct * h;
+            at_mouths += C_AIR * mouth.rho;
+            self.gas.mass_kg += into.rho * self.a_duct * h;
+            self.gas.energy_j += into.e * self.a_duct * h;
+        }
+        guard(&mut self.gas);
+        (inducted, at_mouths)
+    }
+
+    fn mass(&self) -> f64 {
+        self.gas.mass_kg
+            + self
+                .ducts
+                .iter()
+                .map(|p| p.cells.iter().map(|c| c.rho).sum::<f64>() * self.a_duct * p.dx)
+                .sum::<f64>()
+    }
 }
 
 /// A group of ITB runners and what stepping them needs: the part of an [`IntakeFv`] that can run
@@ -103,32 +246,38 @@ pub struct RunnerSet {
 #[derive(Debug, Clone, Default)]
 pub struct RunnerResult {
     pub flux: Vec<f64>,
+    /// The energy flux at the same faces, per substep, like `flux`.
+    pub eflux: Vec<f64>,
     pub last: Vec<Cons>,
     pub mid_p: Vec<f64>,
     pub min_dt: f64,
 }
 
 impl RunnerSet {
-    /// One FV step of `dt`, k substeps, the throttle's area `throttle_area`, each runner's valve
-    /// flow over the step `acc` (mass, energy).
+    /// One FV step of `dt`, k substeps, the throttle's area `throttle_area`, the state the
+    /// trumpets draw from `up`, each runner's valve flow over the step `acc` (mass, energy).
     pub fn fv_step(
         &mut self,
         k: usize,
         dt: f64,
         throttle_area: f64,
+        up: Upstream,
         acc: &[(f64, f64)],
         out: &mut RunnerResult,
     ) {
         out.flux.resize(self.pipes.len() * k, 0.0);
+        out.eflux.resize(self.pipes.len() * k, 0.0);
         itb_runners_step(
             &mut self.pipes,
             acc,
             self.a_runner,
             self.trumpet_cd,
             throttle_area,
+            up,
             dt,
             k,
             &mut out.flux,
+            &mut out.eflux,
         );
         out.last.clear();
         out.last
@@ -141,10 +290,10 @@ impl RunnerSet {
 }
 
 /// Where an [`IntakeFv`] sends the FV steps of its detached runners (another thread, in the
-/// app): `submit` an FV step (k substeps over `dt`, the throttle area, each runner's valve flow),
-/// then `collect` its [`RunnerResult`].
+/// app): `submit` an FV step (k substeps over `dt`, the throttle area, what the trumpets draw
+/// from, each runner's valve flow), then `collect` its [`RunnerResult`].
 pub trait RunnerLink: Send {
-    fn submit(&mut self, k: usize, dt: f64, throttle_area: f64, acc: &[(f64, f64)]);
+    fn submit(&mut self, k: usize, dt: f64, throttle_area: f64, up: Upstream, acc: &[(f64, f64)]);
     fn collect(&mut self, out: &mut RunnerResult);
     /// No more steps: whatever runs the runners may hand them back.
     fn stop(&mut self) {}
@@ -161,6 +310,7 @@ struct Submitted {
     k: usize,
     dt: f64,
     throttle_area: f64,
+    up: Upstream,
     acc: Vec<(f64, f64)>,
 }
 
@@ -171,17 +321,19 @@ impl LocalRunners {
 }
 
 impl RunnerLink for LocalRunners {
-    fn submit(&mut self, k: usize, dt: f64, throttle_area: f64, acc: &[(f64, f64)]) {
+    fn submit(&mut self, k: usize, dt: f64, throttle_area: f64, up: Upstream, acc: &[(f64, f64)]) {
         self.pending = Some(Submitted {
             k,
             dt,
             throttle_area,
+            up,
             acc: acc.to_vec(),
         });
     }
     fn collect(&mut self, out: &mut RunnerResult) {
         if let Some(j) = self.pending.take() {
-            self.set.fv_step(j.k, j.dt, j.throttle_area, &j.acc, out);
+            self.set
+                .fv_step(j.k, j.dt, j.throttle_area, j.up, &j.acc, out);
         }
     }
 }
@@ -236,9 +388,10 @@ fn stable_dt(pipes: &[Pipe1d]) -> f64 {
 }
 
 /// ITB runners through one FV step: each runner's valve flow `acc` becomes its right-end flux,
-/// then k substeps of dt/k with the throttled trumpet (stable characteristic end on the
-/// atmosphere) at its left; each runner's left-end mass flux per substep goes to `flux`. Each
-/// runner is independent of the others, so they step one after another.
+/// then k substeps of dt/k with the throttled trumpet (stable characteristic end on `up`: the
+/// atmosphere or the air box, held over the step) at its left; each runner's left-end mass and
+/// energy flux per substep go to `flux` and `eflux`. Each runner is independent of the others,
+/// so they step one after another.
 #[allow(clippy::too_many_arguments)]
 fn itb_runners_step(
     pipes: &mut [Pipe1d],
@@ -246,22 +399,29 @@ fn itb_runners_step(
     a: f64,
     trumpet_cd: f64,
     throttle_area: f64,
+    up: Upstream,
     dt: f64,
     k: usize,
     flux: &mut [f64],
+    eflux: &mut [f64],
 ) {
     let a_eff = throttle_area.max(0.0) * trumpet_cd;
     let a_itb = a_eff.min(a * trumpet_cd);
     let psi = a_itb / a;
-    let rho_atm = ATM_PA / (R_AIR * AMBIENT_T_K);
     let h = dt / k as f64;
-    for ((pipe, &(m, e)), f) in pipes.iter_mut().zip(acc).zip(flux.chunks_mut(k)) {
+    for (((pipe, &(m, e)), f), ef) in pipes
+        .iter_mut()
+        .zip(acc)
+        .zip(flux.chunks_mut(k))
+        .zip(eflux.chunks_mut(k))
+    {
         set_valve_boundary(pipe, m, e, a, dt);
-        for fs in f.iter_mut() {
-            let ghost = throttled_ghost(pipe.prim(0), ATM_PA, rho_atm, -1.0, psi);
+        for (fs, es) in f.iter_mut().zip(ef) {
+            let ghost = throttled_ghost(pipe.prim(0), up.p, up.rho, -1.0, psi);
             pipe.left = Boundary::State(ghost);
             pipe.step(h);
             *fs = pipe.end_flux.0.rho;
+            *es = pipe.end_flux.0.e;
         }
     }
 }
@@ -271,6 +431,11 @@ impl IntakeFv {
     pub fn with_scheme(mut self, scheme: crate::fv::Scheme) -> Self {
         for p in &mut self.runners {
             p.scheme = scheme;
+        }
+        if let Some(b) = &mut self.airbox {
+            for p in &mut b.ducts {
+                p.scheme = scheme;
+            }
         }
         self
     }
@@ -303,6 +468,7 @@ impl IntakeFv {
             a_runner,
             individual: def.individual_throttles,
             plenum: GasVolume::at(ATM_PA, AMBIENT_T_K, plenum_volume_m3.max(1e-5)),
+            airbox: def.airbox.as_ref().map(|b| Airbox::new(b, init)),
             trumpet_cd: 1.0 / (1.0 + def.trumpet_loss.max(0.0)).sqrt(),
             substeps,
             dt_fv: substeps as f64 * dt,
@@ -316,8 +482,14 @@ impl IntakeFv {
             previous_rate: 0.0,
             remote: RemoteRunners(None),
             flux: Vec::new(),
+            eflux: Vec::new(),
             acc: Vec::new(),
         }
+    }
+
+    /// The air box's pressure, Pa; none without an air box.
+    pub fn airbox_pressure(&self) -> Option<f64> {
+        self.airbox.as_ref().map(|b| b.gas.pressure())
     }
 
     /// The runner's last cell (at the valve) as a 0D volume, for the valve flow.
@@ -347,7 +519,8 @@ impl IntakeFv {
 
     /// Advance one physics step with throttle effective area `throttle_area` (per runner with
     /// ITBs, total for a common throttle). Returns the induction sound source (c·ρu at the
-    /// trumpets, or at the throttle for a plenum), held between FV steps.
+    /// trumpets, at the throttle for a plenum, or at the duct mouths with an air box), held
+    /// between FV steps.
     pub fn step(&mut self, throttle_area: f64) -> f64 {
         self.count += 1;
         self.inducted = 0.0;
@@ -360,37 +533,51 @@ impl IntakeFv {
         if self.individual {
             let total =
                 self.runners.len() + self.remote.0.as_ref().map_or(0, |r| r.result.last.len());
-            let limit = match &self.remote.0 {
+            let mut limit = match &self.remote.0 {
                 Some(r) => stable_dt(&self.runners).min(r.result.min_dt),
                 None => stable_dt(&self.runners),
             };
+            if let Some(b) = &self.airbox {
+                limit = limit.min(stable_dt(&b.ducts));
+            }
             let k = ((dt / limit).ceil() as usize).clamp(1, MAX_SUBCYCLES);
             let h = dt / k as f64;
             let local = self.runners.len();
+            // the box's state is held over the FV step for the runners (the step is a few
+            // tens of µs; the box holds litres); the ducts and the box then follow substep by
+            // substep
+            let up = self
+                .airbox
+                .as_ref()
+                .map_or(Upstream::ATMOSPHERE, Airbox::upstream);
             if let Some(r) = self.remote.0.as_mut() {
                 // the detached runners go first: they step while these do
                 r.acc.clear();
                 r.acc
                     .extend((r.first..total).map(|i| (self.acc_mass[i], self.acc_energy[i])));
-                r.link.submit(k, dt, throttle_area, &r.acc);
+                r.link.submit(k, dt, throttle_area, up, &r.acc);
             }
             self.acc.clear();
             self.acc
                 .extend((0..local).map(|i| (self.acc_mass[i], self.acc_energy[i])));
             self.flux.resize(total * k, 0.0);
+            self.eflux.resize(total * k, 0.0);
             itb_runners_step(
                 &mut self.runners,
                 &self.acc,
                 a,
                 self.trumpet_cd,
                 throttle_area,
+                up,
                 dt,
                 k,
                 &mut self.flux[..local * k],
+                &mut self.eflux[..local * k],
             );
             if let Some(r) = self.remote.0.as_mut() {
                 r.link.collect(&mut r.result);
                 self.flux[local * k..].copy_from_slice(&r.result.flux);
+                self.eflux[local * k..].copy_from_slice(&r.result.eflux);
             }
             for i in 0..total {
                 self.acc_mass[i] = 0.0;
@@ -399,13 +586,27 @@ impl IntakeFv {
             // the sums as the runners would add up side by side, substep by substep
             let mut radiated = 0.0;
             for s in 0..k {
-                let mut at_trumpets = 0.0;
+                let (mut at_trumpets, mut drawn, mut energy) = (0.0, 0.0, 0.0);
                 for i in 0..total {
                     let f = self.flux[i * k + s];
-                    self.inducted += f * a * h;
+                    drawn += f * a * h;
+                    energy += self.eflux[i * k + s] * a * h;
                     at_trumpets += C_AIR * f;
                 }
-                radiated += at_trumpets / k as f64;
+                match &mut self.airbox {
+                    Some(b) => {
+                        // the trumpets took it from the box; the ducts breathe behind them
+                        b.gas.mass_kg -= drawn;
+                        b.gas.energy_j -= energy;
+                        let (in_at_mouths, at_mouths) = b.breathe(h);
+                        self.inducted += in_at_mouths;
+                        radiated += at_mouths / k as f64;
+                    }
+                    None => {
+                        self.inducted += drawn;
+                        radiated += at_trumpets / k as f64;
+                    }
+                }
             }
             self.radiated = radiated;
             self.previous_rate = self.inducted_rate;
@@ -417,7 +618,10 @@ impl IntakeFv {
             self.acc_mass[i] = 0.0;
             self.acc_energy[i] = 0.0;
         }
-        let limit = stable_dt(&self.runners);
+        let mut limit = stable_dt(&self.runners);
+        if let Some(b) = &self.airbox {
+            limit = limit.min(stable_dt(&b.ducts));
+        }
         let k = ((dt / limit).ceil() as usize).clamp(1, MAX_SUBCYCLES);
         let h = dt / k as f64;
         let mut radiated = 0.0;
@@ -437,17 +641,33 @@ impl IntakeFv {
         let a_eff = throttle_area.max(0.0) * self.trumpet_cd;
         let mut radiated = 0.0;
         {
-            let dm = crate::gas::exchange_with_reservoir(
-                &mut self.plenum,
-                &crate::gas::Reservoir {
+            // the throttle draws from the air box if there is one, else from the atmosphere
+            let reservoir = match &self.airbox {
+                Some(b) => crate::gas::Reservoir {
+                    pressure_pa: b.gas.pressure(),
+                    temperature_k: b.gas.temperature(),
+                },
+                None => crate::gas::Reservoir {
                     pressure_pa: ATM_PA,
                     temperature_k: AMBIENT_T_K,
                 },
-                a_eff,
-                h,
-            );
-            self.inducted -= dm;
-            radiated += C_AIR * (-dm / h) / a;
+            };
+            let flow = crate::gas::plan_with_reservoir(&self.plenum, &reservoir, a_eff, h, 1.0);
+            flow.apply_to(&mut self.plenum);
+            let dm = flow.dm;
+            match &mut self.airbox {
+                Some(b) => {
+                    b.gas.mass_kg += dm;
+                    b.gas.energy_j += dm * flow.h;
+                    let (in_at_mouths, at_mouths) = b.breathe(h);
+                    self.inducted += in_at_mouths;
+                    radiated += at_mouths;
+                }
+                None => {
+                    self.inducted -= dm;
+                    radiated += C_AIR * (-dm / h) / a;
+                }
+            }
             let pl = Prim {
                 rho: self.plenum.mass_kg / self.plenum.volume_m3,
                 u: 0.0,
@@ -522,6 +742,7 @@ impl IntakeFv {
         let pipes = self.runners.split_off(first);
         let result = RunnerResult {
             flux: Vec::new(),
+            eflux: Vec::new(),
             last: pipes.iter().map(|p| p.cells[p.cells.len() - 1]).collect(),
             mid_p: pipes.iter().map(|p| p.prim(p.cells.len() / 2).p).collect(),
             min_dt: stable_dt(&pipes),
@@ -572,6 +793,7 @@ impl IntakeFv {
             } else {
                 self.plenum.mass_kg
             }
+            + self.airbox.as_ref().map_or(0.0, Airbox::mass)
     }
 }
 
@@ -997,5 +1219,189 @@ mod tests {
         }
         assert_eq!(n, 8);
         assert!((net.manifold_pressure() - 94_000.0).abs() < 1e-6);
+    }
+
+    fn boxed(individual: bool) -> IntakeDef {
+        IntakeDef {
+            model: IntakeModel::Fv,
+            individual_throttles: individual,
+            runner_length_m: 0.325,
+            runner_diameter_m: 0.045,
+            airbox: Some(AirboxDef::lfa_v10_estimate()),
+            ..IntakeDef::default()
+        }
+    }
+
+    /// Amplitude of `x` (sampled at `dt`) at `f`, by a straight DFT (rectangular window).
+    fn amplitude_at(x: &[f64], dt: f64, f: f64) -> f64 {
+        let (mut re, mut im) = (0.0, 0.0);
+        for (i, v) in x.iter().enumerate() {
+            let ph = 2.0 * std::f64::consts::PI * f * i as f64 * dt;
+            re += v * ph.cos();
+            im += v * ph.sin();
+        }
+        2.0 * (re * re + im * im).sqrt() / x.len() as f64
+    }
+
+    #[test]
+    fn the_lfa_surge_tank_estimate_resonates_below_its_idle_firing() {
+        // Two ducts (EPC 176966A); Helmholtz by hand, f = (c/2π)·√(n·A/(L'·V)) with
+        // c = 347.2 m/s (300 K), A = π·0.045² = 6.362e-3 m², L' = 0.40 + 1.45 · 0.045 =
+        // 0.46525 m, V = 0.020 m³: 55.26 · √(1.2723e-2 / 9.305e-3) = 64.6 Hz — just above
+        // the idle's firing (650 rpm × 5 / 60 = 54 Hz), so the idle pulse passes the ducts
+        let b = AirboxDef::lfa_v10_estimate();
+        assert_eq!(b.ducts, 2);
+        let a = std::f64::consts::PI * 0.25 * b.duct_diameter_m.powi(2);
+        let f = 347.2 / (2.0 * std::f64::consts::PI)
+            * (2.0 * a / (b.effective_duct_length() * b.volume_m3)).sqrt();
+        assert!((f - 64.6).abs() < 0.5, "{f} Hz");
+        assert!((b.effective_duct_length() - 0.46525).abs() < 1e-9);
+        assert!(f > 54.0 && f < 1.5 * 54.0);
+    }
+
+    #[test]
+    fn airbox_round_trips_and_an_old_file_has_none() {
+        let def = boxed(true);
+        let json = serde_json::to_string(&def).unwrap();
+        assert_eq!(serde_json::from_str::<IntakeDef>(&json).unwrap(), def);
+        let yaml = serde_yaml_ng::to_string(&def).unwrap();
+        assert_eq!(serde_yaml_ng::from_str::<IntakeDef>(&yaml).unwrap(), def);
+        assert!(yaml.contains("duct_length_m: 0.4"));
+        let old: IntakeDef =
+            serde_yaml_ng::from_str("model: fv\nindividual_throttles: true\n").unwrap();
+        assert_eq!(old.airbox, None);
+        assert_eq!(IntakeDef::default().airbox, None);
+    }
+
+    #[test]
+    fn the_airbox_and_its_ducts_ring_at_the_helmholtz_frequency() {
+        // Box V = 20 L breathing through two Ø90 mm ducts of 0.40 m. Effective duct length with
+        // end corrections L' = L + 0.85a (flanged at the box, Rayleigh) + 0.6a (unflanged mouth,
+        // Levine–Schwinger) = 0.46525 m (Kinsler, Frey, Coppens & Sanders, Fundamentals of
+        // Acoustics 4th ed., §10.8–10.9). Lumped Helmholtz f = (c/2π)√(A_t/(L'V)) = 64.6 Hz with
+        // c = √(1.4·287·300) = 347.2 m/s, A_t = 2·6.3617e-3 m². The ducts are 0.47 m long,
+        // λ/4 ≈ 1.4 m, so the distributed line's resonance (Kinsler §10.9: x·tan x = A_t·L'/V
+        // = 0.29598, x = kL' = 0.51861) sits lower: f = c·x/(2π·L') = 61.59 Hz. A short draw
+        // through the runners sets it ringing; the box pressure then swings at that frequency.
+        let dt = 1e-5;
+        let mut net = IntakeFv::new(&boxed(true), 1e-3, 1, dt);
+        let a = net.a_runner;
+        let mut p = Vec::new();
+        for i in 0..(0.6 / dt) as usize {
+            // 1 g drawn in the first 10 ms: a 2 % dip in the 24 g the box holds
+            let dm = if i < 1000 { 1e-6 } else { 0.0 };
+            net.add_valve_flow(0, dm, CP * 300.0);
+            net.step(a);
+            if i >= 10_000 {
+                p.push(net.airbox_pressure().unwrap() - ATM_PA);
+            }
+        }
+        let swing = p.iter().cloned().fold(0.0_f64, |m, v| m.max(v.abs()));
+        assert!(swing > 100.0, "the box rings by {swing} Pa");
+        let mean = p.iter().sum::<f64>() / p.len() as f64;
+        let x: Vec<f64> = p.iter().map(|v| v - mean).collect();
+        let (mut best, mut at) = (0.0, 0.0);
+        let mut f = 30.0;
+        while f < 120.0 {
+            let amp = amplitude_at(&x, dt, f);
+            if amp > best {
+                (best, at) = (amp, f);
+            }
+            f += 0.25;
+        }
+        assert!((at / 61.59 - 1.0).abs() < 0.04, "rings at {at} Hz");
+    }
+
+    #[test]
+    fn the_airbox_low_passes_the_trumpets_pulsation() {
+        // The same box; one cylinder's runner (0.325 m, Ø45 mm) draws 20 g/s · (1 + sin 2πft)
+        // at the valve with f = 2 × 61.59 = 123.19 Hz. Mouth volume velocity over the valve's,
+        // by transfer matrices (Munjal, Acoustics of Ducts and Mufflers, ch. 2: a line of
+        // length L is [cos kL, jZ sin kL; (j/Z) sin kL, cos kL], Z = ρc/A; a volume shunts
+        // jωC = j·kV/(ρc)): the ducts as one line of length L' and area A_t open at the mouth
+        // (p = 0), the box on its end, the runner line between the valve and the box,
+        //   Q_valve/Q_mouth = cos kL_r·[cos kL' − (kV/A_t)·sin kL'] − (A_r/A_t)·sin kL_r·sin kL'.
+        // k = 2πf/c = 2.2292 m⁻¹: kL' = 1.0371 (cos 0.5087, sin 0.8610), kL_r = 0.7245
+        // (cos 0.7488, sin 0.6628), kV/A_t = 3.5041, A_r/A_t = 0.125:
+        //   Q_valve/Q_mouth = 0.7488·(0.5087 − 3.0169) − 0.125·0.6628·0.8610 = −1.9496,
+        // |H| = 0.5129 (−5.8 dB; the ducts and box alone would give 0.3986, the lumped
+        // 1/((f/f_H)² − 1) 0.38). The mouths' source is c·Σρu: the mouth mass flux amplitude
+        // summed over the two ducts is |H|·ṁ₁/A_duct.
+        let dt = 1e-5;
+        let f = 2.0 * 61.59;
+        let mut net = IntakeFv::new(&boxed(true), 1e-3, 1, dt);
+        let a = net.a_runner;
+        let m1 = 0.02;
+        let mut src = Vec::new();
+        let n = (1.2 / dt) as usize;
+        for i in 0..n {
+            let t = i as f64 * dt;
+            // the draw fades in over 0.3 s so the box's own mode is not set ringing (a step
+            // of the mean flow alone rings it for seconds: the ducts' only loss is friction)
+            let ramp = (t / 0.3).min(1.0);
+            let dm = ramp * m1 * (1.0 + (2.0 * std::f64::consts::PI * f * t).sin()) * dt;
+            net.add_valve_flow(0, dm, CP * 300.0);
+            let r = net.step(a);
+            if i >= n / 2 {
+                src.push(r);
+            }
+        }
+        let a_duct = net.airbox.as_ref().unwrap().a_duct;
+        let h = amplitude_at(&src, dt, f) / (C_AIR * m1 / a_duct);
+        assert!((h / 0.5129 - 1.0).abs() < 0.03, "|H| = {h} at 2 f_H");
+        // and the box's own mode was not set ringing: nothing to speak of at f_H
+        let at_fh = amplitude_at(&src, dt, 61.59) / (C_AIR * m1 / a_duct);
+        assert!(at_fh < 0.05, "{at_fh} at f_H");
+    }
+
+    #[test]
+    fn the_air_drawn_through_the_ducts_is_what_box_ducts_runners_and_valves_took() {
+        // mass conservation with an airbox, ITBs and a common throttle alike: what came in at
+        // the duct mouths (last_inducted) is what the box, ducts and runners gained plus what
+        // the valves took out
+        for individual in [true, false] {
+            let mut net = IntakeFv::new(&boxed(individual), 1e-3, 4, 1e-4);
+            let mut lowest = ATM_PA;
+            for k in 0..300 {
+                let before = net.total_mass();
+                let mut taken = 0.0;
+                for i in 0..4 {
+                    let dm = if (k + 25 * i) % 100 < 30 { 2e-6 } else { 0.0 };
+                    net.add_valve_flow(i, dm, 3.0e5);
+                    taken += dm;
+                }
+                net.step(5e-4);
+                lowest = lowest.min(net.airbox_pressure().unwrap());
+                let gained = net.total_mass() - before;
+                assert!(
+                    (gained - (net.last_inducted() - taken)).abs() < 1e-9 * before,
+                    "individual {individual}, step {k}: gained {gained}, drawn {} − taken {taken}",
+                    net.last_inducted()
+                );
+            }
+            // the draw pulled the box below the atmosphere at some point, and the air that
+            // left took its energy along: the box stays at the ambient 300 K (the reversion
+            // carries 3.0e5 J/kg = c_p · 298 K)
+            assert!(lowest < ATM_PA - 1.0, "{lowest} Pa");
+            let t = net.airbox.as_ref().unwrap().gas.temperature();
+            assert!((t - 300.0).abs() < 2.0, "{t} K");
+            assert!(net.airbox_pressure().unwrap().is_finite());
+            // the runners detached and stepped elsewhere draw from the same box
+            let mut here = IntakeFv::new(&boxed(individual), 1e-3, 4, 1e-4);
+            let mut split = IntakeFv::new(&boxed(individual), 1e-3, 4, 1e-4);
+            assert_eq!(
+                split.detach_runners(2, |set| Box::new(LocalRunners::new(set))),
+                individual
+            );
+            for k in 0..200 {
+                for i in 0..4 {
+                    let dm = if (k + 25 * i) % 100 < 30 { 2e-6 } else { 0.0 };
+                    here.add_valve_flow(i, dm, 3.0e5);
+                    split.add_valve_flow(i, dm, 3.0e5);
+                }
+                assert_eq!(here.step(5e-4), split.step(5e-4), "step {k}");
+                assert_eq!(here.airbox_pressure(), split.airbox_pressure(), "step {k}");
+            }
+        }
     }
 }

@@ -308,9 +308,10 @@ impl ExhaustFv {
         let branches = def
             .groups(cylinders)
             .into_iter()
-            .map(|members| {
+            .enumerate()
+            .map(|(bi, members)| {
                 let mut out =
-                    Pipe1d::segmented(&[(def.collector_length_m, a_collector)], CELL_M, init);
+                    Pipe1d::segmented(&[(def.collector_length(bi), a_collector)], CELL_M, init);
                 out.floors = (1e-3, 500.0);
                 out.friction = PIPE_FRICTION;
                 out.acoustic_loss = acoustic_loss();
@@ -666,15 +667,23 @@ mod tests {
         // 560 m/s. Measured +4.9, +5.9, −3.4 dB (FV's 4 cm cells wear the highs); its own can and
         // no wall loss left it +6.7 dB at the bottom.
         // the same pipes in both models: the FV net keeps the banks apart, so no merge; the
-        // 60 mm tail the figures above were measured with (the model gap, not the preset, is
-        // under test)
+        // lengths and the 60 mm tail the figures above were measured with (the model gap, not
+        // the preset, is under test)
         let mut d = crate::exhaust::ExhaustDef {
             merge: None,
+            primary_length_m: 0.675,
+            collector_length_m: 0.3,
+            collector_extra_length_m: vec![0.0, 0.10],
+            primary_length_deviation_m: Vec::new(),
             ..crate::engine::EngineDef::lfa_v10().exhaust
         };
         for seg in &mut d.after_collector {
-            if let crate::exhaust::Segment::Pipe { diameter_m, .. } = seg {
-                *diameter_m = 0.060;
+            if let crate::exhaust::Segment::Pipe {
+                length_m,
+                diameter_m,
+            } = seg
+            {
+                (*length_m, *diameter_m) = (1.98, 0.060);
             }
         }
         let bands: [&[f64]; 3] = [

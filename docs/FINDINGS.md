@@ -804,3 +804,293 @@ like a spectrum and periodicity survives — nothing flags it.
 
 **Fix.** Read the subformat's first two bytes when the tag is 0xFFFE (job script `wavio.py`), and
 check a reader's min/max/RMS on a known render (|x| ≤ 1) before trusting any number from it.
+
+## Steepening with the LFA's muffler: WOT right, lift-off still too loud (2026-10-29, branch feat/wave-steepening)
+
+Steepening (both directions, 0.2 m segments) on top of the as-built LFA exhaust (bypass muffler,
+engine sources ahead), `--render drive`, levels within one file (offline renders are normalized
+per file, so only in-file ratios compare): WOT 6.5–7.4 s, 2–8 kHz re total −8.9 dB (linear
+−24.6; real LFA blips −6…−8.5). Lift-off 7.6–8.5 s re WOT: −3.5 dB (linear −15.5; real LFA
+−8…−19). The muffler did not cure the overrun shock: at 7000+ rpm its bypass valve is open (rpm
+rule), so the shock takes the short way. Whether the real valve also closes on overrun (a vacuum
+actuator usually answers to load too) is not published — asked the user (PAPERS.md).
+
+Lead (coast_chain, LFA 6300 rpm held, overrun vs WOT, sound layers off = valve source → tail only):
+the valve's volume-flow source falls 14.8 dB but the radiated tail only 3.7 dB even with LINEAR
+pipes (orders 9–11 of the tail rise +2…+12 dB while the source's fall). With the layers on, WOT is
+carried by the intake and flow noise, which hides it (−14.3 dB). So the exhaust's own overrun
+excess is not steepening's: the pipes ring more when the mean flow stops (the open end's jet
+reflection (1−M)/(1+M) and the friction α = f·M/D both vanish at M → 0) and the valve flow reverses
+~4×/cycle with sharp edges. Steepening then lifts those edges' harmonics. Next: check the reverse
+flow's sharpness at the valve (Benson boundary on inflow) and the pipes' damping at zero mean flow
+(heat transfer, Kirchhoff walls on the linear pipes too) before touching steepening.
+
+## "Sounds far": the linear waveguide's pulses had no shock front, so 2–8 kHz was 15–24 dB short (2026-10-29)
+
+**Symptom.** The LFA's gear pull (`--render gears`) "suena muy lejos" (user). Held 6700 rpm WOT
+against the chassis-dyno clip (`ruler.py`, octave deltas model − real in dB re total, 63 Hz…8 kHz):
++8.9 +8.0 +2.9 +3.7 −1.8 −14.4 −23.4 −21.6, score 12.9 dB (at 91312d5, this branch's base — not the
+8.9 quoted from another branch); spectral tilt 250 Hz–8 kHz −2.2 dB/oct against the real clip's
++2.1; 2–8 kHz crest factor 18.8 dB (sparse clicks at the firing rate) against 11.5.
+**Not the cause (measured one variable at a time on the same held render).** Listener geometry:
+ground off 13.8 dB; on the dyno camera's spot (2.5 m, on axis, 0.5 m high, ground) 17.2; 1 m on
+axis in free field 15.4 — none moved 2–8 kHz by more than 1.5 dB. Muffler chambers removed: 4 k /
+8 k +5 / +10 dB, still −19. Catalyst removed: +7 / +12 dB (its viscothermal loss, Dokumaci), still
+−16. The FV exhaust (`model: fv`, 4 cm cells = 7.5 per wavelength at 2 kHz) is worse: 4 k −33, 8 k
+−36 (numerical dissipation of the shock it does form). Exhaust pulses alone (every `sound.*`
+texture at 0): 2–8 kHz at −25 / −43 / −55 re total — the exhaust delivered nothing above 2 kHz;
+what little there was came from the block and the valve jets.
+**Cause.** The waveguide was linear. A 0.3–0.5 bar blowdown pulse in a 900 K primary shocks within
+0.2–0.8 m (x_s = ρc³/(βωP), Hamilton & Blackstock, *Nonlinear Acoustics*, ch. 4), and a shock
+front's harmonics fall at −6 dB/oct where a smooth pulse's fall at −12 or faster: the real H3…H8
+sit at −7.6…−22 dB re H1, the model's at −19…−49. A dull, bass-heavy spectrum is heard as
+distance (Zahorik, Brungart & Bronkhorst, *Acta Acustica united with Acustica* 91, 2005: spectral
+tilt and high-frequency loss are distance cues; reverberation is the other, and there is none here).
+**Fix.** Merged branch `feat/wave-steepening` (simple-wave delay of Msallam et al. 2000, Burgers'
+entropy solution for the shocks, Kirchhoff walls; spec
+`docs/superpowers/specs/2026-10-26-wave-steepening.md`). Held 6700 after: deltas +5.4 +5.1 +2.6 +0.6
+−5.7 +1.6 −4.5 −5.2, score 7.6 dB (bands 13.2 → 4.2); tilt +1.9 dB/oct; 2–8 kHz crest 10.7 dB.
+Gear pull at 20–22 s: 2 / 4 / 8 kHz re total −14 / −20 / −33 → −5 / −9 / −14, tilt −0.9 → +4.1
+dB/oct. The packed silencers' perforated tubes stay linear (their loss is the packing's, by the 2D
+model), the smooth pipes steepen.
+**Why it isn't obvious.** "Finite-amplitude waves" was already on main (1089284: waves
+*superpose* as finite-amplitude waves) and read as "steepening done"; it is not. And an offline
+render is normalized per file, so the missing highs only show as band ratios, never as a level.
+**What it cost.** Three of the branch's tests had never been green (round trip 441 ≠ 447, the LFA
+refusing to detach, textures < 1.3× over a shocked exhaust) and two newer tests sent loud pulses
+(0.2 kg/s, which steepen and arrive early). Arrivals are now timed at the half-rise of the first
+lobe of a faint pulse (hand values 448 / 1038 / 68 steps met within a step); the detach test runs
+the LFA linear and asserts that a steepening net is never handed to the exhaust thread (by design:
+its waves arrive when their own speed says, not a fixed block later) — so a steepening engine
+keeps its exhaust on the sim thread, see FACTS for the real-time cost.
+**Open.** H3 (1.7 kHz) −19 dB before and after: the notch of the tips' length difference
+(c/2ΔL ≈ 1.8 kHz) in the muffler's estimated geometry, not the listener. 63–125 Hz +5 dB: 4.7 dB
+of it is the rigid ground's image (physics; free field +4.2 / +3.8), the rest cycle orders 1–3;
+the clip is a phone on the dyno deck (video frame at 8 s: vertical, on axis, ~2.5 m behind, ~0.5 m
+high, block-walled room) whose low-end response is unknown, so this band cannot be settled from it.
+
+Found: 2026-10-29 · physics
+
+## The LFA's bank order dominates below ~3000 rpm at full load: the 10 cm asymmetry through lossless chambers (2026-10-29)
+
+**Symptom.** `sim::tests::firing_orders_dominate_and_output_is_not_saturated` (LFA held 3000 rpm
+WOT, Ultra) went red when steepening was merged: cycle order 5 at 0.199 against the firing order
+10 at 0.139. The real car at 4110 rpm has order 5 at −15 dB re the firing order (`exhaust.wav`
+2.0–5.5 s).
+**It predates steepening.** Held renders (Reference, `ruler.py … RPM`, order 5 re order 10):
+2800 rpm linear +11.2 / steepening +10.6; 3000 rpm +5.4 / +8.5; 3200 rpm +0.7 / −1.5; with equal
+bank lines (`collector_extra_length_m` all 0) at 3000: −30. The test passed on the base only at
+its own point (3000 rpm, Ultra) and by a margin steepening's +3 dB there removes; at 2800 rpm or at
+Reference it was already false.
+**Mechanism (measured, not fixed).** The bank order survives the banks' meeting only by the 10 cm
+difference of the lines (0f38888), and below 3000 rpm the muffler valve is closed, so the sum goes
+round the end chambers: empty, lossless 1D chambers of 0.12–0.2 m on 50 mm pipes of 0.3–0.55 m,
+Helmholtz-like at 70–120 Hz — exactly order 5 at 1700–2900 rpm — ringing with no packing, no
+wall loss and no flow loss. Above 3000 rpm the valve's straight path has none of that and order 5
+falls to where the real car keeps it (6700 rpm: −11 against −14.5 real). The test is left red on
+purpose rather than weakened: the physics to fix is the chambered path's damping (and whether 10
+cm is the right bank asymmetry), not the assertion.
+
+Found: 2026-10-29 · physics
+
+## The LFA's firing order at 6700 rpm WOT was the trumpets', not the exhaust's (2026-10-29)
+
+**Symptom.** Giving the LFA its surge tank (`AirboxDef::lfa_v10_estimate`: 20 L, two Ø90 mm
+ducts of 0.40 m, the trumpets drawing from the box and the induction sound radiating from the
+duct mouths) sent `the_lfa_at_full_throttle_keeps_the_real_cars_orders` from 11.7 to 20.0 dB RMS,
+every order *above* the real car's. Peak-picking the held 6700 rpm render: before, 558 Hz (the
+firing order) was the top line; after, it is not in the top ten (2511 Hz = order 45 leads, order 5
+at −9 dB). The ruler's f0 tracker then locks on 7538 rpm — read its rpm line before its score.
+**Cause.** The runners' half-wave (c/2L ≈ 520 Hz) coincides with the firing frequency at 6700 rpm,
+and the ten trumpets open to the air radiated it: the whole firing order of the render was the
+intake's. Behind a 20 L box the duct mouths pass 1/|cos kL' − (kV/A_t) sin kL'| ≈ 0.06 (−24 dB)
+of it, as a Helmholtz filter must, and the exhaust alone has no firing order at that speed.
+**What it says.** The exhaust model's missing line at the firing order at high rpm was masked by
+the intake, and the real car's remaining intake path is the one Yamaha built: the tank's walls,
+tuned to radiate 250–500 Hz (Yamaha, 2009 release). Until that path exists, the preset keeps the
+trumpets in the open air (`lfa_v10`), and the tank is an estimate ready to wire in. Numbers:
+`docs/FACTS.md` (surge tank, 2026-10-29).
+**Why it isn't obvious.** Every band and order test passed with the trumpets masking it; the
+dyno barely moves (−2 % at 6000–8000 rpm, one dynamic head lost at the duct's exit into the box).
+
+Found: 2026-10-29 · physics
+
+## The exhaust net's transfer swings ±20 dB between neighbouring orders; the firing order at 6000–7400 rpm sits in a trough (2026-10-29)
+
+**Symptom.** With the surge tank in the LFA preset (the trumpets no longer open to the air) the
+held 6700 rpm WOT render loses the firing order: order 10 (558 Hz) −4.2 → −24.0 dB re total, every
+other line within 1 dB; guard `the_lfa_at_full_throttle_keeps_the_real_cars_orders` 20.0 dB RMS
+(≤ 12 required), ruler 7.6 → 24.9. The real car on the dyno has H1 as its top line (FACTS).
+**Cause (measured, not fixed).** The exhaust net's transfer from the valves' flow to the radiated
+tails, by cycle order (`engine::probe::probe_lfa_orders`): at 6700 rpm 65 dB at the firing order
+against 74–96 at the others; at 6000 rpm order 20 (1 kHz) is at 52 against 105 for order 25; at
+4800 order 15 (600 Hz) at 51 against 66–83. A fixed trough near 560–600 Hz and 1 kHz, i.e. a
+nearly lossless 1D line ringing: the merge + bypass muffler takes 38 dB at 558 Hz (12–38 at the
+other orders) where the patent measures ≈ 10–11 per order with the valve open (JP 2008-169751 A
+Fig. 7A); the bare line (no merge, no catalyst) already has the firing order 13–16 dB under its
+neighbours, and goes flat only with 0.5 m primaries. The source is right: both banks' valve flow
+has H1 on top (H2 −15, order 5 −19). Blocking the chamber path (baffle 0.01), removing the final
+chamber or equalising the tips does not bring H1 back at WOT amplitude (FACTS); only removing the
+merge (+9 dB) or the whole line's tuning does. The real line is flat to ±5 dB across the orders
+(Fig. 7A dashed: H2/H4/H5 −2/+2/−3 re H1 at the muffler inlet; Fig. 8 radiated +3/+9/+2) — what
+damps it (temperature gradient along the pipes, losses at every bend, cone and area change with a
+M ≈ 0.2 mean flow, the sub muffler, two catalysts per bank) the net does not have; its junctions
+are lossless and its pipes lose 0.03 Np/m.
+**What was ruled out (numbers in FACTS).** Any surge-tank geometry: the ducts pass −17…−26 dB at
+558 Hz (−42 with the air-cleaner case), the "400 Hz" of Okamoto's Fig. 18 being the duct's own
+half-wave; only a 0.25 m duct (half-wave at 555 Hz, half the drawing's length) passes it.
+**Status.** The preset keeps the trumpets open to the air; the tank stays an estimate ready to
+wire in. The physics to fix before it goes in: the exhaust line's damping (flow losses at area
+changes and bends, Munjal ch. 2 / Idelchik, c(T) along the line) and the bank stub that rings at
+2.5 kHz (order 45 the top line of every render at 6700) — validated against the patent's Fig. 7A/8
+orders at 4800 rpm, not by ear.
+**Why it isn't obvious.** Every band and order test passed because the open trumpets, by the
+runners' half-wave coinciding with the firing frequency at 6700 rpm, put the firing order back
+in the air; the exhaust had been without it all along.
+
+Found: 2026-10-29 · physics
+
+## The gear-change thump was the torque cut blanking single charges out (2026-10-30)
+
+**Symptom.** Every upshift of the gears render had a dull LF thump: 20–200 Hz 8–13 dB over the steady
+mid/high bands for ≈ 80 ms, once as the cut ramped in and once as it ramped out (peak 117–234 Hz).
+**Cause (measured).** The ECU took a cut past the spark's reach (31 %) by blanking out charges,
+an accumulator spreading them evenly: as the share swept 0 → 1 in 70 ms the skip pattern swept a
+tone of f_firing × share through 0–333 Hz. The exhaust net carries the sub-firing orders far better
+than the firing order (FINDINGS above, 2026-10-29): held at 6000 rpm with a quarter of the charges
+blanked out, the 125 Hz line came out 7 dB *over* the whole engine's firing order (an ideal train
+gives −12 dB); half blanked out kills one bank (they alternate) and its 250 Hz line is 9 dB over.
+Spark retard alone left no thump, but with the pedal down the clutch-open engine flared into the
+limiter, whose cut-off made the same thump. Ruled out: nonlinear quasi-steady losses at the duct
+area changes, a second catalyst per bank, the Rao–Munjal grazing-flow resistance of the baffle
+(each moved the orders < 1.5 dB with the fitted geometry).
+**Fix.** The ECU's two channels (Bosch, *Gasoline Engine Management*, torque structure): the air
+channel trims the electronic throttle on a charge loop to the charge whose most retarded burn
+gives the cut's share; the crank-synchronous channel retards the spark on the charge it has. A
+full cut is a zero-torque request — closed throttle at speed — which the overrun cut-off answers by
+cutting every injection at once. No single charge is blanked out. Per shift the LF peak over the
+steady level went 8.6/8.3/11.2/12.6/12.8 → 1.2/1.6/0.9/3.7/5.4 dB.
+
+## The gear-change thump, second pass: the limiter, the muffler's 1D ripple and a cut that reached every cylinder at once (2026-10-30)
+
+**Symptom.** After the torque cut moved to the air channel and the spark (entry above), the user
+still heard a dry thump at every upshift of the LFA gears render (`ecu.wav`). The 20 ms band
+metric that had passed was the wrong ruler: a 5 ms one finds a single pulse per shift, 10–60 Hz
++33…+35 dB and 60–200 Hz +21 dB over the 300 ms before it, a negative lobe of −0.4 FS (1 ms
+mean) for 6 ms then a positive one — a step in the tail's mean flow radiated as dQ/dt. The real
+LFA on a dyno (`real/dynogears.wav`, four upshifts found by their pitch drop) has its < 200 Hz
+5 ms peak at −11…−15 dB *under* the steady full-band level (+7…+13 dB over the steady LF level);
+the render had it +6…+9 dB *over* (+28…+31 over the steady LF).
+**Causes (measured, per-step diagnostic through the first shift).**
+1. The pulse starts the moment the engine crosses 9000 rpm: the Shift phase ramped the cut 0 → 1
+   open-loop while the clutch opened in the same 0.1 s, the clutch's capacity (∝ clutch²) fell
+   faster than the air channel took the torque (plate 10/s), and the engine flared 8760 → 9007 rpm
+   into the limiter, whose all-cylinder injection cut silenced ten cylinders within 3 ms. Shifting
+   at 93 % of the redline instead (no limiter) kept the thump: the overrun cut-off, reached when the
+   air trim hit 0.01, did the same thing 20 ms later.
+2. Neither layer ablation moved it (block, intake, flow noise, valve jet: identical pulse): it is
+   the exhaust line's DC. The tails' outgoing wave sat at ρc·u ≈ 19 kPa (u ≈ 82 m/s hot) at WOT
+   and fell to −3 kPa in 6 ms once the charges stopped burning (the waveguide's source counts a
+   charge's volume at its own temperature, and a motored charge is half a burnt one's).
+3. The line passes that step whole and buries the firing order: a linear tone sweep of the fitted
+   LFA line (one cylinder's flow → radiated sum) gave 50–200 Hz at 55–61 dB and 400–950 Hz at
+   15–31 dB; without the bypass muffler 43–66 dB flat. The 1D transfer-matrix of pipe → final
+   chamber (Ø0.22 × 0.25 m) → three Ø60 outlets reproduces the ripple (−28…−7 dB), so the net
+   was right for its geometry: a 1D expansion chamber is 0 dB at every half-wave and 20 dB between.
+   The LFA's final chamber is a sphere precisely so that its loss is flat: JP 2008-169751 A, Fig. 6
+   measures ≈ 15 dB at 100 Hz and 20–21 dB from 300 Hz to 1 kHz, against the flat chamber it is
+   compared with swinging 10–33 dB. H1..H8 of `ecu.wav` at 7000–9000 rpm: 0/−11/−2/−7/−7/−18/
+   −15/−10 dB; the real dyno run 0/−10/−12/−15/−11/−16/−16/−16.
+**Fix.** (a) `Segment::Measured`: a silencer element carried as its published transmission loss
+(graphic EQ on a straight bore, as the packed silencers' 2D transmission already is); the user's
+fitted engine file takes Fig. 6 for its final chamber. The preset does **not**: with it the guard
+`the_lfa_at_full_throttle_keeps_the_real_cars_orders` (held 6700 rpm, orders re the firing order
+against the dyno clip) reads 14.1 dB RMS against its 12 dB ratchet — H1 up 15 dB, H3–H8 unmoved
+at −24…−42 dB (real −8…−22), the half orders −14 dB off; extending Fig. 6 above 1 kHz with Fig. 7A's
+shape (14/17/23/28 dB at 1.5/2.5/4/8 kHz) made it 16.6. The exhaust's highs are short by that
+much; until they are found the preset keeps its 1D chamber and the ratchet its number. (b) The shift's torque cut is the slipping-opening speed loop of
+Glielmo et al. 2006 §III.D (reference held at the request speed; 1 % band, ESTIMATE): the flare
+stays at 8920–8990 rpm, under the limiter. (c) Port injection: a cut-off reaches a cylinder at its
+next exhaust opening (the injection is made onto the closed valve during the exhaust stroke,
+Bosch *Automotive Handbook*), so the cylinders stop one by one over a cycle (3.1 of 4 still burn),
+not within a quarter cycle.
+**Result (`thump/final.wav`, same engine file with the measured chamber).** H1..H8
+0/−11/−11/−9/−14/−21/−22/−15 dB (real 0/−10/−12/−15/−11/−16/−16/−16): the firing order is the top
+line again. The thump is **not gone**: the 5 ms LF peak is +9…+13 dB over the steady full-band
+level (real −11…−15), +34 dB over the steady LF; the pulse is now a −0.18 FS plateau of ≈ 15 ms
+(the tail DC falling 15 kPa → 0 over 20 ms) instead of −0.4 FS for 6 ms.
+**Ruled out, with numbers.** Counting the source as mass flow alone (the gas's temperature riding
+the path lines, Benson vol. 1 §5.1) took the LF peak to −3…+6 dB over steady and +24…+33 over the
+steady LF — but it is wrong: at low Mach the column is incompressible, the outlet's volume flow
+follows the inlet's at once, so a colder charge of the same mass *does* slow the tail (and it put
+H2–H4 at −4/−5/−3, the orders the real car has at −10…−15). Reverted. A slow line temperature
+(τ = 1 s) is the same error spread out. The injection latency alone changed the LF peak < 1 dB
+(the plateau lengthens, its height stays: the tail's volume flow still falls by the burnt/motored
+temperature ratio within a cycle).
+**What is left (not done).** The thermal step itself is physical; what the real car does not have
+is the full all-cylinder cut: a 0.2 s ASG shift asks the ECU for a torque *reduction* and Bosch's
+fast path is spark retard and blanking individual cylinders, not the overrun cut-off's complete
+stop with the throttle closing behind it — the air channel of the entry above is the wrong path
+for a 0.2 s cut. And the muffler's total compliance (the shell, ≈ 70 L by Fig. 1) is 26 L in the
+fitted file.
+
+Found: 2026-10-30 · physics
+
+### The two candidates after it, measured against the real car's shifts (2026-10-30, later)
+
+Per-band 5 ms peaks at the cut-in, dB re the steady full-band level before the shift (real dyno
+clip, four upshifts, in the same brackets): 10–60 Hz / 60–200 Hz / 200–800 Hz.
+- As committed (measured final chamber, speed loop, injection latency): +8…+12 / −4…−9 / −7…0.
+- Real: −11…−24 / −14…−17 / −7…0.
+- (1) The muffler shell at the patent's ≈ 70 L (chambers 7/32/12 L, Ø0.30, short connections
+  for the plates' holes and pipes 36) instead of the fitted 16.7 L + sphere: +10…+13 / −5…−18 /
+  −5…+1 — no change on the thump, H2/H3 up to −7.7/−8.8 (real −10/−12). Not kept.
+- (2) The torque request answered by 40° retard + Bosch's injection blank-out (even accumulator)
+  with the throttle at the pedal, the air channel of c856392 removed: −3…+5 / +1…+3 / +2…+13.
+  Ten dB less infrasound (the throttle stays open, only the burnt→motored volume step is left),
+  but 8–10 dB more at 60–200 Hz and 5–13 at 200–800, the sub-firing beat of the skip pattern that
+  c856392 had measured: louder exactly where the ear is, 15–20 dB over the real car. Not kept;
+  the air channel stays. (1)+(2): the same as (2). Clips: `thump/shell.wav`, `blank.wav`,
+  `blank-shell.wav`; `target/tgt-thump/gears-blanking-rejected.mp3`.
+- What would meet the real numbers is a cut whose exhaust volume flow does not step within a
+  cycle: neither a complete fuel stop (any path) nor a skip pattern does that. The real 0.2 s
+  shift's torque trace (Glielmo Fig. 10c) is the next thing to match, with the exhaust mean
+  flow's time constant measured on the real clip at a shift (its 10–60 Hz stays 20 dB under).
+
+## The shift thump was the LFA's limiter at its red zone and an overrun cut on the ECU's own throttle (2026-10-30)
+
+**Measured** (ECU timeline per step through the first upshift): the cut ramps in while the clutch
+opens, the plate slews 0.1 s to close, the engine flares 8740 → 9046 rpm. The limiter sat at the
+redline (9000) and cut every injection; before it, the overrun cut-off read the ECU's trimmed
+throttle (the cut's air channel, c856392), not the pedal, and cut every injection as soon as a full
+cut closed the plate. Either way ten cylinders stopped burning within a cycle and the tails' mean
+flow stepped (39 → 2 kPa in 50 ms).
+**Fix.** `shutoff_rpm` (the ECU's fuel shutoff, 0 = at the redline): the LFA's is 9500 over a 9000
+red zone (Okamoto et al., SAE 2011-01-2024, Table 1). Overrun is the driver's lift (Bosch, torque
+structure: blank-out "when the engine is overrunning"): the cut-off reads the pedal; a shift's full
+cut closes the plate and keeps the charges burning, retarded. LF peak at the cut-in re the steady
+level, `shiftlf.py` on the fitted LFA, upshifts: +11.5/+2.8/+5.8/+6.8 → +2.2/−7.8/−9.9/−15.9 dB
+(real car on its dyno: −14…−17).
+
+## The car's body as a screen makes the LFA heard from behind worse, not better (2026-10-30)
+
+The LFA's 2nd firing harmonic (cycle order 20) is 6–12 dB over the recordings' through the gears
+(−5 dB re H1 against −11/−17), and the block carries part of it (block off: −3 dB). The rear body
+as one diffracting edge (ISO 9613-2 eq. (14), D_z = 10·lg(3 + 20z/λ); rear edge 1.0 m, engine
+3.2 m ahead, ear 2.5 m behind: z ≈ 0.12 m, 6–15 dB from 125 Hz to 4 kHz) on the block *and* the
+intake mouth moved order 20 by 1 dB and took H1 with it: the intake mouth carries much of H1, the
+half orders rose −10.7 → −5.9 dB and H3/H4 rose to −3 dB re H1. Screening only the block (−10 dB)
+gives order 20 −8 dB and leaves the rest. A real body leaks round its sides (z ≈ 0.31 m) and under
+its open floor, which one top edge does not model; the remaining order-20 excess is the exhaust's
+own (exhaust alone at 8000 rpm: H2 −11.5 dB, still over). Patch kept out of tree:
+`body-screen.patch` (Listener::with_body_edge, VehicleDef::rear_height_m) in the session scratchpad.
+
+## The dyno recordings' level between the LFA's firing orders is the dyno cell, not the engine (2026-10-30)
+
+Fitting orders 1–40 to the two dyno clips left cycle orders 11–29 10–15 dB under the recordings
+(median −33 against −19…−23 re H1), and no exhaust geometry moved them. In those clips the level
+at the half orders between (o + ½) is only 1.5–3 dB under the integer orders (−25/−20 against
+−23/−19): a broadband floor (rollers, tyres, the cell's reverb), not engine orders. The two road
+clips (`accel`, `flight`) give −32/−29 at the orders and −36/−33 between, where the render sits
+(−33/−39). Fit inter-harmonic orders against road clips only; from the dyno clips take the firing
+harmonics alone. Tool: `offord.py` beside `ord40.py` in the session scratchpad.
