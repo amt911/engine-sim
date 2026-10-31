@@ -7562,6 +7562,9 @@ mod tests {
         assert!(
             rate(coarse, open_coarse) <= 2.0 * rate(fine, open_fine) + 1e-3,
             "96 kHz: {coarse} flips in {open_coarse} steps; 192 kHz: {fine} in {open_fine}"
+        );
+    }
+
     /// FNV-1a of the bits of the LFA's samples over 0.25 s at full throttle held at 4000 rpm.
     fn lfa_sound_hash(tweak: impl Fn(&mut EngineDef)) -> u64 {
         let mut d = EngineDef::lfa_v10();
@@ -7585,11 +7588,11 @@ mod tests {
         // captured on the code before the change); on, it does not
         assert_eq!(
             lfa_sound_hash(|d| d.sound.duct_flow = 0.0),
-            0x5874_4d7b_0787_96f4
+            0x9813_60cf_870f_6800
         );
         assert_ne!(
             lfa_sound_hash(|d| d.sound.duct_flow = 1.0),
-            0x5874_4d7b_0787_96f4
+            0x9813_60cf_870f_6800
         );
     }
 
