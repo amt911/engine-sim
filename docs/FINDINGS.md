@@ -1100,7 +1100,12 @@ harmonics alone. Tool: `offord.py` beside `ord40.py` in the session scratchpad.
 With `exhaust.gas_temperature` on, the inline-4 held at 3000 rpm gives a port outflow temperature
 (enthalpy-weighted over the cycle) of 1275 K at 15 % throttle against 1214 K at full throttle;
 counting outflow only gives the same order. Measured engines run hotter exhaust at more load at
-a fixed speed, so this is the cylinder model, not the averaging. Cause not established yet;
-suspects: the spark advance hitting `MAX_SPARK_ADVANCE_DEG` for the slow light-load flame
-(`spark_advance_for`), so it burns late; the low-speed reserve (`idle_reserve`) retarding it
-further. The pipes' gas follows whatever the cylinder hands them.
+a fixed speed. Measured on the inline-4 at 3000 rpm (throttle 0.1 / 0.15 / 0.3 / 1.0): spark
+20.3 / 16.9 / 13.9 / 13.3° BTDC (not at `MAX_SPARK_ADVANCE_DEG`), cylinder gas at exhaust opening
+1281 / 1336 / 1261 / 1252 K, port mean 1383 / 1292 / 1232 / 1225 K. So (1) the cylinder's gas at
+opening hardly falls with load, where a real one falls by a few hundred kelvin: its heat loss or
+residual at light load is the suspect; (2) at a 0.2–0.4 bar manifold the overlap pulls port gas
+back into the cylinder, and a net mean (outflow less backflow) rose over the cylinder's: the
+backflow's enthalpy is taken at the port model's `port_t` (≈ 500 K), far under the primary's gas,
+so it took too little energy away (LFA idle: port 1657 K). Fixed: the port hands the outflow's
+mean alone (LFA idle: port 1032 K, primaries 822 K; full load unchanged).
