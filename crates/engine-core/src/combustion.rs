@@ -114,6 +114,61 @@ impl Watson {
     }
 }
 
+/// How the charge lights: a spark in a premixed charge (petrol), or compression ignition of
+/// fuel injected late (diesel; spec `docs/superpowers/specs/2026-10-31-diesel-design.md`).
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Combustion {
+    #[default]
+    Spark,
+    Diesel(DieselDef),
+}
+
+impl Combustion {
+    pub fn is_spark(&self) -> bool {
+        matches!(self, Combustion::Spark)
+    }
+    pub fn diesel(&self) -> Option<&DieselDef> {
+        match self {
+            Combustion::Diesel(d) => Some(d),
+            Combustion::Spark => None,
+        }
+    }
+}
+
+/// A direct-injection diesel's fuel and injection.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct DieselDef {
+    /// The fuel's cetane number (EN 590 road diesel: at least 51).
+    pub cetane: f64,
+    /// Start of injection at idle and at the redline, ° BTDC: the pump's advance, linear in speed.
+    pub soi_idle_btdc_deg: f64,
+    pub soi_rated_btdc_deg: f64,
+    /// Excess air at full fuel (the smoke limit): λ = 1.4–1.6 for a naturally aspirated DI
+    /// engine (Heywood 1988, §1.8).
+    pub full_load_lambda: f64,
+}
+
+impl Default for DieselDef {
+    fn default() -> Self {
+        Self {
+            cetane: 51.0,
+            soi_idle_btdc_deg: 2.0,
+            soi_rated_btdc_deg: 12.0,
+            full_load_lambda: 1.4,
+        }
+    }
+}
+
+impl DieselDef {
+    /// Start of injection at `rpm`, ° BTDC, between idle and redline speeds.
+    pub fn soi_btdc(&self, rpm: f64, idle_rpm: f64, redline_rpm: f64) -> f64 {
+        let x = ((rpm - idle_rpm) / (redline_rpm - idle_rpm).max(1.0)).clamp(0.0, 1.0);
+        self.soi_idle_btdc_deg + (self.soi_rated_btdc_deg - self.soi_idle_btdc_deg) * x
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,9 +312,34 @@ mod tests {
         let w = Watson { beta, ..w };
         let x = w.burned(0.05);
         let f2 = 1.0 - (-k3 * 0.05f64.powf(k4)).exp();
-        assert!((x - (beta * 0.42025 + (1.0 - beta) * f2)).abs() < 1e-4, "x {x}");
+        assert!(
+            (x - (beta * 0.42025 + (1.0 - beta) * f2)).abs() < 1e-4,
+            "x {x}"
+        );
         assert!((w.burned(0.3) - (beta * 1.0 + (1.0 - beta) * 0.92991)).abs() < 1e-4);
         assert_eq!(w.burned(0.0), 0.0);
         assert!((w.burned(1.0) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn injection_advances_with_speed() {
+        let d = DieselDef::default();
+        assert_eq!(d.soi_btdc(800.0, 800.0, 4800.0), 2.0);
+        assert_eq!(d.soi_btdc(2800.0, 800.0, 4800.0), 7.0);
+        assert_eq!(d.soi_btdc(6000.0, 800.0, 4800.0), 12.0);
+    }
+
+    #[test]
+    fn combustion_round_trips_and_defaults_to_spark() {
+        let d = Combustion::Diesel(DieselDef {
+            cetane: 48.0,
+            ..DieselDef::default()
+        });
+        let j = serde_json::to_string(&d).unwrap();
+        assert_eq!(serde_json::from_str::<Combustion>(&j).unwrap(), d);
+        let y = serde_yaml_ng::to_string(&d).unwrap();
+        assert_eq!(serde_yaml_ng::from_str::<Combustion>(&y).unwrap(), d);
+        assert_eq!(Combustion::default(), Combustion::Spark);
+        assert!(Combustion::Spark.is_spark() && d.diesel().is_some());
     }
 }

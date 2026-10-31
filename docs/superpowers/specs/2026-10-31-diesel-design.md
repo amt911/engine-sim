@@ -32,8 +32,11 @@ different for physical reasons the model can already carry once its combustion i
   (VW SSP 183 *(to cite precisely when implementing)*; Wikipedia "VW EA827/EA188 1.9 SDI").
 - Tests with values from outside the code: the delay correlation against Heywood's worked
   numbers, the Wiebe functions against their closed forms, the preset against its published
-  power and torque, and the clatter: peak dp/dθ of the diesel ≥ 3× the K20A's at the same mean
-  effective pressure (Heywood Fig. 10-1/10-4: 0.5–1 MPa/° for DI vs ≈ 0.1–0.2 for SI).
+  power and torque, and the clatter: Lyn's two phases — at light load the burn's peak dp/dθ
+  ≥ 1.5× the motored one (the premixed spike), at full load < 1.2× (mixing-controlled).
+  *(Changed while implementing: a comparison with the K20A's dp/dθ at full load failed for a
+  physical reason — at full load Watson's premixed share is ≈ 0 and the diesel burns slowly;
+  the clatter lives at light load.)*
 
 ## Non-goals
 

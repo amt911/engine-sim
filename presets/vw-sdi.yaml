@@ -1,0 +1,127 @@
+version: 3
+engine:
+  name: VW 1.9 SDI (diesel inline-4)
+  geometry:
+    bore_m: 0.0795
+    stroke_m: 0.0955
+    rod_m: 0.144
+    compression_ratio: 19.5
+  cylinders: 4
+  firing_order:
+  - 1
+  - 3
+  - 4
+  - 2
+  layout:
+    bank_angle_deg: 0.0
+    banks: []
+  combustion:
+    kind: diesel
+    cetane: 51.0
+    soi_idle_btdc_deg: 2.0
+    soi_rated_btdc_deg: 12.0
+    full_load_lambda: 1.4
+  intake_valve:
+    open_deg: 350.0
+    duration_deg: 230.0
+    max_lift_m: 0.009
+    diameter_m: 0.036
+  exhaust_valve:
+    open_deg: 135.0
+    duration_deg: 235.0
+    max_lift_m: 0.0078
+    diameter_m: 0.031
+  spark_advance_deg: 25.0
+  burn_duration_deg: 55.0
+  flywheel_inertia_kgm2: 0.2
+  plenum_volume_m3: 0.003
+  throttle_diameter_m: 0.06
+  idle_throttle: 0.0
+  idle_rpm: 900.0
+  exhaust:
+    primary_length_m: 0.3
+    primary_diameter_m: 0.04
+    collectors: []
+    collector_length_m: 0.2
+    collector_diameter_m: 0.055
+    collector_extra_length_m: []
+    primary_length_deviation_m: []
+    tail_length_m: 2.0
+    tail_diameter_m: 0.05
+    muffler_transmission: 1.0
+    model: waveguide
+    muffler_volume_m3: 0.006
+    muffler_packing:
+      thickness_m: 0.025
+      flow_resistivity: 16000.0
+      porosity: 0.95
+    tail_spacing_m: 0.9
+    after_collector:
+    - kind: catalyst
+      length_m: 0.13
+      diameter_m: 0.1363
+      cells_per_in2: 400.0
+      wall_m: 0.000165
+    - kind: pipe
+      length_m: 2.0
+      diameter_m: 0.05
+    merge: null
+    steepening: true
+    gas_temperature: false
+  intake:
+    model: fv
+    runner_length_m: 0.4
+    runner_diameter_m: 0.036
+    individual_throttles: false
+    trumpet_loss: 0.1
+    film_fraction: 0.18
+    film_tau_s: 1.0
+    airbox: null
+  redline_rpm: 4800.0
+  shutoff_rpm: 0.0
+  starter_torque_nm: 90.0
+  friction:
+    valvetrain: sohc_direct_acting
+    roller_followers: false
+    valves_per_cylinder: 4
+    rods_per_crankpin: 2
+    ring_tension_ratio: 1.0
+    liner_roughness: 1.0
+    oil_viscosity_ratio: 1.0
+  sound:
+    flow_noise: 1.0
+    intake: 1.0
+    valve_jet: 1.0
+    block: 1.0
+    mechanical: 1.0
+    combustion_jitter: 1.0
+    reverb: 0.0
+    leveling: 0.0
+    listener_distance_m: 3.0
+    listener_angle_deg: 30.0
+    ground: true
+    tail_height_m: 0.3
+    listener_height_m: 1.6
+    street_width_m: 0.0
+    wall_reflection: 0.8
+  exhaust_reverse_cd_ratio: 0.75
+  overrun_fuel_cut_rpm: 1500.0
+  vehicle:
+    name: Compact hatchback
+    mass_kg: 1300.0
+    wheel_radius_m: 0.316
+    drag_cd_a_m2: 0.64
+    rolling_coeff: 0.012
+    gear_ratios:
+    - 3.62
+    - 1.95
+    - 1.36
+    - 0.94
+    - 0.78
+    final_drive: 4.1
+    driveline_efficiency: 0.92
+    wheel_inertia_kgm2: 4.0
+    clutch_capacity_nm: 350.0
+    max_brake_decel_m_s2: 9.0
+    shift_time_s: 0.0
+    engine_ahead_m: 3.4

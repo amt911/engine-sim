@@ -233,6 +233,26 @@ mod tests {
     }
 
     #[test]
+    fn the_vw_sdi_breathes_near_what_vw_published() {
+        // VW 1.9 SDI: 125 N·m at 2200–2600 rpm, 47 kW (63 hp) at 4200. Within 15 % of both
+        // (the diesel's own spec), the torque flat through the mid range as a diesel's is
+        let pts = sweep(&EngineDef::vw_sdi());
+        let (t, p) = peaks(&pts).unwrap();
+        assert!(
+            (t.torque_nm / 125.0 - 1.0).abs() < 0.15,
+            "{} N·m",
+            t.torque_nm
+        );
+        assert!(
+            (p.power_hp() / 63.0 - 1.0).abs() < 0.15,
+            "{} hp",
+            p.power_hp()
+        );
+        let at_2000 = pts.iter().find(|q| q.rpm == 2000.0).unwrap();
+        assert!(at_2000.torque_nm > 0.9 * t.torque_nm, "{at_2000:?}");
+    }
+
+    #[test]
     fn inline4_sweep_has_a_plausible_curve() {
         let pts = sweep(&EngineDef::inline4());
         assert_eq!(pts.len(), sweep_speeds(7000.0).len());
