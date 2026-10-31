@@ -237,6 +237,78 @@ impl EngineDef {
         .with_catalyst()
     }
 
+    /// Subaru EJ25 flat-four (EJ251, Impreza 2.5 RS 1999–2005): 99.5 × 79 mm, 2457 cc,
+    /// CR 10.0, 165 hp at 5600 rpm, 225 N·m at 4000, SOHC with four valves per cylinder; firing
+    /// 1-3-2-4, cylinders 1 and 3 on one bank, 2 and 4 on the other (Subaru EJ engine,
+    /// Wikipedia). Its unequal-length headers are what make the boxer's rumble.
+    pub fn subaru_ej25() -> Self {
+        Self {
+            name: "Subaru EJ25 2.5 (flat-four)".into(),
+            geometry: CylinderGeometry {
+                bore_m: 0.0995,
+                stroke_m: 0.079,
+                // commonly quoted (not a factory document)
+                rod_m: 0.1305,
+                compression_ratio: 10.0,
+            },
+            cylinders: 4,
+            firing_order: vec![1, 3, 2, 4],
+            layout: Layout {
+                bank_angle_deg: 180.0,
+                banks: vec![vec![1, 3], vec![2, 4]],
+            },
+            // two 36 mm intake and two 31 mm exhaust valves as one equivalent each (√2·D);
+            // lift a quarter of the equivalent's diameter, as for the K20A. Timing: Heywood's
+            // typical road-engine values (IVO 10° BTDC, IVC 50° ABDC, EVO 50° BBDC, EVC
+            // 10° ATDC). Valve sizes and timing: ESTIMATES
+            intake_valve: ValveTiming {
+                open_deg: 350.0,
+                duration_deg: 240.0,
+                max_lift_m: 0.0127,
+                diameter_m: 0.0509,
+                high: None,
+            },
+            exhaust_valve: ValveTiming {
+                open_deg: 130.0,
+                duration_deg: 240.0,
+                max_lift_m: 0.011,
+                diameter_m: 0.0438,
+                high: None,
+            },
+            flywheel_inertia_kgm2: 0.15,
+            plenum_volume_m3: 4.0e-3,
+            throttle_diameter_m: 0.065,
+            idle_throttle: 0.0055,
+            // a typical car idle (estimate)
+            idle_rpm: 700.0,
+            // The stock headers: each bank's pipes run to one collector under the engine, the
+            // front cylinders' short, the rear's long (the unequal-length "UEL" headers). Base
+            // length and the ±0.2 m spread: ESTIMATES (no drawing found); one 4-into-1
+            // collector, its own tail pipe
+            exhaust: ExhaustDef {
+                primary_length_m: 0.8,
+                primary_length_deviation_m: vec![-0.2, -0.2, 0.2, 0.2],
+                ..ExhaustDef::default()
+            },
+            // runners Helmholtz-tuned near the 4000 rpm torque peak (Engelman): ESTIMATE
+            intake: IntakeDef {
+                model: IntakeModel::Fv,
+                runner_length_m: 0.35,
+                ..IntakeDef::default()
+            },
+            redline_rpm: 6200.0,
+            starter_torque_nm: 60.0,
+            vehicle: crate::drivetrain::VehicleDef::inline4(),
+            friction: crate::friction::FrictionDef {
+                valvetrain: crate::friction::Valvetrain::SohcRockerArm,
+                ..crate::friction::FrictionDef::default()
+            },
+            ..Self::single()
+        }
+        .with_tail_pipe()
+        .with_catalyst()
+    }
+
     /// The K20A as tuners build it for the VTEC scream (the user's wish, 2026-10-31: not a real
     /// engine's data): stiffer valve springs and a wilder VTEC lobe — a typical "stage 2"
     /// cam's lift and duration over the stock lobe — engaging earlier, revving to 9200 rpm.
@@ -5120,6 +5192,78 @@ mod tests {
         assert_eq!(
             tuned.exhaust.primary_length_m,
             stock.exhaust.primary_length_m
+        );
+    }
+
+    #[test]
+    fn subaru_ej25_matches_published_specs() {
+        // EJ251 (Impreza 2.5 RS, 1999–2005): 99.5 × 79 mm, 2457 cc, flat-four, firing 1-3-2-4
+        // with 1 and 3 on one bank, 2 and 4 on the other (Subaru EJ engine, Wikipedia)
+        let d = EngineDef::subaru_ej25();
+        assert_eq!(d.cylinders, 4);
+        assert!((d.displacement_m3() * 1e6 - 2457.0).abs() < 5.0);
+        assert_eq!(d.layout.bank_angle_deg, 180.0);
+        assert_eq!(d.layout.banks, vec![vec![1, 3], vec![2, 4]]);
+        assert_eq!(d.firing_order, vec![1, 3, 2, 4]);
+        // unequal-length headers: the front cylinders' primaries shorter than the rear's
+        let dev = &d.exhaust.primary_length_deviation_m;
+        assert!(
+            dev[0] < 0.0 && dev[1] < 0.0 && dev[2] > 0.0 && dev[3] > 0.0,
+            "{dev:?}"
+        );
+    }
+
+    /// Power at cycle orders `ks` of the tails' sound, the EJ25 held at 3000 rpm WOT.
+    fn ej25_tail_orders(def: EngineDef, ks: &[f64]) -> Vec<f64> {
+        let rpm = 3000.0;
+        let mut e = Engine::new(def, rpm, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(rpm),
+            ..Controls::default()
+        };
+        for _ in 0..(1.0 / DT) as usize {
+            e.step(DT, &c);
+        }
+        let n = 30 * (120.0 / rpm / DT).round() as usize;
+        let mut x = Vec::with_capacity(n);
+        for _ in 0..n {
+            e.step(DT, &c);
+            x.push(
+                e.net
+                    .as_ref()
+                    .map_or(0.0, |net| net.last_tails().iter().sum()),
+            );
+        }
+        ks.iter()
+            .map(|k| {
+                let w = 2.0 * std::f64::consts::PI * rpm / 120.0 * k * DT;
+                let (re, im) = x.iter().enumerate().fold((0.0, 0.0), |(re, im), (i, s)| {
+                    (re + s * (w * i as f64).cos(), im + s * (w * i as f64).sin())
+                });
+                re * re + im * im
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_boxers_unequal_headers_make_its_rumble() {
+        // an even-firing four's pulses reach an equal-length collector every 180°: order 4 and
+        // its multiples only. Primaries of unequal length make them arrive alternately early
+        // and late, so the collector sees a pattern repeating once a turn: order 2, the rumble
+        let uel = EngineDef::subaru_ej25();
+        let mut eq = uel.clone();
+        eq.exhaust.primary_length_deviation_m = vec![0.0; 4];
+        let (u, e) = (
+            ej25_tail_orders(uel, &[2.0, 4.0]),
+            ej25_tail_orders(eq, &[2.0, 4.0]),
+        );
+        let rel = |v: &[f64]| 10.0 * (v[0] / v[1]).log10();
+        assert!(
+            rel(&u) > rel(&e) + 10.0,
+            "order 2 re 4: unequal {:.1} dB, equal {:.1} dB",
+            rel(&u),
+            rel(&e)
         );
     }
 
