@@ -217,7 +217,8 @@ pub fn validate(def: &EngineDef) -> Result<(), ConfigError> {
             ]
             .iter()
             .all(|d| within(*d, 0.005, 0.3)),
-        "exhaust pipes: lengths 0.01–20 m (a bank's extra 0–5 m), Ø 5–300 mm",
+        "exhaust pipes: lengths 0.01–20 m (a bank's extra 0–5 m, a primary's deviation at most ¼ \
+         of its length), Ø 5–300 mm",
     );
     check(
         within(x.muffler_transmission, 0.05, 1.0),

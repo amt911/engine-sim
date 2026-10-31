@@ -286,7 +286,7 @@ impl EngineDef {
             // length and the ±0.2 m spread: ESTIMATES (no drawing found); one 4-into-1
             // collector, its own tail pipe
             exhaust: ExhaustDef {
-                primary_length_m: 0.6,
+                primary_length_m: 0.8,
                 primary_length_deviation_m: vec![-0.2, -0.2, 0.2, 0.2],
                 ..ExhaustDef::default()
             },
