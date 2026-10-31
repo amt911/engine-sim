@@ -731,8 +731,6 @@ struct Branch {
     /// Muffler can and tail pipe.
     tail: Duct,
     end: OpenEnd,
-    /// Each member's flow noise where it merges ([`crate::flow_noise`]); empty while off.
-    noise: Vec<crate::flow_noise::FlowNoise>,
 }
 
 /// ρc of the primaries' gas, Pa·s/m: an ideal gas at an atmosphere whose speed of sound is
@@ -953,8 +951,6 @@ pub struct ExhaustNet {
     shared: Option<Shared>,
     /// The gas's temperature along the pipes ([`ExhaustDef::gas_temperature`]).
     heat: Option<Heat>,
-    /// Level of the collectors' flow noise (`sound.duct_flow`; 0 = off, the default).
-    flow_noise: f64,
     pub dt: f64,
 }
 
@@ -1234,7 +1230,6 @@ impl ExhaustNet {
                 ),
                 tail: after_collector(def, dt, lining_m),
                 end: OpenEnd::new(def.tail_diameter_m, dt),
-                noise: Vec::new(),
             })
             .collect();
         Self {
@@ -1294,7 +1289,6 @@ impl ExhaustNet {
             }),
             branches,
             heat: def.gas_temperature.then(Heat::default),
-            flow_noise: 0.0,
             dt,
         }
         .with_room_for_cold_gas()
@@ -1396,29 +1390,6 @@ impl ExhaustNet {
         }
         heat.outs = outs;
         heat.tails = tails;
-    }
-
-    /// Turn the collectors' flow noise to `level` (1 = physical, 0 = off), its sources seeded
-    /// from `seed` the first time it is turned on.
-    pub fn set_flow_noise(&mut self, level: f64, seed: u64) {
-        self.flow_noise = level.max(0.0);
-        if self.flow_noise > 0.0 {
-            for (b, branch) in self.branches.iter_mut().enumerate() {
-                if branch.noise.len() != branch.members.len() {
-                    branch.noise = (0..branch.members.len())
-                        .map(|k| {
-                            let s = seed ^ ((b as u64) << 32 | k as u64).wrapping_mul(0x9E37_79B9);
-                            crate::flow_noise::FlowNoise::new(s, self.dt)
-                        })
-                        .collect();
-                }
-            }
-        }
-    }
-
-    /// The collectors' flow-noise level ([`ExhaustNet::set_flow_noise`]).
-    pub fn flow_noise(&self) -> f64 {
-        self.flow_noise
     }
 
     /// Mean mass flows, kg/s: through each cylinder's primary and each branch's collector and
@@ -1608,31 +1579,10 @@ impl ExhaustNet {
                 primary_impedance(),
                 outgoing,
             );
-            let mut noise_on = 0.0;
-            if self.flow_noise > 0.0 {
-                // each member's merging jet: its velocity into the junction from the waves,
-                // u = (incoming − outgoing)/ρc, and its loss coefficient that way, K = s/(½ρ)
-                // (Nelson–Morfey's dipole sends its pressure one way and minus it the other)
-                let z = primary_impedance();
-                let rho = z / C_PRIMARY;
-                for (k, noise) in b.noise.iter_mut().enumerate() {
-                    let u = (incoming[k] - outgoing[k]) / z;
-                    let s = if u > 0.0 {
-                        b.losses[k].0
-                    } else {
-                        b.losses[k].1
-                    };
-                    let d = (4.0 * areas[k] / std::f64::consts::PI).sqrt();
-                    let sp = crate::flow_noise::spoiler(s / (0.5 * rho), u, d, C_PRIMARY);
-                    let p = self.flow_noise * noise.step(sp.as_ref(), d, rho, C_PRIMARY);
-                    outgoing[k] -= p;
-                    noise_on += p;
-                }
-            }
             for (k, &m) in b.members.iter().enumerate() {
                 from_far[m] = clamp_wave(outgoing[k]);
             }
-            let collector_near = clamp_wave(outgoing[b.members.len()] + noise_on);
+            let collector_near = clamp_wave(outgoing[b.members.len()]);
             let mut two = [0.0; 2];
             junction(
                 &[b.collector.area_m2, b.tail.end_areas().0],
@@ -1701,62 +1651,6 @@ impl ExhaustNet {
 
 #[cfg(test)]
 mod tests {
-    /// The collectors' flow noise alone: a net driven by steady `flow` (kg/s) into each of its
-    /// cylinders, with the noise on minus the same net with it off (the net is linear in the
-    /// waves and the flows are given, so the difference is the noise and nothing else).
-    fn collector_noise(def: &ExhaustDef, flow: f64) -> Vec<f64> {
-        let n = 4;
-        let run = |level: f64| {
-            let mut net = ExhaustNet::new(def, n, DT);
-            net.set_flow_noise(level, 1);
-            let flows = vec![flow; n];
-            (0..(0.6 / DT) as usize)
-                .map(|_| net.step(&flows))
-                .skip((0.2 / DT) as usize)
-                .collect::<Vec<_>>()
-        };
-        run(1.0).iter().zip(run(0.0)).map(|(a, b)| a - b).collect()
-    }
-
-    /// Mean square of `x` in `lo`..`hi` Hz (sampled at DT), by FFT-free band sum of a DFT.
-    fn band_ms(x: &[f64], lo: f64, hi: f64) -> f64 {
-        let n = x.len();
-        let df = 1.0 / (n as f64 * DT);
-        let mut acc = 0.0;
-        let mut k = (lo / df).ceil() as usize;
-        while (k as f64) * df <= hi {
-            let (mut re, mut im) = (0.0, 0.0);
-            for (j, v) in x.iter().enumerate() {
-                let ph = -2.0 * std::f64::consts::PI * (k * j % n) as f64 / n as f64;
-                re += v * ph.cos();
-                im += v * ph.sin();
-            }
-            acc += 2.0 * (re * re + im * im) / (n * n) as f64;
-            k += 7; // a sparse sample of the band's bins is enough to compare two levels
-        }
-        acc
-    }
-
-    #[test]
-    fn collector_noise_follows_the_flow() {
-        // twice the flow through the collector's branches: U⁴ in plane waves (Oldham eq. 16) at a
-        // Strouhal number still on K²'s flat part (St ≈ 0.3 at 3 kHz), so +12 dB at 2–5 kHz
-        let d = ExhaustDef::default();
-        let a = collector_noise(&d, 0.02);
-        let b = collector_noise(&d, 0.04);
-        assert!(a.iter().any(|v| *v != 0.0), "no noise");
-        let db = 10.0 * (band_ms(&b, 2000.0, 5000.0) / band_ms(&a, 2000.0, 5000.0)).log10();
-        assert!((db - 12.04).abs() < 1.5, "{db:+.2} dB");
-    }
-
-    #[test]
-    fn reversed_flow_is_finite() {
-        // gas flowing back toward the valves still makes noise, finite
-        let x = collector_noise(&ExhaustDef::default(), -0.02);
-        assert!(x.iter().all(|v| v.is_finite()));
-        assert!(x.iter().any(|v| *v != 0.0));
-    }
-
     /// Steady transmitted amplitude (re a unit incident sine at `f`) through `duct` with an
     /// anechoic source and termination.
     fn transmission(mut duct: crate::waveguide::Duct, f: f64, dt: f64) -> f64 {

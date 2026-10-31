@@ -170,7 +170,7 @@ Planned (add when the phase needs them, then update this table): `fft-convolver`
 ├── crates/
 │   ├── engine-core/   # pure physics, no IO: units, geometry (crank-slider), gas (0D volumes,
 │   │                  #   orifice + implicit port flow), waveguide + exhaust (pipes, collectors,
-│   │                  #   open ends), flow noise (Nelson–Morfey), combustion (Wiebe), real-gas cylinder properties (thermo: NASA c_p),
+│   │                  #   open ends), combustion (Wiebe), real-gas cylinder properties (thermo: NASA c_p),
 │   │                  #   friction by components (Sandoval), block radiation (structure response), dynamics, load/dyno,
 │   │                  #   gearbox (drivetrain: vehicle, clutch), engine definition (serde) + presets. 100% deterministic, f64.
 │   ├── engine-audio/  # pure DSP (DC blocker, filters, radiation, later convolution) + cpal output
