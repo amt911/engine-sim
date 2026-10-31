@@ -1153,3 +1153,22 @@ finite-volume solver (the exact non-linear one, offline): FV 25 dB under, crest 
 waveguide 34 dB, crest 1.9. The steepening waveguide overshoots on these pulses (a chamber of 654 cm³
 blowing down through a port in a few degrees); the rotary presets run linear pipes until it is
 checked against FV on strong pulses (roadmap). The ports and shocks of the preset were not the cause.
+
+## A starved intake port froze into a 4600 K plug and halved the engine (2026-10-31)
+
+The tuned 13B "sounded bad from third gear on" — only in the gears scene, never held on the dyno.
+Cloning the engine at the moment and holding it: half the torque (99 vs 225 N·m), for good (no
+recovery with the ignition off, the pedal up or 3000 rpm). Its state: one intake runner at
+3500–4600 K, still (above any flame: energy made by the numerics). It formed at the 2→3 shift, at
+≈ 9000 rpm with the throttle shut: the bridge port's overlap blew the cylinders' gas back into the
+runners. Two faults in the valve's coupling to the 1D runner, whose cell is only updated once per
+FV step (several physics steps):
+1. the valve drew the port cell as the FV step began, so gas pushed back and drawn again within the
+   step left at the cold cell's enthalpy and its heat stayed with no mass (`port_volume` now draws
+   the backflow's mixture, at the cell's pressure);
+2. a draw beyond the runner's flux limit (half the port cell per FV step) was taken by the
+   cylinder but never given by the runner — mass made from nothing, which kept the hot cell from
+   ever being flushed (`take_unserved`: the cylinder gives the excess back).
+With both, the 13B pulls clean through the gears (above 4 kHz 35 dB under the note); the RENESIS
+and the dyno figures are unchanged. Found by cloning the engine (`Engine: Clone + Debug`) at the
+bad moment and diffing it against a fresh one — worth repeating for any "only in the scene" bug.

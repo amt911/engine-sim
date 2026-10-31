@@ -2905,6 +2905,19 @@ impl Engine {
             }
         };
 
+        // what a valve took beyond its runner's reach was never in the runner: its cylinder
+        // gives it back (mass conserved; a starved port otherwise fed its cylinder from nothing)
+        if let Some(net) = &mut self.intake_net {
+            let th = self.thermo;
+            for (i, cs) in self.cyl.iter_mut().enumerate() {
+                let m = net.take_unserved(i);
+                if m > 0.0 {
+                    cylinder_out(cs, m.min(0.5 * cs.gas.mass_kg));
+                    settle(cs, &th);
+                }
+            }
+        }
+
         self.inducted_kg -= throttle_dm;
 
         // The intake mouth is a sink of the air it draws in: a monopole of volume flow

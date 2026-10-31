@@ -148,6 +148,14 @@ pub struct IntakeFv {
     count: usize,
     acc_mass: Vec<f64>,
     acc_energy: Vec<f64>,
+    /// The part of each step's valve flow pushed back into the runner, kg and J (≤ 0): the
+    /// gas sitting in the port that the valve draws first ([`IntakeFv::port_volume`]).
+    back_mass: Vec<f64>,
+    back_energy: Vec<f64>,
+    /// What each valve took over the last FV step beyond what its port cell could give (the
+    /// runner's flux limit), kg: never in the runner, to be handed back by the cylinder
+    /// ([`IntakeFv::take_unserved`]).
+    unserved: Vec<f64>,
     radiated: f64,
     inducted: f64,
     inducted_rate: f64,
@@ -375,6 +383,7 @@ fn set_valve_boundary(pipe: &mut Pipe1d, m: f64, e: f64, a: f64, dt: f64) {
     // what leaves the runner into the cylinder is a +x flux at its right face
     let available = 0.5 * pipe.cells[n - 1].rho * a * pipe.dx;
     let scale = if m > available { available / m } else { 1.0 };
+
     let mf = scale * m / (a * dt);
     pipe.right = Boundary::Flux(flux_boundary(mf, scale * e / (a * dt), cell));
 }
@@ -476,6 +485,9 @@ impl IntakeFv {
             count: 0,
             acc_mass: vec![0.0; cylinders],
             acc_energy: vec![0.0; cylinders],
+            back_mass: vec![0.0; cylinders],
+            back_energy: vec![0.0; cylinders],
+            unserved: vec![0.0; cylinders],
             radiated: 0.0,
             inducted: 0.0,
             inducted_rate: 0.0,
@@ -492,7 +504,11 @@ impl IntakeFv {
         self.airbox.as_ref().map(|b| b.gas.pressure())
     }
 
-    /// The runner's last cell (at the valve) as a 0D volume, for the valve flow.
+    /// The runner's last cell (at the valve) as a 0D volume, for the valve flow, with what the
+    /// valve has moved through it since the FV step began (`add_valve_flow`): gas pushed back
+    /// is drawn again before the cell's own. Without it, a backflow and the draw after it within
+    /// one FV step took the cold cell's gas and left the backflow's heat with no mass behind —
+    /// a runner heated without bound (FINDINGS 2026-10-31).
     pub fn port_volume(&self, i: usize) -> GasVolume {
         let (c, dx) = match &self.remote.0 {
             Some(r) if i >= r.first => (r.result.last[i - r.first], r.dx),
@@ -503,11 +519,40 @@ impl IntakeFv {
         };
         let v = self.a_runner * dx;
         let prim = c.to_prim();
+        let (mass, energy) = (c.rho * v, prim.p / (crate::gas::GAMMA - 1.0) * v);
+        // gas pushed back since the step began sits in the port: what the valve draws is at
+        // the mixture's temperature, at the cell's pressure (its neighbours hold the pressure
+        // until the FV step; a draw since then leaves the cell as it was for the same reason)
+        let (back_m, back_e) = (self.back_mass[i], self.back_energy[i]);
+        let (mass_kg, energy_j) = if back_m < 0.0 && back_e < 0.0 {
+            let t_mix = (energy - back_e) / ((mass - back_m) * crate::gas::CV);
+            (energy / (crate::gas::CV * t_mix), energy)
+        } else {
+            (mass, energy)
+        };
         GasVolume {
-            mass_kg: c.rho * v,
-            energy_j: prim.p / (crate::gas::GAMMA - 1.0) * v,
+            mass_kg,
+            energy_j,
             volume_m3: v,
         }
+    }
+
+    /// The mass in runner `i`'s last cell, kg.
+    fn port_cell_mass(&self, i: usize) -> f64 {
+        let (c, dx) = match &self.remote.0 {
+            Some(r) if i >= r.first => (r.result.last[i - r.first], r.dx),
+            _ => {
+                let pipe = &self.runners[i];
+                (pipe.cells[pipe.cells.len() - 1], pipe.dx)
+            }
+        };
+        c.rho * self.a_runner * dx
+    }
+
+    /// What valve `i` took beyond its runner's reach since this was last called, kg (see
+    /// `unserved`); the cylinder gives it back.
+    pub fn take_unserved(&mut self, i: usize) -> f64 {
+        std::mem::take(&mut self.unserved[i])
     }
 
     /// Register this physics step's valve flow: `dm` kg from the runner into the cylinder
@@ -515,6 +560,10 @@ impl IntakeFv {
     pub fn add_valve_flow(&mut self, i: usize, dm: f64, h: f64) {
         self.acc_mass[i] += dm;
         self.acc_energy[i] += dm * h;
+        if dm < 0.0 {
+            self.back_mass[i] += dm;
+            self.back_energy[i] += dm * h;
+        }
     }
 
     /// Advance one physics step with throttle effective area `throttle_area` (per runner with
@@ -530,6 +579,12 @@ impl IntakeFv {
         self.count = 0;
         let dt = self.dt_fv;
         let a = self.a_runner;
+        // what the valves took beyond their port cells' limit (`set_valve_boundary`'s): the
+        // runners give only that limit, so the excess goes back from the cylinders
+        for i in 0..self.acc_mass.len() {
+            let limit = 0.5 * self.port_cell_mass(i);
+            self.unserved[i] += (self.acc_mass[i] - limit).max(0.0);
+        }
         if self.individual {
             let total =
                 self.runners.len() + self.remote.0.as_ref().map_or(0, |r| r.result.last.len());
@@ -582,6 +637,8 @@ impl IntakeFv {
             for i in 0..total {
                 self.acc_mass[i] = 0.0;
                 self.acc_energy[i] = 0.0;
+                self.back_mass[i] = 0.0;
+                self.back_energy[i] = 0.0;
             }
             // the sums as the runners would add up side by side, substep by substep
             let mut radiated = 0.0;
@@ -617,6 +674,8 @@ impl IntakeFv {
             set_valve_boundary(pipe, self.acc_mass[i], self.acc_energy[i], a, dt);
             self.acc_mass[i] = 0.0;
             self.acc_energy[i] = 0.0;
+            self.back_mass[i] = 0.0;
+            self.back_energy[i] = 0.0;
         }
         let mut limit = stable_dt(&self.runners);
         if let Some(b) = &self.airbox {
@@ -1403,5 +1462,63 @@ mod tests {
                 assert_eq!(here.airbox_pressure(), split.airbox_pressure(), "step {k}");
             }
         }
+    }
+
+    #[test]
+    fn the_valve_draws_the_gas_its_backflow_left_in_the_port() {
+        // Within one FV step the cylinder pushes hot gas back into the runner, then draws again:
+        // it must draw the mixture now in the port cell, not the cell as the FV step began.
+        // Drawing the stale cold gas left the backflow's heat behind with no mass: a runner of a
+        // bridge-ported 13B reached 4600 K after a closed-throttle shift (FINDINGS 2026-10-31).
+        // The cell's m kg at 300 K takes m/2 of 1200 K gas (enthalpy c_p·1200): its internal
+        // energy m·c_v·300 + m/2·c_p·1200 over 1.5·m·c_v: (300 + 0.7·1200)/1.5 = 760 K
+        let mut net = IntakeFv::new(&def(false), 1e-3, 1, DT);
+        let cold = net.port_volume(0);
+        let cv = crate::gas::CV;
+        let t0 = cold.energy_j / (cold.mass_kg * cv);
+        assert!((t0 - 300.0).abs() < 5.0, "{t0}");
+        let m = cold.mass_kg;
+        // the cell at exactly 300 K for the hand value
+        let scale = 300.0 / t0;
+        net.add_valve_flow(0, -0.5 * m, CP * 1200.0 * scale);
+        let port = net.port_volume(0);
+        let t = port.energy_j / (port.mass_kg * cv);
+        assert!((t / t0 - 760.0 / 300.0).abs() < 0.01, "port at {t} K");
+        // at the cell's pressure: the runner holds it until the FV step
+        assert!((port.energy_j / cold.energy_j - 1.0).abs() < 1e-12);
+        // a backflow then a larger draw within the step: the gas pushed back is still drawn
+        // first (the net flow being out of the runner does not hide it)
+        net.add_valve_flow(0, 0.8 * m, CP * 760.0 * scale);
+        let after = net.port_volume(0);
+        assert!((after.energy_j / (after.mass_kg * cv) / t0 - 760.0 / 300.0).abs() < 0.01);
+        // a draw since the step began leaves the cell as it was (its neighbours refill it)
+        let mut net = IntakeFv::new(&def(false), 1e-3, 1, DT);
+        net.add_valve_flow(0, 0.3 * m, CP * 300.0);
+        assert_eq!(net.port_volume(0), cold);
+    }
+
+    #[test]
+    fn a_draw_the_port_cell_cannot_serve_is_handed_back() {
+        // the valve took more over one FV step than the runner's flux limit lets the port cell
+        // give (half of it): the excess was never in the runner, the cylinder must give it back
+        // (it was created there: a bridge-ported 13B's port starved into a 4600 K plug)
+        let mut net = IntakeFv::new(&def(false), 1e-3, 1, DT);
+        let cell = net.port_volume(0).mass_kg;
+        net.add_valve_flow(0, 0.8 * cell, CP * 300.0);
+        while net.count + 1 < net.substeps {
+            net.step(1e-3);
+        }
+        assert_eq!(net.take_unserved(0), 0.0, "not before the FV step");
+        net.step(1e-3);
+        let back = net.take_unserved(0);
+        assert!((back - 0.3 * cell).abs() < 1e-9 * cell, "{back} of {cell}");
+        assert_eq!(net.take_unserved(0), 0.0, "taken once");
+        // within the limit nothing comes back
+        let mut net = IntakeFv::new(&def(false), 1e-3, 1, DT);
+        net.add_valve_flow(0, 0.3 * cell, CP * 300.0);
+        for _ in 0..net.substeps {
+            net.step(1e-3);
+        }
+        assert_eq!(net.take_unserved(0), 0.0);
     }
 }
