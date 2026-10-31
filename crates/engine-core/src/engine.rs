@@ -275,9 +275,12 @@ impl EngineDef {
                     max_lift_m: 0.017_74,
                 }),
             },
+            // exhaust EVO 39.5° BBDC, EVC 23° ATDC: fitted within the usual 35–70° / 5–40° to
+            // the recordings' firing harmonics (stock DC5 and EP3 chassis dynos) and an onboard
+            // DC5 pull's other orders, the power held in the published range (2026-10-31)
             exhaust_valve: ValveTiming {
-                open_deg: 130.0,
-                duration_deg: 260.0,
+                open_deg: 140.5,
+                duration_deg: 242.5,
                 max_lift_m: 0.0106,
                 diameter_m: 0.0424,
                 high: None,
@@ -289,9 +292,17 @@ impl EngineDef {
             // a typical car idle (estimate)
             idle_rpm: 800.0,
             // primaries timed to the blowdown's second return at the 8000 rpm power peak
-            // (Blair, ch. 6; c ≈ 600 m/s): 0.734 m; one 4-into-1 collector, its own tail pipe
+            // (Blair, ch. 6; c ≈ 600 m/s): 0.734 m, a first guess; 0.624 m, the pipe after the
+            // catalyst 1.84 m and the primaries' spread from the fit to the recordings (as for
+            // the LFA; every unknown kept in its physical range). One 4-into-1 collector, its
+            // own tail pipe
             exhaust: ExhaustDef {
-                primary_length_m: 0.734,
+                primary_length_m: 0.624,
+                // the stock manifold is a cast 4-2-1, not equal-length: ±4 cm, an ESTIMATE from
+                // the fit (identical primaries leave the orders between the firing harmonics
+                // 10–20 dB under the recordings')
+                primary_length_deviation_m: vec![0.0224, -0.0336, 0.0084, 0.042],
+                tail_length_m: 1.84,
                 ..ExhaustDef::default()
             },
             // runners Helmholtz-tuned to the 7000 rpm torque peak (Engelman; 42 mm): 0.255 m,
