@@ -238,6 +238,72 @@ impl EngineDef {
         .with_catalyst()
     }
 
+    /// Mazda 13B-MSP RENESIS (RX-8, 2003–2012): two rotors, e 15 mm, R 105 mm, B 80 mm →
+    /// 654 cm³ per chamber, CR 10.0, 184 kW at 8200 rpm, 216 N·m at 5500 (Heywood, *ICE
+    /// Fundamentals* 2nd ed., Fig. 1.23); side intake and exhaust ports, no overlap. Six
+    /// chambers fired 1-4-2-5-3-6: each rotor's faces 240° of chamber angle apart, the rotors
+    /// 120° (180° of shaft). Not public, estimated: port timing and area, runner, exhaust,
+    /// inertia (spec `docs/superpowers/specs/2026-10-31-rotary-design.md`).
+    pub fn mazda_renesis() -> Self {
+        Self {
+            name: "Mazda 13B RENESIS (two-rotor)".into(),
+            geometry: CylinderGeometry::rotary(0.015, 0.105, 0.080, 10.0),
+            cylinders: 6,
+            firing_order: vec![1, 4, 2, 5, 3, 6],
+            layout: Layout::default(),
+            // Ports as valves, in chamber degrees (⅔ of the shaft's): intake opening at top
+            // centre, closing 70° after bottom (the RENESIS's late-closing auxiliary ports);
+            // exhaust opening 33° before bottom (50° of shaft), closing at top centre. Areas as
+            // one equivalent opening each (lift a quarter of the diameter): three side intake
+            // ports ≈ 2250 mm², two exhaust ≈ 1350 mm². ESTIMATES: 1500/900 mm² made 158 hp at
+            // 6000 rpm; these 224 hp at 8500, the model's usual ≈ 90 % of the published
+            intake_valve: ValveTiming {
+                open_deg: 360.0,
+                duration_deg: 250.0,
+                max_lift_m: 0.0134,
+                diameter_m: 0.0535,
+                high: None,
+            },
+            exhaust_valve: ValveTiming {
+                open_deg: 147.0,
+                duration_deg: 213.0,
+                max_lift_m: 0.0104,
+                diameter_m: 0.0416,
+                high: None,
+            },
+            flywheel_inertia_kgm2: 0.12,
+            plenum_volume_m3: 4.0e-3,
+            throttle_diameter_m: 0.065,
+            idle_throttle: 0.0055,
+            idle_rpm: 800.0,
+            // each rotor's three chambers share its exhaust port: their "primaries" are port
+            // stubs joined at once; the rotor's own pipe is the collector (ESTIMATES)
+            exhaust: ExhaustDef {
+                primary_length_m: 0.06,
+                primary_diameter_m: 0.045,
+                collectors: vec![vec![1, 2, 3], vec![4, 5, 6]],
+                collector_length_m: 0.45,
+                collector_diameter_m: 0.05,
+                tail_length_m: 1.6,
+                tail_diameter_m: 0.055,
+                ..ExhaustDef::default()
+            },
+            intake: IntakeDef {
+                model: IntakeModel::Fv,
+                // ESTIMATE (0.40 m peaked the power at 6500 rpm)
+                runner_length_m: 0.25,
+                runner_diameter_m: 0.045,
+                ..IntakeDef::default()
+            },
+            redline_rpm: 9000.0,
+            starter_torque_nm: 60.0,
+            vehicle: crate::drivetrain::VehicleDef::inline4(),
+            ..Self::single()
+        }
+        .with_tail_pipe()
+        .with_catalyst()
+    }
+
     /// Subaru EJ25 flat-four (EJ251, Impreza 2.5 RS 1999–2005): 99.5 × 79 mm, 2457 cc,
     /// CR 10.0, 165 hp at 5600 rpm, 225 N·m at 4000, SOHC with four valves per cylinder; firing
     /// 1-3-2-4, cylinders 1 and 3 on one bank, 2 and 4 on the other (Subaru EJ engine,
@@ -946,6 +1012,16 @@ impl EngineDef {
     /// half-burned (delay + Wiebe 50 %) scales with the flame, so the advance is
     /// (`spark_advance_deg` + CA50)·ratio − CA50, `spark_advance_deg` being the reference's;
     /// within ±[`MAX_SPARK_ADVANCE_DEG`], as far as an ignition map reaches.
+    /// Each chamber's cycle angle per shaft angle: 1 for pistons, ⅔ for a Wankel (its chamber
+    /// completes four strokes in three turns of the eccentric shaft; Heywood 2nd ed. §1.8).
+    pub fn chamber_ratio(&self) -> f64 {
+        if self.geometry.rotor.is_some() {
+            2.0 / 3.0
+        } else {
+            1.0
+        }
+    }
+
     pub fn spark_advance_for(&self, flame_ratio: f64) -> f64 {
         ((self.spark_advance_deg + CA50_ATDC_DEG) * flame_ratio - CA50_ATDC_DEG)
             .clamp(-MAX_SPARK_ADVANCE_DEG, MAX_SPARK_ADVANCE_DEG)
@@ -2061,7 +2137,8 @@ impl Engine {
     /// 500 cc single and a 6.2 L V8.
     fn idle_air_scale(&self) -> f64 {
         let rho = 30e3 / (crate::gas::R_AIR * 300.0);
-        let mdot = rho * self.def.displacement_m3() * self.def.idle_rpm / 120.0;
+        let mdot =
+            rho * self.def.displacement_m3() * self.def.chamber_ratio() * self.def.idle_rpm / 120.0;
         let flux = crate::gas::orifice_mass_flow(1.0, ATM_PA, 300.0, 30e3);
         let full = DISCHARGE_CD * PI * 0.25 * self.def.throttle_diameter_m.powi(2);
         (mdot / flux / full).max(1e-6)
@@ -2148,14 +2225,17 @@ impl Engine {
             at = self.def.friction.at_speed(&self.def.friction_engine(), rpm);
             self.friction_at.set(at);
         }
-        at.fmep(self.plenum_pressure_pa()) * self.def.displacement_m3() / (4.0 * PI)
+        at.fmep(self.plenum_pressure_pa()) * self.def.displacement_m3() * self.def.chamber_ratio()
+            / (4.0 * PI)
             * (self.omega / 5.0).tanh()
     }
 
     /// Advance by `dt` seconds; returns the raw acoustic source sample (Pa).
     pub fn step(&mut self, dt: f64, c: &Controls) -> f64 {
         let g = self.def.geometry;
-        let crank_deg = self.theta.to_degrees();
+        // each chamber's cycle angle: the crank's, or ⅔ of a Wankel's eccentric shaft
+        let shaft_k = self.def.chamber_ratio();
+        let crank_deg = self.theta.to_degrees() * shaft_k;
         let rpm_now = self.rpm();
         // the ECU's throttle demand: the pedal, trimmed by a torque cut's air channel towards
         // the charge whose most retarded burn gives the cut's share
@@ -2183,10 +2263,12 @@ impl Engine {
         let (film_x, film_tau) = (self.def.intake.film_fraction, self.def.intake.film_tau_s);
         let film_x = if film_tau > 0.0 { film_x } else { 0.0 };
         // one intake event per cycle per port: the film evaporates over the cycle's period
-        let film_share =
-            crate::fuel::evaporated_share(4.0 * PI / self.omega.abs().max(1e-3), film_tau);
+        let film_share = crate::fuel::evaporated_share(
+            4.0 * PI / (shaft_k * self.omega.abs()).max(1e-3),
+            film_tau,
+        );
         let wall_area = 2.0 * g.piston_area();
-        let mean_piston_speed = mean_piston_speed(g.stroke_m, self.omega);
+        let mean_piston_speed = mean_piston_speed(g.stroke_m, shaft_k * self.omega);
         match self.def.intake.model {
             IntakeModel::ZeroD => self.intake_net = None,
             IntakeModel::Fv => {
@@ -2467,7 +2549,8 @@ impl Engine {
             // Combustion events.
             // a valve closing strikes its seat (both kinds: one valve each, conservative)
             let strike = SEAT_FORCE_N * (rpm_now / SEAT_FORCE_RPM);
-            if crossed(prev, cur, evc) || crossed(prev, cur, ivc) {
+            // (a rotary's ports have no valves to strike)
+            if g.rotor.is_none() && (crossed(prev, cur, evc) || crossed(prev, cur, ivc)) {
                 self.seat_strikes.push((0.0, strike));
             }
             if crossed(prev, cur, evc) {
@@ -2590,7 +2673,9 @@ impl Engine {
             settle(cs, &th);
             self.wall_heat_j += q;
 
-            gas_torque += (cs.gas.pressure() - ATM_PA) * g.piston_area() * g.dpos_dtheta(theta_c);
+            // on the shaft: dV/dφ = dV/dψ · dψ/dφ
+            gas_torque +=
+                (cs.gas.pressure() - ATM_PA) * g.piston_area() * g.dpos_dtheta(theta_c) * shaft_k;
 
             cs.cycle_deg = cur;
 
@@ -2783,7 +2868,7 @@ impl Engine {
             self.tail_mach = vec![0.0; n_tails];
         }
         // one engine cycle (two turns), bounded for a stopped or racing crank
-        let k = (dt * self.omega.abs() / (4.0 * PI)).clamp(dt, 1.0);
+        let k = (dt * shaft_k * self.omega.abs() / (4.0 * PI)).clamp(dt, 1.0);
         {
             if self.cyl_mean_flow.len() != self.cyl.len() {
                 self.cyl_mean_flow = vec![0.0; self.cyl.len()];
@@ -2953,7 +3038,7 @@ impl Engine {
                 self.omega = (self.omega + net / j * dt).max(0.0);
             }
         }
-        self.theta = crate::units::wrap(self.theta + self.omega * dt, 4.0 * PI);
+        self.theta = crate::units::wrap(self.theta + self.omega * dt, 4.0 * PI / shaft_k);
         audio
     }
 
@@ -5270,6 +5355,41 @@ mod tests {
             "order 2 re 4: unequal {:.1} dB, equal {:.1} dB",
             rel(&u),
             rel(&e)
+        );
+    }
+
+    #[test]
+    fn the_renesis_matches_heywoods_figures() {
+        let d = EngineDef::mazda_renesis();
+        assert!((d.geometry.displacement() * 1e6 - 654.7).abs() < 0.1);
+        assert_eq!(d.cylinders, 6);
+        assert!((d.chamber_ratio() - 2.0 / 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_rotary_fires_once_per_rotor_per_shaft_turn() {
+        // Heywood 2nd ed. §1.8: "for each eccentric (output) shaft revolution, there is one
+        // torque pulse" per rotor: two rotors, two combustions a turn
+        let rpm = 3000.0;
+        let mut e = Engine::new(EngineDef::mazda_renesis(), rpm, 1);
+        let c = Controls {
+            throttle: 0.5,
+            hold_rpm: Some(rpm),
+            ..Controls::default()
+        };
+        for _ in 0..(0.5 / DT) as usize {
+            e.step(DT, &c);
+        }
+        let before = e.combustions;
+        let secs = 1.0;
+        for _ in 0..(secs / DT) as usize {
+            e.step(DT, &c);
+        }
+        let turns = rpm / 60.0 * secs;
+        let fired = (e.combustions - before) as f64;
+        assert!(
+            (fired / turns - 2.0).abs() < 0.05,
+            "{fired} in {turns} turns"
         );
     }
 

@@ -233,6 +233,24 @@ mod tests {
     }
 
     #[test]
+    fn the_renesis_breathes_near_what_mazda_published() {
+        // 184 kW (247 hp) at 8200 rpm, 216 N·m at 5500 (Heywood 2nd ed., Fig. 1.23): within 15 %
+        let pts = sweep(&EngineDef::mazda_renesis());
+        let (t, p) = peaks(&pts).unwrap();
+        assert!(
+            (t.torque_nm / 216.0 - 1.0).abs() < 0.15,
+            "{} N·m",
+            t.torque_nm
+        );
+        assert!(
+            (p.power_hp() / 247.0 - 1.0).abs() < 0.15,
+            "{} hp",
+            p.power_hp()
+        );
+        assert!(p.rpm >= 7500.0, "power peaks at {} rpm", p.rpm);
+    }
+
+    #[test]
     fn inline4_sweep_has_a_plausible_curve() {
         let pts = sweep(&EngineDef::inline4());
         assert_eq!(pts.len(), sweep_speeds(7000.0).len());

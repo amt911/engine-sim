@@ -154,8 +154,9 @@ pub fn validate(def: &EngineDef) -> Result<(), ConfigError> {
     );
     check(within(g.bore_m, 0.02, 0.3), "bore must be 20–300 mm");
     check(within(g.stroke_m, 0.02, 0.3), "stroke must be 20–300 mm");
+    // a Wankel chamber has no rod (its geometry is the rotor's)
     check(
-        within(g.rod_m, 0.0, 1.0) && g.rod_m > g.stroke_m * 0.5,
+        g.rotor.is_some() || (within(g.rod_m, 0.0, 1.0) && g.rod_m > g.stroke_m * 0.5),
         "rod must be longer than half the stroke (and < 1 m)",
     );
     check(
