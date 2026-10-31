@@ -65,7 +65,25 @@ engine:
       cells_per_in2: 400.0
       wall_m: 0.000165
     - kind: pipe
-      length_m: 1.5
+      length_m: 0.21
+      diameter_m: 0.05
+    - kind: muffler
+      length_m: 0.35
+      diameter_m: 0.1337
+      tube_diameter_m: 0.05
+      packing_resistivity: 16000.0
+      packing_porosity: 0.95
+    - kind: pipe
+      length_m: 0.315
+      diameter_m: 0.05
+    - kind: muffler
+      length_m: 0.45
+      diameter_m: 0.2358
+      tube_diameter_m: 0.05
+      packing_resistivity: 16000.0
+      packing_porosity: 0.95
+    - kind: pipe
+      length_m: 0.175
       diameter_m: 0.05
     merge: null
     steepening: true
