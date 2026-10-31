@@ -534,6 +534,11 @@ impl Pipe {
     /// Room in its lines for gas as slow as `c_min` m/s ([`Pipe::set_sound_speed`]). Call it
     /// last, on a pipe that has not carried a wave yet.
     pub fn with_room(mut self, c_min: f64) -> Self {
+        self.make_room(c_min);
+        self
+    }
+    /// [`Pipe::with_room`] in place.
+    pub fn make_room(&mut self, c_min: f64) {
         let factor = (self.sound_speed / c_min).max(1.0);
         self.fwd = self.fwd.roomier(factor);
         self.bwd = self.bwd.roomier(factor);
@@ -542,7 +547,6 @@ impl Pipe {
                 st.line = st.line.roomier(factor);
             }
         }
-        self
     }
     /// The gas in the pipe now carries sound at `c` m/s: its waves take length/c to cross it
     /// (within the room it was built with, [`Pipe::with_room`]). A steepening line's k =
@@ -558,6 +562,10 @@ impl Pipe {
                 st.line.set_scale(scale);
             }
         }
+    }
+    /// The speed of sound of its gas now, m/s.
+    pub fn gas_sound_speed(&self) -> f64 {
+        self.gas_c
     }
     /// The pipe's length, m, and diameter, m.
     pub fn size(&self) -> (f64, f64) {
@@ -929,6 +937,10 @@ impl Duct {
         self.pipes[0].at_near()
     }
     /// The mean mass flow through every pipe of the duct, kg/s ([`Pipe::set_mean_flow`]).
+    /// Its pipes, near end first.
+    pub fn pipes_mut(&mut self) -> &mut [Pipe] {
+        &mut self.pipes
+    }
     pub fn set_mean_flow(&mut self, mass_flow: f64) {
         self.mean_flow = mass_flow;
         for p in &mut self.pipes {
