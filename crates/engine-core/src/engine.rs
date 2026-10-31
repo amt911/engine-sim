@@ -6713,9 +6713,11 @@ mod tests {
         // the rest. A blip midway moves the mean flows the pipes' friction follows; the run ends
         // in the middle of a block.
         for def in [EngineDef::lfa_v10(), EngineDef::inline4()] {
-            // linear pipes: a steepening exhaust is never handed off (max_block)
+            // linear pipes at fixed speeds: a steepening exhaust or one whose gas follows its
+            // walls is never handed off (max_block)
             let mut def = def;
             def.exhaust.steepening = false;
+            def.exhaust.gas_temperature = false;
             let mut a = Engine::new(def.clone(), 3000.0, 1);
             let mut b = Engine::new(def.clone(), 3000.0, 1);
             let n = (0.15 / DT) as usize + 7;
@@ -6810,6 +6812,7 @@ mod tests {
             })
         );
         def.exhaust.steepening = false;
+        def.exhaust.gas_temperature = false;
         let mut a = Engine::new(def.clone(), 3000.0, 1);
         let mut b = Engine::new(def, 3000.0, 1);
         for _ in 0..10 {
@@ -6872,8 +6875,12 @@ mod tests {
     /// RMS of the second difference ÷ dt² of cylinder 0's exhaust flow over its outflow, idle
     /// LFA held at 1100 rpm, at the physics rate `fs`: the flow's curvature, kg/s³.
     fn idle_outflow_curvature(fs: f64) -> f64 {
+        idle_outflow_curvature_of(EngineDef::lfa_v10(), fs)
+    }
+
+    fn idle_outflow_curvature_of(def: EngineDef, fs: f64) -> f64 {
         let dt = 1.0 / fs;
-        let mut e = Engine::new(EngineDef::lfa_v10(), 1100.0, 1);
+        let mut e = Engine::new(def, 1100.0, 1);
         let c = Controls {
             throttle: 0.0,
             hold_rpm: Some(1100.0),
