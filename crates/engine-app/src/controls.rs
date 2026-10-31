@@ -13,16 +13,18 @@ pub enum Preset {
     Single,
     Inline4,
     HondaK20a,
+    HondaK20aTuned,
     LfaV10,
     FlatplaneV8,
     CrossplaneV8,
 }
 
 impl Preset {
-    pub const ALL: [Preset; 6] = [
+    pub const ALL: [Preset; 7] = [
         Preset::Single,
         Preset::Inline4,
         Preset::HondaK20a,
+        Preset::HondaK20aTuned,
         Preset::LfaV10,
         Preset::FlatplaneV8,
         Preset::CrossplaneV8,
@@ -32,6 +34,7 @@ impl Preset {
             Preset::Single => EngineDef::single(),
             Preset::Inline4 => EngineDef::inline4(),
             Preset::HondaK20a => EngineDef::honda_k20a(),
+            Preset::HondaK20aTuned => EngineDef::honda_k20a_tuned(),
             Preset::LfaV10 => EngineDef::lfa_v10(),
             Preset::FlatplaneV8 => EngineDef::flatplane_v8(),
             Preset::CrossplaneV8 => EngineDef::crossplane_v8(),
@@ -47,6 +50,7 @@ impl Preset {
             Preset::Single => "single",
             Preset::Inline4 => "inline4",
             Preset::HondaK20a => "honda-k20a",
+            Preset::HondaK20aTuned => "honda-k20a-tuned",
             Preset::LfaV10 => "lfa-v10",
             Preset::FlatplaneV8 => "v8-flatplane",
             Preset::CrossplaneV8 => "v8-crossplane",
@@ -60,6 +64,7 @@ impl Preset {
             Preset::Single => "Single 500",
             Preset::Inline4 => "Inline-4 2.0",
             Preset::HondaK20a => "Honda K20A 2.0 (Type R)",
+            Preset::HondaK20aTuned => "Honda K20A tuned (VTEC, 9200 rpm)",
             Preset::LfaV10 => "Lexus LFA V10",
             Preset::FlatplaneV8 => "V8 4.5 flat-plane (European)",
             Preset::CrossplaneV8 => "V8 6.2 cross-plane (American)",

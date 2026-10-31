@@ -237,6 +237,26 @@ impl EngineDef {
         .with_catalyst()
     }
 
+    /// The K20A as tuners build it for the VTEC scream (the user's wish, 2026-10-31: not a real
+    /// engine's data): stiffer valve springs and a wilder VTEC lobe — a typical "stage 2"
+    /// cam's lift and duration over the stock lobe — engaging earlier, revving to 9200 rpm.
+    /// Everything else is the fitted stock engine.
+    pub fn honda_k20a_tuned() -> Self {
+        let mut d = Self::honda_k20a();
+        d.name = "Honda K20A tuned (VTEC, 9200 rpm)".into();
+        d.redline_rpm = 9200.0;
+        if let Some(hi) = &mut d.intake_valve.high {
+            // 12.65 → 13.4 mm per valve and ~12° more duration, 6° of it as earlier opening
+            hi.max_lift_m *= 13.4 / 12.65;
+            hi.open_deg -= 6.0;
+            hi.duration_deg += 12.0;
+        }
+        if let Some(v) = &mut d.vtec {
+            v.engage_rpm = 5500.0;
+        }
+        d
+    }
+
     /// Honda K20A (Integra Type R, DC5): the published engine, its unpublished geometry sized
     /// by physics like the LFA's.
     pub fn honda_k20a() -> Self {
@@ -5081,6 +5101,23 @@ mod tests {
             let mut e = Engine::new(base.clone(), 900.0, 1);
             assert!(!e.retune(d), "structural change must rebuild");
         }
+    }
+
+    #[test]
+    fn the_tuned_k20a_revs_higher_on_a_wilder_vtec_lobe() {
+        let (stock, tuned) = (EngineDef::honda_k20a(), EngineDef::honda_k20a_tuned());
+        assert!(tuned.redline_rpm >= stock.redline_rpm + 600.0);
+        let (s, t) = (
+            stock.intake_valve.high.unwrap(),
+            tuned.intake_valve.high.unwrap(),
+        );
+        assert!(t.max_lift_m > s.max_lift_m && t.duration_deg > s.duration_deg);
+        // more overlap: the VTEC lobe opens earlier
+        assert!(t.open_deg < s.open_deg);
+        assert!(tuned.vtec.unwrap().engage_rpm < stock.vtec.unwrap().engage_rpm);
+        // the same engine otherwise
+        assert_eq!(tuned.geometry.bore_m, stock.geometry.bore_m);
+        assert_eq!(tuned.exhaust.primary_length_m, stock.exhaust.primary_length_m);
     }
 
     #[test]
