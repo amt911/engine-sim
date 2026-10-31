@@ -1,0 +1,133 @@
+version: 3
+engine:
+  name: Mazda 13B RENESIS (two-rotor)
+  geometry:
+    bore_m: 0.1361052933804274
+    stroke_m: 0.045
+    rod_m: 0.0
+    compression_ratio: 10.0
+    rotor:
+      eccentricity_m: 0.015
+      generating_radius_m: 0.105
+      width_m: 0.08
+  cylinders: 6
+  firing_order:
+  - 1
+  - 4
+  - 2
+  - 5
+  - 3
+  - 6
+  layout:
+    bank_angle_deg: 0.0
+    banks: []
+  intake_valve:
+    open_deg: 360.0
+    duration_deg: 250.0
+    max_lift_m: 0.0134
+    diameter_m: 0.0535
+  exhaust_valve:
+    open_deg: 147.0
+    duration_deg: 213.0
+    max_lift_m: 0.0104
+    diameter_m: 0.0416
+  spark_advance_deg: 25.0
+  burn_duration_deg: 55.0
+  flywheel_inertia_kgm2: 0.12
+  plenum_volume_m3: 0.004
+  throttle_diameter_m: 0.065
+  idle_throttle: 0.0055
+  idle_rpm: 800.0
+  exhaust:
+    primary_length_m: 0.06
+    primary_diameter_m: 0.045
+    collectors:
+    - - 1
+      - 2
+      - 3
+    - - 4
+      - 5
+      - 6
+    collector_length_m: 0.45
+    collector_diameter_m: 0.05
+    collector_extra_length_m: []
+    primary_length_deviation_m: []
+    tail_length_m: 1.6
+    tail_diameter_m: 0.055
+    muffler_transmission: 1.0
+    model: waveguide
+    muffler_volume_m3: 0.006
+    muffler_packing:
+      thickness_m: 0.025
+      flow_resistivity: 16000.0
+      porosity: 0.95
+    tail_spacing_m: 0.9
+    after_collector:
+    - kind: catalyst
+      length_m: 0.13
+      diameter_m: 0.1387
+      cells_per_in2: 400.0
+      wall_m: 0.000165
+    - kind: pipe
+      length_m: 1.6
+      diameter_m: 0.055
+    merge: null
+    steepening: true
+    gas_temperature: false
+  intake:
+    model: fv
+    runner_length_m: 0.25
+    runner_diameter_m: 0.045
+    individual_throttles: false
+    trumpet_loss: 0.1
+    film_fraction: 0.18
+    film_tau_s: 1.0
+    airbox: null
+  redline_rpm: 9000.0
+  shutoff_rpm: 0.0
+  starter_torque_nm: 60.0
+  friction:
+    valvetrain: dohc_direct_acting
+    roller_followers: false
+    valves_per_cylinder: 4
+    rods_per_crankpin: 2
+    ring_tension_ratio: 1.0
+    liner_roughness: 1.0
+    oil_viscosity_ratio: 1.0
+  sound:
+    flow_noise: 1.0
+    intake: 1.0
+    valve_jet: 1.0
+    block: 1.0
+    mechanical: 1.0
+    combustion_jitter: 1.0
+    reverb: 0.0
+    leveling: 0.0
+    listener_distance_m: 3.0
+    listener_angle_deg: 30.0
+    ground: true
+    tail_height_m: 0.3
+    listener_height_m: 1.6
+    street_width_m: 0.0
+    wall_reflection: 0.8
+  exhaust_reverse_cd_ratio: 0.75
+  overrun_fuel_cut_rpm: 1500.0
+  vehicle:
+    name: Compact hatchback
+    mass_kg: 1300.0
+    wheel_radius_m: 0.316
+    drag_cd_a_m2: 0.64
+    rolling_coeff: 0.012
+    gear_ratios:
+    - 3.62
+    - 1.95
+    - 1.36
+    - 0.94
+    - 0.78
+    final_drive: 4.1
+    driveline_efficiency: 0.92
+    wheel_inertia_kgm2: 4.0
+    clutch_capacity_nm: 350.0
+    max_brake_decel_m_s2: 9.0
+    shift_time_s: 0.0
+    engine_ahead_m: 3.4
