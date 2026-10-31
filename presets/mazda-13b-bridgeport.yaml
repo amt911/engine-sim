@@ -64,7 +64,16 @@ engine:
     tail_spacing_m: 0.9
     after_collector:
     - kind: pipe
-      length_m: 1.6
+      length_m: 1.0
+      diameter_m: 0.065
+    - kind: muffler
+      length_m: 0.45
+      diameter_m: 0.16
+      tube_diameter_m: 0.065
+      packing_resistivity: 16000.0
+      packing_porosity: 0.95
+    - kind: pipe
+      length_m: 0.3
       diameter_m: 0.065
     merge: null
     steepening: true

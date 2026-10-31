@@ -1133,3 +1133,13 @@ never saw it. Fix: the gas in each pipe is one well-stirred volume that moves to
 profile at its renewal plus cooling rate, ṁ/(ρV) + hA/(ρVc_p) (`pipe_heat::gas_exchange_rate`):
 idle curvature 3.4e3, delay steps ≤ 0.02 per update; the LFA fit's terms barely move (harm 1.54 →
 1.60 dB, orders 8.09 → 8.19).
+
+## A straight pipe on big ports crackles with shocks (2026-10-31)
+
+The first tuned 13B (bridge-port, peripheral exhaust, straight pipe) sounded "fatal" through the
+gears: above 4 kHz its sound sat only 5 dB under the note below 1 kHz (stock RENESIS: 38 dB under).
+None of the added sources (flow noise, valve jets, intake, block, mechanical) carried it; with the
+exhaust's steepening off it fell to 32 dB under. The pulses of its large, early ports steepen into
+shocks over the whole pipe, and a radiated shock is a crack: the sticky-particle shocks are right,
+the preset was not. One packed straight-through silencer (no catalyst) brings it back to 36 dB
+under. A straight-piped preset needs the same check.

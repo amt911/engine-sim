@@ -307,9 +307,9 @@ impl EngineDef {
     /// A tuned 13B as an RX-7 build (the user's wish, 2026-10-31: more revs and ported for a
     /// rougher sound; not a real engine's data): the RENESIS's rotors with a bridge-ported
     /// intake and peripheral exhaust ports — wide, early-opening ports whose overlap gives the
-    /// ported rotary's lumpy "brap" idle — revving to 9500 rpm through a straight pipe with no
-    /// catalyst. Timings in shaft degrees, typical of such builds: intake 75° BTDC to 80°
-    /// ABDC, exhaust 75° BBDC to 48° ATDC (≈ 120° of overlap); port areas 1.5× the RENESIS's.
+    /// ported rotary's lumpy "brap" idle — revving to 9500 rpm with no catalyst. Timings in shaft degrees, typical of such builds: intake 75° BTDC to 80°
+    /// ABDC, exhaust 75° BBDC to 48° ATDC (≈ 120° of overlap); port areas 1.5× the RENESIS's;
+    /// a sports silencer instead of the catalyst.
     pub fn mazda_13b_bridgeport() -> Self {
         let base = Self::mazda_renesis();
         let mut d = Self {
@@ -339,9 +339,26 @@ impl EngineDef {
             },
             ..base
         };
-        // a straight pipe after each rotor's collector, no catalyst
-        d.exhaust.after_collector = Vec::new();
-        d.with_tail_pipe()
+        // no catalyst: a pipe, one straight-through packed sports silencer, a short tip. A
+        // straight pipe let the bridge port's pulses steepen into shocks all the way to the
+        // tip: a crackle 5 dB under the note itself above 4 kHz (this silencer: 36 dB under,
+        // as the stock car). Sizes: ESTIMATES
+        let pipe = |length_m: f64| crate::exhaust::Segment::Pipe {
+            length_m,
+            diameter_m: 0.065,
+        };
+        d.exhaust.after_collector = vec![
+            pipe(1.0),
+            crate::exhaust::Segment::Muffler {
+                length_m: 0.45,
+                diameter_m: 0.16,
+                tube_diameter_m: 0.065,
+                packing_resistivity: 16_000.0,
+                packing_porosity: 0.95,
+            },
+            pipe(0.3),
+        ];
+        d
     }
 
     /// Subaru EJ25 flat-four (EJ251, Impreza 2.5 RS 1999–2005): 99.5 × 79 mm, 2457 cc,
