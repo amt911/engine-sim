@@ -143,6 +143,24 @@ impl ValveTiming {
         let s = (std::f64::consts::PI * x).sin();
         self.max_lift_m * s * s
     }
+    /// Effective area of a rotary's port at a cycle angle: the rotor's edge sweeps across the
+    /// round port (diameter `diameter_m`) at `travel_m_per_deg`, so the area uncovered is the
+    /// circular segment of that depth, r²·acos((r − s)/r) − (r − s)·√(2rs − s²), full once
+    /// the edge has crossed it, and mirrored as the next edge covers it over the window's
+    /// end (Yamamoto, *Rotary Engine*, 1981, ch. 3: side ports opened by the rotor's flank). A
+    /// cam's sin² lift opened a port over its whole window; an edge opens it in tens of
+    /// degrees, and the blowdown is that much sharper.
+    pub fn swept_port_area(&self, cycle_deg: f64, travel_m_per_deg: f64) -> f64 {
+        let x = crate::units::wrap(cycle_deg - self.open_deg, 720.0);
+        if x >= self.duration_deg {
+            return 0.0;
+        }
+        let r = 0.5 * self.diameter_m;
+        let s = (x.min(self.duration_deg - x) * travel_m_per_deg).min(2.0 * r);
+        let h = r - s;
+        VALVE_CD
+            * (r * r * (h / r).clamp(-1.0, 1.0).acos() - h * (2.0 * r * s - s * s).max(0.0).sqrt())
+    }
     /// Effective area at a cycle angle: Cd times the smaller of the curtain (πDL) and the port
     /// (πD²/4), turned smoothly from one to the other, (A_c⁻ⁿ + A_p⁻ⁿ)^(−1/n). Measured
     /// exhaust valves pass ~95 % of the geometric minimum below L/D = 0.2 and ~90 % at 0.25,
@@ -179,6 +197,42 @@ mod tests {
                 max_lift_m: 0.01265,
             }),
         }
+    }
+
+    #[test]
+    fn a_rotor_edge_uncovers_a_round_port_as_a_circular_segment() {
+        // d = 40 mm port, the edge 1 mm per degree, open at 100° for 200°. Hand values: half
+        // the depth (20 mm, 120°) half the circle, Cd·π·0.02²/2 = 4.3982e-4 m²; a quarter
+        // (10 mm, 110°) the segment r²·acos(½) − ½r·√(2r·½r − ¼r²)·… = 4e-4·1.0472 −
+        // 0.01·√3e-4 = 2.4567e-4, ×0.7 = 1.7197e-4 m²; full from 140° to 260°; the closing
+        // edge mirrors it.
+        let v = ValveTiming {
+            open_deg: 100.0,
+            duration_deg: 200.0,
+            max_lift_m: 0.01,
+            diameter_m: 0.04,
+            high: None,
+        };
+        let full = VALVE_CD * PI * 0.02 * 0.02;
+        assert_eq!(v.swept_port_area(99.0, 1e-3), 0.0);
+        assert_relative_eq!(
+            v.swept_port_area(110.0, 1e-3),
+            1.7197e-4,
+            max_relative = 1e-4
+        );
+        assert_relative_eq!(
+            v.swept_port_area(120.0, 1e-3),
+            0.5 * full,
+            max_relative = 1e-12
+        );
+        assert_relative_eq!(v.swept_port_area(140.0, 1e-3), full, max_relative = 1e-12);
+        assert_relative_eq!(v.swept_port_area(200.0, 1e-3), full, max_relative = 1e-12);
+        assert_relative_eq!(
+            v.swept_port_area(280.0, 1e-3),
+            0.5 * full,
+            max_relative = 1e-12
+        );
+        assert_eq!(v.swept_port_area(300.0, 1e-3), 0.0);
     }
 
     #[test]

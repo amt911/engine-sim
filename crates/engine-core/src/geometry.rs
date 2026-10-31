@@ -34,6 +34,15 @@ pub struct Rotor {
     pub width_m: f64,
 }
 
+impl Rotor {
+    /// How far the rotor's flank moves past the housing per degree of chamber angle, m: the
+    /// rotor turns ψ/2 (a third of the shaft, ψ = ⅔ of it), its flank at about the generating
+    /// radius (Heywood 2nd ed., §1.8) — the speed its edge sweeps across the side ports.
+    pub fn port_sweep_m_per_deg(&self) -> f64 {
+        0.5 * self.generating_radius_m * std::f64::consts::PI / 180.0
+    }
+}
+
 impl CylinderGeometry {
     /// A Wankel chamber of a rotor with eccentricity `e`, generating radius `r` and width `b`,
     /// m: displacement 3√3·e·R·B (Heywood 2nd ed., Fig. 1.23), as an equivalent piston of the
@@ -106,6 +115,16 @@ mod tests {
             compression_ratio: 10.0,
             rotor: None,
         }
+    }
+
+    #[test]
+    fn a_rotor_flank_sweeps_its_ports_at_half_the_generating_radius_per_chamber_radian() {
+        // the rotor turns ψ/2 (a third of the shaft, ψ = ⅔ shaft): R/2 per radian of ψ;
+        // RENESIS R = 105 mm: 0.0525 · π/180 = 9.1630e-4 m per degree
+        let r = CylinderGeometry::rotary(0.015, 0.105, 0.080, 10.0)
+            .rotor
+            .unwrap();
+        assert!((r.port_sweep_m_per_deg() - 9.1630e-4).abs() < 1e-8);
     }
 
     #[test]

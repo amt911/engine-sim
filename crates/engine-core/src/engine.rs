@@ -347,25 +347,14 @@ impl EngineDef {
             },
             ..base
         };
-        // no catalyst: a pipe, one straight-through packed sports silencer, a short tip. A
-        // straight pipe let the bridge port's pulses steepen into shocks all the way to the
-        // tip: a crackle 5 dB under the note itself above 4 kHz (this silencer: 36 dB under,
-        // as the stock car). Sizes: ESTIMATES
-        let pipe = |length_m: f64| crate::exhaust::Segment::Pipe {
-            length_m,
+        // no catalyst, no silencer: an open 65 mm pipe, as such builds run. The crackle a
+        // straight pipe once had came from the intake port's coupling and the steepening
+        // waveguide (FINDINGS 2026-10-31); a silencer then took the scream with it (1–4 kHz
+        // 33 dB under the note, a bridge port's dyno pull has it 5 dB under). Length: ESTIMATE
+        d.exhaust.after_collector = vec![crate::exhaust::Segment::Pipe {
+            length_m: 1.3,
             diameter_m: 0.065,
-        };
-        d.exhaust.after_collector = vec![
-            pipe(1.0),
-            crate::exhaust::Segment::Muffler {
-                length_m: 0.45,
-                diameter_m: 0.16,
-                tube_diameter_m: 0.065,
-                packing_resistivity: 16_000.0,
-                packing_porosity: 0.95,
-            },
-            pipe(0.3),
-        ];
+        }];
         d
     }
 
@@ -2428,8 +2417,17 @@ impl Engine {
             // Both valve flows are planned from the same state (Jacobi) and each may close
             // at most half the pressure gap: during overlap, sequential full equalisation
             // with plenum then runner ping-pongs every substep (loud numerical chatter).
-            let a_in = intake_valve.flow_area(cur);
-            let a_ex = exhaust_valve.flow_area(cur);
+            // a rotary's ports open as the rotor's edge sweeps them, a cam's valve on its lift
+            let (a_in, a_ex) = match &g.rotor {
+                Some(r) => {
+                    let sweep = r.port_sweep_m_per_deg();
+                    (
+                        intake_valve.swept_port_area(cur, sweep),
+                        exhaust_valve.swept_port_area(cur, sweep),
+                    )
+                }
+                None => (intake_valve.flow_area(cur), exhaust_valve.flow_area(cur)),
+            };
             // The intake valve draws from the 0D plenum, or from its runner's last cell (1D).
             let f_in = (a_in > 0.0).then(|| match &self.intake_net {
                 Some(net) => plan_exchange(&net.port_volume(i), &cs.gas, a_in, dt, VALVE_RELAX),
@@ -5486,13 +5484,13 @@ mod tests {
             stock.exhaust_valve.open_deg + stock.exhaust_valve.duration_deg - s.open_deg <= 0.0
         );
         assert!(iv.diameter_m > s.diameter_m && tuned.redline_rpm > stock.redline_rpm);
-        // straight through: no catalyst
+        // an open straight pipe: no catalyst, no silencer
         assert!(
-            !tuned
+            tuned
                 .exhaust
                 .after_collector
                 .iter()
-                .any(|x| matches!(x, crate::exhaust::Segment::Catalyst { .. }))
+                .all(|x| matches!(x, crate::exhaust::Segment::Pipe { .. }))
         );
         assert_eq!(tuned.geometry, stock.geometry);
     }

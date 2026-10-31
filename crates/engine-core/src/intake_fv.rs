@@ -525,7 +525,11 @@ impl IntakeFv {
         // of the cell at the gas's temperature so the valve sees a near-empty port, not a void
         let floor = 0.1 * mass;
         let (mass_kg, energy_j) = if m < floor || e <= 0.0 {
-            let temp = if m > 0.0 && e > 0.0 { e / m } else { energy / mass };
+            let temp = if m > 0.0 && e > 0.0 {
+                e / m
+            } else {
+                energy / mass
+            };
             (floor, floor * temp)
         } else {
             (m, e)
@@ -1511,11 +1515,18 @@ mod tests {
         let port = net.port_volume(0);
         let t = port.energy_j / (port.mass_kg * cv);
         assert!((t / t0 - 760.0 / 300.0).abs() < 0.01, "port at {t} K");
-        assert!((port.mass_kg / m - 1.5).abs() < 1e-12, "the backflow is in the port");
+        assert!(
+            (port.mass_kg / m - 1.5).abs() < 1e-12,
+            "the backflow is in the port"
+        );
         // a larger draw then: the port gives what it holds, 1.5·m − 0.8·m
         net.add_valve_flow(0, 0.8 * m, CP * 760.0 * scale);
         let after = net.port_volume(0);
-        assert!((after.mass_kg / m - 0.7).abs() < 1e-12, "{}", after.mass_kg / m);
+        assert!(
+            (after.mass_kg / m - 0.7).abs() < 1e-12,
+            "{}",
+            after.mass_kg / m
+        );
     }
 
     #[test]
