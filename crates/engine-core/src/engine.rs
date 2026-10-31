@@ -1305,7 +1305,9 @@ struct CylinderState {
     port_t: f64,
     /// The exhaust port's last mass flow, kg/s: where the next step's port solve starts.
     port_flow: f64,
-    /// The enthalpy that flow carried, W (mass flow × specific total enthalpy).
+    /// What of that flow left the cylinder, kg/s, and the enthalpy it carried, W (mass flow ×
+    /// specific total enthalpy); backflow counts as none.
+    port_outflow: f64,
     port_enthalpy_flow: f64,
     /// The exhaust valve boundary's last root, where the next step's solve starts.
     valve_hint: f64,
@@ -1609,8 +1611,9 @@ pub struct Engine {
     tail_mach: Vec<f64>,
     /// Each cylinder's exhaust flow averaged over a cycle, kg/s.
     cyl_mean_flow: Vec<f64>,
-    /// Each cylinder's exhaust enthalpy flow averaged over a cycle, W, and the temperature of
-    /// its outflow that it makes, K ([`crate::exhaust::ExhaustDef::gas_temperature`]).
+    /// Each cylinder's outflow and the enthalpy it carries averaged over a cycle, kg/s and W,
+    /// and the outflow's temperature they make, K ([`crate::exhaust::ExhaustDef::gas_temperature`]).
+    cyl_mean_outflow: Vec<f64>,
     cyl_mean_enthalpy_flow: Vec<f64>,
     cyl_port_k: Vec<f64>,
     /// Steps since the pipes' friction last followed the mean flows.
@@ -1726,6 +1729,7 @@ impl Engine {
                     injected: true,
                     port_t: PIPE_COLD_K,
                     port_flow: 0.0,
+                    port_outflow: 0.0,
                     port_enthalpy_flow: 0.0,
                     valve_hint: f64::NAN,
                     wall_t: PIPE_COLD_K,
@@ -1820,6 +1824,7 @@ impl Engine {
             exit_losses: None,
             tail_mach: Vec::new(),
             cyl_mean_flow: Vec::new(),
+            cyl_mean_outflow: Vec::new(),
             cyl_mean_enthalpy_flow: Vec::new(),
             cyl_port_k: Vec::new(),
             friction_age: 0,
@@ -2246,7 +2251,11 @@ impl Engine {
                 cylinder_flow(cs, &th, into_cyl, fresh);
             }
             cs.port_flow = f_ex.map_or(0.0, |f| f.dm / dt);
-            cs.port_enthalpy_flow = f_ex.map_or(0.0, |f| f.dm / dt * f.h);
+            // the primary's gas is what the cylinder let out: backflow returns gas the primary
+            // already holds (at its own temperature, which the port's `port_t` does not track)
+            let out = f_ex.filter(|f| f.dm > 0.0);
+            cs.port_outflow = out.map_or(0.0, |f| f.dm / dt);
+            cs.port_enthalpy_flow = out.map_or(0.0, |f| f.dm / dt * f.h);
             let cyl_state = (cs.gas.pressure(), cs.gas.temperature());
             let port_t = cs.port_t;
             self.flows[i] = f_ex.map_or(0.0, |f| {
@@ -2671,14 +2680,17 @@ impl Engine {
             }
             if self.def.exhaust.gas_temperature {
                 if self.cyl_mean_enthalpy_flow.len() != self.cyl.len() {
+                    self.cyl_mean_outflow = vec![0.0; self.cyl.len()];
                     self.cyl_mean_enthalpy_flow = vec![0.0; self.cyl.len()];
                     self.cyl_port_k = vec![crate::pipe_heat::AMBIENT_K; self.cyl.len()];
                 }
                 for (i, cs) in self.cyl.iter().enumerate() {
+                    let m = &mut self.cyl_mean_outflow[i];
+                    *m += (cs.port_outflow - *m) * k;
+                    let m = *m;
                     let h = &mut self.cyl_mean_enthalpy_flow[i];
                     *h += (cs.port_enthalpy_flow - *h) * k;
-                    // the outflow's mean temperature, h/c_p, while gas goes out on the whole
-                    let m = self.cyl_mean_flow[i];
+                    // the outflow's mean temperature, h/c_p
                     if m > 1e-6 {
                         self.cyl_port_k[i] =
                             (*h / (m * crate::gas::CP)).clamp(crate::pipe_heat::AMBIENT_K, 2500.0);
@@ -6565,10 +6577,43 @@ mod tests {
     }
 
     #[test]
+    fn a_throttled_port_hands_no_gas_hotter_than_its_cylinder_let_out() {
+        // at a 0.2 bar manifold the overlap pulls gas back from the primary into the cylinder;
+        // the gas the primary receives still comes from the cylinder at or after its exhaust
+        // opening, which it leaves no hotter than the cylinder's gas then (it expands as it goes)
+        let mut def = EngineDef::inline4();
+        def.exhaust.gas_temperature = true;
+        let mut e = Engine::new(def, 3000.0, 1);
+        let c = Controls {
+            throttle: 0.1,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.5, &c);
+        let (mut t_open, mut n, mut was_open) = (0.0, 0.0, false);
+        for _ in 0..(0.04 / DT) as usize {
+            e.step(DT, &c);
+            let cs = &e.cyl[0];
+            let open = cs.port_flow > 0.0;
+            if open && !was_open {
+                t_open += cs.gas.temperature();
+                n += 1.0;
+            }
+            was_open = open;
+        }
+        let t_open = t_open / n;
+        let port = e.cyl_port_k[0];
+        assert!(
+            port <= 1.02 * t_open,
+            "port {port} K, cylinder at opening {t_open} K"
+        );
+    }
+
+    #[test]
     fn the_ports_outflow_sets_the_primaries_speed_of_sound() {
         // with the gas temperature on, each port hands its primary the cycle-mean temperature of
-        // what it lets out: the enthalpy-weighted mean of the outflow (backflow counts against
-        // it), and the primary's gas lies between its wall's and the port's
+        // what it lets out: the enthalpy-weighted mean of the outflow, and the primary's gas
+        // lies between its wall's and the port's
         let mut def = EngineDef::inline4();
         def.exhaust.gas_temperature = true;
         let mut e = Engine::new(def, 5000.0, 1);
@@ -6583,7 +6628,7 @@ mod tests {
         for _ in 0..(0.024 / DT) as usize {
             e.step(DT, &c);
             h += e.cyl[0].port_enthalpy_flow;
-            m += e.cyl[0].port_flow;
+            m += e.cyl[0].port_flow.max(0.0);
         }
         let measured = h / m / crate::gas::CP;
         let port = e.cyl_port_k[0];

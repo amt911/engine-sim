@@ -1104,6 +1104,8 @@ a fixed speed. Measured on the inline-4 at 3000 rpm (throttle 0.1 / 0.15 / 0.3 /
 20.3 / 16.9 / 13.9 / 13.3° BTDC (not at `MAX_SPARK_ADVANCE_DEG`), cylinder gas at exhaust opening
 1281 / 1336 / 1261 / 1252 K, port mean 1383 / 1292 / 1232 / 1225 K. So (1) the cylinder's gas at
 opening hardly falls with load, where a real one falls by a few hundred kelvin: its heat loss or
-residual at light load is the suspect; (2) at a 0.2–0.4 bar manifold the overlap pulls cooler
-port gas back into the cylinder, and the net mean (energy-correct: the colder gas went back) rises
-over the cylinder's. The pipes' gas follows whatever the cylinder hands them.
+residual at light load is the suspect; (2) at a 0.2–0.4 bar manifold the overlap pulls port gas
+back into the cylinder, and a net mean (outflow less backflow) rose over the cylinder's: the
+backflow's enthalpy is taken at the port model's `port_t` (≈ 500 K), far under the primary's gas,
+so it took too little energy away (LFA idle: port 1657 K). Fixed: the port hands the outflow's
+mean alone (LFA idle: port 1032 K, primaries 822 K; full load unchanged).
