@@ -32,7 +32,7 @@ engine:
       - 9
       - 10
   intake_valve:
-    open_deg: 340.0
+    open_deg: 380.0
     duration_deg: 270.0
     max_lift_m: 0.0124
     diameter_m: 0.0496
@@ -41,6 +41,26 @@ engine:
     duration_deg: 246.0
     max_lift_m: 0.0103
     diameter_m: 0.0412
+  intake_phaser:
+    range_deg: 40.0
+    rate_deg_s: 60.0
+    map:
+    - rpm: 1000.0
+      full_load_deg: 40.0
+      no_load_deg: 10.0
+    - rpm: 2000.0
+      full_load_deg: 40.0
+      no_load_deg: 40.0
+  exhaust_phaser:
+    range_deg: 32.0
+    rate_deg_s: 60.0
+    map:
+    - rpm: 1000.0
+      full_load_deg: 0.0
+      no_load_deg: 20.0
+    - rpm: 2000.0
+      full_load_deg: 0.0
+      no_load_deg: 0.0
   spark_advance_deg: 28.0
   burn_duration_deg: 45.0
   flywheel_inertia_kgm2: 0.28

@@ -659,8 +659,18 @@ impl EngineDef {
             // (IVO 20° BTDC, IVC 70° ABDC); the exhaust's EVO 43° BBDC, EVC 23° ATDC fitted
             // within the usual 40–70° / 10–45° to the recordings' firing harmonics and the
             // patent's muffler response, the power held in the published range.
+            // That is the timing floored; the cams turn there on dual VVT-i (Toyota). At idle the
+            // intake sits retarded and the exhaust advanced, so the valves barely overlap and
+            // the charge is not half residual: the 1LR-GUE's ranges are not published, those
+            // of Toyota's 1UR-FE V8 with the same system are taken (intake opening 18° ATDC to
+            // 22° BTDC, 40°; exhaust closing 8° BTDC to 24° ATDC, 32°). The base here is the
+            // intake fully retarded; the maps give the high-output timing whenever the pedal is
+            // down and above 2000 rpm, and at a light-load idle open the intake 10° ATDC and
+            // close the exhaust 3° ATDC (7° apart: an ESTIMATE inside those ranges). Rate: the
+            // measured 0.6 s snap to 9000 rpm (see the test) leaves the cams no more than half a
+            // second to reach the high-output timing, ≥ 60 °/s; 30 °/s took 0.73 s.
             intake_valve: ValveTiming {
-                open_deg: 340.0,
+                open_deg: 380.0,
                 duration_deg: 270.0,
                 max_lift_m: 0.0124,
                 diameter_m: 0.0496,
@@ -674,8 +684,38 @@ impl EngineDef {
                 high: None,
             },
             vtec: None,
-            intake_phaser: None,
-            exhaust_phaser: None,
+            intake_phaser: Some(crate::valve::Phaser {
+                range_deg: 40.0,
+                rate_deg_s: 60.0,
+                map: vec![
+                    crate::valve::PhaserPoint {
+                        rpm: 1000.0,
+                        full_load_deg: 40.0,
+                        no_load_deg: 10.0,
+                    },
+                    crate::valve::PhaserPoint {
+                        rpm: 2000.0,
+                        full_load_deg: 40.0,
+                        no_load_deg: 40.0,
+                    },
+                ],
+            }),
+            exhaust_phaser: Some(crate::valve::Phaser {
+                range_deg: 32.0,
+                rate_deg_s: 60.0,
+                map: vec![
+                    crate::valve::PhaserPoint {
+                        rpm: 1000.0,
+                        full_load_deg: 0.0,
+                        no_load_deg: 20.0,
+                    },
+                    crate::valve::PhaserPoint {
+                        rpm: 2000.0,
+                        full_load_deg: 0.0,
+                        no_load_deg: 0.0,
+                    },
+                ],
+            }),
             spark_advance_deg: 28.0,
             burn_duration_deg: 45.0,
             // from the measured unloaded snap, idle to 9000 rpm in 0.6 s (see the test)
@@ -4727,6 +4767,40 @@ mod tests {
         // 2009): unloaded, a stab of the pedal takes the V10 from idle to 9000 rpm in 0.6 s.
         let (t, _) = rev_and_release(EngineDef::lfa_v10(), 8990.0, 0.0);
         assert!((0.5..0.7).contains(&t), "idle to 9000 in {t:.3} s");
+    }
+
+    /// Crank degrees both valves stand open around top centre: exhaust closing past intake
+    /// opening (negative: a gap between them).
+    fn overlap_deg(e: &Engine) -> f64 {
+        let (i, x) = e.valves();
+        crate::units::wrap(x.open_deg + x.duration_deg - i.open_deg + 360.0, 720.0) - 360.0
+    }
+
+    #[test]
+    fn the_lfa_closes_its_overlap_at_idle_and_opens_it_under_load() {
+        // Dual VVT-i (Toyota, 1LR-GUE): at idle the intake cam sits retarded and the exhaust
+        // advanced, so the valves barely overlap (Toyota 1UR-FE, the same system's published
+        // ranges: intake opening 18° ATDC to 22° BTDC, exhaust closing 8° BTDC to 24° ATDC);
+        // floored, the high-output timing (43° of overlap, see the preset).
+        let d = EngineDef::lfa_v10();
+        let mut e = Engine::new(d.clone(), d.idle_rpm, 1);
+        run(&mut e, 4.0, &Controls::default());
+        assert!(overlap_deg(&e) < 0.0, "idle overlap {}", overlap_deg(&e));
+        // the idle's charge: diluted as a warm idle's (Heywood Fig. 6-21: ≈ 20–30 % at 0.3
+        // bar), not at the flame's limit
+        let dil = e.cyl.iter().map(dilution_of).sum::<f64>() / e.cyl.len() as f64;
+        assert!(dil < 0.33, "idle dilution {dil}");
+        let wot = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 3.0, &wot);
+        assert!(
+            (overlap_deg(&e) - 43.0).abs() < 0.5,
+            "WOT overlap {}",
+            overlap_deg(&e)
+        );
     }
 
     /// Overrun fuel cut until injection reactivates near idle, then the idle control takes
