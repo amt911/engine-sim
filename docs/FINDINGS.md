@@ -1269,3 +1269,19 @@ intake and 20° earlier exhaust gave dilution 0.27, burn 63°, +6.5 dB firing. N
 LFA's sound is approved, its cam ranges are not published, and a phaser at 30 °/s would slow
 the measured 0.6 s snap to 9000 rpm. Every idle's pressure at exhaust opening is ≈ 0.8–1 bar:
 no blowdown (fuel per cycle 5 mg in the inline-4, a 2.0 L idle's 0.6–1 L/h).
+
+## Road silencers on the road presets: closer to recordings by the numbers, worse by ear (2026-11-01)
+
+At full throttle through the gears the K20A, inline-4 and crossplane V8 carry 4–16 kHz at −4 to
+−11 dB re their loudest octave; tail-pipe recordings (Sonniss 911 SC, Pantera, Viper race V10,
+R33, V70; four K20A road clips) −10 to −41, the K20A's median −32. The excess is the steepening
+shocks (K20A held 6000 WOT, steepening off: 2–16 kHz from −8…−15 to −26…−39 dB) on a tail that
+is a straight pipe. `road_exhaust`'s two packed cans in the same tail length took the K20A's
+highs to −14 dB at the same power (206 hp at 8000), but the user heard it as "fatal, muy
+callado": reverted. A muffler that cuts the highs is not the answer the ear accepts; the shocks'
+spectrum itself (sharper than the exact solver's, see "rotary on linear pipes") is the next suspect.
+Also measured and not kept: the collector junctions' flow noise (Nelson–Morfey, the stalled
+feat/duct-flow-noise branch) is 45–49 dB under the exhaust at 6000 WOT — inaudible.
+The LFA's drive scene sits mostly on the rev limiter in neutral: its orders there are the fuel
+cut's, not the engine's; judge the LFA's harmonics on `gears` or `held:`, where orders 1–40 sit
+inside the spread of the real car's dyno and road clips.
