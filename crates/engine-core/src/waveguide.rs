@@ -13,6 +13,8 @@ pub struct DelayLine {
     /// the ring wraps by comparison — a modulo per read was most of a lined muffler's cost).
     whole: usize,
     frac: f64,
+    /// The delay it was built with, steps: [`DelayLine::set_scale`] scales it.
+    base: f64,
     /// Each value's own arrival time, when the line is non-linear ([`DelayLine::nonlinear`]).
     arrivals: Option<Box<Arrivals>>,
 }
@@ -56,14 +58,42 @@ const MERGE_FREEZE: f64 = 2.0;
 impl DelayLine {
     /// `delay` in steps, ≥ 1.
     pub fn new(delay: f64) -> Self {
+        Self::with_room(delay, delay)
+    }
+    /// [`DelayLine::new`] with room to stretch to a delay of `room` steps
+    /// ([`DelayLine::set_scale`]).
+    pub fn with_room(delay: f64, room: f64) -> Self {
         let delay = delay.max(1.0);
         let whole = delay.floor();
         Self {
-            buf: vec![0.0; delay.ceil() as usize + 2],
+            buf: vec![0.0; room.max(delay).ceil() as usize + 2],
             pos: 0,
             whole: whole as usize,
             frac: delay - whole,
+            base: delay,
             arrivals: None,
+        }
+    }
+    /// The delay becomes `scale` × the one it was built with (the gas warmed or cooled: the
+    /// delay goes as 1/c), within the room it was built with. A linear line reads its values at
+    /// the new age; a non-linear one sends new values at the new delay while those in flight
+    /// keep theirs. Scaled slowly (a small fraction of a step per call), nothing overtakes.
+    pub fn set_scale(&mut self, scale: f64) {
+        let room = match &self.arrivals {
+            // the loudest values still travel at most twice as fast and half as slow
+            Some(_) => (self.buf.len() as f64 - 4.0) / 2.0,
+            None => self.buf.len() as f64 - 2.0,
+        };
+        let delay = (self.base * scale).clamp(1.0, room);
+        let delay = match &self.arrivals {
+            // a non-linear line's next read must not depend on the value about to be pushed
+            Some(_) => delay.max(2.0 * MIN_LINE_STEPS),
+            None => delay,
+        };
+        self.whole = delay.floor() as usize;
+        self.frac = delay - delay.floor();
+        if let Some(a) = &mut self.arrivals {
+            a.delay = delay;
         }
     }
     /// A line on which each value rides at its own speed, c·(1 + k·x): a simple wave's value
@@ -72,11 +102,15 @@ impl DelayLine {
     /// The speed stays within ½c–2c (the delay within 2× either way); a line shorter than 4
     /// steps stays linear (its next read must not depend on the value about to be pushed).
     pub fn nonlinear(delay: f64, k: f64) -> Self {
+        Self::nonlinear_with_room(delay, k, delay)
+    }
+    /// [`DelayLine::nonlinear`] with room to stretch to a delay of `room` steps.
+    pub fn nonlinear_with_room(delay: f64, k: f64, room: f64) -> Self {
         let delay = delay.max(1.0);
         if delay < 2.0 * MIN_LINE_STEPS {
-            return Self::new(delay);
+            return Self::with_room(delay, room);
         }
-        let cap = (2.0 * delay).ceil() as usize + 4;
+        let cap = (2.0 * room.max(delay)).ceil() as usize + 4;
         // as if the line had always carried silence: value j was sent at step j − cap
         let sent: Vec<f64> = (0..cap).map(|j| j as f64 - cap as f64).collect();
         let t: Vec<f64> = sent.iter().map(|n| n + delay).collect();
@@ -86,6 +120,7 @@ impl DelayLine {
             pos: 0,
             whole: delay.floor() as usize,
             frac: delay - delay.floor(),
+            base: delay,
             arrivals: Some(Box::new(Arrivals {
                 t,
                 mass: vec![1.0; cap],
@@ -96,6 +131,14 @@ impl DelayLine {
                 delay,
                 k,
             })),
+        }
+    }
+    /// The same line, still empty, with room for `factor` × its built delay.
+    fn roomier(&self, factor: f64) -> Self {
+        let room = self.base * factor;
+        match &self.arrivals {
+            Some(a) => Self::nonlinear_with_room(self.base, a.k, room),
+            None => Self::with_room(self.base, room),
         }
     }
     /// The delay when faint, steps.
@@ -272,7 +315,9 @@ pub struct Pipe {
     still_gain: f64,
     length_m: f64,
     diameter_m: f64,
+    /// The speed of sound it was built for, m/s, and its gas's now ([`Pipe::set_sound_speed`]).
     sound_speed: f64,
+    gas_c: f64,
     dt: f64,
     /// The walls' loss above 200 Hz on each line ([`Pipe::viscothermal`]).
     walls: Option<Box<[WallLoss; 2]>>,
@@ -411,6 +456,7 @@ impl Pipe {
             length_m,
             diameter_m,
             sound_speed,
+            gas_c: sound_speed,
             dt,
             walls: None,
             chain: None,
@@ -485,6 +531,38 @@ impl Pipe {
         self.bwd = DelayLine::nonlinear(delay, k);
         self
     }
+    /// Room in its lines for gas as slow as `c_min` m/s ([`Pipe::set_sound_speed`]). Call it
+    /// last, on a pipe that has not carried a wave yet.
+    pub fn with_room(mut self, c_min: f64) -> Self {
+        let factor = (self.sound_speed / c_min).max(1.0);
+        self.fwd = self.fwd.roomier(factor);
+        self.bwd = self.bwd.roomier(factor);
+        if let Some(chain) = &mut self.chain {
+            for st in chain.iter_mut().flatten() {
+                st.line = st.line.roomier(factor);
+            }
+        }
+        self
+    }
+    /// The gas in the pipe now carries sound at `c` m/s: its waves take length/c to cross it
+    /// (within the room it was built with, [`Pipe::with_room`]). A steepening line's k =
+    /// (γ+1)/(2ρc·c) = (γ+1)/(2γp) does not depend on c; the walls' √f loss keeps its build-time
+    /// fit (α ∝ √ν/c moves a few % of a few dB).
+    pub fn set_sound_speed(&mut self, c: f64) {
+        self.gas_c = c;
+        let scale = self.sound_speed / c;
+        self.fwd.set_scale(scale);
+        self.bwd.set_scale(scale);
+        if let Some(chain) = &mut self.chain {
+            for st in chain.iter_mut().flatten() {
+                st.line.set_scale(scale);
+            }
+        }
+    }
+    /// The pipe's length, m, and diameter, m.
+    pub fn size(&self) -> (f64, f64) {
+        (self.length_m, self.diameter_m)
+    }
     /// Whether its waves steepen ([`Pipe::nonlinear`], [`Pipe::steepening`]).
     pub fn is_nonlinear(&self) -> bool {
         self.chain.is_some() || self.fwd.is_nonlinear()
@@ -502,7 +580,7 @@ impl Pipe {
     /// per metre (M = U/c; Darcy f of [`crate::exhaust_fv::PIPE_FRICTION`]):
     /// the faster the gas, the more a pipe's resonances are worn down.
     pub fn set_mean_flow(&mut self, mass_flow: f64) {
-        let rho_c = crate::gas::GAMMA * crate::units::ATM_PA / self.sound_speed;
+        let rho_c = crate::gas::GAMMA * crate::units::ATM_PA / self.gas_c;
         let mach = (mass_flow / (rho_c * self.area_m2)).abs();
         let alpha = crate::exhaust_fv::PIPE_FRICTION * mach / (2.0 * self.diameter_m);
         self.gain = self.still_gain * (-alpha * self.length_m).exp();
@@ -1671,6 +1749,74 @@ mod tests {
             p.send(if n == 0 { 1.0 } else { 0.0 }, 0.0);
         }
         assert_eq!(arrived_at, Some(48));
+    }
+
+    /// Step at which an impulse sent into `p`'s near end peaks at its far end.
+    fn far_peak(p: &mut Pipe, steps: usize) -> usize {
+        far_peak_after(p, 0, steps)
+    }
+    /// [`far_peak`] with the impulse sent after `lead` steps of silence, counted from it.
+    fn far_peak_after(p: &mut Pipe, lead: usize, steps: usize) -> usize {
+        let mut best = (0, 0.0);
+        for n in 0..lead + steps {
+            let y = p.at_far();
+            if n >= lead && y > best.1 {
+                best = (n - lead, y);
+            }
+            p.send(if n == lead { 1.0 } else { 0.0 }, 0.0);
+        }
+        best.0
+    }
+
+    #[test]
+    fn a_pipe_carries_waves_at_its_gas_speed() {
+        let dt = 1.0 / 48_000.0;
+        // 0.55 m at 275 m/s = 2 ms = 96 steps; at 733.3 m/s 0.75 ms = 36 steps
+        let mut p = Pipe::new(0.55, 0.04, 550.0, dt, 0.0).with_room(275.0);
+        p.set_sound_speed(275.0);
+        assert_eq!(far_peak(&mut p, 200), 96);
+        let mut p = Pipe::new(0.55, 0.04, 550.0, dt, 0.0).with_room(275.0);
+        p.set_sound_speed(550.0 / 0.75 * 1.0);
+        assert_eq!(far_peak(&mut p, 200), 36);
+        // without room the line cannot stretch past what it was built for (48 steps)
+        let mut p = Pipe::new(0.55, 0.04, 550.0, dt, 0.0);
+        p.set_sound_speed(275.0);
+        assert_eq!(far_peak(&mut p, 200), 48);
+    }
+
+    #[test]
+    fn a_steepening_pipe_carries_waves_at_its_gas_speed() {
+        // 1.2 m at 400 m/s = 3 ms = 144 steps at 48 kHz (built for 600 m/s: 96); a faint pulse
+        let dt = 1.0 / 48_000.0;
+        let mut p = Pipe::new(1.2, 0.04, 600.0, dt, 0.0)
+            .steepening()
+            .with_room(300.0);
+        p.set_sound_speed(400.0);
+        // once the line carries gas at the new speed (the values sent at the old delay are out)
+        let n = far_peak_after(&mut p, 300, 300);
+        assert!((143..=145).contains(&n), "peak at {n}");
+    }
+
+    #[test]
+    fn room_alone_changes_nothing() {
+        let dt = 1.0 / 96_000.0;
+        let build = |room: bool, steep: bool| {
+            let p = Pipe::new(0.9, 0.045, 600.0, dt, 0.03);
+            let p = if steep { p.steepening() } else { p };
+            if room { p.with_room(300.0) } else { p }
+        };
+        for steep in [false, true] {
+            let (mut a, mut b) = (build(false, steep), build(true, steep));
+            let mut x = 0.3_f64;
+            for _ in 0..2000 {
+                x = (x * 3.7 * (1.0 - x)).clamp(0.01, 0.99);
+                let s = 4000.0 * (x - 0.5);
+                assert_eq!(a.at_far().to_bits(), b.at_far().to_bits());
+                assert_eq!(a.at_near().to_bits(), b.at_near().to_bits());
+                a.send(s, -s);
+                b.send(s, -s);
+            }
+        }
     }
 
     #[test]

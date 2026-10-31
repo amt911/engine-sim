@@ -197,7 +197,10 @@ mod tests {
         let hot = p.wall_k;
         let frac = (after_5s - cold) / (hot - cold);
         // 1 − e^(−5/40) ≈ 0.12: neither instant nor stuck
-        assert!((0.05..0.3).contains(&frac), "{cold} → {after_5s} → {hot}: {frac}");
+        assert!(
+            (0.05..0.3).contains(&frac),
+            "{cold} → {after_5s} → {hot}: {frac}"
+        );
     }
 
     #[test]
