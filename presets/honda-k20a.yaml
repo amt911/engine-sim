@@ -25,8 +25,8 @@ engine:
       duration_deg: 301.0
       max_lift_m: 0.01774
   exhaust_valve:
-    open_deg: 130.0
-    duration_deg: 260.0
+    open_deg: 140.5
+    duration_deg: 242.5
     max_lift_m: 0.0106
     diameter_m: 0.0424
   vtec:
@@ -81,12 +81,18 @@ engine:
   idle_throttle: 0.0055
   idle_rpm: 800.0
   exhaust:
-    primary_length_m: 0.734
+    primary_length_m: 0.624
     primary_diameter_m: 0.04
     collectors: []
     collector_length_m: 0.25
     collector_diameter_m: 0.055
-    tail_length_m: 1.5
+    collector_extra_length_m: []
+    primary_length_deviation_m:
+    - 0.0224
+    - -0.0336
+    - 0.0084
+    - 0.042
+    tail_length_m: 1.84
     tail_diameter_m: 0.05
     muffler_transmission: 1.0
     model: waveguide
@@ -103,9 +109,11 @@ engine:
       cells_per_in2: 400.0
       wall_m: 0.000165
     - kind: pipe
-      length_m: 1.5
+      length_m: 1.84
       diameter_m: 0.05
     merge: null
+    steepening: true
+    gas_temperature: false
   intake:
     model: fv
     runner_length_m: 0.255
@@ -114,7 +122,9 @@ engine:
     trumpet_loss: 0.1
     film_fraction: 0.18
     film_tau_s: 1.0
+    airbox: null
   redline_rpm: 8400.0
+  shutoff_rpm: 0.0
   starter_torque_nm: 60.0
   friction:
     valvetrain: dohc_finger_follower
