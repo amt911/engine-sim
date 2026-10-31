@@ -1133,3 +1133,16 @@ never saw it. Fix: the gas in each pipe is one well-stirred volume that moves to
 profile at its renewal plus cooling rate, ṁ/(ρV) + hA/(ρVc_p) (`pipe_heat::gas_exchange_rate`):
 idle curvature 3.4e3, delay steps ≤ 0.02 per update; the LFA fit's terms barely move (harm 1.54 →
 1.60 dB, orders 8.09 → 8.19).
+
+## A diesel with an open intake and tail hides its clatter (2026-10-31)
+
+The first VW SDI render did not sound like a diesel ("no tiene el ralentí típico ni suena a
+tractor"). The combustion was right: Anderton's 1 kHz cylinder pressure level (CPR, 1000 rpm)
+came out 171 dB for the SDI and 138 for the K20A, against his averages of 156 for NA DI diesels
+and 130 for petrol — the diesel's 26 dB were there. The mix was wrong: at idle the block's
+radiation sat 36–45 dB under the rest below 250 Hz, 18 dB at 250–1000 Hz and 8 dB at 1–4 kHz.
+Switching sources off one at a time: the intake mouth carried it from 250 Hz up (with no throttle
+every intake pulse reaches an open 60 mm bore), the open tail below 250 Hz. A Golf-sized air box
+with its snorkel and the road car's catalyst and two silencers (`road_exhaust`) put the block
+level with the rest from 250 Hz to 4 kHz. No preset carried silencers before, which a petrol
+engine's sound hides and a diesel's does not: worth revisiting for the road-car presets.

@@ -250,7 +250,7 @@ impl EngineDef {
     /// Volkswagen Group diesel engines"). Not public, estimated: rod, valves, cams, pump
     /// advance, intake and exhaust lengths, inertia.
     pub fn vw_sdi() -> Self {
-        Self {
+        let mut d = Self {
             name: "VW 1.9 SDI (diesel inline-4)".into(),
             geometry: CylinderGeometry {
                 bore_m: 0.0795,
@@ -286,17 +286,28 @@ impl EngineDef {
             throttle_diameter_m: 0.06,
             idle_throttle: 0.0,
             idle_rpm: 900.0,
-            // a cast four-into-one manifold: short primaries (ESTIMATE), its own tail pipe
+            // a cast four-into-one manifold: short primaries (ESTIMATE); after it the road car's
+            // catalyst and two silencers (below)
             exhaust: ExhaustDef {
                 primary_length_m: 0.3,
                 collector_length_m: 0.2,
                 tail_length_m: 2.0,
                 ..ExhaustDef::default()
             },
+            // The air cleaner's box and its snorkel: with no throttle every intake pulse reaches
+            // the mouth, and an open bore drowned the block's combustion noise by 6–18 dB from
+            // 250 Hz to 4 kHz (FINDINGS 2026-10-31). Golf IV-sized box, ≈ 8 L, one Ø 65 mm duct
+            // 0.5 m long: ESTIMATES
             intake: IntakeDef {
                 model: IntakeModel::Fv,
                 runner_length_m: 0.4,
                 runner_diameter_m: 0.036,
+                airbox: Some(crate::intake_fv::AirboxDef {
+                    volume_m3: 0.008,
+                    ducts: 1,
+                    duct_length_m: 0.5,
+                    duct_diameter_m: 0.065,
+                }),
                 ..IntakeDef::default()
             },
             redline_rpm: 4800.0,
@@ -307,9 +318,12 @@ impl EngineDef {
                 ..crate::friction::FrictionDef::default()
             },
             ..Self::single()
-        }
-        .with_tail_pipe()
-        .with_catalyst()
+        };
+        // A road car's exhaust: catalyst, centre and rear silencers sized by the rule of thumb
+        // ([`crate::exhaust::road_exhaust`], 45 mm pipes; ESTIMATE). An open pipe left the
+        // exhaust 36–45 dB over the block below 250 Hz.
+        d.exhaust.after_collector = crate::exhaust::road_exhaust(d.displacement_m3(), 0.045);
+        d
     }
 
     /// Subaru EJ25 flat-four (EJ251, Impreza 2.5 RS 1999–2005): 99.5 × 79 mm, 2457 cc,
@@ -5553,6 +5567,66 @@ mod tests {
             e.step(DT, &c);
         }
         assert_eq!(e.diesel_fuel, 0.0);
+    }
+
+    /// Cylinder 0's pressure level in the 1/3 octave at 1 kHz, dB re 20 µPa (Anderton's CPR),
+    /// held at `rpm` with the pedal at `pedal`.
+    fn cylinder_pressure_level_1k(def: EngineDef, rpm: f64, pedal: f64) -> f64 {
+        let mut e = Engine::new(def, rpm, 1);
+        let c = Controls {
+            throttle: pedal,
+            hold_rpm: Some(rpm),
+            ..Controls::default()
+        };
+        for _ in 0..(1.0 / DT) as usize {
+            e.step(DT, &c);
+        }
+        let n = (20.0 * 120.0 / rpm / DT) as usize;
+        let x: Vec<f64> = (0..n)
+            .map(|_| {
+                e.step(DT, &c);
+                e.cyl[0].gas.pressure()
+            })
+            .collect();
+        // power in 891–1122 Hz by direct DFT over the band's bins
+        let fs = 1.0 / DT;
+        let df = fs / n as f64;
+        let (k0, k1) = ((891.0 / df) as usize, (1122.0 / df) as usize);
+        let mut pw = 0.0;
+        for k in k0..=k1 {
+            let w = 2.0 * std::f64::consts::PI * k as f64 / n as f64;
+            let (mut re, mut im) = (0.0, 0.0);
+            for (i, v) in x.iter().enumerate() {
+                re += v * (w * i as f64).cos();
+                im += v * (w * i as f64).sin();
+            }
+            pw += 2.0 * (re * re + im * im) / (n as f64 * n as f64);
+        }
+        10.0 * (pw / (20e-6f64 * 20e-6)).log10()
+    }
+
+    #[test]
+    fn a_diesel_shakes_its_block_as_anderton_measured() {
+        // Anderton (SAE 790270): the cylinder pressure level at 1 kHz, 1000 rpm, averages 156 dB
+        // for naturally aspirated DI diesels and 130 dB for petrol engines — the 26 dB that make
+        // a diesel's combustion noise. Ours must keep at least 20 of them
+        let sdi = cylinder_pressure_level_1k(EngineDef::vw_sdi(), 1000.0, 1.0);
+        let k20 = cylinder_pressure_level_1k(EngineDef::honda_k20a(), 1000.0, 1.0);
+        assert!(sdi - k20 > 20.0, "SDI {sdi:.1} dB, K20A {k20:.1} dB");
+    }
+
+    #[test]
+    fn the_sdi_breathes_through_its_air_box_and_silencers() {
+        // without them its open intake and tail drowned the block's clatter (FINDINGS)
+        let d = EngineDef::vw_sdi();
+        assert!(d.intake.airbox.is_some());
+        let mufflers = d
+            .exhaust
+            .after_collector
+            .iter()
+            .filter(|s| matches!(s, crate::exhaust::Segment::Muffler { .. }))
+            .count();
+        assert_eq!(mufflers, 2);
     }
 
     #[test]
