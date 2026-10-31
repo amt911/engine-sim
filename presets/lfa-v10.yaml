@@ -37,8 +37,8 @@ engine:
     max_lift_m: 0.0124
     diameter_m: 0.0496
   exhaust_valve:
-    open_deg: 131.0
-    duration_deg: 252.0
+    open_deg: 137.0
+    duration_deg: 246.0
     max_lift_m: 0.0103
     diameter_m: 0.0412
   spark_advance_deg: 28.0
@@ -62,7 +62,7 @@ engine:
       - 8
       - 9
       - 10
-    collector_length_m: 0.4125
+    collector_length_m: 0.4725
     collector_diameter_m: 0.065
     collector_extra_length_m:
     - 0.0
@@ -78,7 +78,7 @@ engine:
     - -0.004
     - 0.01
     - -0.026
-    tail_length_m: 1.6800000000000002
+    tail_length_m: 1.88
     tail_diameter_m: 0.07
     muffler_transmission: 1.0
     model: waveguide
@@ -95,7 +95,7 @@ engine:
       cells_per_in2: 400.0
       wall_m: 0.000165
     - kind: pipe
-      length_m: 1.6800000000000002
+      length_m: 1.88
       diameter_m: 0.07
     merge:
       segments:
@@ -171,12 +171,13 @@ engine:
             packing_resistivity: 16000.0
             packing_porosity: 0.95
           - kind: pipe
-            length_m: 0.185
+            length_m: 0.225
             diameter_m: 0.06
         baffle_open_area: 0.03
         open_rpm: 3000.0
         travel_s: 0.3
     steepening: true
+    gas_temperature: true
   intake:
     model: fv
     runner_length_m: 0.325

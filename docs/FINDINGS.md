@@ -1117,6 +1117,19 @@ sits at ~900–980 K instead of the 622 K the fixed 500 m/s implied, and the pat
 rises from ~2 to 21 dB. A full refit of the same seven unknowns (fit5: geometry + EVO/EVC, same
 dyno-power penalty, same J) with the option on reached J 6.55 (harm 1.54, orders 8.09, patent
 1.93, 485 hp) against 6.0 for the approved fixed-speed fit. The longer line (1.68 → 1.88 m) it
-picks is what hotter gas asks for (c ∝ √T, same delays need longer pipes). The option stays off
-for the LFA. Next lever if revisited: junction impedance from each pipe's ρc
+picks is what hotter gas asks for (c ∝ √T, same delays need longer pipes). The option stayed off
+for the LFA until the user heard both and chose the refit with it on (same day, v0.32.0). Next lever if revisited: junction impedance from each pipe's ρc
 (the spec's non-goal), which the fixed-speed fit never needed.
+
+## A pipe's gas temperature jumped every cycle at idle (2026-10-31)
+
+With `exhaust.gas_temperature` on, the LFA at idle failed the valve-flow smoothness test
+(curvature 8.0e4 kg/s³ vs 2.4e3 with it off): its primaries' speed of sound swung 355–556 m/s,
+the delay jumping up to 30 steps from one mean-flow update to the next. The cylinder's mean flow
+is a one-pole filter over one cycle; at idle it still ripples once a cycle down to almost nothing,
+and each update set the pipe's gas straight to the steady profile of that flow — the wall's
+temperature one moment, the port's the next. At full load the flow never drops, so the fit runs
+never saw it. Fix: the gas in each pipe is one well-stirred volume that moves toward the steady
+profile at its renewal plus cooling rate, ṁ/(ρV) + hA/(ρVc_p) (`pipe_heat::gas_exchange_rate`):
+idle curvature 3.4e3, delay steps ≤ 0.02 per update; the LFA fit's terms barely move (harm 1.54 →
+1.60 dB, orders 8.09 → 8.19).

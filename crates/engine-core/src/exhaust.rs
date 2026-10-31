@@ -2660,7 +2660,11 @@ mod tests {
         assert!(c[c.len() - 1] < c[2], "{c:?}");
         // every pipe left its fixed speed, and a hotter port warms the gas all the way down
         assert!(c.iter().zip(&built).all(|(a, b)| a != b), "{c:?}");
+        // the gas in the pipes takes time to follow (its exchange rate): 50 ms
         net.set_port_temperature(&[1300.0, 1300.0]);
+        for _ in 0..(0.05 / DT) as usize {
+            net.step(&[0.0, 0.0]);
+        }
         net.set_mean_flow(&[0.02, 0.02], &[0.02, 0.02]);
         let hotter = net.gas_sound_speeds();
         assert!(hotter.iter().zip(&c).all(|(h, c)| h > c), "{hotter:?}");

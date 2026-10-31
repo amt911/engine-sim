@@ -48,6 +48,8 @@ operating point sounds tuned to one temperature.
   k = μc_p/Pr. Below Re 2300 the laminar Nu = 3.66 (eq. 8.55) applies. Pulsating exhaust flow
   transfers more heat than steady flow; that factor is left at 1 *(my call; cited range 1–3 is
   too wide to pick blind)*.
+- **The gas in a pipe** is one well-stirred volume: it moves toward the profile below at
+  ṁ/(ρV) + hA/(ρVc_p) (renewal plus its own cooling; added 2026-10-31, see FINDINGS).
 - **Gas along a pipe at wall temperature T_w:** T(x) = T_w + (T_in − T_w)·e^(−x/ℓ), with
   ℓ = ṁc_p/(hπD) (Incropera eq. 8.42b, constant surface temperature). The pipe's mean
   temperature is T_w + (T_in − T_w)(1 − e^(−N))/N, where N = L/ℓ, and its outlet temperature

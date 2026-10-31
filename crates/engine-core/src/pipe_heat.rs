@@ -57,6 +57,8 @@ pub struct PipeHeat {
     pub wall_k: f64,
     /// Whether the wall has been set to its first operating point's steady state.
     settled: bool,
+    /// The gas in the pipe, (mean, outlet) K: it follows the flow over its residence time.
+    gas_k: Option<(f64, f64)>,
 }
 
 impl PipeHeat {
@@ -66,6 +68,7 @@ impl PipeHeat {
             diameter_m,
             wall_k: AMBIENT_K,
             settled: false,
+            gas_k: None,
         }
     }
 
@@ -94,15 +97,23 @@ impl PipeHeat {
     /// heat it takes from the gas less what it loses outside (a lumped wall, explicit Euler: `dt`
     /// is a few hundred µs against a time constant of tens of seconds). The first call sets the
     /// wall to that operating point's steady state, so a render does not start with cold pipes.
-    /// Returns the gas's (mean, outlet) temperatures, K.
+    /// Returns the gas's (mean, outlet) temperatures, K, moved toward that profile at
+    /// [`gas_exchange_rate`].
     pub fn step(&mut self, t_in: f64, mass_flow: f64, dt: f64) -> (f64, f64) {
         if !self.settled {
             self.settled = true;
             self.wall_k = self.steady_wall(t_in, mass_flow);
         }
-        let (q, temps) = self.exchange(t_in, mass_flow, self.wall_k);
+        let (q, (mean, out)) = self.exchange(t_in, mass_flow, self.wall_k);
         self.wall_k += dt * (q - Self::loss(self.wall_k)) / WALL_HEAT_CAPACITY;
-        temps
+        // the gas moves toward the steady profile at its exchange rate (a cylinder's flow
+        // pulses once a cycle: the gas in the pipe, renewed over several, does not)
+        let (gm, go) = self.gas_k.unwrap_or((mean, out));
+        let rate = gas_exchange_rate(mass_flow, self.length_m, self.diameter_m, gm);
+        let f = 1.0 - (-rate * dt).exp();
+        let gas = (gm + (mean - gm) * f, go + (out - go) * f);
+        self.gas_k = Some(gas);
+        gas
     }
 
     /// The wall temperature where the gas's heat balances the losses outside (bisection: the
@@ -119,6 +130,19 @@ impl PipeHeat {
         }
         0.5 * (lo + hi)
     }
+}
+
+/// Rate, 1/s, at which the gas in a pipe of `length_m` × `diameter_m` at `t_gas` K moves toward
+/// the temperature its inflow and wall set, with `mass_flow` kg/s through it: the pipe as one
+/// well-stirred volume (Heywood, *Internal Combustion Engine Fundamentals*, §6.3, a plenum's
+/// filling), renewed at ṁ/(ρV), plus the gas's own cooling to the wall at hA/(ρVc_p) (lumped,
+/// Incropera §5.2), ρ at one atmosphere.
+pub fn gas_exchange_rate(mass_flow: f64, length_m: f64, diameter_m: f64, t_gas: f64) -> f64 {
+    let rho = crate::units::ATM_PA / (crate::gas::R_AIR * t_gas);
+    let area = std::f64::consts::PI * diameter_m;
+    let mass = rho * area * diameter_m / 4.0 * length_m;
+    let h = inside_htc(mass_flow, diameter_m, t_gas);
+    mass_flow.abs() / mass + h * area * length_m / (mass * crate::gas::CP)
 }
 
 /// Speed of sound in gas at `t` K, m/s: c = √(γRT).
@@ -216,5 +240,36 @@ mod tests {
     fn sound_speed_of_air_at_room_temperature() {
         // √(1.4·287·293.15) = 343.2 m/s
         assert!((sound_speed(293.15) - 343.2).abs() < 0.1);
+    }
+
+    #[test]
+    fn the_gas_in_a_primary_renews_and_cools_at_the_hand_rate() {
+        // 0.02 kg/s of 900 K gas in a 0.8 m × 42 mm pipe: ρ = 101325/(287·900) = 0.39228 kg/m³,
+        // V = π/4·0.042²·0.8 = 1.10835e-3 m³, ρV = 4.3478e-4 kg: renewed at ṁ/ρV = 46.00 /s;
+        // cooled at hA/(ρVc_p) = 61.49·(π·0.042·0.8)/(4.3478e-4·1004.5) = 6.4908/0.43674
+        // = 14.862 /s: 60.86 /s in all
+        let r = gas_exchange_rate(0.02, 0.8, 0.042, 900.0);
+        assert!((r - 60.86).abs() < 0.3, "rate {r}");
+    }
+
+    #[test]
+    fn a_pulsing_flow_moves_the_gas_temperature_gradually() {
+        // idle: a cylinder's mean flow ripples once a cycle between a puff and almost nothing.
+        // The gas in the pipe is one volume renewed over its residence time: its temperature
+        // must not jump from one update (64 steps at 96 kHz) to the next as the flow does
+        let mut p = PipeHeat::new(0.8, 0.042);
+        let dt = 64.0 / 96_000.0;
+        p.step(1000.0, 0.002, dt);
+        let mut last: Option<f64> = None;
+        let mut worst: f64 = 0.0;
+        for k in 0..2000 {
+            let m = if (k / 80) % 2 == 0 { 0.002 } else { 1e-7 };
+            let (mean, _) = p.step(1000.0, m, dt);
+            if let Some(l) = last {
+                worst = worst.max((mean - l).abs());
+            }
+            last = Some(mean);
+        }
+        assert!(worst < 10.0, "worst jump {worst} K");
     }
 }

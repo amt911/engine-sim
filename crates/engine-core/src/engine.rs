@@ -428,7 +428,7 @@ impl EngineDef {
             // area): 41.2 mm. Lift: a quarter of each valve's diameter, where the curtain area
             // reaches the port's (8.8 mm per intake valve; the equivalent valve's lift keeps the
             // two valves' curtain area). Timing: Heywood's typical high-output values
-            // (IVO 20° BTDC, IVC 70° ABDC); the exhaust's EVO 49° BBDC, EVC 23° ATDC fitted
+            // (IVO 20° BTDC, IVC 70° ABDC); the exhaust's EVO 43° BBDC, EVC 23° ATDC fitted
             // within the usual 40–70° / 10–45° to the recordings' firing harmonics and the
             // patent's muffler response, the power held in the published range.
             intake_valve: ValveTiming {
@@ -439,8 +439,8 @@ impl EngineDef {
                 high: None,
             },
             exhaust_valve: ValveTiming {
-                open_deg: 131.0,
-                duration_deg: 252.0,
+                open_deg: 137.0,
+                duration_deg: 246.0,
                 max_lift_m: 0.0103,
                 diameter_m: 0.0412,
                 high: None,
@@ -470,7 +470,7 @@ impl EngineDef {
                 primary_length_m: 0.8,
                 primary_diameter_m: 0.042,
                 collectors: vec![vec![1, 2, 3, 4, 5], vec![6, 7, 8, 9, 10]],
-                collector_length_m: 0.4125,
+                collector_length_m: 0.4725,
                 collector_diameter_m: 0.065,
                 // the banks' lines are equal "within 500 mm" (JP 2008-180136 A): 7 cm is an ESTIMATE
                 // inside that bound, from the fit. Identical lines cancel the half orders where
@@ -483,8 +483,10 @@ impl EngineDef {
                 primary_length_deviation_m: vec![
                     0.016, -0.024, 0.006, 0.030, -0.012, -0.018, 0.022, -0.004, 0.010, -0.026,
                 ],
-                // the bank line below, catalyst to muffler
-                tail_length_m: 0.50 + 0.38 + 0.80,
+                // the bank line below, catalyst to muffler (the last pipe refitted with the gas
+                // at its own temperature: hotter gas carries sound faster, the same delays ask
+                // for a longer pipe; 2026-10-31)
+                tail_length_m: 0.50 + 0.38 + 1.00,
                 tail_diameter_m: 0.070,
                 // Sport muffler with bypass valves: less damping than a road car.
                 muffler_transmission: 1.0,
@@ -506,7 +508,9 @@ impl EngineDef {
                 // that (FACTS, "The sub muffler"). One pipe of the three lengths, then.
                 after_collector: Vec::new(),
                 steepening: true,
-                gas_temperature: false,
+                // each pipe's gas at its own temperature (the LFA's refit with it on: harmonics
+                // H2–H4 1.5 dB from the dyno clips; the user chose it by ear, 2026-10-31)
+                gas_temperature: true,
                 // Both banks run into one rear muffler and leave through three tips together
                 // (Okamoto et al., SAE 2011-01-2024, Fig. 19; Toyota EPC 17410/17430): a Y into
                 // an 85 mm pipe, a transverse titanium muffler whose valve opens above 3000 rpm
@@ -608,7 +612,7 @@ impl EngineDef {
                                     packing_porosity: 0.95,
                                 },
                                 Segment::Pipe {
-                                    length_m: 0.185,
+                                    length_m: 0.225,
                                     diameter_m: 0.060,
                                 },
                             ],
@@ -6709,9 +6713,11 @@ mod tests {
         // the rest. A blip midway moves the mean flows the pipes' friction follows; the run ends
         // in the middle of a block.
         for def in [EngineDef::lfa_v10(), EngineDef::inline4()] {
-            // linear pipes: a steepening exhaust is never handed off (max_block)
+            // linear pipes at fixed speeds: a steepening exhaust or one whose gas follows its
+            // walls is never handed off (max_block)
             let mut def = def;
             def.exhaust.steepening = false;
+            def.exhaust.gas_temperature = false;
             let mut a = Engine::new(def.clone(), 3000.0, 1);
             let mut b = Engine::new(def.clone(), 3000.0, 1);
             let n = (0.15 / DT) as usize + 7;
@@ -6806,6 +6812,7 @@ mod tests {
             })
         );
         def.exhaust.steepening = false;
+        def.exhaust.gas_temperature = false;
         let mut a = Engine::new(def.clone(), 3000.0, 1);
         let mut b = Engine::new(def, 3000.0, 1);
         for _ in 0..10 {
@@ -6868,8 +6875,12 @@ mod tests {
     /// RMS of the second difference ÷ dt² of cylinder 0's exhaust flow over its outflow, idle
     /// LFA held at 1100 rpm, at the physics rate `fs`: the flow's curvature, kg/s³.
     fn idle_outflow_curvature(fs: f64) -> f64 {
+        idle_outflow_curvature_of(EngineDef::lfa_v10(), fs)
+    }
+
+    fn idle_outflow_curvature_of(def: EngineDef, fs: f64) -> f64 {
         let dt = 1.0 / fs;
-        let mut e = Engine::new(EngineDef::lfa_v10(), 1100.0, 1);
+        let mut e = Engine::new(def, 1100.0, 1);
         let c = Controls {
             throttle: 0.0,
             hold_rpm: Some(1100.0),
@@ -7098,10 +7109,10 @@ mod tests {
             );
         }
         assert_eq!(EngineDef::inline4().exhaust.tail_length_m, 1.5);
-        // the LFA's bank line, catalyst to muffler: 0.50 + 0.38 (sub muffler) + 0.80 m
+        // the LFA's bank line, catalyst to muffler: 0.50 + 0.38 (sub muffler) + 1.00 m
         assert_eq!(
             EngineDef::lfa_v10().exhaust.tail_length_m,
-            0.50 + 0.38 + 0.80
+            0.50 + 0.38 + 1.00
         );
     }
 
