@@ -1248,3 +1248,24 @@ pulse is smooth (a V10's ten 245° exhaust events overlap 3–4 deep and their 7
 and what roughens a real idle — valvetrain and injector ticks, the idle air's hiss, the block —
 is 30–40 dB under the exhaust here (block and valve seats together 45 dB at 3 m at idle). Note:
 YouTube idles carry street noise in those bands; prefer the Sonniss recordings.
+
+## Idle against its blip: the inline-4 is near, the LFA loses it in its muffler (2026-10-31, open)
+
+Measured relative to the firing tone instead of the blip, the inline-4's idle has the recording's
+balance (Skoda exhaust mic, bands 400–1000/1000–2000/2000–6000/6000+ Hz re the firing tone: real
+−27/−36/−37/−43 dB, render −30/−31/−32/−49), and the 500–2000 Hz content of the real idle is
+broadband, not harmonics (harmonic share at chance level): no missing orders to chase there.
+Idle to free-rev blip in the drive render: inline-4 13–18 dB (Skoda 12), K20A 16–25, crossplane
+V8 28–36, LFA 36–39 (YouTube LFAs, compressed, 16–27). Probed at the source (`port_flow`, raw
+`Engine::step`, temporary test, removed): the LFA's valves give a firing-order flow only 6.6 dB
+under the inline-4's, and its firing frequency radiates better, yet its output is 30 dB under.
+Ablations at free idle: no merge +19 dB at the firing order (+22 dB rms); bypass forced open
++6.5 dB; steepening off or gas temperature off ±0–3 dB. The closed path of the rear muffler and
+its measured tip loss (JP 2008-169751 A, Fig. 6: 8–15 dB at 50–100 Hz) do most of it.
+The LFA's idle also burns at the dilution clamp (0.41, burn 87° against 30° at full load; the
+inline-4 0.29, V8 0.31): 43° of fixed overlap at 30 kPa. The real 1LR-GUE has dual VVT-i, which
+on Toyota engines closes the overlap at idle (1UR-FE: exhaust closing to 8° BTDC); 30° later
+intake and 20° earlier exhaust gave dilution 0.27, burn 63°, +6.5 dB firing. Not applied: the
+LFA's sound is approved, its cam ranges are not published, and a phaser at 30 °/s would slow
+the measured 0.6 s snap to 9000 rpm. Every idle's pressure at exhaust opening is ≈ 0.8–1 bar:
+no blowdown (fuel per cycle 5 mg in the inline-4, a 2.0 L idle's 0.6–1 L/h).
