@@ -5117,7 +5117,10 @@ mod tests {
         assert!(tuned.vtec.unwrap().engage_rpm < stock.vtec.unwrap().engage_rpm);
         // the same engine otherwise
         assert_eq!(tuned.geometry.bore_m, stock.geometry.bore_m);
-        assert_eq!(tuned.exhaust.primary_length_m, stock.exhaust.primary_length_m);
+        assert_eq!(
+            tuned.exhaust.primary_length_m,
+            stock.exhaust.primary_length_m
+        );
     }
 
     #[test]
