@@ -76,7 +76,7 @@ engine:
       length_m: 0.3
       diameter_m: 0.065
     merge: null
-    steepening: true
+    steepening: false
     gas_temperature: false
   intake:
     model: fv

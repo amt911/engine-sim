@@ -1143,3 +1143,13 @@ exhaust's steepening off it fell to 32 dB under. The pulses of its large, early 
 shocks over the whole pipe, and a radiated shock is a crack: the sticky-particle shocks are right,
 the preset was not. One packed straight-through silencer (no catalyst) brings it back to 36 dB
 under. A straight-piped preset needs the same check.
+
+## The steepening waveguide crackles on a rotary's blowdowns above ≈ 7000 rpm (2026-10-31)
+
+The tuned 13B still "sounded bad from third gear" with a silencer: in third it runs 6500–8800 rpm
+at full load, and held at 8000 rpm its sound above 4 kHz sat 8 dB under the note with a crest
+factor of 3.7 (crackle); the stock RENESIS did the same above ≈ 7000 rpm. Against the exhaust's
+finite-volume solver (the exact non-linear one, offline): FV 25 dB under, crest 2.0; linear
+waveguide 34 dB, crest 1.9. The steepening waveguide overshoots on these pulses (a chamber of 654 cm³
+blowing down through a port in a few degrees); the rotary presets run linear pipes until it is
+checked against FV on strong pulses (roadmap). The ports and shocks of the preset were not the cause.

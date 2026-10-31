@@ -286,6 +286,12 @@ impl EngineDef {
                 collector_diameter_m: 0.05,
                 tail_length_m: 1.6,
                 tail_diameter_m: 0.055,
+                // Linear pipes: a chamber's port blowdown is so violent that the steepening
+                // waveguide crackles above ≈ 7000 rpm (the tuned 13B at 8000 rpm: 8 dB under the
+                // note above 4 kHz, crest 3.7), where the finite-volume solver — the exact one —
+                // gives 25 dB under, crest 2.0; linear pipes give 34 dB, crest 1.9: the nearer
+                // (FINDINGS 2026-10-31)
+                steepening: false,
                 ..ExhaustDef::default()
             },
             intake: IntakeDef {
