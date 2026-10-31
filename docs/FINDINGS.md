@@ -1175,18 +1175,49 @@ bad moment and diffing it against a fresh one — worth repeating for any "only 
 
 ## A valve on a frozen port cell whistles at half the FV rate (2026-10-31)
 
-The tuned 13B idled with a steady 11.3 kHz whistle (≈ 8 dB over its neighbours, −38 dB of the
-whole), which a sharper port opening raised to −4 dB. Not a sound source (each `sound.*` off: the
-same), not the exhaust (a silencer: the same): fewer intake overlap degrees lowered it. 11 294 Hz is
-exactly half the intake FV rate at Reference (384 kHz / 17 substeps); FV steps every 4 substeps
-took it away, every 8 moved it to 24 kHz. The valve traded with the port cell as the FV step began
-— a frozen reservoir — for the whole step, and the runner then took the lump at once: with a big
-port on a small chamber (a bridge port's overlap near top centre, the chamber about the cell's
-66 cc) the lump overshot and the flow flipped sign every FV step. A bound on the step from the
-orifice did not separate the stable presets from this one; the cure is the coupling: `port_volume`
-is the cell as it stands within the step — less what the valve took, plus the refill its
-neighbour gave over the last FV step (measured: Δm + outflow). In steady flow that is the cell as
-before (LFA and RENESIS idle within 0.2 dB per band; LFA, K20A, 13B power within 1 %, RENESIS torque
-−4 %); the 13B's whistle sits at its neighbours' level. Without the refill the port starved (the
-first strict try cut the RENESIS to 204 hp). The 13B then idled at 1430 rpm on the IAC's floor: its
-idle bleed came down to 0.0035.
+The tuned 13B idled with a steady 11.3 kHz whistle (≈ 8–16 dB over its neighbours). Not a sound
+source (each `sound.*` off: the same), not the exhaust (a silencer: the same): fewer intake overlap
+degrees lowered it. 11 294 Hz is exactly half the intake FV rate at Reference (384 kHz / 17
+substeps); FV steps every 4 substeps took it away, every 8 moved it to 24 kHz. The valve trades
+with the port cell as the FV step began — a frozen reservoir — for the whole step, and the runner
+then takes the lump: a port that passes more than the runner's own section (the 13B's 1.34×; every
+poppet preset 0.77–0.96) empties that cell faster than the duct refills it, and the lump overshoots.
+Tried and dropped: the valve seeing the cell live (less its draw, plus the refill measured over the
+last FV step). It cured the whistle and kept the dyno, but the refill lags a step, so a throttled
+idle starved: the RENESIS fell into a stall after its start flare and the drive scene rendered
+silence (a held-speed render hid it). Seeing only the backflow live stalled it too. The cure kept:
+such a port couples on an FV step of 4 physics steps (`IntakeFv::coupled_to_port`, from the
+valve's largest flow area); the others keep the CFL step (4 substeps everywhere cost the LFA 23 %
+CPU for ≤ 0.4 dB). Test the rotaries' free idle at Reference (`the_rotaries_idle_on_their_own…`).
+
+## Gas the overlap pushed into the intake came back as fresh air (2026-10-31)
+
+The tuned 13B "idled" at 950–2200 rpm whatever its idle bleed (down to a fifth): its idle sat over
+the 1500 rpm overrun cut, which cut, dropped and refuelled it. The overlap pushes the chamber's gas
+into the intake; drawn back, it was counted as air — metered fuel and burnt again, energy from
+nothing — and not as dilution (20 % where the chamber was mostly exhaust). Now the gas pushed back
+waits at the valve and comes back first (plug flow, Heywood §6.4), with its burned share
+(`PortReversion`); what comes back after the exhaust closed, net, dilutes the flame and is no air
+to fuel. With it the 13B stalled on its old bleed, as a bridge port does: such builds idle on a
+cracked throttle (0.018, 1200 rpm: lumpy 1080–1700 rpm, CoV of its pulses 0.40 against 0.35
+recorded). Every other preset's idle within 1.6 dB per band, and steadier (K20A 663–1362 →
+764–922 rpm). Note: the dilution fit holds at its 40 % value beyond (`laminar_flame_speed`), so a
+charge this diluted burns slowly but never misfires.
+
+## A rotary on linear pipes sounds like a wind instrument (2026-10-31)
+
+With linear pipes the rotaries were 98 % pure tones at 8000 rpm (share of 300–5000 Hz power in
+peaks 10 dB over a 200 Hz median; spectral flatness −20 dB); recordings of ported 13Bs pulling:
+29–51 %, −6 to −9 dB. The exact finite-volume exhaust is no better (99 %): their rasp is the port
+jet's turbulence, which no 1D model carries, and the jet-noise models give it 35 dB under the
+pulses. The steepening waveguide, as every other preset uses, lands on the recordings (70 %, −8 dB,
+above 4 kHz 6 dB under the note against 5–15 dB). Its highs come from the wrong mechanism (the
+shocks it forms are sharper than the exact solver's): a turbulent port-jet source at a measured
+level would be the right one.
+
+## The same render gave an idle and a stall on two runs (2026-10-31, open)
+
+A probe of the RENESIS's free idle at Reference (`Simulation::with_quality`, seed 1, preset
+vehicle) idled at 800 rpm on one run and stalled on the next with no code between them. Not
+chased yet: a thread (exhaust or detached runners) whose result depends on timing would break the
+determinism `engine-core` promises.

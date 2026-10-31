@@ -286,12 +286,13 @@ impl EngineDef {
                 collector_diameter_m: 0.05,
                 tail_length_m: 1.6,
                 tail_diameter_m: 0.055,
-                // Linear pipes: a chamber's port blowdown is so violent that the steepening
-                // waveguide crackles above ≈ 7000 rpm (the tuned 13B at 8000 rpm: 8 dB under the
-                // note above 4 kHz, crest 3.7), where the finite-volume solver — the exact one —
-                // gives 25 dB under, crest 2.0; linear pipes give 34 dB, crest 1.9: the nearer
-                // (FINDINGS 2026-10-31)
-                steepening: false,
+                // Steepening, as every preset: linear pipes (or the exact finite-volume solver)
+                // left a rotary 98–99 % pure tones at 8000 rpm, "a wind instrument", where
+                // recordings of ported 13Bs pulling are 29–51 % (their rasp is the port jet's
+                // turbulence, which no 1D model carries); the steepening's highs land on the
+                // recordings' (above 4 kHz 6 dB under the note, recordings 5–15 dB). FINDINGS
+                // 2026-10-31.
+                steepening: true,
                 ..ExhaustDef::default()
             },
             intake: IntakeDef {
@@ -337,10 +338,10 @@ impl EngineDef {
                 high: None,
             },
             redline_rpm: 9500.0,
-            // the overlap blows fresh charge through at idle: it idles higher, on less idle
-            // air than the stock engine's (the bigger ports breathe more at the same bleed)
-            idle_rpm: 1000.0,
-            idle_throttle: 0.0035,
+            // the overlap dilutes the idle charge with the exhaust it pushes into the intake:
+            // such builds idle higher on a cracked-open throttle, and lumpy
+            idle_rpm: 1200.0,
+            idle_throttle: 0.018,
             exhaust: ExhaustDef {
                 tail_diameter_m: 0.065,
                 ..base.exhaust.clone()
@@ -1398,11 +1399,64 @@ fn cycle_flame(
     ratio.is_finite().then_some(ratio)
 }
 
-/// The burned share of a trapped charge: the residual less its unburnt fuel and air, over the
-/// trapped mass.
+/// Gas a cylinder pushed back into its intake port: it sits at the valve and is the first the
+/// valve draws again (plug flow in the port; Heywood, *ICE Fundamentals*, §6.4: backflow into
+/// the intake is re-inducted on the next draw). Tracks how much of it is burned.
+#[derive(Debug, Clone, Copy, Default)]
+struct PortReversion {
+    mass_kg: f64,
+    burned_kg: f64,
+}
+
+impl PortReversion {
+    /// `dm` kg pushed back with burned share `burned`.
+    fn push(&mut self, dm: f64, burned: f64) {
+        self.mass_kg += dm;
+        self.burned_kg += dm * burned.clamp(0.0, 1.0);
+    }
+    /// Draw `dm` kg through the port: the burned gas it brings back, kg.
+    fn draw(&mut self, dm: f64) -> f64 {
+        let take = dm.min(self.mass_kg);
+        if take <= 0.0 {
+            return 0.0;
+        }
+        let burned = take * self.burned_kg / self.mass_kg;
+        self.mass_kg -= take;
+        self.burned_kg = (self.burned_kg - burned).max(0.0);
+        burned
+    }
+}
+
+/// `dm` kg through a cylinder's intake valve (< 0: pushed back into the port): what it pushes
+/// back waits at the valve and comes back first ([`PortReversion`]). Returns the burned share of
+/// what comes in. `reinducted_burned_kg` counts the burned gas crossing inwards, net: after the
+/// exhaust closes the cylinder's own gas going out and back was already in its residual.
+fn intake_exchange(cs: &mut CylinderState, dm: f64) -> f64 {
+    if dm < 0.0 {
+        cs.intake_back.push(-dm, cs.comp.burned);
+        cs.reinducted_burned_kg += dm * cs.comp.burned;
+        0.0
+    } else if dm > 0.0 {
+        let b = cs.intake_back.draw(dm);
+        cs.reinducted_burned_kg += b;
+        b / dm
+    } else {
+        0.0
+    }
+}
+
+/// The burned gas in a trapped charge, kg: the residual less its unburnt fuel and air, and the
+/// burned gas the intake gave back after the exhaust closed.
+fn burned_in_charge(cs: &CylinderState) -> f64 {
+    ((cs.residual_kg - cs.residual_unburnt_kg).max(0.0) + cs.reinducted_burned_kg).max(0.0)
+}
+
+/// The burned share of a trapped charge ([`burned_in_charge`] over the trapped mass). A big
+/// overlap pushes the chamber's gas into the intake at idle; drawn again, it dilutes the
+/// charge as much as a residual.
 fn dilution_of(cs: &CylinderState) -> f64 {
     if cs.trapped_kg > 0.0 {
-        (cs.residual_kg - cs.residual_unburnt_kg).max(0.0) / cs.trapped_kg
+        burned_in_charge(cs) / cs.trapped_kg
     } else {
         0.0
     }
@@ -1588,6 +1642,11 @@ struct CylinderState {
     /// Burned share of the gas in the exhaust primary (what a reversion brings back): set by
     /// what leaves the cylinder, like `port_t` (air on overrun, products under power).
     port_xb: f64,
+    /// The cylinder's gas pushed back into its intake port, waiting to be drawn again.
+    intake_back: PortReversion,
+    /// Burned gas the intake gave back since the exhaust closed, net, kg: part of the charge's
+    /// dilution like the residual ([`dilution_of`]), and no air for the ECU to fuel.
+    reinducted_burned_kg: f64,
 }
 
 /// How far the speed may move before the friction's speed terms are recomputed, rpm: at most
@@ -1996,6 +2055,8 @@ impl Engine {
                     mix_stale: true,
                     fresh_share: 1.0,
                     port_xb: 0.0,
+                    intake_back: PortReversion::default(),
+                    reinducted_burned_kg: 0.0,
                 }
             })
             .map(|mut cs: CylinderState| {
@@ -2334,7 +2395,8 @@ impl Engine {
                             self.cyl.len(),
                             dt,
                         )
-                        .with_scheme(self.fidelity.pipe_scheme),
+                        .with_scheme(self.fidelity.pipe_scheme)
+                        .coupled_to_port(self.def.intake_valve.max_flow_area()),
                     );
                 }
             }
@@ -2501,9 +2563,10 @@ impl Engine {
                         self.plenum.energy_j -= f.dm * f.h;
                     }
                 }
+                let burned = intake_exchange(cs, f.dm);
                 // port injection: the charge carries fuel unless the ECU cut its injection
                 let fresh = Composition {
-                    burned: 0.0,
+                    burned,
                     fuelled: if cs.injected { 1.0 } else { 0.0 },
                 };
                 cylinder_flow(cs, &th, into_cyl, fresh);
@@ -2618,6 +2681,7 @@ impl Engine {
             }
             if crossed(prev, cur, evc) {
                 cs.residual_kg = cs.gas.mass_kg;
+                cs.reinducted_burned_kg = 0.0;
             }
             if crossed(prev, cur, ivc) {
                 cs.trapped_kg = cs.gas.mass_kg;
@@ -2635,7 +2699,9 @@ impl Engine {
                 // The ECU meters the fuel for a stoichiometric charge of the fresh air it
                 // finds, compensating the port film (Aquino); a cut injects nothing and the film
                 // still gives back its share. What the last cycle left unburnt stays in.
-                let fresh = (cs.trapped_kg - cs.residual_kg).max(0.0);
+                // the burned gas the intake gave back is no air to fuel
+                let fresh =
+                    (cs.trapped_kg - cs.residual_kg - cs.reinducted_burned_kg.max(0.0)).max(0.0);
                 let air = fresh * AFR_STOICH / (1.0 + AFR_STOICH);
                 let film_x =
                     crate::fuel::deposit_fraction(film_x, cs.gas.pressure(), self.omega.abs());
@@ -5497,13 +5563,64 @@ mod tests {
 
     #[test]
     fn the_bridge_ported_13b_idles_on_its_overlap() {
-        let mut e = Engine::new(EngineDef::mazda_13b_bridgeport(), 1000.0, 1);
+        let mut e = Engine::new(EngineDef::mazda_13b_bridgeport(), 1200.0, 1);
         let c = Controls::default();
         for _ in 0..(4.0 / DT) as usize {
             e.step(DT, &c);
         }
         let rpm = e.rpm();
-        assert!((700.0..1400.0).contains(&rpm), "idle {rpm}");
+        assert!((800.0..2000.0).contains(&rpm), "idle {rpm}");
+    }
+
+    #[test]
+    fn gas_pushed_back_into_the_intake_port_is_drawn_again_first() {
+        // 2e-5 kg of 80 % burned gas pushed back, then 1e-5 of 50 %: 2.1e-5 kg burned in
+        // 3e-5. A draw of 1.5e-5 takes half of it: 1.05e-5 kg burned; the next 2e-5 take the
+        // other 1.5e-5 (1.05e-5 burned) then 5e-6 of fresh air.
+        let mut p = PortReversion::default();
+        p.push(2e-5, 0.8);
+        p.push(1e-5, 0.5);
+        assert!((p.draw(1.5e-5) - 1.05e-5).abs() < 1e-18);
+        assert!((p.draw(2e-5) - 1.05e-5).abs() < 1e-18);
+        assert_eq!(p.draw(1e-5), 0.0);
+    }
+
+    #[test]
+    fn only_burned_gas_the_cylinder_lost_before_its_exhaust_closed_dilutes_again() {
+        // pushed back during the overlap (before EVC: not in the residual), drawn after it:
+        // 1e-5 kg at 60 % burned counts, 6e-6 kg
+        let mut e = Engine::new(EngineDef::single(), 1000.0, 1);
+        let cs = &mut e.cyl[0];
+        cs.comp.burned = 0.6;
+        intake_exchange(cs, -1e-5);
+        cs.reinducted_burned_kg = 0.0; // the exhaust closes: the residual is counted
+        assert!(
+            (intake_exchange(cs, 1e-5) - 0.6).abs() < 1e-12,
+            "comes back 60 % burned"
+        );
+        assert!((cs.reinducted_burned_kg - 6e-6).abs() < 1e-18);
+        // after EVC the cylinder's own gas going out and back in was counted in the residual
+        let mut e = Engine::new(EngineDef::single(), 1000.0, 1);
+        let cs = &mut e.cyl[0];
+        cs.comp.burned = 0.3;
+        intake_exchange(cs, -2e-6);
+        intake_exchange(cs, 2e-6);
+        assert!(
+            cs.reinducted_burned_kg.abs() < 1e-18,
+            "{}",
+            cs.reinducted_burned_kg
+        );
+    }
+
+    #[test]
+    fn burned_gas_drawn_back_dilutes_the_flame_and_is_no_air_to_fuel() {
+        // a 1e-5 kg residual and 1e-5 kg of burned gas the intake gave back, in a 4e-5 charge
+        let mut e = Engine::new(EngineDef::single(), 1000.0, 1);
+        e.cyl[0].trapped_kg = 4e-5;
+        e.cyl[0].residual_kg = 1e-5;
+        e.cyl[0].reinducted_burned_kg = 1e-5;
+        assert!((dilution_of(&e.cyl[0]) - 0.5).abs() < 1e-12);
+        assert!((burned_in_charge(&e.cyl[0]) - 2e-5).abs() < 1e-18);
     }
 
     #[test]

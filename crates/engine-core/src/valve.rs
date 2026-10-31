@@ -143,6 +143,18 @@ impl ValveTiming {
         let s = (std::f64::consts::PI * x).sin();
         self.max_lift_m * s * s
     }
+    /// The most this valve passes: its effective area at its peak lift, on its high lobe if it
+    /// has one and that lifts it further, m².
+    pub fn max_flow_area(&self) -> f64 {
+        let lift = self
+            .high
+            .map_or(self.max_lift_m, |h| h.max_lift_m.max(self.max_lift_m));
+        let peak = ValveTiming {
+            max_lift_m: lift,
+            ..*self
+        };
+        peak.flow_area(peak.open_deg + 0.5 * peak.duration_deg)
+    }
     /// Effective area of a rotary's port at a cycle angle: the rotor's edge sweeps across the
     /// round port (diameter `diameter_m`) at `travel_m_per_deg`, so the area uncovered is the
     /// circular segment of that depth, r²·acos((r − s)/r) − (r − s)·√(2rs − s²), full once
@@ -197,6 +209,27 @@ mod tests {
                 max_lift_m: 0.01265,
             }),
         }
+    }
+
+    #[test]
+    fn a_valve_passes_most_at_its_peak_lift_on_either_lobe() {
+        // 35 mm at 10 mm: curtain π·0.035·0.01 = 1.0996e-3, port π/4·0.035² = 9.6211e-4, the
+        // blend (n = 6.5788) 9.1262e-4, ×0.7 = 6.3884e-4 m²; a 12 mm high lobe: curtain
+        // 1.3195e-3, blend 9.4502e-4, ×0.7 = 6.6151e-4 m²
+        let mut v = ValveTiming {
+            open_deg: 350.0,
+            duration_deg: 240.0,
+            max_lift_m: 0.010,
+            diameter_m: 0.035,
+            high: None,
+        };
+        assert_relative_eq!(v.max_flow_area(), 6.3884e-4, max_relative = 1e-4);
+        v.high = Some(CamLobe {
+            open_deg: 340.0,
+            duration_deg: 260.0,
+            max_lift_m: 0.012,
+        });
+        assert_relative_eq!(v.max_flow_area(), 6.6151e-4, max_relative = 1e-4);
     }
 
     #[test]
