@@ -304,6 +304,46 @@ impl EngineDef {
         .with_catalyst()
     }
 
+    /// A tuned 13B as an RX-7 build (the user's wish, 2026-10-31: more revs and ported for a
+    /// rougher sound; not a real engine's data): the RENESIS's rotors with a bridge-ported
+    /// intake and peripheral exhaust ports — wide, early-opening ports whose overlap gives the
+    /// ported rotary's lumpy "brap" idle — revving to 9500 rpm through a straight pipe with no
+    /// catalyst. Timings in shaft degrees, typical of such builds: intake 75° BTDC to 80°
+    /// ABDC, exhaust 75° BBDC to 48° ATDC (≈ 120° of overlap); port areas 1.5× the RENESIS's.
+    pub fn mazda_13b_bridgeport() -> Self {
+        let base = Self::mazda_renesis();
+        let mut d = Self {
+            name: "Mazda 13B RX-7 bridge-port (tuned)".into(),
+            // in chamber degrees, ⅔ of the shaft's: IVO 50° BTDC, IVC 53° ABDC; EVO 50° BBDC,
+            // EVC 32° ATDC
+            intake_valve: ValveTiming {
+                open_deg: 310.0,
+                duration_deg: 283.0,
+                max_lift_m: base.intake_valve.max_lift_m * 1.5f64.sqrt(),
+                diameter_m: base.intake_valve.diameter_m * 1.5f64.sqrt(),
+                high: None,
+            },
+            exhaust_valve: ValveTiming {
+                open_deg: 130.0,
+                duration_deg: 262.0,
+                max_lift_m: base.exhaust_valve.max_lift_m * 1.5f64.sqrt(),
+                diameter_m: base.exhaust_valve.diameter_m * 1.5f64.sqrt(),
+                high: None,
+            },
+            redline_rpm: 9500.0,
+            // the overlap blows fresh charge through at idle: it idles higher
+            idle_rpm: 1000.0,
+            exhaust: ExhaustDef {
+                tail_diameter_m: 0.065,
+                ..base.exhaust.clone()
+            },
+            ..base
+        };
+        // a straight pipe after each rotor's collector, no catalyst
+        d.exhaust.after_collector = Vec::new();
+        d.with_tail_pipe()
+    }
+
     /// Subaru EJ25 flat-four (EJ251, Impreza 2.5 RS 1999–2005): 99.5 × 79 mm, 2457 cc,
     /// CR 10.0, 165 hp at 5600 rpm, 225 N·m at 4000, SOHC with four valves per cylinder; firing
     /// 1-3-2-4, cylinders 1 and 3 on one bank, 2 and 4 on the other (Subaru EJ engine,
@@ -5391,6 +5431,43 @@ mod tests {
             (fired / turns - 2.0).abs() < 0.05,
             "{fired} in {turns} turns"
         );
+    }
+
+    #[test]
+    fn the_bridge_ported_13b_overlaps_its_ports_and_revs_higher() {
+        let (stock, tuned) = (
+            EngineDef::mazda_renesis(),
+            EngineDef::mazda_13b_bridgeport(),
+        );
+        let (iv, ev) = (&tuned.intake_valve, &tuned.exhaust_valve);
+        // the bridge opens the intake before the exhaust closes: overlap, the "brap" idle
+        let overlap = (ev.open_deg + ev.duration_deg) - iv.open_deg;
+        assert!(overlap > 60.0, "overlap {overlap}° of chamber angle");
+        let s = &stock.intake_valve;
+        assert!(
+            stock.exhaust_valve.open_deg + stock.exhaust_valve.duration_deg - s.open_deg <= 0.0
+        );
+        assert!(iv.diameter_m > s.diameter_m && tuned.redline_rpm > stock.redline_rpm);
+        // straight through: no catalyst
+        assert!(
+            !tuned
+                .exhaust
+                .after_collector
+                .iter()
+                .any(|x| matches!(x, crate::exhaust::Segment::Catalyst { .. }))
+        );
+        assert_eq!(tuned.geometry, stock.geometry);
+    }
+
+    #[test]
+    fn the_bridge_ported_13b_idles_on_its_overlap() {
+        let mut e = Engine::new(EngineDef::mazda_13b_bridgeport(), 1000.0, 1);
+        let c = Controls::default();
+        for _ in 0..(4.0 / DT) as usize {
+            e.step(DT, &c);
+        }
+        let rpm = e.rpm();
+        assert!((700.0..1400.0).contains(&rpm), "idle {rpm}");
     }
 
     #[test]
