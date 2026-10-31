@@ -1117,6 +1117,6 @@ sits at ~900–980 K instead of the 622 K the fixed 500 m/s implied, and the pat
 rises from ~2 to 21 dB. A full refit of the same seven unknowns (fit5: geometry + EVO/EVC, same
 dyno-power penalty, same J) with the option on reached J 6.55 (harm 1.54, orders 8.09, patent
 1.93, 485 hp) against 6.0 for the approved fixed-speed fit. The longer line (1.68 → 1.88 m) it
-picks is what hotter gas asks for (c ∝ √T, same delays need longer pipes). The option stays off
-for the LFA. Next lever if revisited: junction impedance from each pipe's ρc
+picks is what hotter gas asks for (c ∝ √T, same delays need longer pipes). The option stayed off
+for the LFA until the user heard both and chose the refit with it on (same day, v0.32.0). Next lever if revisited: junction impedance from each pipe's ρc
 (the spec's non-goal), which the fixed-speed fit never needed.
