@@ -1109,3 +1109,14 @@ back into the cylinder, and a net mean (outflow less backflow) rose over the cyl
 backflow's enthalpy is taken at the port model's `port_t` (≈ 500 K), far under the primary's gas,
 so it took too little energy away (LFA idle: port 1657 K). Fixed: the port hands the outflow's
 mean alone (LFA idle: port 1032 K, primaries 822 K; full load unchanged).
+
+## With gas temperature on, the LFA refit does not beat the fixed-speed fit (2026-10-31)
+
+Turning `exhaust.gas_temperature` on moves the approved LFA off its fit: the muffler and tail gas
+sits at ~900–980 K instead of the 622 K the fixed 500 m/s implied, and the patent's Fig. 8 error
+rises from ~2 to 21 dB. A full refit of the same seven unknowns (fit5: geometry + EVO/EVC, same
+dyno-power penalty, same J) with the option on reached J 6.55 (harm 1.54, orders 8.09, patent
+1.93, 485 hp) against 6.0 for the approved fixed-speed fit. The longer line (1.68 → 1.88 m) it
+picks is what hotter gas asks for (c ∝ √T, same delays need longer pipes). The option stays off
+for the LFA. Next lever if revisited: junction impedance from each pipe's ρc
+(the spec's non-goal), which the fixed-speed fit never needed.
