@@ -1118,6 +1118,5 @@ rises from ~2 to 21 dB. A full refit of the same seven unknowns (fit5: geometry 
 dyno-power penalty, same J) with the option on reached J 6.55 (harm 1.54, orders 8.09, patent
 1.93, 485 hp) against 6.0 for the approved fixed-speed fit. The longer line (1.68 → 1.88 m) it
 picks is what hotter gas asks for (c ∝ √T, same delays need longer pipes). The option stays off
-for the LFA; its better H2–H4 harmonics (1.54 vs the fixed fit's) are paid for in the
-inter-harmonic orders. Next lever if revisited: junction impedance from each pipe's ρc
+for the LFA. Next lever if revisited: junction impedance from each pipe's ρc
 (the spec's non-goal), which the fixed-speed fit never needed.
