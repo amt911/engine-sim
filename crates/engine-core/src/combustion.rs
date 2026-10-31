@@ -44,6 +44,76 @@ pub fn flame_angle_scale(piston_speed: f64, nu: f64, h: f64, s_l: f64) -> f64 {
     (piston_speed * nu * (h / s_l).powi(2)).cbrt()
 }
 
+/// Lower heating value of diesel fuel, J/kg (Heywood, App. D).
+pub const LHV_DIESEL: f64 = 42.5e6;
+/// Stoichiometric air/fuel ratio of diesel fuel (Heywood, App. D).
+pub const AFR_STOICH_DIESEL: f64 = 14.5;
+/// Universal gas constant, J/(mol·K).
+const R_UNIVERSAL: f64 = 8.3143;
+
+/// Ignition delay of a direct-injection diesel, crank-angle degrees, in air at `p_bar` and
+/// `t_k` with mean piston speed `piston_speed` m/s and fuel of `cetane` number: Hardenberg &
+/// Hase (SAE 790493; Heywood, *ICE Fundamentals* 1988, eq. 10.37),
+/// τ = (0.36 + 0.22·S̄p)·exp[E_A·(1/(R̃T) − 1/17 190) + (21.2/(p − 12.4))^0.63],
+/// E_A = 618 840/(CN + 25) J/mol. Below 12.4 bar the correlation has no ignition: infinite.
+pub fn ignition_delay_deg(p_bar: f64, t_k: f64, piston_speed: f64, cetane: f64) -> f64 {
+    if p_bar <= 12.4 || t_k <= 0.0 {
+        return f64::INFINITY;
+    }
+    let ea = 618_840.0 / (cetane + 25.0);
+    let x = ea * (1.0 / (R_UNIVERSAL * t_k) - 1.0 / 17_190.0) + (21.2 / (p_bar - 12.4)).powf(0.63);
+    (0.36 + 0.22 * piston_speed) * x.exp()
+}
+
+/// Watson's premixed share of the fuel (Watson, Pilley & Marzouk, SAE 800029; Heywood 1988
+/// eq. 14.49): β = 1 − a·φ^b/τ^c with Watson's a = 0.926, b = 0.37, c = 0.26 (within the
+/// book's ranges), φ the overall equivalence ratio and τ the delay in ms; kept in [0, 0.95].
+pub fn watson_premixed_fraction(phi: f64, tau_ms: f64) -> f64 {
+    (1.0 - 0.926 * phi.max(1e-3).powf(0.37) / tau_ms.max(1e-3).powf(0.26)).clamp(0.0, 0.95)
+}
+
+/// Watson's normalising combustion period, degrees (Heywood 1988, §14.4.3 footnote: 125°).
+pub const WATSON_DURATION_DEG: f64 = 125.0;
+
+/// The Watson double-Wiebe heat release of one injection (Heywood 1988 eqs. 14.47–14.48):
+/// premixed f₁ = 1 − (1 − t^K₁)^K₂ and mixing-controlled f₂ = 1 − exp(−K₃·t^K₄), weighted
+/// β and 1 − β; t is the time since ignition over [`WATSON_DURATION_DEG`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Watson {
+    pub beta: f64,
+    pub k1: f64,
+    pub k2: f64,
+    pub k3: f64,
+    pub k4: f64,
+}
+
+impl Watson {
+    /// For an overall equivalence ratio `phi`, a delay of `tau_ms` and engine speed `rpm`:
+    /// K₁ = 2 + 1.25·10⁻⁸·(τN)^2.4, K₂ = 5000, K₃ = 14.2/φ^0.644, K₄ = 0.79·K₃^0.25.
+    pub fn new(phi: f64, tau_ms: f64, rpm: f64) -> Self {
+        let phi = phi.max(1e-3);
+        let k3 = 14.2 / phi.powf(0.644);
+        Self {
+            beta: watson_premixed_fraction(phi, tau_ms),
+            k1: 2.0 + 1.25e-8 * (tau_ms * rpm).max(0.0).powf(2.4),
+            k2: 5000.0,
+            k3,
+            k4: 0.79 * k3.powf(0.25),
+        }
+    }
+
+    /// Fraction of the injected fuel burned at normalised time `t` since ignition.
+    pub fn burned(&self, t: f64) -> f64 {
+        if t <= 0.0 {
+            return 0.0;
+        }
+        let t = t.min(1.0);
+        let f1 = 1.0 - (1.0 - t.powf(self.k1)).powf(self.k2);
+        let f2 = 1.0 - (-self.k3 * t.powf(self.k4)).exp();
+        self.beta * f1 + (1.0 - self.beta) * f2
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,5 +221,45 @@ mod tests {
             prop_assert!(xl <= xh);
             prop_assert!((0.0..=1.0).contains(&xl) && (0.0..=1.0).contains(&xh));
         }
+    }
+
+    #[test]
+    fn hardenberg_hase_delay_matches_the_hand_value() {
+        // CN 45, 60 bar, 900 K, 8 m/s (Heywood 1988 eq. 10.37): E_A = 618 840/70 = 8840.57
+        // J/mol; E_A·(1/(8.3143·900) − 1/17 190) = 0.66714; (21.2/47.6)^0.63 = 0.60077;
+        // (0.36 + 0.22·8)·e^1.26791 = 2.12·3.55325 = 7.533 °CA
+        let d = ignition_delay_deg(60.0, 900.0, 8.0, 45.0);
+        assert!((d - 7.533).abs() < 0.005, "delay {d}");
+        // hotter and denser air lights sooner; a higher cetane fuel too
+        assert!(ignition_delay_deg(60.0, 1000.0, 8.0, 45.0) < d);
+        assert!(ignition_delay_deg(80.0, 900.0, 8.0, 45.0) < d);
+        assert!(ignition_delay_deg(60.0, 900.0, 8.0, 55.0) < d);
+    }
+
+    #[test]
+    fn watson_premixed_share_matches_the_hand_value() {
+        // φ 0.6, τ 1 ms: β = 1 − 0.926·0.6^0.37/1^0.26 = 0.23347; a longer delay mixes more
+        let b = watson_premixed_fraction(0.6, 1.0);
+        assert!((b - 0.23347).abs() < 1e-4, "beta {b}");
+        assert!(watson_premixed_fraction(0.6, 3.0) > b);
+        // never negative nor all of it
+        assert!((0.0..1.0).contains(&watson_premixed_fraction(1.2, 0.05)));
+    }
+
+    #[test]
+    fn watson_burn_matches_its_closed_forms() {
+        // φ 0.6, τ 1 ms at 2000 rpm: K1 = 2 + 1.25e-8·2000^2.4 = 3.04564, premixed
+        // f1(0.05) = 1 − (1 − 0.05^K1)^5000 = 0.42025; K3 = 14.2/0.6^0.644 = 19.7314,
+        // K4 = 0.79·K3^0.25 = 1.66501, diffusion f2(0.3) = 1 − e^(−K3·0.3^K4) = 0.92991
+        let (beta, k1, k3, k4) = (0.5, 3.04564, 19.7314, 1.66501);
+        let w = Watson::new(0.6, 1.0, 2000.0);
+        assert!((w.k1 - k1).abs() < 1e-4 && (w.k3 - k3).abs() < 1e-3 && (w.k4 - k4).abs() < 1e-4);
+        let w = Watson { beta, ..w };
+        let x = w.burned(0.05);
+        let f2 = 1.0 - (-k3 * 0.05f64.powf(k4)).exp();
+        assert!((x - (beta * 0.42025 + (1.0 - beta) * f2)).abs() < 1e-4, "x {x}");
+        assert!((w.burned(0.3) - (beta * 1.0 + (1.0 - beta) * 0.92991)).abs() < 1e-4);
+        assert_eq!(w.burned(0.0), 0.0);
+        assert!((w.burned(1.0) - 1.0).abs() < 1e-6);
     }
 }
