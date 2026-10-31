@@ -7671,8 +7671,8 @@ mod tests {
     fn only_the_fresh_charge_burns() {
         // At part throttle the residual (the mass left when the exhaust valve closed) is a fair
         // share of what is trapped (measured 7.3 % here): each burn's energy is the fresh
-        // charge's, (m_IVC − m_EVC)/(1 + AFR)·LHV·η, within the ±4 % cycle variation — the
-        // whole trapped mass's would be 7.9 % more.
+        // charge's, (m_IVC − m_EVC − burned gas drawn back)/(1 + AFR)·LHV·η, within the ±4 %
+        // cycle variation — the whole trapped mass's would be 7.9 % more.
         let mut e = Engine::new(EngineDef::inline4(), 3000.0, 1);
         let c = Controls {
             throttle: 0.15,
@@ -7686,7 +7686,8 @@ mod tests {
             e.step(DT, &c);
             let cs = &e.cyl[0];
             if !was_burning && let Some(b) = &cs.burn {
-                let fresh = cs.trapped_kg - cs.residual_kg;
+                // less the burned gas the intake gave back after the exhaust closed
+                let fresh = cs.trapped_kg - cs.residual_kg - cs.reinducted_burned_kg.max(0.0);
                 assert!(
                     cs.residual_kg > 0.05 * cs.trapped_kg,
                     "residual {} of {}",
