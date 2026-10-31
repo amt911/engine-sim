@@ -260,13 +260,13 @@ mod tests {
         let mut p = PipeHeat::new(0.8, 0.042);
         let dt = 64.0 / 96_000.0;
         p.step(1000.0, 0.002, dt);
-        let mut last = None;
+        let mut last: Option<f64> = None;
         let mut worst: f64 = 0.0;
         for k in 0..2000 {
             let m = if (k / 80) % 2 == 0 { 0.002 } else { 1e-7 };
             let (mean, _) = p.step(1000.0, m, dt);
             if let Some(l) = last {
-                worst = worst.max((mean - l as f64).abs());
+                worst = worst.max((mean - l).abs());
             }
             last = Some(mean);
         }
