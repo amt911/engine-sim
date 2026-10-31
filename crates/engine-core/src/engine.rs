@@ -6599,7 +6599,12 @@ mod tests {
             e.step(DT, &c);
         }
         let net = e.net.as_mut().unwrap();
-        assert_eq!(net.port_temperatures(), &e.cyl_port_k[..]);
+        // (handed over before this step's means moved on: within a step's change)
+        let handed = net.port_temperatures();
+        assert_eq!(handed.len(), e.cyl_port_k.len());
+        for (h, k) in handed.iter().zip(&e.cyl_port_k) {
+            assert!((h / k - 1.0).abs() < 1e-3, "{handed:?} vs {:?}", e.cyl_port_k);
+        }
         let c0 = net.gas_sound_speeds()[0];
         let (air, gas) = (
             crate::pipe_heat::sound_speed(crate::pipe_heat::AMBIENT_K),
