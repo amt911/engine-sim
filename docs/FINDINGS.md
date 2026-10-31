@@ -1094,3 +1094,13 @@ at the half orders between (o + ½) is only 1.5–3 dB under the integer orders 
 clips (`accel`, `flight`) give −32/−29 at the orders and −36/−33 between, where the render sits
 (−33/−39). Fit inter-harmonic orders against road clips only; from the dyno clips take the firing
 harmonics alone. Tool: `offord.py` beside `ord40.py` in the session scratchpad.
+
+## The cylinder's exhaust comes out hotter at light throttle than at full load (2026-10-31)
+
+With `exhaust.gas_temperature` on, the inline-4 held at 3000 rpm gives a port outflow temperature
+(enthalpy-weighted over the cycle) of 1275 K at 15 % throttle against 1214 K at full throttle;
+counting outflow only gives the same order. Measured engines run hotter exhaust at more load at
+a fixed speed, so this is the cylinder model, not the averaging. Cause not established yet;
+suspects: the spark advance hitting `MAX_SPARK_ADVANCE_DEG` for the slow light-load flame
+(`spark_advance_for`), so it burns late; the low-speed reserve (`idle_reserve`) retarding it
+further. The pipes' gas follows whatever the cylinder hands them.
