@@ -1172,3 +1172,21 @@ FV step (several physics steps):
 With both, the 13B pulls clean through the gears (above 4 kHz 35 dB under the note); the RENESIS
 and the dyno figures are unchanged. Found by cloning the engine (`Engine: Clone + Debug`) at the
 bad moment and diffing it against a fresh one — worth repeating for any "only in the scene" bug.
+
+## A valve on a frozen port cell whistles at half the FV rate (2026-10-31)
+
+The tuned 13B idled with a steady 11.3 kHz whistle (≈ 8 dB over its neighbours, −38 dB of the
+whole), which a sharper port opening raised to −4 dB. Not a sound source (each `sound.*` off: the
+same), not the exhaust (a silencer: the same): fewer intake overlap degrees lowered it. 11 294 Hz is
+exactly half the intake FV rate at Reference (384 kHz / 17 substeps); FV steps every 4 substeps
+took it away, every 8 moved it to 24 kHz. The valve traded with the port cell as the FV step began
+— a frozen reservoir — for the whole step, and the runner then took the lump at once: with a big
+port on a small chamber (a bridge port's overlap near top centre, the chamber about the cell's
+66 cc) the lump overshot and the flow flipped sign every FV step. A bound on the step from the
+orifice did not separate the stable presets from this one; the cure is the coupling: `port_volume`
+is the cell as it stands within the step — less what the valve took, plus the refill its
+neighbour gave over the last FV step (measured: Δm + outflow). In steady flow that is the cell as
+before (LFA and RENESIS idle within 0.2 dB per band; LFA, K20A, 13B power within 1 %, RENESIS torque
+−4 %); the 13B's whistle sits at its neighbours' level. Without the refill the port starved (the
+first strict try cut the RENESIS to 204 hp). The 13B then idled at 1430 rpm on the IAC's floor: its
+idle bleed came down to 0.0035.

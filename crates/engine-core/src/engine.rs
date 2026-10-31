@@ -337,8 +337,10 @@ impl EngineDef {
                 high: None,
             },
             redline_rpm: 9500.0,
-            // the overlap blows fresh charge through at idle: it idles higher
+            // the overlap blows fresh charge through at idle: it idles higher, on less idle
+            // air than the stock engine's (the bigger ports breathe more at the same bleed)
             idle_rpm: 1000.0,
+            idle_throttle: 0.0035,
             exhaust: ExhaustDef {
                 tail_diameter_m: 0.065,
                 ..base.exhaust.clone()
