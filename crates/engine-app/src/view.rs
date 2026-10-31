@@ -65,6 +65,10 @@ pub fn engine(ui: &mut egui::Ui, s: &Snapshot) {
     let p = ui.painter_at(rect);
     p.rect_filled(rect, 0.0, Color32::from_rgb(24, 26, 30));
     let g = s.def.geometry;
+    if let Some(rotor) = g.rotor {
+        rotary(&p, rect, s, &rotor);
+        return;
+    }
     let n = s.cylinders.len().max(1);
     let (r, l, b) = (g.crank_radius(), g.rod_m, g.bore_m);
     let clear_h = g.clearance_volume() / g.piston_area();
@@ -101,6 +105,182 @@ pub fn engine(ui: &mut egui::Ui, s: &Snapshot) {
             scale,
         };
         cylinder(&p, &f, c, i, s, cell_w);
+    }
+}
+
+/// Point of a Wankel housing's epitrochoid at parameter `alpha` rad, for eccentricity `e` and
+/// generating radius `r`: (e·cos 3α + R·cos α, e·sin 3α + R·sin α) (Yamamoto, *Rotary Engine*,
+/// 1981, §2; Heywood 2nd ed., §1.8). Major axis along x, minor (R − e) along y.
+fn housing_point(alpha: f64, e: f64, r: f64) -> (f64, f64) {
+    (
+        e * (3.0 * alpha).cos() + r * alpha.cos(),
+        e * (3.0 * alpha).sin() + r * alpha.sin(),
+    )
+}
+
+/// Rotor centre and its three apexes for a chamber at cycle angle `psi_deg` (ψ = ⅔ of the
+/// shaft angle). The rotor turns at a third of the shaft (ψ/2 per ψ); the drawing puts that
+/// chamber's face mid-direction at 90° + ψ/2, so it is at its smallest at ψ = 0 with the face
+/// up against the housing's waist (the spark plugs), largest at ψ = 180°. Apex k sits at
+/// rotor angle θ + 120°·k with θ = 30° + ψ/2, the centre on the eccentric at 3θ, so every apex
+/// rides on the housing: housing_point(θ + 120°·k).
+fn rotor_pose(psi_deg: f64, e: f64, r: f64) -> ((f64, f64), [(f64, f64); 3]) {
+    let theta = (30.0 + 0.5 * psi_deg).to_radians();
+    let c = (e * (3.0 * theta).cos(), e * (3.0 * theta).sin());
+    let apex = |k: f64| {
+        let a = theta + k * 2.0 * std::f64::consts::FRAC_PI_3;
+        (c.0 + r * a.cos(), c.1 + r * a.sin())
+    };
+    (c, [apex(0.0), apex(1.0), apex(2.0)])
+}
+
+/// Animated cross-section of a Wankel engine: one housing per rotor, the rotor turning on its
+/// eccentric, each chamber filled with its gas colour, spark plugs at the waist (top), the
+/// exhaust and intake ports below lit by their opening.
+fn rotary(p: &egui::Painter, rect: egui::Rect, s: &Snapshot, rotor: &engine_core::geometry::Rotor) {
+    use std::f64::consts::{FRAC_PI_3, TAU};
+    let (e, r) = (rotor.eccentricity_m, rotor.generating_radius_m);
+    let rotors = s.cylinders.len().div_ceil(3).max(1);
+    let cell_w = rect.width() / rotors as f32;
+    let scale =
+        (0.8 * rect.height() / (2.0 * (r - e)) as f32).min(0.85 * cell_w / (2.0 * (r + e)) as f32);
+    let font = FontId::proportional((cell_w / 22.0).clamp(9.0, 13.0));
+    for k in 0..rotors {
+        let centre = pos2(
+            rect.left() + cell_w * (k as f32 + 0.5),
+            rect.center().y - 0.06 * rect.height(),
+        );
+        let at = |(x, y): (f64, f64)| centre + vec2(x as f32 * scale, -(y as f32) * scale);
+        let chambers = &s.cylinders[3 * k..(3 * k + 3).min(s.cylinders.len())];
+        // Housing.
+        let n = 96;
+        let outline: Vec<Pos2> = (0..n)
+            .map(|i| at(housing_point(TAU * i as f64 / n as f64, e, r)))
+            .collect();
+        p.add(egui::Shape::closed_line(outline, Stroke::new(4.0, STEEL)));
+        // Chambers: a strip from the housing arc between two apexes to the rotor flank.
+        let Some(first) = chambers.first() else {
+            continue;
+        };
+        let (c, _) = rotor_pose(first.cycle_deg, e, r);
+        for ch in chambers {
+            let mid = (90.0 + 0.5 * ch.cycle_deg).to_radians();
+            let (a0, a1) = (mid - FRAC_PI_3, mid + FRAC_PI_3);
+            let (p0, p1) = (
+                (c.0 + r * a0.cos(), c.1 + r * a0.sin()),
+                (c.0 + r * a1.cos(), c.1 + r * a1.sin()),
+            );
+            // The flank bulges out of the apex chord by most of the gap left at the waist.
+            let bulge = 0.6 * (0.5 * r - 2.0 * e).max(0.0);
+            let col = gas_color(ch.temperature_k, ch.burning);
+            let mut mesh = egui::Mesh::default();
+            let m = 24;
+            for i in 0..=m {
+                let t = i as f64 / m as f64;
+                let h = housing_point(a0 + t * (a1 - a0), e, r);
+                let out = bulge * 4.0 * t * (1.0 - t);
+                let f = (
+                    p0.0 + t * (p1.0 - p0.0) + out * mid.cos(),
+                    p0.1 + t * (p1.1 - p0.1) + out * mid.sin(),
+                );
+                mesh.colored_vertex(at(h), col);
+                mesh.colored_vertex(at(f), col);
+                if i > 0 {
+                    let j = 2 * i as u32;
+                    mesh.add_triangle(j - 2, j - 1, j);
+                    mesh.add_triangle(j - 1, j + 1, j);
+                }
+            }
+            p.add(mesh);
+        }
+        // Rotor: three flanks between the apexes, on top of the chamber strips.
+        let mut flank = Vec::new();
+        for ch in chambers {
+            let mid = (90.0 + 0.5 * ch.cycle_deg).to_radians();
+            let bulge = 0.6 * (0.5 * r - 2.0 * e).max(0.0);
+            let a0 = mid - FRAC_PI_3;
+            let a1 = mid + FRAC_PI_3;
+            let m = 12;
+            for i in 0..m {
+                let t = i as f64 / m as f64;
+                let out = bulge * 4.0 * t * (1.0 - t);
+                flank.push((
+                    c.0 + r * ((1.0 - t) * a0.cos() + t * a1.cos()) + out * mid.cos(),
+                    c.1 + r * ((1.0 - t) * a0.sin() + t * a1.sin()) + out * mid.sin(),
+                ));
+            }
+        }
+        // Flanks in rotor order so the outline closes: sort by angle about the centre.
+        flank.sort_by(|a, b| {
+            let ang = |q: &(f64, f64)| (q.1 - c.1).atan2(q.0 - c.0);
+            ang(a).total_cmp(&ang(b))
+        });
+        let body: Vec<Pos2> = flank.iter().map(|&q| at(q)).collect();
+        p.add(egui::Shape::convex_polygon(
+            body,
+            STEEL,
+            Stroke::new(1.5, DARK),
+        ));
+        // Eccentric lobe, rotor gear, shaft.
+        p.circle_filled(at(c), (0.45 * r) as f32 * scale, DARK);
+        p.circle_stroke(at(c), (0.3 * r) as f32 * scale, Stroke::new(2.0, STEEL));
+        p.circle_filled(
+            at((0.0, 0.0)),
+            (0.17 * r) as f32 * scale,
+            Color32::from_rgb(190, 190, 200),
+        );
+        p.circle_filled(at(c), 3.0, Color32::WHITE);
+        // Spark plugs at the waist; ports below, lit while any chamber has them open.
+        let burning = chambers.iter().any(|ch| ch.burning);
+        for dx in [-0.12, 0.12] {
+            let tip = at((dx * r, r - e));
+            p.circle_filled(
+                tip,
+                4.0,
+                if burning {
+                    Color32::from_rgb(255, 230, 120)
+                } else {
+                    DARK
+                },
+            );
+            p.line_segment([tip, tip + vec2(0.0, -14.0)], Stroke::new(3.0, STEEL));
+        }
+        let open = |f: fn(&engine_core::engine::CylinderView) -> f64| {
+            chambers.iter().map(f).fold(0.0, f64::max) > 0.0
+        };
+        for (deg, col, lit) in [
+            (225.0f64, EXHAUST, open(|ch| ch.exhaust_lift_m)),
+            (315.0, INTAKE, open(|ch| ch.intake_lift_m)),
+        ] {
+            let q = housing_point(deg.to_radians(), e, r);
+            let dir = vec2(
+                deg.to_radians().cos() as f32,
+                -(deg.to_radians().sin() as f32),
+            );
+            let base = at(q);
+            let colour = if lit { col } else { col.gamma_multiply(0.3) };
+            p.line_segment([base, base + 22.0 * dir], Stroke::new(8.0, colour));
+        }
+        // One line per chamber under the housing.
+        let lines: Vec<String> = chambers
+            .iter()
+            .enumerate()
+            .map(|(j, ch)| {
+                format!(
+                    "#{} {} {:.1} bar",
+                    3 * k + j + 1,
+                    stroke_name(ch.cycle_deg),
+                    pa_to_bar(ch.pressure_pa)
+                )
+            })
+            .collect();
+        p.text(
+            at((0.0, -(r - e))) + vec2(0.0, 30.0),
+            Align2::CENTER_TOP,
+            format!("Rotor {}\n{}", k + 1, lines.join("\n")),
+            font.clone(),
+            Color32::LIGHT_GRAY,
+        );
     }
 }
 
@@ -357,6 +537,36 @@ fn dyno_plot(ui: &mut egui::Ui, points: &[DynoPoint]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every apex of the rotor rides on the housing at any chamber angle: an apex at rotor
+    /// angle a, centre at e·(cos 3θ, sin 3θ), lies at e·(cos 3a, sin 3a) + R·(cos a, sin a)
+    /// because 3·(θ + 120°·k) ≡ 3θ (Yamamoto §2) — checked here on the drawn pose.
+    #[test]
+    fn the_drawn_rotor_apexes_ride_on_the_housing() {
+        let (e, r) = (0.015, 0.105);
+        for psi in [0.0, 37.0, 180.0, 359.0, 611.0] {
+            let (_, apexes) = rotor_pose(psi, e, r);
+            for (k, a) in apexes.iter().enumerate() {
+                let alpha = (30.0 + 0.5 * psi + 120.0 * k as f64).to_radians();
+                let h = housing_point(alpha, e, r);
+                assert!((a.0 - h.0).hypot(a.1 - h.1) < 1e-12, "psi {psi} apex {k}");
+            }
+        }
+    }
+
+    /// The chamber is smallest at ψ = 0 (its face pressed to the waist, centre at (0, e)) and
+    /// largest at ψ = 180° (centre at (e, 0), away from the face at 180°).
+    #[test]
+    fn the_drawn_chamber_is_smallest_at_its_top_centre() {
+        let (e, r) = (0.015, 0.105);
+        let (c, _) = rotor_pose(0.0, e, r);
+        assert!(c.0.abs() < 1e-12 && (c.1 - e).abs() < 1e-12);
+        let (c, _) = rotor_pose(180.0, e, r);
+        assert!((c.0 - e).abs() < 1e-12 && c.1.abs() < 1e-12);
+        // The housing's minor half-axis is R − e = 90 mm (Heywood Fig. 1.23 RENESIS).
+        let w = housing_point(std::f64::consts::FRAC_PI_2, e, r);
+        assert!((w.1 - 0.090).abs() < 1e-12);
+    }
 
     #[test]
     fn the_audio_line_tells_when_the_simulation_fell_behind() {
