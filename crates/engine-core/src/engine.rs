@@ -197,6 +197,7 @@ impl EngineDef {
                 tail_spacing_m: 0.9,
                 after_collector: Vec::new(),
                 steepening: true,
+                gas_temperature: false,
                 merge: None,
             },
             intake: IntakeDef::default(),
@@ -505,6 +506,7 @@ impl EngineDef {
                 // that (FACTS, "The sub muffler"). One pipe of the three lengths, then.
                 after_collector: Vec::new(),
                 steepening: true,
+                gas_temperature: false,
                 // Both banks run into one rear muffler and leave through three tips together
                 // (Okamoto et al., SAE 2011-01-2024, Fig. 19; Toyota EPC 17410/17430): a Y into
                 // an 85 mm pipe, a transverse titanium muffler whose valve opens above 3000 rpm
@@ -718,6 +720,7 @@ impl EngineDef {
                 tail_spacing_m: 0.25,
                 after_collector: Vec::new(),
                 steepening: true,
+                gas_temperature: false,
                 merge: None,
             },
             intake: IntakeDef::default(),
@@ -801,6 +804,7 @@ impl EngineDef {
                 tail_spacing_m: 1.1,
                 after_collector: Vec::new(),
                 steepening: true,
+                gas_temperature: false,
                 merge: None,
             },
             intake: IntakeDef::default(),
@@ -1301,6 +1305,8 @@ struct CylinderState {
     port_t: f64,
     /// The exhaust port's last mass flow, kg/s: where the next step's port solve starts.
     port_flow: f64,
+    /// The enthalpy that flow carried, W (mass flow × specific total enthalpy).
+    port_enthalpy_flow: f64,
     /// The exhaust valve boundary's last root, where the next step's solve starts.
     valve_hint: f64,
     wall_t: f64,
@@ -1603,6 +1609,10 @@ pub struct Engine {
     tail_mach: Vec<f64>,
     /// Each cylinder's exhaust flow averaged over a cycle, kg/s.
     cyl_mean_flow: Vec<f64>,
+    /// Each cylinder's exhaust enthalpy flow averaged over a cycle, W, and the temperature of
+    /// its outflow that it makes, K ([`crate::exhaust::ExhaustDef::gas_temperature`]).
+    cyl_mean_enthalpy_flow: Vec<f64>,
+    cyl_port_k: Vec<f64>,
     /// Steps since the pipes' friction last followed the mean flows.
     friction_age: usize,
     flows: Vec<f64>,
@@ -1716,6 +1726,7 @@ impl Engine {
                     injected: true,
                     port_t: PIPE_COLD_K,
                     port_flow: 0.0,
+                    port_enthalpy_flow: 0.0,
                     valve_hint: f64::NAN,
                     wall_t: PIPE_COLD_K,
                     ref_p: ATM_PA,
@@ -1809,6 +1820,8 @@ impl Engine {
             exit_losses: None,
             tail_mach: Vec::new(),
             cyl_mean_flow: Vec::new(),
+            cyl_mean_enthalpy_flow: Vec::new(),
+            cyl_port_k: Vec::new(),
             friction_age: 0,
             flows: Vec::new(),
             reversion_kg: 0.0,
@@ -2233,6 +2246,7 @@ impl Engine {
                 cylinder_flow(cs, &th, into_cyl, fresh);
             }
             cs.port_flow = f_ex.map_or(0.0, |f| f.dm / dt);
+            cs.port_enthalpy_flow = f_ex.map_or(0.0, |f| f.dm / dt * f.h);
             let cyl_state = (cs.gas.pressure(), cs.gas.temperature());
             let port_t = cs.port_t;
             self.flows[i] = f_ex.map_or(0.0, |f| {
@@ -2536,6 +2550,9 @@ impl Engine {
                     self.friction_age = 0;
                 }
                 let mean = due.then_some((&self.cyl_mean_flow[..], &self.tail_mean_flow[..], rpm));
+                if due {
+                    net.set_port_temperature(&self.cyl_port_k);
+                }
                 net.prepare(&self.tail_mach, mean);
                 net.step(&self.flows);
             }
@@ -2651,6 +2668,22 @@ impl Engine {
             }
             for (mean, cs) in self.cyl_mean_flow.iter_mut().zip(&self.cyl) {
                 *mean += (cs.port_flow - *mean) * k;
+            }
+            if self.def.exhaust.gas_temperature {
+                if self.cyl_mean_enthalpy_flow.len() != self.cyl.len() {
+                    self.cyl_mean_enthalpy_flow = vec![0.0; self.cyl.len()];
+                    self.cyl_port_k = vec![crate::pipe_heat::AMBIENT_K; self.cyl.len()];
+                }
+                for (i, cs) in self.cyl.iter().enumerate() {
+                    let h = &mut self.cyl_mean_enthalpy_flow[i];
+                    *h += (cs.port_enthalpy_flow - *h) * k;
+                    // the outflow's mean temperature, h/c_p, while gas goes out on the whole
+                    let m = self.cyl_mean_flow[i];
+                    if m > 1e-6 {
+                        self.cyl_port_k[i] =
+                            (*h / (m * crate::gas::CP)).clamp(crate::pipe_heat::AMBIENT_K, 2500.0);
+                    }
+                }
             }
             for t in 0..n_tails {
                 let m: f64 = self.tail_groups[t]
@@ -6528,6 +6561,66 @@ mod tests {
         assert!(
             (slope * 283.71 - 1.0).abs() < 0.04,
             "slope {slope} vs 1/283.71"
+        );
+    }
+
+    #[test]
+    fn the_ports_outflow_sets_the_primaries_speed_of_sound() {
+        // with the gas temperature on, each port hands its primary the cycle-mean temperature of
+        // what it lets out: the enthalpy-weighted mean of the outflow (backflow counts against
+        // it), and the primary's gas lies between its wall's and the port's
+        let mut def = EngineDef::inline4();
+        def.exhaust.gas_temperature = true;
+        let mut e = Engine::new(def, 5000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(5000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.4, &c);
+        // outflow over the next cycle, measured apart (24 ms at 5000 rpm)
+        let (mut h, mut m) = (0.0, 0.0);
+        for _ in 0..(0.024 / DT) as usize {
+            e.step(DT, &c);
+            h += e.cyl[0].port_enthalpy_flow;
+            m += e.cyl[0].port_flow;
+        }
+        let measured = h / m / crate::gas::CP;
+        let port = e.cyl_port_k[0];
+        assert!(
+            (port / measured - 1.0).abs() < 0.03,
+            "{port} K vs {measured} K"
+        );
+        // hot burnt gas, under the adiabatic flame temperature of a stoichiometric hydrocarbon in
+        // air from ambient (≈ 2270 K for isooctane; Turns, *An Introduction to Combustion*,
+        // Table 2.1) and far over the air
+        assert!((800.0..2300.0).contains(&port), "port {port} K");
+        while e.friction_age != 0 {
+            e.step(DT, &c);
+        }
+        let net = e.net.as_mut().unwrap();
+        // (handed over before this step's means moved on: within a step's change)
+        let handed = net.port_temperatures();
+        assert_eq!(handed.len(), e.cyl_port_k.len());
+        for (h, k) in handed.iter().zip(&e.cyl_port_k) {
+            assert!(
+                (h / k - 1.0).abs() < 1e-3,
+                "{handed:?} vs {:?}",
+                e.cyl_port_k
+            );
+        }
+        let c0 = net.gas_sound_speeds()[0];
+        let (air, gas) = (
+            crate::pipe_heat::sound_speed(crate::pipe_heat::AMBIENT_K),
+            crate::pipe_heat::sound_speed(port),
+        );
+        assert!(
+            c0 > air && c0 < gas,
+            "primary {c0} m/s between {air} and {gas}"
+        );
+        assert!(
+            (c0 - crate::exhaust::C_PRIMARY).abs() > 1.0,
+            "still the fixed speed"
         );
     }
 

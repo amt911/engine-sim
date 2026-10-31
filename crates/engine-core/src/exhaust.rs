@@ -107,6 +107,10 @@ pub struct ExhaustDef {
     /// highs (Msallam et al., *Acta Acustica* 86, 2000; Kirchhoff, Kinsler §9.9): see
     /// [`Pipe::steepening`]. Off: linear pipes (cheaper; what lower quality levels run).
     pub steepening: bool,
+    /// Each pipe's gas takes its own temperature, so its own speed of sound: the port's outflow
+    /// cooled along the system by its walls, which warm and cool over seconds
+    /// ([`crate::pipe_heat`]). Off: the fixed speeds [`C_PRIMARY`], [`C_COLLECTOR`], [`C_TAIL`].
+    pub gas_temperature: bool,
 }
 
 /// Where the collectors' paths meet: each path ends in a junction with this shared duct, which
@@ -543,6 +547,7 @@ impl Default for ExhaustDef {
             after_collector: Vec::new(),
             merge: None,
             steepening: true,
+            gas_temperature: false,
         }
     }
 }
@@ -944,7 +949,73 @@ pub struct ExhaustNet {
     mean_flows: (Vec<f64>, Vec<f64>),
     /// The duct the branches' tails join, and its one open end ([`ExhaustDef::merge`]).
     shared: Option<Shared>,
+    /// The gas's temperature along the pipes ([`ExhaustDef::gas_temperature`]).
+    heat: Option<Heat>,
     pub dt: f64,
+}
+
+/// The pipes' walls and their gas ([`crate::pipe_heat`]): one state per pipe, in the order
+/// [`ExhaustNet::update_gas`] walks them (the gas's), made on its first walk.
+#[derive(Debug, Clone, Default)]
+struct Heat {
+    walls: Vec<crate::pipe_heat::PipeHeat>,
+    /// Each cylinder's port outflow temperature, K ([`ExhaustNet::set_port_temperature`]).
+    port_k: Vec<f64>,
+    /// Steps since the walls last moved.
+    steps: usize,
+    /// The next wall in the walk, and the time it covers, s.
+    next: usize,
+    elapsed: f64,
+    /// Scratch, reused (no allocation on the sim thread): each primary's and each branch's
+    /// outlet gas (temperature, mass flow).
+    outs: Vec<f64>,
+    tails: Vec<(f64, f64)>,
+}
+
+impl Heat {
+    /// Gas at `t_in` K and `mass_flow` kg/s through `pipe`: its wall moves over the walk's
+    /// time, the pipe's waves take the gas's mean speed of sound. Returns the outlet temperature.
+    fn pass(&mut self, pipe: &mut Pipe, t_in: f64, mass_flow: f64) -> f64 {
+        if self.next == self.walls.len() {
+            let (length, diameter) = pipe.size();
+            self.walls
+                .push(crate::pipe_heat::PipeHeat::new(length, diameter));
+        }
+        let wall = &mut self.walls[self.next];
+        self.next += 1;
+        let (mean, out) = wall.step(t_in, mass_flow, self.elapsed);
+        // a path no gas runs through (a shut bypass) holds the gas of the chamber it opens
+        // from, which the shell around it keeps warm (an estimate: the lumped wall alone would
+        // cool it to the air)
+        let (mean, out) = if mass_flow.abs() < 1e-9 {
+            (t_in, t_in)
+        } else {
+            (mean, out)
+        };
+        pipe.set_sound_speed(crate::pipe_heat::sound_speed(mean));
+        out
+    }
+    /// A duct's pipes in turn; returns the outlet temperature.
+    fn duct(&mut self, duct: &mut Duct, t_in: f64, mass_flow: f64) -> f64 {
+        duct.pipes_mut()
+            .iter_mut()
+            .fold(t_in, |t, p| self.pass(p, t, mass_flow))
+    }
+}
+
+/// Mass-weighted mean temperature of gas streams (temperature K, mass flow kg/s): where they
+/// mix, enthalpy adds up at one c_p. With no flow, their plain mean.
+fn mixed(streams: impl Iterator<Item = (f64, f64)>) -> f64 {
+    let (tm, m, t, n) = streams.fold(
+        (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64),
+        |(tm, m, t, n), (ti, mi)| (tm + ti * mi.abs(), m + mi.abs(), t + ti, n + 1.0),
+    );
+    if m > 1e-12 { tm / m } else { t / n.max(1.0) }
+}
+
+/// The slowest gas the pipes make room for: air at [`crate::pipe_heat::AMBIENT_K`].
+fn coldest_sound_speed() -> f64 {
+    crate::pipe_heat::sound_speed(crate::pipe_heat::AMBIENT_K)
 }
 
 /// The branches' common duct and open end, and each branch's last tail wave (scratch).
@@ -1217,8 +1288,108 @@ impl ExhaustNet {
                 }
             }),
             branches,
+            heat: def.gas_temperature.then(Heat::default),
             dt,
         }
+        .with_room_for_cold_gas()
+    }
+
+    /// With [`ExhaustDef::gas_temperature`], room in every pipe for gas down to the air's
+    /// temperature.
+    fn with_room_for_cold_gas(mut self) -> Self {
+        if self.heat.is_some() {
+            let c = coldest_sound_speed();
+            self.for_each_pipe(|p| p.make_room(c));
+        }
+        self
+    }
+
+    /// Every pipe of the net.
+    fn for_each_pipe(&mut self, mut f: impl FnMut(&mut Pipe)) {
+        self.primaries.iter_mut().for_each(&mut f);
+        for b in &mut self.branches {
+            f(&mut b.collector);
+            b.tail.pipes_mut().iter_mut().for_each(&mut f);
+        }
+        if let Some(sh) = &mut self.shared {
+            sh.duct.pipes_mut().iter_mut().for_each(&mut f);
+            if let Some(v) = &mut sh.valved {
+                for d in [&mut v.closed, &mut v.open, &mut v.tips] {
+                    d.pipes_mut().iter_mut().for_each(&mut f);
+                }
+                for (d, _) in &mut v.outlets {
+                    d.pipes_mut().iter_mut().for_each(&mut f);
+                }
+            }
+        }
+    }
+
+    /// The speed of sound each pipe's gas carries now, m/s, near end first: the primaries,
+    /// each branch's collector and tail, then the shared duct and a bypass's paths and tips.
+    pub fn gas_sound_speeds(&mut self) -> Vec<f64> {
+        let mut v = Vec::new();
+        self.for_each_pipe(|p| v.push(p.gas_sound_speed()));
+        v
+    }
+
+    /// The port temperatures last handed ([`ExhaustNet::set_port_temperature`]), K.
+    pub fn port_temperatures(&self) -> &[f64] {
+        self.heat.as_ref().map_or(&[], |h| &h.port_k)
+    }
+
+    /// Each cylinder's port outflow temperature, K: the gas entering its primary
+    /// ([`ExhaustDef::gas_temperature`]; ignored without it).
+    pub fn set_port_temperature(&mut self, per_cylinder: &[f64]) {
+        if let Some(h) = &mut self.heat {
+            h.port_k.clear();
+            h.port_k.extend_from_slice(per_cylinder);
+        }
+    }
+
+    /// The gas through every pipe in the order it flows, at the last mean flows: each wall
+    /// moves over the steps since the last walk, each pipe takes its gas's speed of sound.
+    fn update_gas(&mut self) {
+        let Some(heat) = &mut self.heat else {
+            return;
+        };
+        heat.elapsed = heat.steps as f64 * self.dt;
+        heat.steps = 0;
+        heat.next = 0;
+        let (per_cyl, per_branch) = (&self.mean_flows.0, &self.mean_flows.1);
+        let flow = |v: &[f64], i: usize| v.get(i).copied().unwrap_or(0.0);
+        // before the engine hands a port temperature: the primaries' fixed speed's gas
+        let fallback = C_PRIMARY * C_PRIMARY / (crate::gas::GAMMA * crate::gas::R_AIR);
+        let mut outs = std::mem::take(&mut heat.outs);
+        let mut tails = std::mem::take(&mut heat.tails);
+        outs.clear();
+        tails.clear();
+        for (i, p) in self.primaries.iter_mut().enumerate() {
+            let t = heat.port_k.get(i).copied().unwrap_or(fallback);
+            outs.push(heat.pass(p, t, flow(per_cyl, i)));
+        }
+        for (bi, b) in self.branches.iter_mut().enumerate() {
+            let m = flow(per_branch, bi);
+            let t = mixed(b.members.iter().map(|&i| (outs[i], flow(per_cyl, i))));
+            let t = heat.pass(&mut b.collector, t, m);
+            tails.push((heat.duct(&mut b.tail, t, m), m));
+        }
+        if let Some(sh) = &mut self.shared {
+            let m: f64 = per_branch.iter().sum();
+            let t = heat.duct(&mut sh.duct, mixed(tails.iter().copied()), m);
+            if let Some(v) = &mut sh.valved {
+                let (mo, mc) = (m * v.x, m * (1.0 - v.x));
+                let to = heat.duct(&mut v.open, t, mo);
+                let tc = heat.duct(&mut v.closed, t, mc);
+                let t = heat.duct(&mut v.tips, mixed([(to, mo), (tc, mc)].into_iter()), m);
+                // the tips share the flow evenly (an estimate: they are about alike)
+                let mt = m / v.outlets.len().max(1) as f64;
+                for (d, _) in &mut v.outlets {
+                    heat.duct(d, t, mt);
+                }
+            }
+        }
+        heat.outs = outs;
+        heat.tails = tails;
     }
 
     /// Mean mass flows, kg/s: through each cylinder's primary and each branch's collector and
@@ -1247,6 +1418,7 @@ impl ExhaustNet {
             b.collector.set_mean_flow(*m);
             b.tail.set_mean_flow(*m);
         }
+        self.update_gas();
     }
 
     /// The mean flows the pipes' friction last followed: (per cylinder, per branch), kg/s.
@@ -1330,8 +1502,9 @@ impl ExhaustNet {
     /// [`MAX_BLOCK`]. Under [`MIN_BLOCK`] it is 0: not worth handing off.
     pub fn max_block(&self) -> usize {
         // a steepening primary's waves arrive when their own speed says, through its segments:
-        // the copy the probe keeps of the lines cannot run ahead of the net
-        if self.primaries.iter().any(Pipe::is_nonlinear) {
+        // the copy the probe keeps of the lines cannot run ahead of the net; nor can it follow
+        // the gas's temperature, which the walls' state sets
+        if self.heat.is_some() || self.primaries.iter().any(Pipe::is_nonlinear) {
             return 0;
         }
         let whole = self
@@ -1371,6 +1544,9 @@ impl ExhaustNet {
     /// (negative = reversion). Valve end: p⁺ = p⁻ + c·ṁ/A. Returns the radiated pressure
     /// summed over the tail pipes.
     pub fn step(&mut self, flows: &[f64]) -> f64 {
+        if let Some(h) = &mut self.heat {
+            h.steps += 1;
+        }
         let n = self.primaries.len();
         let Scratch {
             from_far,
@@ -1864,6 +2040,7 @@ mod tests {
                 primary_length_m: length_m,
                 // linear primaries: a steepening one is never run ahead (max_block)
                 steepening: false,
+                gas_temperature: false,
                 ..ExhaustDef::default()
             };
             ExhaustNet::new(&def, 4, 1.0 / fs).max_block()
@@ -1888,6 +2065,7 @@ mod tests {
         // the probe runs linear primaries ahead (a steepening net is never handed off)
         let def = ExhaustDef {
             steepening: false,
+            gas_temperature: false,
             ..ExhaustDef::default()
         };
         let mut net = ExhaustNet::new(&def, 4, 1.0 / 96_000.0);
@@ -2454,6 +2632,86 @@ mod tests {
         assert_eq!(arrival(&def, 0), arrival(&drawn, 0));
         let late = arrival(&def, 1) - arrival(&drawn, 1);
         assert!((late - 32.0).abs() <= 1.0, "{late} steps");
+    }
+
+    #[test]
+    fn the_gas_cools_along_the_exhaust() {
+        // 1100 K gas leaving both ports at 20 g/s through the valved banks (bypass shut): each
+        // pipe is cooler than the one feeding it, all between the air and the port
+        let def = ExhaustDef {
+            gas_temperature: true,
+            ..valved_banks()
+        };
+        let mut net = ExhaustNet::new(&def, 2, DT);
+        let built = net.gas_sound_speeds();
+        assert_eq!(&built[..3], &[C_PRIMARY, C_PRIMARY, C_COLLECTOR]);
+        net.set_port_temperature(&[1100.0, 1100.0]);
+        net.set_mean_flow(&[0.02, 0.02], &[0.02, 0.02]);
+        let c = net.gas_sound_speeds();
+        let (port, air) = (
+            crate::pipe_heat::sound_speed(1100.0),
+            crate::pipe_heat::sound_speed(300.0),
+        );
+        assert!(c.iter().all(|&x| x > air && x < port), "{c:?}");
+        // primaries, bank 0's collector, then what follows it down to the tips
+        assert_eq!(c[0], c[1]);
+        assert!(c[2] < c[0], "{c:?}");
+        assert!(c[2..].iter().all(|&x| x < c[0]), "{c:?}");
+        assert!(c[c.len() - 1] < c[2], "{c:?}");
+        // every pipe left its fixed speed, and a hotter port warms the gas all the way down
+        assert!(c.iter().zip(&built).all(|(a, b)| a != b), "{c:?}");
+        net.set_port_temperature(&[1300.0, 1300.0]);
+        net.set_mean_flow(&[0.02, 0.02], &[0.02, 0.02]);
+        let hotter = net.gas_sound_speeds();
+        assert!(hotter.iter().zip(&c).all(|(h, c)| h > c), "{hotter:?}");
+    }
+
+    #[test]
+    fn streams_mix_by_their_mass_flows() {
+        // 30 g/s at 1000 K and 10 g/s at 700 K: (30·1000 + 10·700)/40 = 925 K; no flow: the mean
+        assert!((mixed([(1000.0, 0.03), (700.0, 0.01)].into_iter()) - 925.0).abs() < 1e-9);
+        assert!((mixed([(1000.0, 0.0), (700.0, 0.0)].into_iter()) - 850.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn without_gas_temperature_the_pipes_keep_their_fixed_speeds() {
+        let mut net = ExhaustNet::new(&valved_banks(), 2, DT);
+        let built = net.gas_sound_speeds();
+        net.set_port_temperature(&[1100.0, 1100.0]);
+        net.set_mean_flow(&[0.02, 0.02], &[0.02, 0.02]);
+        assert_eq!(net.gas_sound_speeds(), built);
+        assert_eq!(
+            net.max_block(),
+            ExhaustNet::new(&valved_banks(), 2, DT).max_block()
+        );
+    }
+
+    #[test]
+    fn a_net_with_gas_temperature_stays_on_the_engines_thread() {
+        let linear = ExhaustDef {
+            steepening: false,
+            ..valved_banks()
+        };
+        let def = ExhaustDef {
+            gas_temperature: true,
+            ..linear.clone()
+        };
+        assert!(ExhaustNet::new(&linear, 2, DT).max_block() > 0);
+        assert_eq!(ExhaustNet::new(&def, 2, DT).max_block(), 0);
+    }
+
+    #[test]
+    fn gas_temperature_round_trips_and_defaults_to_off() {
+        let old: ExhaustDef = serde_yaml_ng::from_str("tail_length_m: 1.0\n").unwrap();
+        assert!(!old.gas_temperature);
+        let on = ExhaustDef {
+            gas_temperature: true,
+            ..ExhaustDef::default()
+        };
+        let yaml = serde_yaml_ng::to_string(&on).unwrap();
+        assert_eq!(serde_yaml_ng::from_str::<ExhaustDef>(&yaml).unwrap(), on);
+        let json = serde_json::to_string(&on).unwrap();
+        assert_eq!(serde_json::from_str::<ExhaustDef>(&json).unwrap(), on);
     }
 
     #[test]
