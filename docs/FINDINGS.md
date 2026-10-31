@@ -1146,3 +1146,15 @@ every intake pulse reaches an open 60 mm bore), the open tail below 250 Hz. A Go
 with its snorkel and the road car's catalyst and two silencers (`road_exhaust`) put the block
 level with the rest from 250 Hz to 4 kHz. No preset carried silencers before, which a petrol
 engine's sound hides and a diesel's does not: worth revisiting for the road-car presets.
+
+## Anderton's petrol average does not fit modern four-valve engines' recordings (2026-10-31)
+
+Calibrating the petrol flame to Anderton's average excitation (SAE 790270: cylinder pressure
+level at 1 kHz 130 dB at 1000 rpm, growing with speed^6.3) needs a reference burn of 75° instead
+of 45–55°, and puts every petrol preset within ±6 dB of it (they ran 3–22 dB over). But it moves
+the two engines fitted to their own recordings away from them: the LFA's full-throttle orders
+13.8 dB RMS off the real car's (test `the_lfa_at_full_throttle_keeps_the_real_cars_orders`) and
+455 hp, the K20A's fit error J 6.3 → 28 (harmonics 1.3 → 2.7 dB off, 206 → 191 hp). Anderton's
+engines are 1970s two-valve designs; a pent-roof four-valve chamber burns faster. The engine's
+own recordings win over a population average: the burn stays as it was. (Tried for the diesel's
+"revving sounds like petrol": the petrol engines' high-speed excitation is not the cause to fix.)
