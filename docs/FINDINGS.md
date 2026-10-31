@@ -1221,3 +1221,14 @@ A probe of the RENESIS's free idle at Reference (`Simulation::with_quality`, see
 vehicle) idled at 800 rpm on one run and stalled on the next with no code between them. Not
 chased yet: a thread (exhaust or detached runners) whose result depends on timing would break the
 determinism `engine-core` promises.
+
+## The idles are quiet, but not for want of manifold pressure (2026-10-31)
+
+Idle at Reference sits at 22–34 kPa in the manifold for every piston preset (K20A 29, LFA 29, the
+V8s 22–29) — a warm engine's usual range — so a quiet idle is not a starved manifold. A car's
+electrical load through the alternator (400 W at 55 %, 8.7 N·m at 800 rpm) raised it only 3–5
+kPa and stalled the single, the RENESIS and the bridge-ported 13B: dropped. The RENESIS's quiet
+idle is in its chamber: 17 kPa at intake close against 26 kPa in the manifold, about half of the
+trapped mass its residual (~50 % dilution), a burn barely over the compression's (6.7 bar peak)
+and the exhaust port opening below the atmosphere (0.79 bar): no blowdown to hear. Next: why the
+chamber fills to only two thirds of the manifold at idle (port timing and areas are ESTIMATES).
