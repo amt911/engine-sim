@@ -1232,3 +1232,19 @@ idle is in its chamber: 17 kPa at intake close against 26 kPa in the manifold, a
 trapped mass its residual (~50 % dilution), a burn barely over the compression's (6.7 bar peak)
 and the exhaust port opening below the atmosphere (0.79 bar): no blowdown to hear. Next: why the
 chamber fills to only two thirds of the manifold at idle (port timing and areas are ESTIMATES).
+
+## Idle lacks the orders above firing, 20–40 dB; not for the reasons first tried (2026-10-31, open)
+
+Against a clean exhaust-mic recording (Sonniss, Skoda Octavia 1.6, idle and blips), the inline-4's
+idle relative to its blip is right below 150 Hz (−19 vs −10/−12 dB, near) but 12–17 dB short at
+500–2000 Hz, 6–8 dB at 2–6 kHz, 20 dB above. The LFA's idle at 3 m is 55 dB against the
+inline-4's 76 (equal at 3000 rpm full throttle, 99 dB); its cycle orders above the firing are
+22–66 dB under it where recordings of real LFAs idling have them 5–29 dB under. Ruled out, each
+measured: the manifold (22–34 kPa, normal), the spark (the LFA idles 15° BTDC, 35° from its MBT),
+its silencers (none: the same 54 dB), the cycle itself (pressure at exhaust opening ≈ 1 bar, as
+an Otto cycle at 0.3 bar by hand gives: no blowdown at idle, in a real engine either) and cycle
+variability (CoV of imep at idle 5 % i4, 8 % K20A, 17 % LFA — real 5–10 %). Left: the per-cycle
+pulse is smooth (a V10's ten 245° exhaust events overlap 3–4 deep and their 75 Hz nearly cancel),
+and what roughens a real idle — valvetrain and injector ticks, the idle air's hiss, the block —
+is 30–40 dB under the exhaust here (block and valve seats together 45 dB at 3 m at idle). Note:
+YouTube idles carry street noise in those bands; prefer the Sonniss recordings.
