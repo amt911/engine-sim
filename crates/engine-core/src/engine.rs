@@ -236,7 +236,6 @@ impl EngineDef {
         }
         .with_tail_pipe()
         .with_catalyst()
-        .with_road_silencers()
     }
 
     /// Mazda 13B-MSP RENESIS (RX-8, 2003–2012): two rotors, e 15 mm, R 105 mm, B 80 mm →
@@ -431,7 +430,6 @@ impl EngineDef {
         }
         .with_tail_pipe()
         .with_catalyst()
-        .with_road_silencers()
     }
 
     /// The K20A as tuners build it for the VTEC scream (the user's wish, 2026-10-31: not a real
@@ -624,7 +622,6 @@ impl EngineDef {
         }
         .with_tail_pipe()
         .with_catalyst()
-        .with_road_silencers()
     }
 
     /// Lexus LFA, Toyota 1LR-GUE: 4.8 L 72° V10, 88 × 79 mm, CR 12.0, even firing,
@@ -1102,7 +1099,6 @@ impl EngineDef {
         }
         .with_tail_pipe()
         .with_catalyst()
-        .with_road_silencers()
     }
 
     /// The ECU's spark advance (° BTDC) for a flame `flame_ratio` times as long in crank angle as
@@ -1135,26 +1131,6 @@ impl EngineDef {
             length_m: self.exhaust.tail_length_m,
             diameter_m: self.exhaust.tail_diameter_m,
         }];
-        self
-    }
-
-    /// The tail pipe ([`EngineDef::with_tail_pipe`]) turned into a road car's silencers of the
-    /// same length ([`crate::exhaust::road_silencers`], sized by the rule of thumb from each
-    /// branch's swept volume): the car has them, their drawings are not published, and a
-    /// straight pipe leaves 4–16 kHz 15–30 dB over tail-pipe recordings (the K20A's road clips
-    /// −32 dB re their loudest octave in median, the straight pipe −3; FINDINGS 2026-11-01).
-    fn with_road_silencers(mut self) -> Self {
-        let branches = self.exhaust.collectors.len().max(1);
-        let swept = self.displacement_m3() / branches as f64;
-        if let Some(crate::exhaust::Segment::Pipe {
-            length_m,
-            diameter_m,
-        }) = self.exhaust.after_collector.pop()
-        {
-            self.exhaust
-                .after_collector
-                .extend(crate::exhaust::road_silencers(swept, diameter_m, length_m));
-        }
         self
     }
 
@@ -4800,30 +4776,6 @@ mod tests {
         assert!((0.5..0.7).contains(&t), "idle to 9000 in {t:.3} s");
     }
 
-    #[test]
-    fn road_cars_carry_their_silencers_and_the_lfa_its_own_muffler() {
-        // the road presets' tails are the road car's two packed cans, the tail's length kept;
-        // the LFA keeps its patented rear muffler on the merged duct instead
-        let cans = |d: &EngineDef| {
-            d.exhaust
-                .after_collector
-                .iter()
-                .filter(|s| matches!(s, crate::exhaust::Segment::Muffler { .. }))
-                .count()
-        };
-        for d in [
-            EngineDef::inline4(),
-            EngineDef::subaru_ej25(),
-            EngineDef::honda_k20a(),
-            EngineDef::crossplane_v8(),
-        ] {
-            assert_eq!(cans(&d), 2, "{}", d.name);
-        }
-        let lfa = EngineDef::lfa_v10();
-        assert_eq!(cans(&lfa), 0);
-        assert!(lfa.exhaust.merge.is_some());
-    }
-
     /// Crank degrees both valves stand open around top centre: exhaust closing past intake
     /// opening (negative: a gap between them).
     fn overlap_deg(e: &Engine) -> f64 {
@@ -7766,19 +7718,19 @@ mod tests {
 
     #[test]
     fn each_preset_carries_only_the_exhaust_it_has_data_for() {
-        // after each collector, the catalyst every road car carries (sized by its rule), then
-        // the tail of the preset's own length and bore: a plain pipe where the car's own muffler
-        // is modelled elsewhere (the LFA's on its merged duct) or not known (the 458), the road
-        // car's two silencers in that length where the car has them (FINDINGS 2026-11-01)
-        let catalyst = |d: &EngineDef| {
+        // after each collector, the catalyst every road car carries (sized by its rule) and the
+        // tail pipe of the preset's own length and bore — no silencer sized by rule
+        for d in [
+            EngineDef::inline4(),
+            EngineDef::lfa_v10(),
+            EngineDef::flatplane_v8(),
+            EngineDef::crossplane_v8(),
+        ] {
             let branch = d.displacement_m3() / d.exhaust.collectors.len().max(1) as f64;
-            crate::exhaust::close_coupled_catalyst(branch, d.exhaust.tail_diameter_m)
-        };
-        for d in [EngineDef::lfa_v10(), EngineDef::flatplane_v8()] {
             assert_eq!(
                 d.exhaust.after_collector,
                 [
-                    catalyst(&d),
+                    crate::exhaust::close_coupled_catalyst(branch, d.exhaust.tail_diameter_m),
                     crate::exhaust::Segment::Pipe {
                         length_m: d.exhaust.tail_length_m,
                         diameter_m: d.exhaust.tail_diameter_m,
@@ -7787,16 +7739,6 @@ mod tests {
                 "{}",
                 d.name
             );
-        }
-        for d in [EngineDef::inline4(), EngineDef::crossplane_v8()] {
-            let branch = d.displacement_m3() / d.exhaust.collectors.len().max(1) as f64;
-            let mut want = vec![catalyst(&d)];
-            want.extend(crate::exhaust::road_silencers(
-                branch,
-                d.exhaust.tail_diameter_m,
-                d.exhaust.tail_length_m,
-            ));
-            assert_eq!(d.exhaust.after_collector, want, "{}", d.name);
         }
         assert_eq!(EngineDef::inline4().exhaust.tail_length_m, 1.5);
         // the LFA's bank line, catalyst to muffler: 0.50 + 0.38 (sub muffler) + 1.00 m

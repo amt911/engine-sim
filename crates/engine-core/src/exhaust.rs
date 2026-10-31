@@ -383,7 +383,13 @@ pub fn road_exhaust(swept_m3: f64, pipe_d: f64) -> Vec<Segment> {
         length_m,
         diameter_m: pipe_d,
     };
-    let silencer = |volume: f64, length_m: f64| road_silencer(volume, length_m, pipe_d);
+    let silencer = |volume: f64, length_m: f64| Segment::Muffler {
+        length_m,
+        diameter_m: shell(volume, length_m).max(1.5 * pipe_d),
+        tube_diameter_m: pipe_d,
+        packing_resistivity: default_resistivity(),
+        packing_porosity: default_porosity(),
+    };
     vec![
         pipe(0.4),
         close_coupled_catalyst(swept_m3, pipe_d),
@@ -392,39 +398,6 @@ pub fn road_exhaust(swept_m3: f64, pipe_d: f64) -> Vec<Segment> {
         pipe(0.8),
         silencer(8.0 * swept_m3, 0.45),
         pipe(0.3),
-    ]
-}
-
-/// A straight-through packed silencer of `volume` over `length_m` around a `pipe_d` tube.
-fn road_silencer(volume: f64, length_m: f64, pipe_d: f64) -> Segment {
-    Segment::Muffler {
-        length_m,
-        diameter_m: shell(volume, length_m).max(1.5 * pipe_d),
-        tube_diameter_m: pipe_d,
-        packing_resistivity: default_resistivity(),
-        packing_porosity: default_porosity(),
-    }
-}
-
-/// [`road_exhaust`]'s two silencers in a tail pipe of `length_m` (bore `pipe_d`) behind a
-/// branch sweeping `swept_m3`: the centre resonator (2 × swept, 0.35 m) and the rear box
-/// (8 × swept, 0.45 m), the rest of the length as pipe before, between and after them
-/// (0.3 / 0.45 / 0.25 of it), at least 0.1 m each. For a preset whose car has silencers but
-/// whose drawings are not published: a plain tail pipe is a straight pipe, which no road car
-/// has, and it leaves the shocks' highs the cans absorb.
-pub fn road_silencers(swept_m3: f64, pipe_d: f64, length_m: f64) -> Vec<Segment> {
-    let (res, rear) = (0.35, 0.45);
-    let rest = (length_m - res - rear).max(0.0);
-    let pipe = |share: f64| Segment::Pipe {
-        length_m: (share * rest).max(0.1),
-        diameter_m: pipe_d,
-    };
-    vec![
-        pipe(0.3),
-        road_silencer(2.0 * swept_m3, res, pipe_d),
-        pipe(0.45),
-        road_silencer(8.0 * swept_m3, rear, pipe_d),
-        pipe(0.25),
     ]
 }
 
@@ -2286,43 +2259,6 @@ mod tests {
         assert!(
             matches!(path.last(), Some(Segment::Pipe { diameter_m, .. }) if *diameter_m == 0.05)
         );
-    }
-
-    #[test]
-    fn road_silencers_fill_a_tail_pipe_of_its_length() {
-        // a 1.84 m tail of 50 mm behind a 2.0 L branch: the same two silencers as the road
-        // exhaust (Ø 0.1206 m × 0.35 m, Ø 0.2128 m × 0.45 m), pipes of the tail's bore between
-        // and after them taking the other 1.04 m, the whole as long as the tail it replaces
-        let len = |s: &Segment| match s {
-            Segment::Pipe { length_m, .. } | Segment::Muffler { length_m, .. } => *length_m,
-            other => panic!("unexpected {other:?}"),
-        };
-        let path = road_silencers(2.0e-3, 0.05, 1.84);
-        let total: f64 = path.iter().map(len).sum();
-        assert!((total - 1.84).abs() < 1e-9, "{total}");
-        let cans: Vec<(f64, f64)> = path
-            .iter()
-            .filter_map(|s| match s {
-                Segment::Muffler {
-                    length_m,
-                    diameter_m,
-                    tube_diameter_m,
-                    ..
-                } => {
-                    assert_eq!(*tube_diameter_m, 0.05);
-                    Some((*length_m, *diameter_m))
-                }
-                _ => None,
-            })
-            .collect();
-        assert_eq!(cans, vec![(0.35, 0.1206), (0.45, 0.2128)]);
-        assert!(
-            matches!(path.last(), Some(Segment::Pipe { diameter_m, .. }) if *diameter_m == 0.05)
-        );
-        // a tail too short for both cans and their pipes keeps 10 cm of pipe each side
-        let short = road_silencers(2.0e-3, 0.05, 0.5);
-        let total: f64 = short.iter().map(len).sum();
-        assert!((total - 1.1).abs() < 1e-9, "{total}");
     }
 
     #[test]

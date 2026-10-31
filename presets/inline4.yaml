@@ -38,8 +38,6 @@ engine:
     collectors: []
     collector_length_m: 0.25
     collector_diameter_m: 0.055
-    collector_extra_length_m: []
-    primary_length_deviation_m: []
     tail_length_m: 1.5
     tail_diameter_m: 0.05
     muffler_transmission: 1.0
@@ -57,29 +55,9 @@ engine:
       cells_per_in2: 400.0
       wall_m: 0.000165
     - kind: pipe
-      length_m: 0.21
-      diameter_m: 0.05
-    - kind: muffler
-      length_m: 0.35
-      diameter_m: 0.1206
-      tube_diameter_m: 0.05
-      packing_resistivity: 16000.0
-      packing_porosity: 0.95
-    - kind: pipe
-      length_m: 0.315
-      diameter_m: 0.05
-    - kind: muffler
-      length_m: 0.45
-      diameter_m: 0.2127
-      tube_diameter_m: 0.05
-      packing_resistivity: 16000.0
-      packing_porosity: 0.95
-    - kind: pipe
-      length_m: 0.175
+      length_m: 1.5
       diameter_m: 0.05
     merge: null
-    steepening: true
-    gas_temperature: false
   intake:
     model: zero_d
     runner_length_m: 0.3
@@ -88,9 +66,7 @@ engine:
     trumpet_loss: 0.1
     film_fraction: 0.18
     film_tau_s: 1.0
-    airbox: null
   redline_rpm: 7000.0
-  shutoff_rpm: 0.0
   starter_torque_nm: 60.0
   friction:
     valvetrain: dohc_direct_acting
