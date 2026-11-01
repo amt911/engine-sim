@@ -192,6 +192,10 @@ pub struct TurboState {
     /// How the turbine inlet's pressure follows the exhaust flow, dp₀₃/dṁ, Pa per kg/s: what a
     /// pulse meets there ([`crate::waveguide::TurbineJunction`]); 0 with no flow.
     pub turbine_dp_dm: f64,
+    /// The charge air's time constant, s: its compliance V/(RT) over the conductances that
+    /// drain a swing of its pressure (the compressor's characteristic, the engine's and the
+    /// valve's draw) — the low-pass between the throttle's flow and the compressor's.
+    pub charge_tau_s: f64,
 }
 
 /// A turbocharger's running state: its shaft's kinetic energy and its charge air's pressure.
@@ -310,6 +314,19 @@ impl Turbo {
             0.5 * (lo + hi)
         };
         let vented = vent(self.boost_pa, t_b);
+        // A swing δp of the charge's pressure: the compressor delivers δp/R_c less (its speed
+        // line's slope; none choked, the line vertical), the engine and the valve draw ṁ/p·δp
+        // more (both in proportion to the pressure they draw from)
+        let g_compressor = if m_c > 0.0 && !choked {
+            let h = 1e-4;
+            let slope = (charge(m_c).0 - charge(m_c + h).0) / h;
+            if slope > 0.0 { 1.0 / slope } else { 0.0 }
+        } else {
+            0.0
+        };
+        let g_draw = (intake + vented) / self.boost_pa.max(1.0);
+        let compliance = d.charge_volume_m3 / (R_GAS * t_b);
+        let charge_tau_s = (compliance / (g_compressor + g_draw).max(1e-12)).min(1.0);
         // the impeller does its work on what it passes (choked, the pressure it would make past
         // the inducer is lost in the shocks there)
         let ratio = exit(m_c).0;
@@ -355,6 +372,7 @@ impl Turbo {
             shaft_rpm: omega * 60.0 / (2.0 * std::f64::consts::PI),
             bov_m_dot: vented,
             turbine_dp_dm,
+            charge_tau_s,
         }
     }
 }
@@ -538,6 +556,20 @@ mod tests {
         };
         assert!(run(0.2) > ATM_PA + 30e3, "{}", run(0.2));
         assert!(run(0.5) < ATM_PA, "{}", run(0.5));
+    }
+
+    #[test]
+    fn the_charge_air_drains_its_swings_through_compressor_and_engine() {
+        // At rest the compressor's line is the intercooler's alone, p = p_atm − k·ṁ²: at 0.01
+        // kg/s a swing meets dp/dṁ = 2k·ṁ = 5000 Pa per kg/s, a conductance of 2e-4; the engine's
+        // ṁ/p = 0.01/101325 = 9.87e-8 more. C = V/(RT) = 0.005/(287·300) = 5.807e-8 kg/Pa:
+        // τ = C/G = 2.902e-4 s (by hand)
+        let mut t = Turbo::new(&TurboDef::default());
+        let mut s = t.step(0.0, 0.0, 0.01, false, 1e-3);
+        for _ in 0..200 {
+            s = t.step(0.0, 0.0, 0.01, false, 1e-3);
+        }
+        assert!((s.charge_tau_s / 2.902e-4 - 1.0).abs() < 0.02, "{}", s.charge_tau_s);
     }
 
     #[test]

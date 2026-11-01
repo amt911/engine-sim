@@ -2031,6 +2031,8 @@ pub struct Engine {
     turbo: Option<crate::turbo::Turbo>,
     turbo_state: Option<crate::turbo::TurboState>,
     turbo_acc: (usize, f64, f64, f64),
+    /// The compressor's flow, kg/s: the throttle's through the charge air ([`Engine::step`]).
+    compressor_flow: f64,
     /// The flows the turbo sees, averaged over [`TURBO_FLOW_TAU_S`]: exhaust kg/s, its
     /// temperature K, air drawn kg/s.
     turbo_mean: (f64, f64, f64),
@@ -2266,6 +2268,7 @@ impl Engine {
             turbo,
             turbo_state: None,
             turbo_acc: (0, 0.0, 0.0, 0.0),
+            compressor_flow: 0.0,
             turbo_mean: (0.0, crate::intake_fv::AMBIENT_T_K, 0.0),
             bov_jet: JetNoise::new(seed.wrapping_add(0xB0F)),
             exit_losses: None,
@@ -3202,8 +3205,18 @@ impl Engine {
         // −ṁ/ρ₀ (1D: what the trumpets take in; 0D: the throttle's flow), heard from the
         // tails' mean distance — no gain chosen by ear. `sound.intake` scales it (1 = physical).
         let snd = &self.def.sound;
-        // `drawn`: the mouth's mass flow into the engine, kg/s (1D: held between FV steps)
-        let intake_flow = -snd.intake * drawn / AIR_DENSITY;
+        // `drawn`: the mouth's mass flow into the engine, kg/s (1D: held between FV steps). With
+        // a turbo the air filter's flow is the compressor's: the throttle's swings reach it
+        // through the charge air's low-pass (`TurboState::charge_tau_s`)
+        let heard = match self.turbo_state {
+            Some(s) => {
+                self.compressor_flow +=
+                    (drawn - self.compressor_flow) * (dt / s.charge_tau_s).min(1.0);
+                self.compressor_flow
+            }
+            None => drawn,
+        };
+        let intake_flow = -snd.intake * heard / AIR_DENSITY;
         self.texture_signal = intake_flow;
         // each tail's jet: its exit velocity u = (ρc·u)/ρc, its own distance to the listener
         // Exit velocity at each tail: the mean is mass continuity, ṁ/(ρA), with ṁ the exhaust
@@ -4309,6 +4322,41 @@ mod tests {
         let pull: Vec<f64> = (0..(0.5 / dt) as usize).map(|_| e.step(dt, &on)).collect();
         let lift: Vec<f64> = (0..(0.4 / dt) as usize).map(|_| e.step(dt, &off)).collect();
         assert!(rms(&lift) < rms(&pull), "{} vs {}", rms(&lift), rms(&pull));
+    }
+
+    #[test]
+    fn a_turbo_engines_induction_pulses_die_in_its_charge_air() {
+        // What reaches the air filter is the compressor's flow, not the throttle's: between them
+        // the charge air (5 L) is a compliance C = V/(RT) drained by the compressor's and the
+        // engine's conductances, a low-pass of τ = C/(1/R_c + ṁ/p) ≈ 20 ms — the firing at 100 Hz
+        // passes 1/√(1 + (2π·100·0.02)²) ≈ 0.08 of it. Taken straight from the throttle, the
+        // K20C1's boosted pull was 10-12 dB louder at its intake than at its tail.
+        let swing = |turbo: bool| {
+            let mut d = EngineDef::honda_k20c1();
+            if !turbo {
+                d.turbo = None;
+            }
+            let mut e = Engine::new(d, 3000.0, 1);
+            let dt = 1.0 / 48_000.0;
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(3000.0),
+                ..Controls::default()
+            };
+            (0..(2.0 / dt) as usize).for_each(|_| {
+                e.step(dt, &c);
+            });
+            let x: Vec<f64> = (0..(0.4 / dt) as usize)
+                .map(|_| {
+                    e.step(dt, &c);
+                    e.texture_signal
+                })
+                .collect();
+            let mean = x.iter().sum::<f64>() / x.len() as f64;
+            (x.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / x.len() as f64).sqrt()
+        };
+        let (boosted, natural) = (swing(true), swing(false));
+        assert!(boosted < 0.25 * natural, "{boosted} vs {natural}");
     }
 
     #[test]
