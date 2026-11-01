@@ -171,7 +171,8 @@ impl Turbo {
     }
 
     /// One step of `dt` s: `exhaust_m_dot` kg/s at `t03` K into the turbine, `intake_m_dot` kg/s
-    /// drawn by the engine, `lift_off` when the throttle is shut.
+    /// drawn by the engine, `lift_off` while the blow-off valve is held open (the manifold under
+    /// the boost by its spring: the throttle shut on boost).
     pub fn step(
         &mut self,
         exhaust_m_dot: f64,
@@ -202,7 +203,7 @@ impl Turbo {
         };
         let intake = intake_m_dot.max(0.0);
         // a lift-off opens the blow-off valve (its diaphragm referenced to the manifold, whose
-        // vacuum pulls it open): the compressor then delivers the engine's draw and the valve's vent, whose flow the delivered pressure sets (bisection on
+        // vacuum pulls it open; the engine decides when): the compressor then delivers the engine's draw and the valve's vent, whose flow the delivered pressure sets (bisection on
         // the flow: more flow, less pressure, less vented)
         let bov = |m: f64| nozzle_flow(d.bov_area_m2, exit(m).1, exit(m).2, ATM_PA, GAMMA_AIR);
         let venting = lift_off && d.bov_area_m2 > 0.0;

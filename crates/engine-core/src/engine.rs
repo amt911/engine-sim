@@ -116,8 +116,11 @@ const TURBO_EVERY: usize = 64;
 /// between (manifold, boost pipe), as mean-value engine models take them (Hendricks, SAE
 /// 890564; ESTIMATE: a few cycles at idle, many at speed).
 const TURBO_FLOW_TAU_S: f64 = 0.05;
-/// Pedal under which a turbo's blow-off valve vents (a lift-off).
-const LIFT_OFF_PEDAL: f64 = 0.05;
+/// How far the manifold's pressure must fall under the boost to open a turbo's blow-off
+/// valve, Pa: its diaphragm sees the manifold on one side and the boost on the other, held by
+/// a spring (ESTIMATE: aftermarket and OEM valves crack at 5–10 inHg, 17–34 kPa; over the
+/// throttle's drop at full load).
+const BOV_CRACK_PA: f64 = 30_000.0;
 /// Duration of the strike, s: the impulse m·Δv of the valve's equivalent mass (292 N /
 /// 4474 m/s², Zheng Fig. 21: 0.065 kg) against a closing-ramp speed of ~0.3 m/s at 2500 rpm
 /// (an estimate: ramps of ~0.02 mm/° at 15 000 °/s), as a half-sine of the peak:
@@ -3142,6 +3145,11 @@ impl Engine {
 
         // The turbo, stepped every [`TURBO_EVERY`] steps on what the engine sent it meanwhile
         // (quasi-steady: its shaft's lag is tenths of a second)
+        // the blow-off valve's diaphragm: open while the manifold is under the boost by its
+        // spring (the throttle shut, or nearly, on boost)
+        let bov_open = self
+            .turbo_state
+            .is_some_and(|s| s.boost_pa - self.plenum_pressure_pa() > BOV_CRACK_PA);
         if let Some(t) = &mut self.turbo {
             self.turbo_acc.0 += 1;
             self.turbo_acc.3 += drawn.max(0.0) * dt;
@@ -3155,10 +3163,7 @@ impl Engine {
                     m.1 += (ex_t / ex - m.1) * k;
                 }
                 m.2 += (air / span - m.2) * k;
-                // a lift-off: the pedal released (the blow-off valve's diaphragm sees the
-                // manifold's vacuum then)
-                let lift_off = c.throttle < LIFT_OFF_PEDAL;
-                self.turbo_state = Some(t.step(m.0, m.1, m.2, lift_off, span));
+                self.turbo_state = Some(t.step(m.0, m.1, m.2, bov_open, span));
                 self.turbo_acc = (0, 0.0, 0.0, 0.0);
             }
         }
@@ -4162,6 +4167,9 @@ mod tests {
             if k % 480 == 0 {
                 boost.push(e.turbo().map_or(ATM_PA, |s| s.boost_pa) - ATM_PA);
             }
+            // flat out the manifold sits within the throttle's drop of the boost: the blow-off
+            // valve stays shut
+            assert_eq!(e.turbo().map_or(0.0, |s| s.bov_m_dot), 0.0, "vents at {k}");
         }
         let last = *boost.last().unwrap();
         assert!(last > 0.5e5, "boost {last} Pa");

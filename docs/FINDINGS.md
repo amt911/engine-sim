@@ -1362,3 +1362,14 @@ revs swing ±2–4 dB from one 10 ms window to the next, the render is smooth.
 - Not the cause (measured): friction's gas loading (+2 N·m), pumping (~9 kW), misfires (none),
   spark clamping (none), overlap (an earlier EVC lost power).
 - The dyno waits 4 s a point for a turbo engine (steady boost).
+
+## A manual upshift hung at the old gear's revs (2026-11-01)
+
+- The gears scene's driver held the revs at where the clutch came up while it took up: every
+  manual preset (K20A too) sat ~0.6 s at the old gear's speed, then the locking clutch dragged it
+  down at once. With a turbo the hang was worse: the boosted manifold kept the engine pulling
+  with the clutch down (6815 → 6954 rpm), and the pedal-triggered blow-off valve chattered with
+  the driver's 0.3/0/0.3 throttle. Fix: the driver lets the revs fall to the next gear's speed at
+  the road speed the shift began at (rpm × r_next/r_prev) and comes in under it; the blow-off
+  valve opens on the manifold falling 0.3 bar under the boost (its diaphragm), not on the pedal.
+  K20C1: the revs now fall 6900 → 4800 in ~0.5 s and pull up again.
