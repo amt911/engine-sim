@@ -18,8 +18,8 @@ const CP_AIR: f64 = 1005.0;
 const R_GAS: f64 = 287.0;
 /// Hot exhaust's ratio of specific heats (Heywood Fig. 4-11: 1.3–1.35 at 800–1200 K).
 const GAMMA_EXH: f64 = 1.33;
-/// Ambient temperature at the compressor inlet, K.
-const T_AMB_K: f64 = 293.0;
+/// Ambient temperature at the compressor inlet, K: the intake's.
+const T_AMB_K: f64 = crate::intake_fv::AMBIENT_T_K;
 /// Boost over the wastegate's set point at which it is fully open, Pa (ESTIMATE: a spring
 /// actuator's travel over ~0.1 bar).
 const WASTEGATE_SPAN_PA: f64 = 10_000.0;
@@ -92,8 +92,8 @@ pub fn ratio_from_work(w: f64, eta_c: f64, t01: f64) -> f64 {
 
 /// Euler's specific work of a backswept radial impeller, J/kg: Δh = U²(σ − φ₂·tan β₂), the
 /// flow coefficient φ₂ = c_m2/U = ṁ/(ρ·A₂·U) (Dixon & Hall ch. 7: the work falls with flow, the
-/// map's speed lines leaning over). `rho` the gas density at the exit (taken at the inlet's,
-/// ESTIMATE), `exit_area` π·D₂·b₂. Never negative.
+/// map's speed lines leaning over). `rho` the gas density at the exit, `exit_area` π·D₂·b₂.
+/// Never negative.
 pub fn compressor_work(
     u: f64,
     m_dot: f64,
@@ -188,10 +188,16 @@ impl Turbo {
         let exit_area = std::f64::consts::PI * d.compressor_tip_diameter_m * d.exit_width_m;
         let k = (GAMMA_AIR - 1.0) / GAMMA_AIR;
         // the compressor's exit at a flow `m`: (ratio, pressure, temperature)
+        // (the exit's density is the exit state's: one pass at the inlet's, a second at the
+        // state the first gives — the static pressure and temperature taken as the total's)
         let exit = |m: f64| {
-            let w = compressor_work(u, m, d.slip, tan_b2, exit_area, rho);
-            let r = ratio_from_work(w, d.eta_c, T_AMB_K);
-            let t = T_AMB_K * (1.0 + (r.powf(k) - 1.0) / d.eta_c);
+            let state = |rho2: f64| {
+                let w = compressor_work(u, m, d.slip, tan_b2, exit_area, rho2);
+                let r = ratio_from_work(w, d.eta_c, T_AMB_K);
+                (r, T_AMB_K * (1.0 + (r.powf(k) - 1.0) / d.eta_c))
+            };
+            let (r1, t1) = state(rho);
+            let (r, t) = state(rho * r1 * T_AMB_K / t1);
             (r, ATM_PA * r, t)
         };
         let intake = intake_m_dot.max(0.0);

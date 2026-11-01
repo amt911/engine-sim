@@ -1345,3 +1345,20 @@ revs swing ±2–4 dB from one 10 ms window to the next, the render is smooth.
   model. The recordings also idle at 1000–1200 rpm (cold starts) against the preset's 900.
 - **Shell:** the silencer's wall now has `shell_resonance_hz` (LFA 300, ESTIMATE, kept where the
   6700 lows stay at the dyno clip's; a limp wall put 12–18 dB over them).
+
+## Turbo: what cost the K20C1 its power, in order (2026-11-01)
+
+- **The turbo must see mean flows.** Fed each 0.33 ms block's flows, the intercooler's Δp ∝ ṁ²
+  on the intake pulses sank the boost to its floor and the shaft ran away to NaN. Averaged over
+  50 ms (the volumes between damp the pulses; mean-value models, Hendricks SAE 890564) it is
+  stable.
+- **The backswept work's flow term uses the exit density** (Dixon & Hall: c_m2 = ṁ/(ρ₂A₂)); at
+  the inlet's it halves the boost a compressor can make at flow.
+- **A turbine is not a narrow pipe in a linear waveguide.** A 22 mm "nozzle" pipe in the line,
+  on top of the turbine's mean back pressure, reflected the pulses back to the valves: the
+  K20C1 made 228 N·m at 6500 rpm with 1.4 bar of boost (trapped air 1.66× the NA engine's,
+  torque 1.18×). Without it: 381 N·m. The turbine is its mean back pressure only until a
+  measured turbine transmission (Tiikoja et al., SAE 2011-01-1525) is at hand.
+- Not the cause (measured): friction's gas loading (+2 N·m), pumping (~9 kW), misfires (none),
+  spark clamping (none), overlap (an earlier EVC lost power).
+- The dyno waits 4 s a point for a turbo engine (steady boost).
