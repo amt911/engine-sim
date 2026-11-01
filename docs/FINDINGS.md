@@ -1305,3 +1305,20 @@ steepening vs FV: 0.1 atm −42/−35 dB, 0.3 atm −17.3/−18.4, 0.6 atm −17
 simple-wave line; it is somewhere else in the two exhausts (catalyst, junction, valve
 boundary, mean flow), not yet located. Kept as is (throwaway probe, not committed).
 
+
+## Idle "static" and the LFA's limiter, measured (2026-11-01, open)
+
+User: every idle sounds like static, too quiet and without thump; the LFA in `drive` sounds
+synthetic at the limiter. Held idle by source (sources off one at a time): the K20A's content above
+500 Hz is non-harmonic (noise share −1…−4 dB), from the combustion jitter's cycle-to-cycle
+spread — as in a real exterior idle (VW Golf, Sonniss: −3…−4 dB), but the Golf has 10–12 dB more
+250–1000 Hz against its firing tone. The LFA's exhaust passes nothing above 125 Hz at idle
+(−79…−94 dB re its 63 Hz octave; bypass removed −23…−35): its whole 1–4 kHz is the valve seats'
+clicks (−16 dB re the exhaust overall at 3 m) and the intake. The valve's closed path matches 1D
+expansion-chamber theory for its ESTIMATED chambers (3 chambers, area ratio 28: ≈ 62 dB at 500
+Hz by hand, 61 rendered); a 3 % leak past the shut valve lifts the exhaust's 250 Hz by 40 dB but
+stays under the clicks; 55 or 70 mm tubes +0.4/+1.8 dB. Idle leveling (+12 dB) was heard as
+louder static. The limiter: floored in neutral the LFA saws 9260 ↔ 9600 rpm every 105 ms (cut
+70 ms, 4800 rpm/s down; fuelled 35 ms), the level dips only 3 dB in the cut because the ITB
+intake (as loud as the exhaust at 8800 WOT) does not depend on combustion; YouTube LFAs at high
+revs swing ±2–4 dB from one 10 ms window to the next, the render is smooth.
