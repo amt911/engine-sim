@@ -164,11 +164,6 @@ const LAUNCH_SHARE: f64 = 0.45;
 const SHIFT_SHARE: f64 = 0.97;
 /// A shift: throttle off and clutch down this long, s (a quick manual shift).
 const SHIFT_S: f64 = 0.3;
-/// A driver's upshift lifts the throttle this long before the clutch goes down, s: the torque
-/// is off before the engine is free (clutching with the manifold still full flares it — a
-/// turbo engine's 2.4 bar manifold kept 180 N·m for a tenth and flared it 250 rpm at every
-/// shift). ESTIMATE: a tenth, the lag of a foot moving from one pedal to the other.
-const LIFT_LEAD_S: f64 = 0.1;
 /// Lift-off at the end, s.
 const LIFT_S: f64 = 2.0;
 /// A gear whose speed stops climbing (the car's drag holds it under the shift point) is left
@@ -182,8 +177,6 @@ const PLATEAU_GAIN: f64 = 0.005;
 #[derive(Debug, Clone)]
 pub struct GearPull {
     gears: usize,
-    /// The gearbox's ratios, first gear first.
-    ratios: Vec<f64>,
     redline: f64,
     phase: PullPhase,
     gear: usize,
@@ -221,10 +214,9 @@ enum PullPhase {
 
 impl GearPull {
     /// `shift_time_s`: [`engine_core::drivetrain::VehicleDef::shift_time_s`].
-    pub fn new(ratios: &[f64], redline_rpm: f64, shift_time_s: f64) -> Self {
+    pub fn new(gears: usize, redline_rpm: f64, shift_time_s: f64) -> Self {
         Self {
-            gears: ratios.len().max(1),
-            ratios: ratios.to_vec(),
+            gears: gears.max(1),
             redline: redline_rpm,
             phase: PullPhase::Idle,
             gear: 0,
@@ -256,7 +248,7 @@ impl GearPull {
         if self.shift_time > 0.0 {
             0.5 * self.shift_time
         } else {
-            LIFT_LEAD_S + SHIFT_S
+            SHIFT_S
         }
     }
 
@@ -298,15 +290,8 @@ impl GearPull {
                 self.hold = rpm;
             }
             PullPhase::Shift if self.t >= self.open_s() - 1e-9 => {
-                // the road speed the shift began at, in the next gear: what the clutch will pull
-                // the engine to (the car hardly slows in a few tenths)
-                let (from, to_) = (self.ratios[self.gear - 1], self.ratios[self.gear]);
-                self.takeup = if from > 0.0 {
-                    self.hold * to_ / from
-                } else {
-                    rpm
-                };
                 self.gear += 1;
+                self.takeup = rpm;
                 to(self, PullPhase::Pull);
             }
             PullPhase::Lift if self.t >= LIFT_S - 1e-9 => to(self, PullPhase::Done),
@@ -316,11 +301,10 @@ impl GearPull {
             PullPhase::Idle | PullPhase::Lift | PullPhase::Done => (0.0, false),
             PullPhase::Launch => (1.0, true),
             // while the clutch slips the driver holds the revs: at a launch near the launch revs
-            // (on the throttle up to 15 % over them, off by 45 %); after a shift under the new
-            // gear's speed at the road speed it began at (none there, full 10 % under), off the
-            // throttle while the revs fall to it: throttle over it flared the engine, the clutch
-            // still short of its torque, and holding the old gear's revs hung the engine there
-            // through the take-up.
+            // (on the throttle up to 15 % over them, off by 45 %); after a shift under where
+            // the clutch came up (none there, full 10 % under) as the clutch pulls them down to
+            // the new gear's: throttle there flared the engine over them, the clutch still short
+            // of its torque.
             // An automated gearbox holds the engine's torque low until its clutch locks
             // (Glielmo et al. 2006, Fig. 10). Locked, flat out
             PullPhase::Pull if !locked && self.gear == 1 => {
@@ -338,9 +322,7 @@ impl GearPull {
             PullPhase::Pull => (1.0, false),
             // shifted on paddles the foot stays down; a driver lifts it
             PullPhase::Shift if self.shift_time > 0.0 => (1.0, true),
-            // a driver lifts first, then clutches
-            PullPhase::Shift => (0.0, self.t >= LIFT_LEAD_S - 1e-9),
-            PullPhase::Clutch => (0.0, true),
+            PullPhase::Shift | PullPhase::Clutch => (0.0, true),
         };
         let ramp = dt / self.open_s();
         self.cut = match self.phase {
@@ -388,7 +370,7 @@ pub fn render_gears(def: &EngineDef, sample_rate: f64, quality: Quality) -> (Vec
     let block = 240;
     let dt = block as f64 / sample_rate;
     let mut pull = GearPull::new(
-        &def.vehicle.gear_ratios,
+        def.vehicle.gear_ratios.len(),
         def.redline_rpm,
         def.vehicle.shift_time_s,
     );
@@ -620,7 +602,7 @@ mod tests {
         // (Glielmo et al. 2006, Fig. 10: the engine torque falls before the clutch opens, stays
         // low while it slips and rises after lock-up)
         let dt = 0.01;
-        let mut p = GearPull::new(&FIVE, 6000.0, 0.2);
+        let mut p = GearPull::new(5, 6000.0, 0.2);
         for _ in 0..131 {
             p.next(900.0, true, dt);
         }
@@ -661,7 +643,7 @@ mod tests {
         // limiter at every flat-out shift, and the limiter's all-cylinder fuel cut was heard as
         // a thump (measured 2026-10-30: +35 dB in 10-60 Hz for 10 ms at each shift).
         let dt = 0.01;
-        let mut p = GearPull::new(&SIX, 9000.0, 0.2);
+        let mut p = GearPull::new(6, 9000.0, 0.2);
         for _ in 0..131 {
             p.next(900.0, true, dt);
         }
@@ -694,19 +676,15 @@ mod tests {
         );
     }
 
-    /// Gear ratios for the driver's tests: five and six speeds, and one.
-    const FIVE: [f64; 5] = [3.0, 2.0, 1.5, 1.2, 1.0];
-    const SIX: [f64; 6] = [3.0, 2.2, 1.6, 1.25, 1.0, 0.8];
-
     #[test]
-    fn after_a_shift_the_driver_lets_the_revs_fall_to_the_next_gears() {
-        // shifted at 5820 rpm from a 3.0 first into a 2.0 second, the road speed is the next
-        // gear's 5820·2/3 = 3880 rpm: the driver stays off the throttle while the revs fall to it
-        // (holding the old gear's revs hung the engine at 6000+ for the whole take-up and the
-        // clutch then dragged it down at once), comes in under it — half 5 % under, full 10 %
-        // under — as the clutch takes up
+    fn after_a_shift_the_driver_holds_the_revs_while_the_clutch_takes_up() {
+        // an upshift lands the engine above the next gear's speed: the clutch slips until they
+        // meet, and the driver is already back on the throttle (the launch's governor, which
+        // holds the revs near 45 % of the redline while the clutch slips from rest, is for the
+        // launch only; after a shift it shut the throttle until the clutch locked, then opened
+        // it at once: the engine cut and refired as the clutch took up)
         let dt = 0.01;
-        let mut p = GearPull::new(&FIVE, 6000.0, 0.0);
+        let mut p = GearPull::new(5, 6000.0, 0.0);
         let mut step = |rpm: f64, locked: bool| p.next(rpm, locked, dt);
         for _ in 0..131 {
             step(900.0, true);
@@ -714,15 +692,19 @@ mod tests {
         step(1500.0, false);
         step(2700.0, false);
         step(5820.0, true);
-        for _ in 0..40 {
+        for _ in 0..30 {
             step(5000.0, false);
         }
+        // second gear in at 5000 rpm, the clutch still slipping: the clutch pulls the revs down
+        // to the new gear's, the driver comes in under where it came up — none there (half
+        // throttle there flared a bridge-ported 13B 500 rpm with its clutch barely biting: an
+        // odd surge at every shift), half 5 % under, full 10 % under
         let (thr, d) = step(5000.0, false);
         assert_eq!((d.gear, d.clutch_pedal), (2, false));
         assert_eq!(thr, 0.0);
-        assert_eq!(step(4000.0, false).0, 0.0);
-        assert!((step(0.95 * 3880.0, false).0 - 0.5).abs() < 1e-9);
-        assert_eq!(step(0.9 * 3880.0, false).0, 1.0);
+        assert!((step(4750.0, false).0 - 0.5).abs() < 1e-9);
+        assert_eq!(step(5600.0, false).0, 0.0);
+        assert_eq!(step(4500.0, false).0, 1.0);
         // locked: flat out
         assert_eq!(step(4000.0, true).0, 1.0);
     }
@@ -730,10 +712,10 @@ mod tests {
     #[test]
     fn a_gear_pull_launches_shifts_at_the_limit_and_lifts() {
         // 5 gears, redline 6000: launch at 45 % of it with the clutch, full throttle; at 97 %
-        // (5820 rpm) a shift (throttle off, a tenth later clutch down for 0.3 s, next gear); in top gear it pulls
+        // (5820 rpm) a 0.3 s shift (throttle off, clutch down, next gear); in top gear it pulls
         // to the shift point, then lifts off for 2 s and the scene ends
         let dt = 0.01;
-        let mut p = GearPull::new(&FIVE, 6000.0, 0.0);
+        let mut p = GearPull::new(5, 6000.0, 0.0);
         let step = |p: &mut GearPull, rpm: f64| p.next(rpm, true, dt);
         // idle in neutral first
         let (thr, d) = step(&mut p, 900.0);
@@ -755,17 +737,9 @@ mod tests {
         assert_eq!((thr, d.gear, d.clutch_pedal), (1.0, 1, false));
         // pulling until the shift point
         assert_eq!(step(&mut p, 5000.0).1.gear, 1);
-        // the driver lifts first and clutches a tenth later, once the torque is off (clutching
-        // with the manifold still full flared a turbo engine 250 rpm at every shift)
         let (thr, d) = step(&mut p, 5820.0);
-        assert_eq!((thr, d.clutch_pedal), (0.0, false));
-        for _ in 0..9 {
-            let (thr, d) = step(&mut p, 5800.0);
-            assert_eq!((thr, d.gear, d.clutch_pedal), (0.0, 1, false));
-        }
-        let (thr, d) = step(&mut p, 5800.0);
         assert_eq!((thr, d.clutch_pedal), (0.0, true));
-        for _ in 0..29 {
+        for _ in 0..30 {
             step(&mut p, 5000.0);
         }
         let (thr, d) = step(&mut p, 4000.0);
@@ -773,7 +747,7 @@ mod tests {
         // through to top gear
         for g in 2..5 {
             step(&mut p, 5820.0);
-            for _ in 0..41 {
+            for _ in 0..31 {
                 step(&mut p, 4000.0);
             }
             assert_eq!(step(&mut p, 4000.0).1.gear, g + 1);
@@ -794,7 +768,7 @@ mod tests {
     fn a_slipping_clutch_holds_the_launch_revs_and_never_shifts() {
         // the clutch takes its time to bite: while it slips the driver holds the engine near
         // the launch revs instead of letting it fly to the limiter, and does not shift
-        let mut p = GearPull::new(&FIVE, 6000.0, 0.0);
+        let mut p = GearPull::new(5, 6000.0, 0.0);
         for _ in 0..140 {
             p.next(900.0, false, 0.01);
         }
@@ -817,7 +791,7 @@ mod tests {
     fn a_gear_pull_that_stops_climbing_moves_on() {
         // drag can hold a gear under the limit: once its speed stops climbing for PLATEAU_S the
         // pull moves on (here the only gear, so it lifts off and ends)
-        let mut p = GearPull::new(&[3.0], 6000.0, 0.0);
+        let mut p = GearPull::new(1, 6000.0, 0.0);
         for _ in 0..200 {
             p.next(900.0, true, 0.01);
         }
