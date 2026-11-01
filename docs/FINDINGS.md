@@ -1363,7 +1363,11 @@ revs swing ±2–4 dB from one 10 ms window to the next, the render is smooth.
   spark clamping (none), overlap (an earlier EVC lost power).
 - The dyno waits 4 s a point for a turbo engine (steady boost).
 
-## A manual upshift hung at the old gear's revs (2026-11-01)
+## A manual upshift hung at the old gear's revs (2026-11-01) — superseded, see below
+
+- **Reverted the same day:** the driver changes below (synchronised take-up, lift lead) treated
+  symptoms; the shift burst was the turbo model's (next section). The vacuum-referenced,
+  recirculating bypass valve stays.
 
 - The gears scene's driver held the revs at where the clutch came up while it took up: every
   manual preset (K20A too) sat ~0.6 s at the old gear's speed, then the locking clutch dragged it
@@ -1378,3 +1382,34 @@ revs swing ±2–4 dB from one 10 ms window to the next, the render is smooth.
   250 rpm (heard as a blip at every shift). The driver now lifts first and clutches 0.1 s later.
   The turbo's bypass valve recirculates by default (factory practice): its jet is heard only
   with `bov_recirculating: false` (an aftermarket blow-off valve).
+
+## The K20C1's shift burst was the turbo model, not the driver (2026-11-01)
+
+- **Measure against recordings before iterating.** Three driver fixes in a row each moved the
+  burst without curing it; spectrograms of real FK8 pulls showed none, ablation pinned it to the
+  turbo (gone with `turbo: null`), and its spectrum gave it away: exactly 3000 and 9000 Hz.
+- **A bang-bang valve on an algebraic boost is a period-two limit cycle.** The boost was the
+  compressor's instant delivery: the blow-off valve opened at a turbo step, the boost fell 75 kPa,
+  the valve shut at the next — a square wave at half the update rate (384 kHz / 64 / 2 = 3 kHz),
+  through the wastegate into the turbine inlet too. The boost is now the charge air's pressure
+  (`charge_volume_m3`, filling and emptying).
+- **Anything updated every N steps and taken at once is a tone at rate/N.** At Reference (8
+  substeps) the 64-step updates were a 6 kHz tone, 52 dB over a boosted exhaust's floor: the
+  area changes' flow resistance stepping a 75 kPa DC wave was most of it. Slow quantities now
+  follow over 2 ms (`GAIN_TAU_S`, `TURBO_SEEN_TAU_S`, `TURBINE_R_TAU_S`). A 26 dB 6 kHz line
+  remains in every engine's exhaust-only render at Reference, turbo or not (each mean applied
+  every step leaves it too): its cause is still open; in a full mix it is 5-16 dB over the floor.
+- **A turbo engine's intake mouth is behind its charge air.** Radiated straight from the throttle
+  the K20C1's intake was 10-12 dB over its tail and fell silent at every lift-off (24 dB holes);
+  the charge air is a ~20 ms low-pass (`charge_tau_s`).
+- **A turbine needs its acoustics, not only its mean.** Without it, a lift-off's valve blow-back
+  reached the tail whole (13-16 dB over the pull); `TurbineJunction` (R = dp03/dṁ on the pulses).
+- **A compressor needs its choke** (inducer sonic flow): without it boost held to the redline and
+  the K20C1 made 356 hp against 306.
+- **Renders are normalised to their peak**: compare levels across variants only with the
+  normalisation off (a scratch switch), or a loud artefact sinks everything else.
+- **Acceleration videos are onboard**: the cabin takes 15-30 dB off 1-8 kHz; compare timbre with
+  outside recordings (stock-exhaust sound checks), not with 0-100 runs.
+- `pgrep -f '<pattern>'` inside `bash -c "...<pattern>..."` matches its own shell: a wait loop on
+  it never ends.
+
