@@ -501,6 +501,7 @@ impl EngineDef {
             ..crate::turbo::TurboDef::default()
         };
         d.turbo = Some(turbo);
+        d.vehicle = crate::drivetrain::VehicleDef::civic_type_r_fk8();
         d
     }
 
@@ -4215,6 +4216,20 @@ mod tests {
             rms(&jet),
             rms(&off_quiet)
         );
+    }
+
+    #[test]
+    fn the_k20c1_rides_in_a_civic_type_r() {
+        // Its own car: the FK8's six ratios and final drive, and a clutch that holds the
+        // engine's torque — the hatchback's 350 N·m clutch slipped under the turbo's ~445 N·m and
+        // the gears scene sat at 6000 rpm in every gear
+        let v = EngineDef::honda_k20c1().vehicle;
+        assert_eq!(
+            v.gear_ratios,
+            vec![3.625, 2.115, 1.529, 1.125, 0.911, 0.734]
+        );
+        assert_eq!(v.final_drive, 4.105);
+        assert!(v.clutch_capacity_nm > 445.0, "{}", v.clutch_capacity_nm);
     }
 
     #[test]

@@ -129,6 +129,31 @@ impl VehicleDef {
         }
     }
 
+    /// Honda Civic Type R (FK8, 2017): its 6-speed's ratios 3.625/2.115/1.529/1.125/0.911/0.734
+    /// and 4.105 final drive (Honda press kit, as listed by the motoring press), kerb mass ~1,380
+    /// kg + a driver = 1,455 kg; 245/30 R20 tyres: 0.245 × 0.30 + 0.508/2 = 0.3275 m. ESTIMATES:
+    /// Cd·A 0.75 m² (Cd ≈ 0.34 × ~2.2 m²); a clutch holding 1.3× the engine's 400 N·m (the usual
+    /// margin of a clutch over its engine, Shaver, *Manual Transmission Clutch Systems*, SAE AE-17).
+    pub fn civic_type_r_fk8() -> Self {
+        Self {
+            name: "Honda Civic Type R (FK8)".into(),
+            mass_kg: 1455.0,
+            wheel_radius_m: 0.3275,
+            drag_cd_a_m2: 0.75,
+            rolling_coeff: 0.012,
+            gear_ratios: vec![3.625, 2.115, 1.529, 1.125, 0.911, 0.734],
+            final_drive: 4.105,
+            driveline_efficiency: 0.92,
+            wheel_inertia_kgm2: 4.0,
+            clutch_capacity_nm: 1.3 * 400.0,
+            max_brake_decel_m_s2: 9.0,
+            shift_time_s: 0.0,
+            // front engine over the front axle: 2.7 m wheelbase + 0.9 m rear overhang (ESTIMATE)
+            engine_ahead_m: 3.6,
+            engine_bay: Some(crate::engine_bay::EngineBay::default()),
+        }
+    }
+
     /// Lexus LFA. Kerb mass 1,480 kg, the six gear ratios 3.231/2.188/1.609/1.233/0.970/0.795
     /// and the 4.556 final drive are the figures given for the LFA's 6-speed ASG in the
     /// task spec (not independently re-verified here). The rear tyre 305/30 ZR20 gives
@@ -767,6 +792,7 @@ mod tests {
         for d in [
             VehicleDef::single(),
             VehicleDef::inline4(),
+            VehicleDef::civic_type_r_fk8(),
             VehicleDef::lfa_v10(),
             VehicleDef::flatplane_v8(),
             VehicleDef::crossplane_v8(),
