@@ -1285,3 +1285,14 @@ feat/duct-flow-noise branch) is 45–49 dB under the exhaust at 6000 WOT — ina
 The LFA's drive scene sits mostly on the rev limiter in neutral: its orders there are the fuel
 cut's, not the engine's; judge the LFA's harmonics on `gears` or `held:`, where orders 1–40 sit
 inside the spread of the real car's dyno and road clips.
+
+## The steepening waveguide's highs are its own: the exact solver has none of them (2026-11-01)
+
+K20A held 6000 rpm WOT, bands 2/4/8/16 kHz re the loudest octave: steepening waveguide −8/−10/−10/
+−15 dB, the finite-volume exhaust −25/−36/−40/−45, linear −26/−28/−33/−39. The FV result is
+converged (4 cm and 1 cm cells within 3 dB) and is not its wall friction (friction 0: within 3
+dB): the exact 1D solution does not form the shocks the simple-wave line forms on these pulses.
+Through the gears the FV K20A's bands (hi 4–16 kHz −28 dB) fall inside the four road clips'
+(−13…−41) and match one of them band for band. The simple-wave line overshoots on strong pulses
+here as on the rotaries (above). Sent to the user as an A/B (current vs FV) before changing
+anything: the user's ear rejected the last cut of these highs (road silencers).
