@@ -71,8 +71,8 @@ pub struct VehicleDef {
     /// mouths and block are heard from there, farther and later than the tails.
     pub engine_ahead_m: f64,
     /// The bay closed round the engine, if it has one: it takes its part of the valve ticking
-    /// the head radiates into it ([`crate::engine_bay`]). Files written before bays were modelled have none.
-    #[serde(default)]
+    /// the head radiates into it ([`crate::engine_bay`]). Like every field, files without it take
+    /// the default car's (a road car's bay).
     pub engine_bay: Option<crate::engine_bay::EngineBay>,
 }
 
