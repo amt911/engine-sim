@@ -70,6 +70,10 @@ pub struct VehicleDef {
     /// How far ahead of the tail pipes' tips the engine sits along the car, m: its intake
     /// mouths and block are heard from there, farther and later than the tails.
     pub engine_ahead_m: f64,
+    /// The bay closed round the engine, if it has one: it takes its part of the valve ticking
+    /// the head radiates into it ([`crate::engine_bay`]). Like every field, files without it take
+    /// the default car's (a road car's bay).
+    pub engine_bay: Option<crate::engine_bay::EngineBay>,
 }
 
 impl Default for VehicleDef {
@@ -98,6 +102,7 @@ impl VehicleDef {
             shift_time_s: 0.0,
             // the engine sits ahead of a rear-side silencer's tip (ESTIMATE)
             engine_ahead_m: 0.9,
+            engine_bay: None,
         }
     }
 
@@ -120,6 +125,7 @@ impl VehicleDef {
             shift_time_s: 0.0,
             // front engine over the front axle: 2.6 m wheelbase + 0.8 m rear overhang (ESTIMATE)
             engine_ahead_m: 3.4,
+            engine_bay: Some(crate::engine_bay::EngineBay::default()),
         }
     }
 
@@ -146,6 +152,7 @@ impl VehicleDef {
             shift_time_s: 0.2,
             // front-mid engine ~0.35 m behind the front axle: 0.96 m rear overhang + 2.605 m wheelbase − 0.35 m (Lexus GB, 2009-10-21; the 0.35 m an ESTIMATE)
             engine_ahead_m: 3.2,
+            engine_bay: Some(crate::engine_bay::EngineBay::default()),
         }
     }
 
@@ -169,6 +176,7 @@ impl VehicleDef {
             shift_time_s: 0.0,
             // mid engine, its centre ~0.7 m ahead of the rear axle, ~1.0 m rear overhang (ESTIMATE)
             engine_ahead_m: 1.7,
+            engine_bay: Some(crate::engine_bay::EngineBay::default()),
         }
     }
 
@@ -192,6 +200,7 @@ impl VehicleDef {
             shift_time_s: 0.0,
             // front-mid engine just behind the front axle: ~2.69 m wheelbase + ~1.0 m rear overhang − 0.2 m (ESTIMATE)
             engine_ahead_m: 3.5,
+            engine_bay: Some(crate::engine_bay::EngineBay::default()),
         }
     }
 
@@ -397,6 +406,7 @@ mod tests {
             max_brake_decel_m_s2: 9.0,
             shift_time_s: 0.0,
             engine_ahead_m: 0.0,
+            engine_bay: None,
         }
     }
 

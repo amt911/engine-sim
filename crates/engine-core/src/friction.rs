@@ -55,6 +55,9 @@ pub struct FrictionDef {
     /// Roller cam followers (rolling contact) instead of flat ones (mixed lubrication).
     pub roller_followers: bool,
     pub valves_per_cylinder: u32,
+    /// Density of the valves' material, kg/m³: steel 7850, titanium 4430 (Ti-6Al-4V). A lighter
+    /// valve strikes its seat softer ([`crate::engine`]'s seat strikes); friction ignores it.
+    pub valve_density_kg_m3: f64,
     /// Connecting rods sharing each crankpin on a vee engine (2 on most V8s and V10s); sets the
     /// bearing sizes (Patton, Tables 1–2). Inline engines ignore it.
     pub rods_per_crankpin: u32,
@@ -68,12 +71,16 @@ pub struct FrictionDef {
     pub oil_viscosity_ratio: f64,
 }
 
+/// Valve steel's density, kg/m³.
+pub const STEEL_KG_M3: f64 = 7850.0;
+
 impl Default for FrictionDef {
     fn default() -> Self {
         Self {
             valvetrain: Valvetrain::default(),
             roller_followers: false,
             valves_per_cylinder: 4,
+            valve_density_kg_m3: STEEL_KG_M3,
             rods_per_crankpin: 2,
             ring_tension_ratio: 1.0,
             liner_roughness: 1.0,

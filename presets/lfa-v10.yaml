@@ -196,6 +196,10 @@ engine:
         baffle_open_area: 0.03
         open_rpm: 3000.0
         travel_s: 0.3
+        shell_thickness_m: 0.001
+        shell_density_kg_m3: 4510.0
+        shell_area_m2: 0.1382300767579509
+        shell_resonance_hz: 300.0
     steepening: true
     gas_temperature: true
   intake:
@@ -214,6 +218,7 @@ engine:
     valvetrain: dohc_direct_acting
     roller_followers: false
     valves_per_cylinder: 4
+    valve_density_kg_m3: 4430.0
     rods_per_crankpin: 2
     ring_tension_ratio: 1.0
     liner_roughness: 1.0
@@ -256,3 +261,8 @@ engine:
     max_brake_decel_m_s2: 10.0
     shift_time_s: 0.2
     engine_ahead_m: 3.2
+    engine_bay:
+      open_fraction: 0.01
+      liner_thickness_m: 0.02
+      liner_resistivity: 16000.0
+      liner_coverage: 0.25
