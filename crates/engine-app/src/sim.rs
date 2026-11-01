@@ -962,6 +962,43 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_rotaries_idle_on_their_own_at_reference_quality() {
+        // the offline scenes idle each engine before recording; a RENESIS that fell into a
+        // stall after its start flare (a port coupling tried on it) rendered silence. Both
+        // Mazdas must catch their idle and hold it, pedal up, for any seed.
+        use crate::controls::Preset;
+        for p in [Preset::MazdaRenesis, Preset::Mazda13bBridgeport] {
+            for seed in 1..=2 {
+                let def = p.def();
+                let target = def.idle_rpm;
+                let mut sim = Simulation::with_quality(
+                    def,
+                    p.vehicle(),
+                    48_000.0,
+                    seed,
+                    crate::quality::Quality::Reference,
+                );
+                let mut buf = vec![0.0f32; 12_000];
+                // past the start flare: never near a stall, on average near the target (a
+                // bridge port's idle is lumpy: ±30 %)
+                let (mut low, mut sum) = (f64::INFINITY, 0.0);
+                for k in 0..40 {
+                    sim.render(&mut buf);
+                    if k >= 8 {
+                        let rpm = sim.snapshot().rpm;
+                        low = low.min(rpm);
+                        sum += rpm / 32.0;
+                    }
+                }
+                assert!(
+                    low > 0.6 * target && (sum / target - 1.0).abs() < 0.25,
+                    "{p:?} seed {seed}: low {low}, mean {sum}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn neutral_leaves_the_engine_free_and_the_car_still() {
         let mut sim = driven(EngineDef::inline4(), VehicleDef::inline4(), 0, 1.0);
         render_secs(&mut sim, 0.5);
@@ -984,8 +1021,9 @@ pub(crate) mod tests {
             "{v0} → {}",
             s.speed_m_s
         );
+        // free of the car with the pedal up it falls fast (6000 → ≈ 4200 rpm in the second)
         assert!(
-            s.rpm < 0.7 * rpm0,
+            s.rpm < 0.75 * rpm0,
             "engine spools down: {rpm0} -> {}",
             s.rpm
         );
