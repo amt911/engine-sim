@@ -4242,6 +4242,43 @@ mod tests {
     }
 
     #[test]
+    fn a_lift_off_under_boost_lets_the_boost_down_through_its_volume() {
+        // The boost is the pressure of the air between compressor and throttle (intercooler and
+        // pipes, 5 L): it moves at dp/dt = RT/V·(ṁ in − ṁ out), at most 287·320/0.005·0.3 kg/s ≈
+        // 5.5 MPa/s, 7.4 kPa over one turbo step at 48 kHz (64 steps, 1.33 ms). Taken as the
+        // compressor's instant delivery it jumped 75 kPa at every step after a lift-off, the
+        // blow-off valve shut and open by turns (a 3 kHz square wave at 384 kHz: heard as a
+        // burst at every shift).
+        let mut e = Engine::new(EngineDef::honda_k20c1(), 6500.0, 1);
+        let dt = 1.0 / 48_000.0;
+        let on = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(6500.0),
+            ..Controls::default()
+        };
+        let off = Controls {
+            throttle: 0.0,
+            ..on
+        };
+        (0..(2.5 / dt) as usize).for_each(|_| {
+            e.step(dt, &on);
+        });
+        let boost = |e: &Engine| e.turbo().expect("a turbo").boost_pa;
+        let full = boost(&e);
+        assert!(full > ATM_PA + 1e5, "{full}");
+        let (mut last, mut jump): (f64, f64) = (full, 0.0);
+        (0..(0.5 / dt) as usize).for_each(|_| {
+            e.step(dt, &off);
+            jump = jump.max((boost(&e) - last).abs());
+            last = boost(&e);
+        });
+        assert!(jump < 10e3, "{jump}");
+        // and with the throttle shut it does not climb (the shaft still spinning, the open
+        // valve holds it near the compressor's delivery through it)
+        assert!(last < full, "{last} vs {full}");
+    }
+
+    #[test]
     fn the_k20c1_rides_in_a_civic_type_r() {
         // Its own car: the FK8's six ratios and final drive, and a clutch that holds the
         // engine's torque — the hatchback's 350 N·m clutch slipped under the turbo's ~445 N·m and

@@ -57,6 +57,10 @@ pub struct TurboDef {
     /// The valve vents back into the compressor's inlet (a factory bypass valve: nothing heard
     /// outside) rather than to the air (an aftermarket blow-off valve's "pssh").
     pub bov_recirculating: bool,
+    /// The charge air's volume between compressor and throttle (intercooler core and pipes),
+    /// m³: the boost is its pressure, filled by the compressor and emptied by the engine and
+    /// the blow-off valve.
+    pub charge_volume_m3: f64,
 }
 
 impl Default for TurboDef {
@@ -79,6 +83,8 @@ impl Default for TurboDef {
             bov_area_m2: 3e-4,
             // carmakers fit recirculating bypass valves (ESTIMATE: the usual factory practice)
             bov_recirculating: true,
+            // ESTIMATE: a front-mounted intercooler's core (~3 L) and its pipes
+            charge_volume_m3: 0.005,
         }
     }
 }
@@ -160,11 +166,12 @@ pub struct TurboState {
     pub bov_m_dot: f64,
 }
 
-/// A turbocharger's running state: its shaft's kinetic energy.
+/// A turbocharger's running state: its shaft's kinetic energy and its charge air's pressure.
 #[derive(Debug, Clone)]
 pub struct Turbo {
     def: TurboDef,
     energy_j: f64,
+    boost_pa: f64,
 }
 
 impl Turbo {
@@ -172,6 +179,7 @@ impl Turbo {
         Self {
             def: def.clone(),
             energy_j: 0.0,
+            boost_pa: ATM_PA,
         }
     }
 
@@ -207,26 +215,72 @@ impl Turbo {
             (r, ATM_PA * r, t)
         };
         let intake = intake_m_dot.max(0.0);
-        // a lift-off opens the blow-off valve (its diaphragm referenced to the manifold, whose
-        // vacuum pulls it open; the engine decides when): the compressor then delivers the engine's draw and the valve's vent, whose flow the delivered pressure sets (bisection on
-        // the flow: more flow, less pressure, less vented)
-        let bov = |m: f64| nozzle_flow(d.bov_area_m2, exit(m).1, exit(m).2, ATM_PA, GAMMA_AIR);
+        // The charge air (intercooler and pipes, volume V) holds the boost: the compressor
+        // delivers into it the flow its characteristic gives at the pressure it meets, the
+        // engine draws from it, a lift-off's blow-off valve vents it (its diaphragm referenced to
+        // the manifold, whose vacuum pulls it open; the engine decides when). One implicit step
+        // of dp/dt = RT/V·(ṁ_c − ṁ_engine − ṁ_vent), filling and emptying (Heywood §7.6.2;
+        // Watson & Janota ch. 9), solved on ṁ_c: more flow, less pressure on backswept blades,
+        // less vented, so the residual falls with it. As the compressor's instant delivery, the
+        // boost jumped at every step a bang-bang valve opened or shut.
         let venting = lift_off && d.bov_area_m2 > 0.0;
-        let m_c = if venting {
-            let (mut lo, mut hi) = (intake, intake + bov(intake));
-            for _ in 0..40 {
+        // the charge at a compressor flow `m`: (pressure after the intercooler, temperature)
+        let charge = |m: f64| {
+            let (_, p, t) = exit(m);
+            (
+                p - d.intercooler_drop_k * m * m,
+                t - d.intercooler_effectiveness * (t - T_AMB_K),
+            )
+        };
+        let vent = |p: f64, t: f64| {
+            if venting {
+                nozzle_flow(d.bov_area_m2, p, t, ATM_PA, GAMMA_AIR)
+            } else {
+                0.0
+            }
+        };
+        let fill = |t: f64| dt * R_GAS * t / d.charge_volume_m3.max(1e-6);
+        let residual = |m: f64| {
+            let (p, t) = charge(m);
+            p - self.boost_pa - fill(t) * (m - intake - vent(p, t))
+        };
+        let m_c = if residual(0.0) <= 0.0 {
+            // the compressor cannot reach the charge's pressure at any flow: it delivers none
+            0.0
+        } else {
+            let mut hi = 0.05;
+            while residual(hi) > 0.0 && hi < 100.0 {
+                hi *= 2.0;
+            }
+            let mut lo = 0.0;
+            for _ in 0..50 {
                 let m = 0.5 * (lo + hi);
-                if intake + bov(m) > m {
+                if residual(m) > 0.0 {
                     lo = m;
                 } else {
                     hi = m;
                 }
             }
             0.5 * (lo + hi)
-        } else {
-            intake
         };
-        let (ratio, p02, t02) = exit(m_c);
+        let t_b = charge(m_c).1;
+        self.boost_pa = if m_c > 0.0 {
+            charge(m_c).0
+        } else {
+            // none delivered: the engine and the valve empty it (implicit on the vent)
+            let (mut lo, mut hi) = (0.0, self.boost_pa);
+            for _ in 0..50 {
+                let p = 0.5 * (lo + hi);
+                if p - self.boost_pa + fill(t_b) * (intake + vent(p, t_b)) > 0.0 {
+                    hi = p;
+                } else {
+                    lo = p;
+                }
+            }
+            0.5 * (lo + hi)
+        };
+        let vented = vent(self.boost_pa, t_b);
+        let (ratio, p02, _) = exit(m_c);
         // the wastegate opens on the compressor's boost
         let gate = ((p02 - ATM_PA - d.wastegate_pa) / WASTEGATE_SPAN_PA).clamp(0.0, 1.0);
         let gate_area = gate * d.wastegate_area_m2;
@@ -255,11 +309,11 @@ impl Turbo {
         let p_c = compressor_power(m_c, T_AMB_K, ratio, d.eta_c);
         self.energy_j = (self.energy_j + (d.eta_m * p_t - p_c) * dt).max(0.0);
         TurboState {
-            boost_pa: (p02 - d.intercooler_drop_k * m_c * m_c).max(0.1 * ATM_PA),
-            boost_t_k: t02 - d.intercooler_effectiveness * (t02 - T_AMB_K),
+            boost_pa: self.boost_pa.max(0.1 * ATM_PA),
+            boost_t_k: t_b,
             turbine_inlet_pa: p03,
             shaft_rpm: omega * 60.0 / (2.0 * std::f64::consts::PI),
-            bov_m_dot: if venting { m_c - intake } else { 0.0 },
+            bov_m_dot: vented,
         }
     }
 }
@@ -394,10 +448,16 @@ mod tests {
 
     #[test]
     fn a_turbo_round_trips() {
-        let d = TurboDef::default();
+        let d = TurboDef {
+            charge_volume_m3: 0.0071,
+            ..TurboDef::default()
+        };
         let json: TurboDef = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
         let yaml: TurboDef =
             serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&d).unwrap()).unwrap();
         assert_eq!((json, yaml), (d.clone(), d));
+        // a file from before the charge volume takes the default's
+        let old: TurboDef = serde_yaml_ng::from_str("blades: 11").unwrap();
+        assert_eq!(old.charge_volume_m3, TurboDef::default().charge_volume_m3);
     }
 }
