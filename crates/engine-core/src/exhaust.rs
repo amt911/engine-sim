@@ -818,6 +818,9 @@ struct Branch {
     /// Muffler can and tail pipe.
     tail: Duct,
     end: OpenEnd,
+    /// A turbine between the collector and the tail, once the engine has said so
+    /// ([`ExhaustNet::set_turbine_resistance`]).
+    turbine: Option<crate::waveguide::TurbineJunction>,
 }
 
 /// ρc of the primaries' gas, Pa·s/m: an ideal gas at an atmosphere whose speed of sound is
@@ -1167,6 +1170,19 @@ impl BlockIn {
     }
 }
 
+/// The means an [`ExhaustNet`] follows, handed every few dozen steps ([`ExhaustNet::prepare`]):
+/// mass flows, kg/s, per cylinder and per branch; the engine speed, rpm; the gas's mean pressure
+/// before the collectors' end, Pa ([`ExhaustNet::set_mean_pressure`]); and a turbine's slope
+/// there, Pa per kg/s (0: none, [`ExhaustNet::set_turbine_resistance`]).
+#[derive(Debug, Clone, Copy)]
+pub struct NetMeans<'a> {
+    pub cylinders: &'a [f64],
+    pub branches: &'a [f64],
+    pub rpm: f64,
+    pub upstream_pa: f64,
+    pub turbine_dp_dm: f64,
+}
+
 /// What the net did over a [`BlockIn`]: per step, the wave each primary's collector end sent
 /// back toward its valve (steps × valves) and the radiated tail signals (steps × tails).
 #[derive(Debug, Clone, Default)]
@@ -1326,6 +1342,7 @@ impl ExhaustNet {
                 ),
                 tail: after_collector(def, dt, lining_m),
                 end: OpenEnd::new(def.tail_diameter_m, dt),
+                turbine: None,
             })
             .collect();
         Self {
@@ -1507,6 +1524,25 @@ impl ExhaustNet {
         }
     }
 
+    /// A turbine follows each collector, its inlet's pressure rising with the flow at `dp_dm` Pa
+    /// per kg/s ([`crate::turbo::TurboState::turbine_dp_dm`]): the collector meets the tail
+    /// through it ([`crate::waveguide::TurbineJunction`]). None until a positive slope is given (a
+    /// net without a turbo is left as it was).
+    pub fn set_turbine_resistance(&mut self, dp_dm: f64) {
+        let dt = self.dt;
+        for b in &mut self.branches {
+            match &mut b.turbine {
+                Some(t) => t.set_resistance(dp_dm),
+                None if dp_dm > 0.0 => {
+                    let mut t = crate::waveguide::TurbineJunction::new(dt);
+                    t.set_resistance(dp_dm);
+                    b.turbine = Some(t);
+                }
+                None => {}
+            }
+        }
+    }
+
     /// Mean mass flows, kg/s: through each cylinder's primary and each branch's collector and
     /// what follows it (their turbulent friction, [`Pipe::set_mean_flow`]).
     pub fn set_mean_flow(&mut self, per_cylinder: &[f64], per_branch: &[f64]) {
@@ -1585,12 +1621,13 @@ impl ExhaustNet {
     /// The start of a step: the tails' outflow Mach and, when given, the mean flows the pipes'
     /// friction follows — what [`Engine`](crate::engine::Engine) applies before each
     /// [`ExhaustNet::step`].
-    pub fn prepare(&mut self, mach: &[f64], mean: Option<(&[f64], &[f64], f64, f64)>) {
+    pub fn prepare(&mut self, mach: &[f64], mean: Option<NetMeans>) {
         self.set_outflow_mach(mach);
-        if let Some((cyl, branch, rpm, upstream_pa)) = mean {
-            self.set_mean_pressure(upstream_pa);
-            self.set_mean_flow(cyl, branch);
-            self.set_engine_speed(rpm);
+        if let Some(m) = mean {
+            self.set_mean_pressure(m.upstream_pa);
+            self.set_turbine_resistance(m.turbine_dp_dm);
+            self.set_mean_flow(m.cylinders, m.branches);
+            self.set_engine_speed(m.rpm);
         }
     }
 
@@ -1644,8 +1681,14 @@ impl ExhaustNet {
         for s in 0..input.steps {
             let mean = if input.has_mean[s] {
                 let (cyl, rest) = input.mean[mean_at..].split_at(n);
-                mean_at += n + m + 2;
-                Some((cyl, &rest[..m], rest[m], rest[m + 1]))
+                mean_at += n + m + 3;
+                Some(NetMeans {
+                    cylinders: cyl,
+                    branches: &rest[..m],
+                    rpm: rest[m],
+                    upstream_pa: rest[m + 1],
+                    turbine_dp_dm: rest[m + 2],
+                })
             } else {
                 None
             };
@@ -1700,11 +1743,14 @@ impl ExhaustNet {
             }
             let collector_near = clamp_wave(outgoing[b.members.len()]);
             let mut two = [0.0; 2];
-            junction(
-                &[b.collector.area_m2, b.tail.end_areas().0],
-                &[b.collector.at_far(), b.tail.at_near()],
-                &mut two,
-            );
+            let areas = [b.collector.area_m2, b.tail.end_areas().0];
+            let incoming = [b.collector.at_far(), b.tail.at_near()];
+            match &mut b.turbine {
+                Some(t) => t.process(&areas, &incoming, C_PRIMARY, &mut two),
+                None => {
+                    junction(&areas, &incoming, &mut two);
+                }
+            }
             b.collector.send(collector_near, clamp_wave(two[0]));
             match &mut self.shared {
                 // the tail's far end meets the shared duct below

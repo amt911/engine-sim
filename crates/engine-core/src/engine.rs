@@ -3028,6 +3028,8 @@ impl Engine {
         let rpm = self.rpm();
         // the gas before a turbine is at its inlet's pressure, its pulses that much less of it
         let upstream_pa = self.turbo_state.map_or(ATM_PA, |s| s.turbine_inlet_pa);
+        // and its pulses meet the turbine's nozzle on their way to the tail
+        let turbine_dp_dm = self.turbo_state.map_or(0.0, |s| s.turbine_dp_dm);
         match (&mut self.net, &mut self.fv, &mut self.remote.0) {
             (_, Some(fv), _) => {
                 fv.set_outflow_mach(&self.tail_mach);
@@ -3045,12 +3047,13 @@ impl Engine {
                 if due {
                     self.friction_age = 0;
                 }
-                let mean = due.then_some((
-                    &self.cyl_mean_flow[..],
-                    &self.tail_mean_flow[..],
+                let mean = due.then_some(crate::exhaust::NetMeans {
+                    cylinders: &self.cyl_mean_flow,
+                    branches: &self.tail_mean_flow,
                     rpm,
                     upstream_pa,
-                ));
+                    turbine_dp_dm,
+                });
                 if due {
                     net.set_port_temperature(&self.cyl_port_k);
                 }
@@ -3074,6 +3077,7 @@ impl Engine {
                     r.stage.mean.extend_from_slice(&self.tail_mean_flow);
                     r.stage.mean.push(rpm);
                     r.stage.mean.push(upstream_pa);
+                    r.stage.mean.push(turbine_dp_dm);
                     r.probe.set_mean_pressure(upstream_pa);
                     r.probe.set_mean_flow(&self.cyl_mean_flow);
                 }
@@ -4279,6 +4283,33 @@ mod tests {
     }
 
     #[test]
+    fn a_lift_off_under_boost_is_quieter_than_the_pull() {
+        // Throttle shut on full boost: 0.4 bar in the manifold against 2.5 bar before the
+        // turbine, the valves blow back and forth — pulses the turbine's nozzle meets before the
+        // tail (a series element R = dp₀₃/dṁ, transmitting 1/(1 + R·A/2c): about a fifth at a
+        // lift-off's low flow and high inlet pressure). Without it they reached the tail whole and
+        // every shift was 13–16 dB over the pull it interrupted; a real car's falls silent.
+        let mut e = Engine::new(EngineDef::honda_k20c1(), 6500.0, 1);
+        let dt = 1.0 / 48_000.0;
+        let on = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(6500.0),
+            ..Controls::default()
+        };
+        let off = Controls {
+            throttle: 0.0,
+            ..on
+        };
+        let rms = |x: &[f64]| (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
+        (0..(2.0 / dt) as usize).for_each(|_| {
+            e.step(dt, &on);
+        });
+        let pull: Vec<f64> = (0..(0.5 / dt) as usize).map(|_| e.step(dt, &on)).collect();
+        let lift: Vec<f64> = (0..(0.4 / dt) as usize).map(|_| e.step(dt, &off)).collect();
+        assert!(rms(&lift) < rms(&pull), "{} vs {}", rms(&lift), rms(&pull));
+    }
+
+    #[test]
     fn the_k20c1_rides_in_a_civic_type_r() {
         // Its own car: the FK8's six ratios and final drive, and a clutch that holds the
         // engine's torque — the hatchback's 350 N·m clutch slipped under the turbo's ~445 N·m and
@@ -4315,10 +4346,9 @@ mod tests {
             for _ in 0..(2.0 / dt) as usize {
                 e.step(dt, &on);
             }
-            let vents = (0..(0.3 / dt) as usize)
+            (0..(0.3 / dt) as usize)
                 .map(|_| (e.step(dt, &off), e.turbo().map_or(0.0, |s| s.bov_m_dot)))
-                .collect::<Vec<_>>();
-            vents
+                .collect::<Vec<_>>()
         };
         let (heard, quiet) = (run(1.0), run(0.0));
         assert!(heard.iter().any(|v| v.1 > 0.0), "it vents");

@@ -1027,6 +1027,47 @@ pub fn junction(areas: &[f64], incoming: &[f64], outgoing: &mut [f64]) -> f64 {
     pj
 }
 
+/// Time constant of the mean flow a [`TurbineJunction`] lets through unresisted, s: the turbo's
+/// own (its inlet's mean pressure follows its mean flow over it, `engine::TURBO_FLOW_TAU_S`).
+pub const TURBINE_MEAN_TAU_S: f64 = 0.05;
+
+/// A turbine between two pipes, compact: its inlet's pressure follows the flow through it as
+/// its nozzle's characteristic, δp₀₃ = R·δṁ with R = dp₀₃/dṁ (Pa per kg/s,
+/// [`crate::turbo::TurboState::turbine_dp_dm`]; quasi-steady, the wheel's passage being short
+/// against the waves), a series element on the pulses (Munjal, *Acoustics of Ducts and
+/// Mufflers*, §2.3). The mean flow passes it unresisted: the mean drop across the turbine is the
+/// engine's to set, as its ports' back pressure. Waves p = (c/A)·ṁ on either side.
+#[derive(Debug, Clone)]
+pub struct TurbineJunction {
+    r: f64,
+    mean: f64,
+    follow: f64,
+}
+
+impl TurbineJunction {
+    pub fn new(dt: f64) -> Self {
+        Self {
+            r: 0.0,
+            mean: 0.0,
+            follow: (dt / TURBINE_MEAN_TAU_S).min(1.0),
+        }
+    }
+
+    /// R = dp₀₃/dṁ, Pa per kg/s, from now on.
+    pub fn set_resistance(&mut self, r: f64) {
+        self.r = r.max(0.0);
+    }
+
+    /// The waves `incoming` from pipes of `areas` (upstream first) in gas of sound speed `c`,
+    /// writing the outgoing ones: 2(p₁ − p₂) − (z₁ + z₂)·ṁ = R·(ṁ − ṁ̄), z = c/A.
+    pub fn process(&mut self, areas: &[f64; 2], incoming: &[f64; 2], c: f64, out: &mut [f64; 2]) {
+        let z = [c / areas[0], c / areas[1]];
+        let m = (2.0 * (incoming[0] - incoming[1]) + self.r * self.mean) / (z[0] + z[1] + self.r);
+        self.mean += self.follow * (m - self.mean);
+        *out = [incoming[0] - z[0] * m, incoming[1] + z[1] * m];
+    }
+}
+
 /// Acoustic resistance, Pa·s/m³ (pressure drop over volume flow), of a sudden change of area
 /// from `a_from` to `a_to` (m², along the flow) crossed by a mean mass flow `mass_flow` (kg/s,
 /// negative: the other way) of gas whose speed of sound is `c`, at an atmosphere. The flow loses
@@ -1907,6 +1948,46 @@ mod tests {
                 b.send(s, -s);
             }
         }
+    }
+
+    #[test]
+    fn a_turbine_resists_the_pulses_and_passes_the_mean_flow() {
+        // A compact resistance R (Pa per kg/s) between pipes of area A, waves p = (c/A)·ṁ: a
+        // pulse meets R against the two pipes' 2c/A, transmitted 1/(1 + R·A/2c) and reflected
+        // the rest; at R·A/2c = 1 half each way (Munjal, *Acoustics of Ducts and Mufflers*, §2.3,
+        // a series element). The mean flow passes untouched: its pressure is the turbine's
+        // inlet's, which the engine sets.
+        let (a, c) = (2e-3, 600.0);
+        let dt = 1.0 / 96_000.0;
+        let mut t = TurbineJunction::new(dt);
+        t.set_resistance(2.0 * c / a);
+        // the mean first: a steady wave through, after the mean has followed it (1 s ≫ 50 ms)
+        let mut out = [0.0; 2];
+        for _ in 0..96_000 {
+            t.process(&[a, a], &[1000.0, 0.0], c, &mut out);
+        }
+        assert!((out[1] - 1000.0).abs() < 1.0, "{out:?}");
+        assert!(out[0].abs() < 1.0, "{out:?}");
+        // then a 1 kHz pulse train on it: half passes, half comes back
+        let (mut through, mut back): (f64, f64) = (0.0, 0.0);
+        for n in 0..960 {
+            let s = 100.0 * (2.0 * std::f64::consts::PI * 1000.0 * n as f64 * dt).sin();
+            t.process(&[a, a], &[1000.0 + s, 0.0], c, &mut out);
+            through = through.max(out[1] - 1000.0);
+            back = back.max(out[0]);
+        }
+        assert!((through - 50.0).abs() < 1.0, "{through}");
+        assert!((back - 50.0).abs() < 1.0, "{back}");
+    }
+
+    #[test]
+    fn a_turbine_without_resistance_is_the_area_junction() {
+        let dt = 1.0 / 96_000.0;
+        let mut t = TurbineJunction::new(dt);
+        let (mut out, mut plain) = ([0.0; 2], [0.0; 2]);
+        t.process(&[1e-3, 3e-3], &[700.0, -200.0], 600.0, &mut out);
+        junction(&[1e-3, 3e-3], &[700.0, -200.0], &mut plain);
+        assert!((out[0] - plain[0]).abs() < 1e-9 && (out[1] - plain[1]).abs() < 1e-9);
     }
 
     #[test]

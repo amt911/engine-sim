@@ -164,6 +164,9 @@ pub struct TurboState {
     pub shaft_rpm: f64,
     /// Air the blow-off valve vents, kg/s.
     pub bov_m_dot: f64,
+    /// How the turbine inlet's pressure follows the exhaust flow, dp₀₃/dṁ, Pa per kg/s: what a
+    /// pulse meets there ([`crate::waveguide::TurbineJunction`]); 0 with no flow.
+    pub turbine_dp_dm: f64,
 }
 
 /// A turbocharger's running state: its shaft's kinetic energy and its charge air's pressure.
@@ -286,11 +289,11 @@ impl Turbo {
         let gate_area = gate * d.wastegate_area_m2;
         // the turbine inlet's pressure that passes the exhaust through the turbine and the gate
         let p4 = ATM_PA;
+        let pass = |p: f64| {
+            turbine_flow(d.turbine_area_m2, p, t03, p4)
+                + nozzle_flow(gate_area, p, t03, p4, GAMMA_EXH)
+        };
         let p03 = if exhaust_m_dot > 0.0 && t03 > 0.0 {
-            let pass = |p: f64| {
-                turbine_flow(d.turbine_area_m2, p, t03, p4)
-                    + nozzle_flow(gate_area, p, t03, p4, GAMMA_EXH)
-            };
             let (mut lo, mut hi) = (p4, 50.0 * p4);
             for _ in 0..50 {
                 let p = 0.5 * (lo + hi);
@@ -304,6 +307,13 @@ impl Turbo {
         } else {
             p4
         };
+        // the slope of its characteristic there (a forward difference of a 10⁻⁴ step)
+        let turbine_dp_dm = if p03 > p4 {
+            let h = 1e-4 * p03;
+            h / (pass(p03 + h) - pass(p03)).max(1e-12)
+        } else {
+            0.0
+        };
         let m_t = turbine_flow(d.turbine_area_m2, p03, t03, p4);
         let p_t = turbine_power(m_t, t03, p03, p4, d.eta_t);
         let p_c = compressor_power(m_c, T_AMB_K, ratio, d.eta_c);
@@ -314,6 +324,7 @@ impl Turbo {
             turbine_inlet_pa: p03,
             shaft_rpm: omega * 60.0 / (2.0 * std::f64::consts::PI),
             bov_m_dot: vented,
+            turbine_dp_dm,
         }
     }
 }
@@ -444,6 +455,28 @@ mod tests {
                 .iter()
                 .all(|x| x.bov_m_dot == 0.0)
         );
+    }
+
+    #[test]
+    fn the_turbine_inlet_rises_with_its_flow_as_a_choked_nozzle() {
+        // Choked, the nozzle passes ṁ = A·p₀₃·ψ*/√(R·T₀₃) (Heywood App. C, eq. C.9): its inlet
+        // pressure is in proportion to its flow, dp₀₃/dṁ = p₀₃/ṁ — what a pulse meets there
+        let mut t = Turbo::new(&TurboDef::default());
+        let s = t.step(0.3, 1100.0, 0.0, false, 1e-3);
+        assert!(
+            ATM_PA / s.turbine_inlet_pa < 0.5,
+            "choked: {}",
+            s.turbine_inlet_pa
+        );
+        let want = s.turbine_inlet_pa / 0.3;
+        assert!(
+            (s.turbine_dp_dm / want - 1.0).abs() < 1e-3,
+            "{} vs {want}",
+            s.turbine_dp_dm
+        );
+        // no flow, nothing to resist
+        let mut t = Turbo::new(&TurboDef::default());
+        assert_eq!(t.step(0.0, 1100.0, 0.0, false, 1e-3).turbine_dp_dm, 0.0);
     }
 
     #[test]
