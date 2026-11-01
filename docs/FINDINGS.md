@@ -1296,3 +1296,12 @@ Through the gears the FV K20A's bands (hi 4–16 kHz −28 dB) fall inside the f
 (−13…−41) and match one of them band for band. The simple-wave line overshoots on strong pulses
 here as on the rotaries (above). Sent to the user as an A/B (current vs FV) before changing
 anything: the user's ear rejected the last cut of these highs (road silencers).
+
+Verdict and follow-up (2026-11-01): the user's ear prefers the current steepening line ("el
+exacto suena muy raro"). Checked alone, the steepening pipe is right: one right-running
+sin² pulse (1.5 ms) through 2 m of 750 K pipe, at the far end, 4–16 kHz re 0.1–1 kHz,
+steepening vs FV: 0.1 atm −42/−35 dB, 0.3 atm −17.3/−18.4, 0.6 atm −17.2/−17.8; rise times
+21–26 µs vs 10 µs (one FV cell), peaks within 2 %. So the K20A's 20–30 dB gap is not the
+simple-wave line; it is somewhere else in the two exhausts (catalyst, junction, valve
+boundary, mean flow), not yet located. Kept as is (throwaway probe, not committed).
+
