@@ -1322,3 +1322,26 @@ louder static. The limiter: floored in neutral the LFA saws 9260 ↔ 9600 rpm ev
 70 ms, 4800 rpm/s down; fuelled 35 ms), the level dips only 3 dB in the cut because the ITB
 intake (as loud as the exhaust at 8800 WOT) does not depend on combustion; YouTube LFAs at high
 revs swing ±2–4 dB from one 10 ms window to the next, the render is smooth.
+
+## The idle "static" was the valve ticking heard with no engine bay (2026-11-01)
+
+- **By ear:** the user's A/B (LFA idle all / no valve seats / no intake) — the static goes with
+  the seats. Four YouTube LFA idles (wR8FwJVFXOQ, fNuTMJDx9CM, DvbqhuOV5As, fg80tB-wApc) put
+  2 kHz at −28…−40 and 4 kHz at −34…−43 dB re the total; the render had −21 / −16, ~20 dB over,
+  and without the seats it sat inside the range. So the seats are about right at the engine and
+  wrong at the listener: the block radiated as if the car had no body.
+- **Fix:** `vehicle.engine_bay` (`engine_bay.rs`): the bay as a leaky enclosure, IL = 10 lg(1 +
+  ᾱ/τ̄), a Delany–Bazley hood liner over a quarter of it and 1 % open — 4 dB at 63 Hz, 14 dB at
+  4 kHz, under the 16–27 dB measured hoods take (Ibarra et al. 2017); only the block's path
+  (the seats ticking in the head; combustion and the intake mouth and tails pass outside it: with the whole block behind the bay the LFA guard at 6700 WOT went 9.6 → 12.1 dB RMS off the dyno orders). Plus `friction.valve_density_kg_m3`:
+  the strike scales √(ρ/ρ_steel), the LFA's titanium valves −2.5 dB. LFA idle 4 kHz −15 → −30 dB
+  re the loudest octave; 6700 WOT within 2 dB. The user preferred it to the open engine ("suena
+  aún raro, pero bien").
+- **Not used:** a Maekawa/ISO 9613-2 diffraction over the body — with the default ear (3 m, 1.6
+  m high) the line from the engine clears the LFA's deck, so it adds nothing there.
+- **Still open, measured:** the render's band under the firing frequency (8 Hz–0.8 f₁) is −11.5
+  dB re the total, the phone recordings −23…−41; it is the cycle-to-cycle burn (−23 dB without
+  `combustion_jitter`). Phone mics roll off there, so this is not yet a finding against the
+  model. The recordings also idle at 1000–1200 rpm (cold starts) against the preset's 900.
+- **Shell:** the silencer's wall now has `shell_resonance_hz` (LFA 300, ESTIMATE, kept where the
+  6700 lows stay at the dyno clip's; a limp wall put 12–18 dB over them).

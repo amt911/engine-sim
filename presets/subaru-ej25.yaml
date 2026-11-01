@@ -86,6 +86,7 @@ engine:
     valvetrain: sohc_rocker_arm
     roller_followers: false
     valves_per_cylinder: 4
+    valve_density_kg_m3: 7850.0
     rods_per_crankpin: 2
     ring_tension_ratio: 1.0
     liner_roughness: 1.0
@@ -127,3 +128,8 @@ engine:
     max_brake_decel_m_s2: 9.0
     shift_time_s: 0.0
     engine_ahead_m: 3.4
+    engine_bay:
+      open_fraction: 0.01
+      liner_thickness_m: 0.02
+      liner_resistivity: 16000.0
+      liner_coverage: 0.25

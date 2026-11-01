@@ -891,6 +891,16 @@ impl EngineDef {
                         open_rpm: 3000.0,
                         // a vacuum diaphragm actuator: ESTIMATE
                         travel_s: 0.3,
+                        // the titanium silencer's wall over its inlet chamber: 1 mm of
+                        // titanium (4510 kg/m³; thickness ESTIMATE, a single-skin shell), the
+                        // chamber's side π·0.22·0.20 m
+                        shell_thickness_m: 0.001,
+                        shell_density_kg_m3: 4510.0,
+                        shell_area_m2: std::f64::consts::PI * 0.22 * 0.20,
+                        // its first resonance: ESTIMATE, set where the shell leaves the held
+                        // 6700 rpm lows at the dyno recording's (docs/FINDINGS.md, 2026-11-01);
+                        // a limp wall puts 12-18 dB over it
+                        shell_resonance_hz: 300.0,
                     }),
                 }),
             },
@@ -913,7 +923,11 @@ impl EngineDef {
             starter_torque_nm: 150.0,
             // DOHC, four titanium valves a cylinder; Toyota has not published the valve drive, so
             // the usual bucket tappets
-            friction: crate::friction::FrictionDef::default(),
+            friction: crate::friction::FrictionDef {
+                // Ti-6Al-4V
+                valve_density_kg_m3: 4430.0,
+                ..crate::friction::FrictionDef::default()
+            },
             sound: SoundDef::default(),
             overrun_fuel_cut_rpm: 1500.0,
             // Okamoto et al., SAE 2011-01-2024, Table 1: red zone 9000 rpm, shutoff 9500
@@ -1927,6 +1941,9 @@ pub struct Engine {
     n_banks: usize,
     /// Valve strikes still ringing: (time since the strike, s; its peak force, N).
     seat_strikes: Vec<(f64, f64)>,
+    /// The engine bay round each bank's side of the block ([`crate::engine_bay`]), built with
+    /// the listener.
+    bay: Vec<crate::engine_bay::BayFilter>,
     /// The texture layers' signal this step, in the tails' units, before it is radiated.
     texture_signal: f64,
     /// The turbulent jet at each tail pipe.
@@ -2161,6 +2178,7 @@ impl Engine {
             bank_of: Vec::new(),
             n_banks: 1,
             seat_strikes: Vec::new(),
+            bay: Vec::new(),
             texture_signal: 0.0,
             jets: Vec::new(),
             valve_jets: Vec::new(),
@@ -2720,8 +2738,16 @@ impl Engine {
             settle(cs, &th);
 
             // Combustion events.
-            // a valve closing strikes its seat (both kinds: one valve each, conservative)
-            let strike = SEAT_FORCE_N * (rpm_now / SEAT_FORCE_RPM);
+            // a valve closing strikes its seat (both kinds: one valve each, conservative), as hard
+            // as its mass allows: a closing ramp's speed v into a seat of contact stiffness k
+            // peaks at F = v·√(k·m) (a linear contact's half-sine), so a lighter valve than
+            // Zheng's steel one strikes by √(ρ/ρ_steel) (ESTIMATE: the whole equivalent mass
+            // scaling with the valve's material)
+            let strike = SEAT_FORCE_N
+                * (rpm_now / SEAT_FORCE_RPM)
+                * (self.def.friction.valve_density_kg_m3 / crate::friction::STEEL_KG_M3)
+                    .max(0.0)
+                    .sqrt();
             // (a rotary's ports have no valves to strike)
             if g.rotor.is_none() && (crossed(prev, cur, evc) || crossed(prev, cur, ivc)) {
                 self.seat_strikes.push((0.0, strike));
@@ -2991,6 +3017,12 @@ impl Engine {
                 .map(|p| p.0)
                 .collect();
             self.n_banks = self.bank_of.iter().max().map_or(1, |b| b + 1);
+            self.bay = match &self.def.vehicle.engine_bay {
+                Some(b) => (0..self.n_banks)
+                    .map(|_| crate::engine_bay::BayFilter::new(b, dt))
+                    .collect(),
+                None => Vec::new(),
+            };
         }
         let n_tails = match (&self.net, &self.fv, &self.remote.0) {
             (_, Some(fv), _) => fv.last_tails().len(),
@@ -3128,20 +3160,31 @@ impl Engine {
             if self
                 .structure
                 .as_ref()
-                .is_none_or(|s| s.0 != dt || s.1.len() != n_banks)
+                .is_none_or(|s| s.0 != dt || s.1.len() != 2 * n_banks)
             {
-                let s = (0..n_banks).map(|_| StructureResponse::new(dt)).collect();
+                let s = (0..2 * n_banks)
+                    .map(|_| StructureResponse::new(dt))
+                    .collect();
                 self.structure = Some((dt, s));
             }
             let seats = seat_force / g.piston_area() / n_banks as f64;
+            // The seats tick in the head, under the valve cover: what they shake radiates up into
+            // the bay's lined top and leaves through the bay (`vehicle.engine_bay`). The
+            // combustion shakes the whole block, whose skirt and sump radiate into the open
+            // underside: it is heard without the bay (ESTIMATE: the bay taken as closed above
+            // the head only; with the whole block behind it the LFA at 6700 rpm full load loses
+            // the 3–4 kHz orders the dyno recording has, docs/FINDINGS.md 2026-11-01).
             if let Some((_, s)) = &mut self.structure {
-                for (b, (out, s)) in block.iter_mut().zip(s.iter_mut()).enumerate() {
+                let (comb, head) = s.split_at_mut(n_banks);
+                for (b, out) in block.iter_mut().enumerate().take(n_banks) {
                     let bank = self.cyl.iter().zip(&self.bank_of).filter(|&(_, &k)| k == b);
                     let p = crate::structure::combustion_drive(
                         bank.map(|(cs, _)| cs.gas.pressure()),
                         g.bore_m,
                     ) / n_banks as f64;
-                    *out = s.process(snd.block * p + snd.mechanical * seats);
+                    let ticks = head[b].process(snd.mechanical * seats);
+                    let ticks = self.bay.get_mut(b).map_or(ticks, |f| f.process(ticks));
+                    *out = comb[b].process(snd.block * p) + ticks;
                 }
             }
         };
@@ -3951,6 +3994,48 @@ mod tests {
             ..Controls::default()
         };
         run(&mut e, 0.2, &c)
+    }
+
+    /// What the valve seats add to `d`'s sound (with them on, minus off).
+    fn ticks(d: &EngineDef) -> Vec<f64> {
+        let off = seats_only(d.clone(), 0.0, 0.0);
+        seats_only(d.clone(), 1.0, 0.0)
+            .iter()
+            .zip(&off)
+            .map(|(a, b)| a - b)
+            .collect()
+    }
+
+    #[test]
+    fn titanium_valves_strike_their_seats_softer() {
+        // F = v·√(k·m): a valve of 4430 kg/m³ against steel's 7850 strikes by √(4430/7850) =
+        // √0.564331 = 0.751220 of the force, and what the seats add is linear in it
+        let steel = EngineDef::single();
+        let mut ti = steel.clone();
+        ti.friction.valve_density_kg_m3 = 4430.0;
+        let (a, b) = (ticks(&steel), ticks(&ti));
+        let peak = a.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+        assert!(peak > 0.0);
+        for (a, b) in a.iter().zip(&b) {
+            assert!((b - 0.751220 * a).abs() <= 1e-5 * peak, "{a} {b}");
+        }
+    }
+
+    #[test]
+    fn an_engine_bay_muffles_the_valve_ticking() {
+        // The default bay takes 4.0 dB at 63 Hz and 14.2 dB at 4 kHz (`engine_bay`'s tests): the
+        // ticks, broadband, come out between the two, nearer the highs they are made of.
+        let open = EngineDef::single();
+        let mut closed = open.clone();
+        closed.vehicle.engine_bay = Some(crate::engine_bay::EngineBay::default());
+        let rms = |x: &[f64]| (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
+        let loss = 20.0 * (rms(&ticks(&open)) / rms(&ticks(&closed))).log10();
+        assert!((8.0..14.2).contains(&loss), "{loss:.1} dB");
+        // the combustion's path, the block's skirt into the open underside, does not go through it
+        assert_eq!(
+            seats_only(open.clone(), 0.0, 1.0),
+            seats_only(closed, 0.0, 1.0)
+        );
     }
 
     #[test]

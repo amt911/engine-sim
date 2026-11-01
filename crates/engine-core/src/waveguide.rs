@@ -426,7 +426,7 @@ impl WallLoss {
 
 /// A first-order low shelf, unity at DC, its zero `e^depth` above its pole at `pole_hz`:
 /// (1 + s/ω_z)/(1 + s/ω_p) by the bilinear transform. Returns (b0, b1, a1).
-fn shelf(pole_hz: f64, depth: f64, dt: f64) -> (f64, f64, f64) {
+pub(crate) fn shelf(pole_hz: f64, depth: f64, dt: f64) -> (f64, f64, f64) {
     let k = 2.0 / dt;
     let wp = 2.0 * std::f64::consts::PI * pole_hz;
     let wz = wp * depth.exp();

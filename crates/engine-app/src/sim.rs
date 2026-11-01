@@ -699,7 +699,8 @@ pub(crate) mod tests {
         // harmonics 2..8 at −9.6/−7.6/−12.1/−9.7/−13.9/−20.7/−22.0 dB and the half orders
         // (cycle orders 5, 15, 25, 35) at −14.5/−15.3/−24.0/−18.8 dB of the first. Held at
         // 6700 rpm (a whole cycle in 860 samples), the render may not drift further from them
-        // than it stands: RMS 13.3 dB (2026-10-29), 11.7 with the banks 10 cm apart. A ratchet:
+        // than it stands: RMS 13.3 dB (2026-10-29), 11.7 with the banks 10 cm apart, 10.8 with
+        // the silencer's shell and the valve ticking behind the engine bay (2026-11-01). A ratchet:
         // lower it as the sound comes closer, never raise it.
         let rpm = 120.0 * FS / 860.0;
         let mut sim = Simulation::new(EngineDef::lfa_v10(), FS, 1);
@@ -729,7 +730,7 @@ pub(crate) mod tests {
         ];
         let errs: Vec<(f64, f64)> = real.iter().map(|&(k, r)| (k, db(k) - r)).collect();
         let rms = (errs.iter().map(|e| e.1 * e.1).sum::<f64>() / errs.len() as f64).sqrt();
-        assert!(rms <= 12.0, "RMS {rms:.1} dB off the real car: {errs:?}");
+        assert!(rms <= 10.9, "RMS {rms:.1} dB off the real car: {errs:?}");
     }
 
     #[test]
