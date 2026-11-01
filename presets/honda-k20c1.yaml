@@ -184,4 +184,5 @@ engine:
     intercooler_drop_k: 250000.0
     bov_area_m2: 0.0003
     bov_recirculating: true
+    inducer_diameter_m: 0.0406
     charge_volume_m3: 0.005

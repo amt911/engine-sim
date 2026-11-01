@@ -57,6 +57,9 @@ pub struct TurboDef {
     /// The valve vents back into the compressor's inlet (a factory bypass valve: nothing heard
     /// outside) rather than to the air (an aftermarket blow-off valve's "pssh").
     pub bov_recirculating: bool,
+    /// The compressor's inducer (its eye) diameter, m: its sonic flow is the most it passes
+    /// ([`choke_flow`]).
+    pub inducer_diameter_m: f64,
     /// The charge air's volume between compressor and throttle (intercooler core and pipes),
     /// m³: the boost is its pressure, filled by the compressor and emptied by the engine and
     /// the blow-off valve.
@@ -85,8 +88,30 @@ impl Default for TurboDef {
             bov_recirculating: true,
             // ESTIMATE: a front-mounted intercooler's core (~3 L) and its pipes
             charge_volume_m3: 0.005,
+            // ESTIMATE: 0.7 of the tip, a common inducer/exducer ratio of passenger-car wheels
+            inducer_diameter_m: 0.035,
         }
     }
+}
+
+/// The inducer's hub, as a fraction of its diameter (ESTIMATE: radial compressors' 0.3–0.4,
+/// Dixon & Hall ch. 7).
+const INDUCER_HUB_RATIO: f64 = 0.3;
+
+/// The most a compressor whose inducer is `inducer_d` m across passes, kg/s: the inducer choked
+/// on axial inflow from ambient air, ṁ = A₁·ρ₀₁·a₀₁·(2/(γ+1))^((γ+1)/(2(γ−1))) (Dixon & Hall,
+/// *Fluid Mechanics and Thermodynamics of Turbomachinery*, ch. 7, choking of the inducer), A₁
+/// the annulus between the hub and the shroud.
+pub fn choke_flow(inducer_d: f64) -> f64 {
+    let g = GAMMA_AIR;
+    let area = std::f64::consts::PI
+        * 0.25
+        * inducer_d
+        * inducer_d
+        * (1.0 - INDUCER_HUB_RATIO * INDUCER_HUB_RATIO);
+    let rho = ATM_PA / (R_GAS * T_AMB_K);
+    let a = (g * R_GAS * T_AMB_K).sqrt();
+    area * rho * a * (2.0 / (g + 1.0)).powf((g + 1.0) / (2.0 * (g - 1.0)))
 }
 
 /// The compressor's total pressure ratio at tip speed `u` (m/s): Euler's work σU² at an
@@ -247,15 +272,16 @@ impl Turbo {
             let (p, t) = charge(m);
             p - self.boost_pa - fill(t) * (m - intake - vent(p, t))
         };
+        // the inducer passes no more than its sonic flow, whatever the pressure behind it
+        let m_choke = choke_flow(d.inducer_diameter_m);
+        let choked = residual(m_choke) > 0.0;
         let m_c = if residual(0.0) <= 0.0 {
             // the compressor cannot reach the charge's pressure at any flow: it delivers none
             0.0
+        } else if choked {
+            m_choke
         } else {
-            let mut hi = 0.05;
-            while residual(hi) > 0.0 && hi < 100.0 {
-                hi *= 2.0;
-            }
-            let mut lo = 0.0;
+            let (mut lo, mut hi) = (0.0, m_choke);
             for _ in 0..50 {
                 let m = 0.5 * (lo + hi);
                 if residual(m) > 0.0 {
@@ -267,14 +293,15 @@ impl Turbo {
             0.5 * (lo + hi)
         };
         let t_b = charge(m_c).1;
-        self.boost_pa = if m_c > 0.0 {
+        self.boost_pa = if m_c > 0.0 && !choked {
             charge(m_c).0
         } else {
-            // none delivered: the engine and the valve empty it (implicit on the vent)
-            let (mut lo, mut hi) = (0.0, self.boost_pa);
+            // none delivered, or the choked flow whatever the pressure: the engine and the valve
+            // empty it against that (implicit on the vent)
+            let (mut lo, mut hi) = (0.0, self.boost_pa + fill(t_b) * m_c);
             for _ in 0..50 {
                 let p = 0.5 * (lo + hi);
-                if p - self.boost_pa + fill(t_b) * (intake + vent(p, t_b)) > 0.0 {
+                if p - self.boost_pa - fill(t_b) * (m_c - intake - vent(p, t_b)) > 0.0 {
                     hi = p;
                 } else {
                     lo = p;
@@ -283,8 +310,11 @@ impl Turbo {
             0.5 * (lo + hi)
         };
         let vented = vent(self.boost_pa, t_b);
-        let (ratio, p02, _) = exit(m_c);
+        // the impeller does its work on what it passes (choked, the pressure it would make past
+        // the inducer is lost in the shocks there)
+        let ratio = exit(m_c).0;
         // the wastegate opens on the compressor's boost
+        let p02 = self.boost_pa + d.intercooler_drop_k * m_c * m_c;
         let gate = ((p02 - ATM_PA - d.wastegate_pa) / WASTEGATE_SPAN_PA).clamp(0.0, 1.0);
         let gate_area = gate * d.wastegate_area_m2;
         // the turbine inlet's pressure that passes the exhaust through the turbine and the gate
@@ -477,6 +507,37 @@ mod tests {
         // no flow, nothing to resist
         let mut t = Turbo::new(&TurboDef::default());
         assert_eq!(t.step(0.0, 1100.0, 0.0, false, 1e-3).turbine_dp_dm, 0.0);
+    }
+
+    #[test]
+    fn the_inducer_chokes_at_its_sonic_flow() {
+        // Axial inflow, the inducer passes at most ṁ = A₁·ρ₀₁·a₀₁·(2/(γ+1))^((γ+1)/(2(γ−1)))
+        // (Dixon & Hall ch. 7): 40 mm, hub at 0.3 of it, air at 1 atm and 300 K →
+        // A₁ = 1.14354e-3 m², ρ₀₁ = 1.17683, a₀₁ = 347.189, 0.578704 → 0.270387 kg/s (by hand)
+        let m = choke_flow(0.04);
+        assert!((m - 0.270_387).abs() < 1e-5, "{m}");
+    }
+
+    #[test]
+    fn past_its_choke_the_compressor_cannot_hold_the_boost() {
+        // Spun up, then an engine drawing 0.5 kg/s against an inducer choking at 0.27: the charge
+        // air empties, the boost falls under the atmosphere; an engine drawing 0.2 keeps it
+        let run = |draw: f64| {
+            let mut t = Turbo::new(&TurboDef {
+                inducer_diameter_m: 0.04,
+                ..TurboDef::default()
+            });
+            let mut s = t.step(0.3, 1100.0, 0.2, false, 1e-3);
+            for _ in 0..3000 {
+                s = t.step(0.3, 1100.0, 0.2, false, 1e-3);
+            }
+            for _ in 0..500 {
+                s = t.step(0.3, 1100.0, draw, false, 1e-3);
+            }
+            s.boost_pa
+        };
+        assert!(run(0.2) > ATM_PA + 30e3, "{}", run(0.2));
+        assert!(run(0.5) < ATM_PA, "{}", run(0.5));
     }
 
     #[test]

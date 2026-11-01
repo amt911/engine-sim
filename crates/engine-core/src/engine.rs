@@ -497,10 +497,12 @@ impl EngineDef {
             wastegate_pa: 1.6e5,
             turbine_area_m2: 4.0e-4,
             wastegate_area_m2: 1.0e-3,
-            // a larger compressor than the default's for 0.22 kg/s at peak power (ESTIMATE:
-            // a 58 mm exducer, 5 mm exit)
+            // a larger compressor than the default's for 0.22 kg/s at peak power: the stock
+            // MHI wheel's 58 mm exducer (an upgrade's 65 mm is "+7 mm over stock", Hybrid Racing,
+            // MHI Stage 2 for FK8); ESTIMATE its 5 mm exit and its inducer at 0.7 of the exducer
             compressor_tip_diameter_m: 0.058,
             exit_width_m: 0.005,
+            inducer_diameter_m: 0.0406,
             ..crate::turbo::TurboDef::default()
         };
         d.turbo = Some(turbo);
