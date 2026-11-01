@@ -164,6 +164,11 @@ const LAUNCH_SHARE: f64 = 0.45;
 const SHIFT_SHARE: f64 = 0.97;
 /// A shift: throttle off and clutch down this long, s (a quick manual shift).
 const SHIFT_S: f64 = 0.3;
+/// A driver's upshift lifts the throttle this long before the clutch goes down, s: the torque
+/// is off before the engine is free (clutching with the manifold still full flares it — a
+/// turbo engine's 2.4 bar manifold kept 180 N·m for a tenth and flared it 250 rpm at every
+/// shift). ESTIMATE: a tenth, the lag of a foot moving from one pedal to the other.
+const LIFT_LEAD_S: f64 = 0.1;
 /// Lift-off at the end, s.
 const LIFT_S: f64 = 2.0;
 /// A gear whose speed stops climbing (the car's drag holds it under the shift point) is left
@@ -251,7 +256,7 @@ impl GearPull {
         if self.shift_time > 0.0 {
             0.5 * self.shift_time
         } else {
-            SHIFT_S
+            LIFT_LEAD_S + SHIFT_S
         }
     }
 
@@ -333,7 +338,9 @@ impl GearPull {
             PullPhase::Pull => (1.0, false),
             // shifted on paddles the foot stays down; a driver lifts it
             PullPhase::Shift if self.shift_time > 0.0 => (1.0, true),
-            PullPhase::Shift | PullPhase::Clutch => (0.0, true),
+            // a driver lifts first, then clutches
+            PullPhase::Shift => (0.0, self.t >= LIFT_LEAD_S - 1e-9),
+            PullPhase::Clutch => (0.0, true),
         };
         let ramp = dt / self.open_s();
         self.cut = match self.phase {
@@ -707,7 +714,7 @@ mod tests {
         step(1500.0, false);
         step(2700.0, false);
         step(5820.0, true);
-        for _ in 0..30 {
+        for _ in 0..40 {
             step(5000.0, false);
         }
         let (thr, d) = step(5000.0, false);
@@ -723,7 +730,7 @@ mod tests {
     #[test]
     fn a_gear_pull_launches_shifts_at_the_limit_and_lifts() {
         // 5 gears, redline 6000: launch at 45 % of it with the clutch, full throttle; at 97 %
-        // (5820 rpm) a 0.3 s shift (throttle off, clutch down, next gear); in top gear it pulls
+        // (5820 rpm) a shift (throttle off, a tenth later clutch down for 0.3 s, next gear); in top gear it pulls
         // to the shift point, then lifts off for 2 s and the scene ends
         let dt = 0.01;
         let mut p = GearPull::new(&FIVE, 6000.0, 0.0);
@@ -748,9 +755,17 @@ mod tests {
         assert_eq!((thr, d.gear, d.clutch_pedal), (1.0, 1, false));
         // pulling until the shift point
         assert_eq!(step(&mut p, 5000.0).1.gear, 1);
+        // the driver lifts first and clutches a tenth later, once the torque is off (clutching
+        // with the manifold still full flared a turbo engine 250 rpm at every shift)
         let (thr, d) = step(&mut p, 5820.0);
+        assert_eq!((thr, d.clutch_pedal), (0.0, false));
+        for _ in 0..9 {
+            let (thr, d) = step(&mut p, 5800.0);
+            assert_eq!((thr, d.gear, d.clutch_pedal), (0.0, 1, false));
+        }
+        let (thr, d) = step(&mut p, 5800.0);
         assert_eq!((thr, d.clutch_pedal), (0.0, true));
-        for _ in 0..30 {
+        for _ in 0..29 {
             step(&mut p, 5000.0);
         }
         let (thr, d) = step(&mut p, 4000.0);
@@ -758,7 +773,7 @@ mod tests {
         // through to top gear
         for g in 2..5 {
             step(&mut p, 5820.0);
-            for _ in 0..31 {
+            for _ in 0..41 {
                 step(&mut p, 4000.0);
             }
             assert_eq!(step(&mut p, 4000.0).1.gear, g + 1);

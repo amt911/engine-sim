@@ -1373,3 +1373,8 @@ revs swing ±2–4 dB from one 10 ms window to the next, the render is smooth.
   the road speed the shift began at (rpm × r_next/r_prev) and comes in under it; the blow-off
   valve opens on the manifold falling 0.3 bar under the boost (its diaphragm), not on the pedal.
   K20C1: the revs now fall 6900 → 4800 in ~0.5 s and pull up again.
+- Follow-up (same day): the gears scene's driver clutched in the same step it lifted; a turbo
+  engine's manifold, still at 2.4 bar, kept ~180 N·m for a tenth and flared the free engine
+  250 rpm (heard as a blip at every shift). The driver now lifts first and clutches 0.1 s later.
+  The turbo's bypass valve recirculates by default (factory practice): its jet is heard only
+  with `bov_recirculating: false` (an aftermarket blow-off valve).

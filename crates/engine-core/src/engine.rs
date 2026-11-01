@@ -3331,11 +3331,14 @@ impl Engine {
                     rest += l.from_engine_at(b, l.spread_from_1m_at(b, p));
                 }
                 let at_mouth = l.radiate_mouth_at(n_banks, intake_flow, mouth_area);
-                // a turbo's blow-off valve venting on a lift-off: the jet of what it lets out,
+                // a turbo's blow-off valve venting to the air on a lift-off (a recirculating one
+                // vents into the intake, unheard): the jet of what it lets out,
                 // through its own bore at the delivered air's density (the turbulent mixing
                 // noise as at the tails), heard from the engine with the mouths
                 let bov = match (&self.def.turbo, self.turbo_state) {
-                    (Some(t), Some(s)) if snd.blow_off > 0.0 && t.bov_area_m2 > 0.0 => {
+                    (Some(t), Some(s))
+                        if snd.blow_off > 0.0 && t.bov_area_m2 > 0.0 && !t.bov_recirculating =>
+                    {
                         let rho = s.boost_pa / (crate::gas::R_AIR * s.boost_t_k);
                         let v = s.bov_m_dot / (rho * t.bov_area_m2);
                         let d = (4.0 * t.bov_area_m2 / PI).sqrt();
@@ -4190,7 +4193,10 @@ mod tests {
         // once it lifts under boost
         let run = |blow_off: f64| {
             let mut d = EngineDef {
-                turbo: Some(crate::turbo::TurboDef::default()),
+                turbo: Some(crate::turbo::TurboDef {
+                    bov_recirculating: false,
+                    ..crate::turbo::TurboDef::default()
+                }),
                 ..EngineDef::inline4()
             };
             d.sound.blow_off = blow_off;
@@ -4238,6 +4244,39 @@ mod tests {
         );
         assert_eq!(v.final_drive, 4.105);
         assert!(v.clutch_capacity_nm > 445.0, "{}", v.clutch_capacity_nm);
+    }
+
+    #[test]
+    fn a_recirculating_bypass_valve_is_not_heard() {
+        // the factory valve vents into the intake: the same lift-off, heard or not, is the same
+        let run = |blow_off: f64| {
+            let mut d = EngineDef {
+                turbo: Some(crate::turbo::TurboDef::default()),
+                ..EngineDef::inline4()
+            };
+            d.sound.blow_off = blow_off;
+            let mut e = Engine::new(d, 4000.0, 1);
+            let dt = 1.0 / 48_000.0;
+            let on = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(4000.0),
+                ..Controls::default()
+            };
+            let off = Controls {
+                throttle: 0.0,
+                ..on
+            };
+            for _ in 0..(2.0 / dt) as usize {
+                e.step(dt, &on);
+            }
+            let vents = (0..(0.3 / dt) as usize)
+                .map(|_| (e.step(dt, &off), e.turbo().map_or(0.0, |s| s.bov_m_dot)))
+                .collect::<Vec<_>>();
+            vents
+        };
+        let (heard, quiet) = (run(1.0), run(0.0));
+        assert!(heard.iter().any(|v| v.1 > 0.0), "it vents");
+        assert_eq!(heard, quiet);
     }
 
     #[test]

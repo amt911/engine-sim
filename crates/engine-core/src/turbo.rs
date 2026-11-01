@@ -54,6 +54,9 @@ pub struct TurboDef {
     pub intercooler_drop_k: f64,
     /// Blow-off valve's area, m² (0: none).
     pub bov_area_m2: f64,
+    /// The valve vents back into the compressor's inlet (a factory bypass valve: nothing heard
+    /// outside) rather than to the air (an aftermarket blow-off valve's "pssh").
+    pub bov_recirculating: bool,
 }
 
 impl Default for TurboDef {
@@ -74,6 +77,8 @@ impl Default for TurboDef {
             intercooler_effectiveness: 0.75,
             intercooler_drop_k: 2.5e5,
             bov_area_m2: 3e-4,
+            // carmakers fit recirculating bypass valves (ESTIMATE: the usual factory practice)
+            bov_recirculating: true,
         }
     }
 }
