@@ -116,6 +116,11 @@ const TURBO_EVERY: usize = 64;
 /// between (manifold, boost pipe), as mean-value engine models take them (Hendricks, SAE
 /// 890564; ESTIMATE: a few cycles at idle, many at speed).
 const TURBO_FLOW_TAU_S: f64 = 0.05;
+/// What the engine sees of the turbo follows its steps over this, s: the turbo's state moves
+/// on 50 ms means, so the lag is nothing; as a staircase every [`TURBO_EVERY`] steps it was a
+/// click train at the update rate (6 kHz at 384 kHz). 2 ms takes a 6 kHz step train down by
+/// ωτ ≈ 75, 37 dB.
+const TURBO_SEEN_TAU_S: f64 = 0.002;
 /// How far the manifold's pressure must fall under the boost to open a turbo's blow-off
 /// valve, Pa: its diaphragm sees the manifold on one side and the boost on the other, held by
 /// a spring (ESTIMATE: aftermarket and OEM valves crack at 5–10 inHg, 17–34 kPa; over the
@@ -2030,6 +2035,8 @@ pub struct Engine {
     /// steps, exhaust kg, exhaust kg·K, air drawn kg ([`TURBO_EVERY`]).
     turbo: Option<crate::turbo::Turbo>,
     turbo_state: Option<crate::turbo::TurboState>,
+    /// What the engine sees of it: `turbo_state` followed over [`TURBO_SEEN_TAU_S`].
+    turbo_seen: Option<crate::turbo::TurboState>,
     turbo_acc: (usize, f64, f64, f64),
     /// The compressor's flow, kg/s: the throttle's through the charge air ([`Engine::step`]).
     compressor_flow: f64,
@@ -2267,6 +2274,7 @@ impl Engine {
             tail_backpressure: Vec::new(),
             turbo,
             turbo_state: None,
+            turbo_seen: None,
             turbo_acc: (0, 0.0, 0.0, 0.0),
             compressor_flow: 0.0,
             turbo_mean: (0.0, crate::intake_fv::AMBIENT_T_K, 0.0),
@@ -2604,7 +2612,7 @@ impl Engine {
                 .unwrap_or(0.0)
                 // the turbine's inlet, the restriction the exhaust passes first
                 + self
-                    .turbo_state
+                    .turbo_seen
                     .map_or(0.0, |s| s.turbine_inlet_pa - ATM_PA);
             let prev = self.cyl[i].cycle_deg;
             let cur = crate::units::wrap(crank_deg - self.cyl[i].offset_deg, 720.0);
@@ -3032,9 +3040,9 @@ impl Engine {
         // advance the exhaust; what each tail radiates is read below (`last_tails`)
         let rpm = self.rpm();
         // the gas before a turbine is at its inlet's pressure, its pulses that much less of it
-        let upstream_pa = self.turbo_state.map_or(ATM_PA, |s| s.turbine_inlet_pa);
+        let upstream_pa = self.turbo_seen.map_or(ATM_PA, |s| s.turbine_inlet_pa);
         // and its pulses meet the turbine's nozzle on their way to the tail
-        let turbine_dp_dm = self.turbo_state.map_or(0.0, |s| s.turbine_dp_dm);
+        let turbine_dp_dm = self.turbo_seen.map_or(0.0, |s| s.turbine_dp_dm);
         match (&mut self.net, &mut self.fv, &mut self.remote.0) {
             (_, Some(fv), _) => {
                 fv.set_outflow_mach(&self.tail_mach);
@@ -3090,6 +3098,7 @@ impl Engine {
                 if r.stage.steps == r.block {
                     r.hand_over();
                 }
+                r.probe.advance();
                 r.probe
                     .arriving((r.taken - r.applied) as usize, &mut r.arriving);
             }
@@ -3143,7 +3152,7 @@ impl Engine {
                 } else {
                     throttle_area
                 };
-                if let Some(s) = self.turbo_state {
+                if let Some(s) = self.turbo_seen {
                     net.set_inlet(s.boost_pa, s.boost_t_k);
                 }
                 let induction = net.step(area);
@@ -3151,7 +3160,7 @@ impl Engine {
             }
             None => {
                 // the throttle draws from the compressor's delivery, if there is a turbo
-                let supply = self.turbo_state.map_or(self.atm, |s| Reservoir {
+                let supply = self.turbo_seen.map_or(self.atm, |s| Reservoir {
                     pressure_pa: s.boost_pa,
                     temperature_k: s.boost_t_k,
                 });
@@ -3184,6 +3193,24 @@ impl Engine {
                 self.turbo_state = Some(t.step(m.0, m.1, m.2, bov_open, span));
                 self.turbo_acc = (0, 0.0, 0.0, 0.0);
             }
+        }
+
+        // what the engine sees of the turbo follows its steps continuously
+        if let Some(target) = self.turbo_state {
+            let k = (dt / TURBO_SEEN_TAU_S).min(1.0);
+            self.turbo_seen = Some(match self.turbo_seen {
+                Some(s) => {
+                    let f = |a: f64, b: f64| a + (b - a) * k;
+                    crate::turbo::TurboState {
+                        boost_pa: f(s.boost_pa, target.boost_pa),
+                        boost_t_k: f(s.boost_t_k, target.boost_t_k),
+                        turbine_inlet_pa: f(s.turbine_inlet_pa, target.turbine_inlet_pa),
+                        turbine_dp_dm: f(s.turbine_dp_dm, target.turbine_dp_dm),
+                        ..target
+                    }
+                }
+                None => target,
+            });
         }
 
         // what a valve took beyond its runner's reach was never in the runner: its cylinder
@@ -3670,9 +3697,10 @@ impl Engine {
     }
 
     /// Gauge pressure in cylinder `i`'s exhaust port (waves standing at the valve), Pa.
-    /// The turbocharger as of its last step, if the engine has one.
+    /// The turbocharger as the engine sees it now (its steps followed continuously), if it has
+    /// one.
     pub fn turbo(&self) -> Option<crate::turbo::TurboState> {
-        self.turbo_state
+        self.turbo_seen
     }
 
     pub fn exhaust_port_gauge(&self, i: usize) -> f64 {
@@ -4357,6 +4385,36 @@ mod tests {
         };
         let (boosted, natural) = (swing(true), swing(false));
         assert!(boosted < 0.25 * natural, "{boosted} vs {natural}");
+    }
+
+    #[test]
+    fn the_ports_see_the_turbine_inlet_move_smoothly() {
+        // The turbo steps every 64 engine steps on 50 ms means: handed over as a staircase, its
+        // inlet pressure stepped the ports' back pressure and the turbine's resistance every 64
+        // steps — a click train heard as a tone at the update rate (6 kHz at 384 kHz, with its
+        // 12 kHz harmonic). What the engine sees follows it continuously.
+        let mut e = Engine::new(EngineDef::honda_k20c1(), 5000.0, 1);
+        let dt = 1.0 / 48_000.0;
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(5000.0),
+            ..Controls::default()
+        };
+        (0..(1.0 / dt) as usize).for_each(|_| {
+            e.step(dt, &c);
+        });
+        let seen = |e: &Engine| e.turbo().expect("a turbo").turbine_inlet_pa;
+        let mut last = seen(&e);
+        let mut held = 0;
+        let n = 6400;
+        for _ in 0..n {
+            e.step(dt, &c);
+            if seen(&e) == last {
+                held += 1;
+            }
+            last = seen(&e);
+        }
+        assert!(held < n / 10, "held {held} of {n} steps");
     }
 
     #[test]

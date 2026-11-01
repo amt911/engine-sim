@@ -1287,6 +1287,14 @@ impl ArrivalProbe {
         }
     }
 
+    /// One step taken: the primaries' friction follows its mean flow as the net's does
+    /// ([`Pipe::follow_gain`]); once per step, where the net sends.
+    pub fn advance(&mut self) {
+        for p in &mut self.pipes {
+            p.follow_gain();
+        }
+    }
+
     /// The wave arriving at each valve now, with `ahead` steps' results not pushed yet.
     /// `ahead` must stay below [`ExhaustNet::max_block`]`·2`.
     pub fn arriving(&self, ahead: usize, out: &mut [f64]) {
@@ -2306,6 +2314,7 @@ mod tests {
             }
             let flows = [0.02 * (s as f64 * 0.37).sin(); 4];
             net.step(&flows);
+            probe.advance();
             if s == 300 {
                 let mean = [0.05, 0.04, 0.03, 0.02];
                 net.set_mean_flow(&mean, &[0.1]);

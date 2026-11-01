@@ -569,7 +569,11 @@ mod tests {
         for _ in 0..200 {
             s = t.step(0.0, 0.0, 0.01, false, 1e-3);
         }
-        assert!((s.charge_tau_s / 2.902e-4 - 1.0).abs() < 0.02, "{}", s.charge_tau_s);
+        assert!(
+            (s.charge_tau_s / 2.902e-4 - 1.0).abs() < 0.02,
+            "{}",
+            s.charge_tau_s
+        );
     }
 
     #[test]
