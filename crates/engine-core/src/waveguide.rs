@@ -712,6 +712,8 @@ pub struct Duct {
     /// The gas's mean mass flow from the first pipe to the last, kg/s: what its plain area
     /// changes lose ([`area_change_resistance`]).
     mean_flow: f64,
+    /// The mean flow its area changes resist now: `mean_flow` followed over [`GAIN_TAU_S`].
+    mean_now: f64,
     /// What happens at each inner node, between pipe k and k + 1.
     nodes: Vec<Node>,
 }
@@ -931,6 +933,7 @@ impl Duct {
         Self {
             pipes,
             mean_flow: 0.0,
+            mean_now: 0.0,
             nodes: Vec::new(),
         }
     }
@@ -995,6 +998,9 @@ impl Duct {
     /// Send this step's waves into the ends; the inner area changes scatter what arrives at
     /// them this step.
     pub fn send(&mut self, from_near: f64, from_far: f64) {
+        if let Some(p) = self.pipes.first() {
+            self.mean_now += (self.mean_flow - self.mean_now) * p.gain_follow;
+        }
         let n = self.pipes.len();
         let mut into_near = from_near;
         for k in 0..n {
@@ -1012,10 +1018,10 @@ impl Duct {
                         let q = 2.0 * (incoming[0] - incoming[1]) / (z1 + z2 + *r);
                         out = [incoming[0] - z1 * q, incoming[1] + z2 * q];
                     }
-                    _ if self.mean_flow != 0.0 && areas[0] != areas[1] => {
+                    _ if self.mean_now != 0.0 && areas[0] != areas[1] => {
                         // the mean flow loses pressure crossing the change: a resistance
                         let c = self.pipes[k].sound_speed;
-                        let r = area_change_resistance(areas[0], areas[1], self.mean_flow, c);
+                        let r = area_change_resistance(areas[0], areas[1], self.mean_now, c);
                         let rho_c = crate::gas::GAMMA * crate::units::ATM_PA / c;
                         let (z1, z2) = (rho_c / areas[0], rho_c / areas[1]);
                         let q = 2.0 * (incoming[0] - incoming[1]) / (z1 + z2 + r);
@@ -1615,6 +1621,38 @@ mod tests {
             "{}",
             p.at_far()
         );
+    }
+
+    #[test]
+    fn an_area_changes_resistance_moves_without_a_click() {
+        // A duct carrying its flow's DC wave across an area change: each new mean flow changes
+        // the change's resistance; taken at once it stepped the waves every few dozen steps (a
+        // click train, 26 dB of the boosted K20C1's 6 kHz tone). It follows over 2 ms.
+        let dt = 1.0 / 192_000.0;
+        let len = 500.0 * dt * 8.0;
+        let d1 = (4.0 * 0.002 / std::f64::consts::PI).sqrt();
+        let d2 = (4.0 * 0.008 / std::f64::consts::PI).sqrt();
+        let mut duct = Duct::new(vec![
+            Pipe::new(len, d1, 500.0, dt, 0.0),
+            Pipe::new(len, d2, 500.0, dt, 0.0),
+        ]);
+        duct.set_mean_flow(0.05);
+        for _ in 0..20_000 {
+            duct.send(1000.0, 0.0);
+        }
+        let before = duct.pipes[1].at_far();
+        duct.set_mean_flow(0.1);
+        let mut first: f64 = 0.0;
+        for _ in 0..20 {
+            duct.send(1000.0, 0.0);
+            first = first.max((duct.pipes[1].at_far() - before).abs());
+        }
+        for _ in 0..20_000 {
+            duct.send(1000.0, 0.0);
+        }
+        let whole = (duct.pipes[1].at_far() - before).abs();
+        assert!(whole > 1.0, "{whole}");
+        assert!(first < 0.1 * whole, "{first} of {whole}");
     }
 
     #[test]
