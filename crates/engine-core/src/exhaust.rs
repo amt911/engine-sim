@@ -1254,6 +1254,13 @@ impl ArrivalProbe {
         }
     }
 
+    /// The primaries' gas is at `p` Pa from now on (as in [`ExhaustNet::set_mean_pressure`]).
+    pub fn set_mean_pressure(&mut self, p: f64) {
+        for pipe in &mut self.pipes {
+            pipe.set_mean_pressure(p);
+        }
+    }
+
     /// The net's results for steps the copy has not taken yet: `from_far` (steps × valves).
     pub fn push(&mut self, from_far: &[f64]) {
         let n = self.pipes.len();
@@ -1488,6 +1495,18 @@ impl ExhaustNet {
         heat.tails = tails;
     }
 
+    /// The mean pressure, Pa, of the gas in the primaries and the collectors: a turbine's inlet
+    /// pressure when a turbine follows the collectors, the atmosphere without one (what follows
+    /// the collectors stays at the atmosphere's). See [`Pipe::set_mean_pressure`].
+    pub fn set_mean_pressure(&mut self, p: f64) {
+        for pipe in &mut self.primaries {
+            pipe.set_mean_pressure(p);
+        }
+        for b in &mut self.branches {
+            b.collector.set_mean_pressure(p);
+        }
+    }
+
     /// Mean mass flows, kg/s: through each cylinder's primary and each branch's collector and
     /// what follows it (their turbulent friction, [`Pipe::set_mean_flow`]).
     pub fn set_mean_flow(&mut self, per_cylinder: &[f64], per_branch: &[f64]) {
@@ -1566,9 +1585,10 @@ impl ExhaustNet {
     /// The start of a step: the tails' outflow Mach and, when given, the mean flows the pipes'
     /// friction follows — what [`Engine`](crate::engine::Engine) applies before each
     /// [`ExhaustNet::step`].
-    pub fn prepare(&mut self, mach: &[f64], mean: Option<(&[f64], &[f64], f64)>) {
+    pub fn prepare(&mut self, mach: &[f64], mean: Option<(&[f64], &[f64], f64, f64)>) {
         self.set_outflow_mach(mach);
-        if let Some((cyl, branch, rpm)) = mean {
+        if let Some((cyl, branch, rpm, upstream_pa)) = mean {
+            self.set_mean_pressure(upstream_pa);
             self.set_mean_flow(cyl, branch);
             self.set_engine_speed(rpm);
         }
@@ -1624,8 +1644,8 @@ impl ExhaustNet {
         for s in 0..input.steps {
             let mean = if input.has_mean[s] {
                 let (cyl, rest) = input.mean[mean_at..].split_at(n);
-                mean_at += n + m + 1;
-                Some((cyl, &rest[..m], rest[m]))
+                mean_at += n + m + 2;
+                Some((cyl, &rest[..m], rest[m], rest[m + 1]))
             } else {
                 None
             };

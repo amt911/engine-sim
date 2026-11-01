@@ -243,6 +243,12 @@ impl DelayLine {
     pub fn is_nonlinear(&self) -> bool {
         self.arrivals.is_some()
     }
+    /// A non-linear line's values travel at c + k·x from now on (a linear line stays linear).
+    pub fn set_k(&mut self, k: f64) {
+        if let Some(a) = &mut self.arrivals {
+            a.k = k;
+        }
+    }
     /// Whole steps a value pushed now takes at least to arrive: the delay's, or on a non-linear
     /// line half of it (its loudest values travel at most twice as fast).
     pub fn whole_steps(&self) -> usize {
@@ -318,6 +324,8 @@ pub struct Pipe {
     /// The speed of sound it was built for, m/s, and its gas's now ([`Pipe::set_sound_speed`]).
     sound_speed: f64,
     gas_c: f64,
+    /// Its gas's mean pressure, Pa ([`Pipe::set_mean_pressure`]).
+    mean_pa: f64,
     dt: f64,
     /// The walls' loss above 200 Hz on each line ([`Pipe::viscothermal`]).
     walls: Option<Box<[WallLoss; 2]>>,
@@ -457,6 +465,7 @@ impl Pipe {
             diameter_m,
             sound_speed,
             gas_c: sound_speed,
+            mean_pa: crate::units::ATM_PA,
             dt,
             walls: None,
             chain: None,
@@ -531,6 +540,23 @@ impl Pipe {
         self.bwd = DelayLine::nonlinear(delay, k);
         self
     }
+    /// The pipe's gas is at a mean pressure of `p` Pa from now on (a turbine's inlet, upstream of
+    /// it): its waves steepen at k = (γ+1)/(2γp) ([`Pipe::nonlinear`]) — a pressure swing is
+    /// that much less of the gas's own — and a mass flow is ṁ/(ρcA), ρc = γp/c, of Mach number
+    /// ([`Pipe::set_mean_flow`], at its next call).
+    pub fn set_mean_pressure(&mut self, p: f64) {
+        self.mean_pa = p;
+        let gamma = crate::gas::GAMMA;
+        let rho_c = gamma * p / self.sound_speed;
+        let k = (gamma + 1.0) / (2.0 * rho_c * self.sound_speed);
+        self.fwd.set_k(k);
+        self.bwd.set_k(k);
+        if let Some(chain) = &mut self.chain {
+            for st in chain.iter_mut().flatten() {
+                st.line.set_k(k);
+            }
+        }
+    }
     /// Room in its lines for gas as slow as `c_min` m/s ([`Pipe::set_sound_speed`]). Call it
     /// last, on a pipe that has not carried a wave yet.
     pub fn with_room(mut self, c_min: f64) -> Self {
@@ -588,7 +614,7 @@ impl Pipe {
     /// per metre (M = U/c; Darcy f of [`crate::exhaust_fv::PIPE_FRICTION`]):
     /// the faster the gas, the more a pipe's resonances are worn down.
     pub fn set_mean_flow(&mut self, mass_flow: f64) {
-        let rho_c = crate::gas::GAMMA * crate::units::ATM_PA / self.gas_c;
+        let rho_c = crate::gas::GAMMA * self.mean_pa / self.gas_c;
         let mach = (mass_flow / (rho_c * self.area_m2)).abs();
         let alpha = crate::exhaust_fv::PIPE_FRICTION * mach / (2.0 * self.diameter_m);
         self.gain = self.still_gain * (-alpha * self.length_m).exp();
@@ -1807,6 +1833,58 @@ mod tests {
         // once the line carries gas at the new speed (the values sent at the old delay are out)
         let n = far_peak_after(&mut p, 300, 300);
         assert!((143..=145).contains(&n), "peak at {n}");
+    }
+
+    #[test]
+    fn a_pipe_under_pressure_steepens_its_waves_as_much_less() {
+        // A wave steepens at k·x = (γ+1)/(2γp)·x (Msallam et al. 2000, eqs. 1–2): in gas at 3
+        // atmospheres (a turbine's inlet) a pulse three times as strong steepens as one at an
+        // atmosphere, so it arrives the same shape, three times as strong
+        let dt = 1.0 / 96_000.0;
+        let build = || Pipe::new(1.5, 0.04, 600.0, dt, 0.0).steepening();
+        let (mut atm, mut high) = (build(), build());
+        high.set_mean_pressure(3.0 * crate::units::ATM_PA);
+        let pulse = |n: usize| 20_000.0 * (std::f64::consts::PI * n as f64 / 40.0).sin().max(0.0);
+        for n in 0..600 {
+            let x = if n < 40 { pulse(n) } else { 0.0 };
+            let (a, b) = (atm.at_far(), high.at_far());
+            assert!(
+                (3.0 * a - b).abs() < 1e-6 * 20_000.0,
+                "step {n}: {a} vs {b}"
+            );
+            atm.send(x, 0.0);
+            high.send(3.0 * x, 0.0);
+        }
+        // and the strong pulse at an atmosphere arrives otherwise: steeper, sooner
+        let (mut plain, mut high) = (build(), build());
+        high.set_mean_pressure(3.0 * crate::units::ATM_PA);
+        let mut diff: f64 = 0.0;
+        for n in 0..600 {
+            let x = if n < 40 { 3.0 * pulse(n) } else { 0.0 };
+            diff = diff.max((plain.at_far() - high.at_far()).abs());
+            plain.send(x, 0.0);
+            high.send(x, 0.0);
+        }
+        assert!(diff > 1000.0, "{diff}");
+    }
+
+    #[test]
+    fn a_pipe_under_pressure_flows_slower_for_its_mass_flow() {
+        // The friction follows the mean Mach number ṁ/(ρcA), ρc = γp/c: at 3 atmospheres a mass
+        // flow is a third of the Mach number it is at one
+        let dt = 1.0 / 192_000.0;
+        let a = std::f64::consts::PI * 0.25 * 0.05 * 0.05;
+        let mut atm = Pipe::new(1.0, 0.05, 500.0, dt, 0.03);
+        let mut high = Pipe::new(1.0, 0.05, 500.0, dt, 0.03);
+        high.set_mean_pressure(3.0 * crate::units::ATM_PA);
+        atm.set_mean_flow(0.2 * 283.71 * a);
+        high.set_mean_flow(3.0 * 0.2 * 283.71 * a);
+        assert!(
+            (atm.gain - high.gain).abs() < 1e-12,
+            "{} {}",
+            atm.gain,
+            high.gain
+        );
     }
 
     #[test]

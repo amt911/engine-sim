@@ -3026,6 +3026,8 @@ impl Engine {
         // Acoustic source: what the tail pipes radiate.
         // advance the exhaust; what each tail radiates is read below (`last_tails`)
         let rpm = self.rpm();
+        // the gas before a turbine is at its inlet's pressure, its pulses that much less of it
+        let upstream_pa = self.turbo_state.map_or(ATM_PA, |s| s.turbine_inlet_pa);
         match (&mut self.net, &mut self.fv, &mut self.remote.0) {
             (_, Some(fv), _) => {
                 fv.set_outflow_mach(&self.tail_mach);
@@ -3043,7 +3045,12 @@ impl Engine {
                 if due {
                     self.friction_age = 0;
                 }
-                let mean = due.then_some((&self.cyl_mean_flow[..], &self.tail_mean_flow[..], rpm));
+                let mean = due.then_some((
+                    &self.cyl_mean_flow[..],
+                    &self.tail_mean_flow[..],
+                    rpm,
+                    upstream_pa,
+                ));
                 if due {
                     net.set_port_temperature(&self.cyl_port_k);
                 }
@@ -3066,6 +3073,8 @@ impl Engine {
                     r.stage.mean.extend_from_slice(&self.cyl_mean_flow);
                     r.stage.mean.extend_from_slice(&self.tail_mean_flow);
                     r.stage.mean.push(rpm);
+                    r.stage.mean.push(upstream_pa);
+                    r.probe.set_mean_pressure(upstream_pa);
                     r.probe.set_mean_flow(&self.cyl_mean_flow);
                 }
                 r.taken += 1;
