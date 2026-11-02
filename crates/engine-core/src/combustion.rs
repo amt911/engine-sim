@@ -72,6 +72,30 @@ pub fn watson_premixed_fraction(phi: f64, tau_ms: f64) -> f64 {
     (1.0 - 0.926 * phi.max(1e-3).powf(0.37) / tau_ms.max(1e-3).powf(0.26)).clamp(0.0, 0.95)
 }
 
+/// The cylinder's gas ringing after a diesel lights: what mixed during the delay autoignites at
+/// once in places, a pressure step the chamber's transverse modes carry on as they would a struck
+/// drum's, f = ρ·c/(π·B) (Draper, *J. Aero. Sci.*, 1938; the source of most of the combustion noise
+/// radiated above a few kHz: Torregrosa et al., Broatch et al.). The Bessel roots ρ of the modes
+/// (1,0), (2,0), (0,1), and each mode's share of the step (ESTIMATE, none published).
+pub const RING_MODES: [(f64, f64); 3] = [(1.841, 1.0), (3.054, 0.5), (3.832, 0.3)];
+/// The first mode's pressure as a share of the premixed burn's step (ESTIMATE: a bar or so on the
+/// ten bar a light-load premixed burn adds; compared with recordings by ear).
+pub const RING_SHARE: f64 = 0.1;
+/// The ringing's decay time, s (ESTIMATE: traces show it gone in a few milliseconds; viscous and
+/// wall losses, Guardiola et al., *Appl. Energy* 2018).
+pub const RING_DECAY_S: f64 = 0.6e-3;
+
+/// How far a lighting moves a mode's frequency, ±share (ESTIMATE: the bowl is no plain cylinder,
+/// and where it lights and how hot the gas is differ every cycle: recordings show a broad band,
+/// no peak).
+pub const RING_SPREAD: f64 = 0.25;
+
+/// Frequency of a chamber mode of Bessel root `rho`, in gas of sound speed `c` m/s in a bore
+/// `bore_m`, Hz: Draper's f = ρ·c/(π·B).
+pub fn draper_hz(rho: f64, c: f64, bore_m: f64) -> f64 {
+    rho * c / (std::f64::consts::PI * bore_m)
+}
+
 /// Watson's normalising combustion period, degrees (Heywood 1988, §14.4.3 footnote: 125°).
 pub const WATSON_DURATION_DEG: f64 = 125.0;
 
@@ -194,6 +218,12 @@ impl DieselDef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_chambers_first_mode_is_drapers() {
+        // 1.841 × 800 m/s / (π × 0.0795 m) = 5897 Hz, by hand
+        assert_relative_eq!(draper_hz(1.841, 800.0, 0.0795), 5897.0, epsilon = 1.0);
+    }
 
     #[test]
     fn full_fuel_is_the_smoke_limit_or_the_pumps_stop_whichever_is_less() {

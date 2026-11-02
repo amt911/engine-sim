@@ -123,6 +123,7 @@ engine:
     block: 1.0
     mechanical: 1.0
     combustion_jitter: 1.0
+    chamber_ring: 1.0
     blow_off: 1.0
     compressor_whine: 1.0
     reverb: 0.0
