@@ -1423,8 +1423,10 @@ const IAC_KI_PER_S: f64 = 0.5;
 const IAC_MIN: f64 = -0.95;
 const IAC_MAX_AREA: f64 = 0.03;
 /// Spark path: idle timing sits this far retarded from the engine's advance, and the loop
-/// moves it by up to the reserve each way, degrees.
-const IDLE_SPARK_RESERVE_DEG: f64 = 10.0;
+/// moves it by up to the reserve each way, degrees. All the retard there is: multiplied by a
+/// further low-speed share of the advance as well, the burn ended so late (1400 K and 1.3 bar at
+/// the exhaust's opening) that each cycle's scatter became a 13 dB swing of the pulse.
+const IDLE_SPARK_RESERVE_DEG: f64 = 15.0;
 const IDLE_SPARK_KP_DEG: f64 = 80.0;
 const IDLE_SPARK_KD_DEG_S: f64 = 10.0;
 /// Time constant of the speed-rate filter, s: longer than a firing interval at idle, so the
@@ -1643,11 +1645,11 @@ fn flame_ratio(
     here / reference
 }
 
-/// The share of the MBT advance an ECU's map gives at `rpm`: × (0.35 + 0.65·rpm/4000) up to 1.
-/// Below full speed the spark runs retarded from MBT so the idle control has a torque reserve
-/// to take from the spark at once (Bosch, *Gasoline Engine Management*, "idle-speed control");
-/// it is the low-speed shape the spark map had before the flame set MBT.
-fn idle_reserve(rpm: f64) -> f64 {
+/// The share of the flame's MBT advance a rotary's map gives at `rpm`: × (0.35 + 0.65·rpm/4000) up
+/// to 1 (ESTIMATE; the low-speed shape the map had before the flame set MBT). The flame's scale is
+/// a piston chamber's: at a rotor's idle it advances the spark so far the Renesis stalls. A piston
+/// engine takes none of this: its idle retard is [`IDLE_SPARK_RESERVE_DEG`] alone.
+fn rotary_spark_share(rpm: f64) -> f64 {
     (0.35 + 0.65 * rpm.max(0.0) / 4000.0).min(1.0)
 }
 
@@ -2446,11 +2448,15 @@ impl Engine {
         self.limiter_cut = rpm >= red || (self.limiter_cut && rpm > red - LIMITER_HYSTERESIS_RPM);
     }
 
-    /// The ECU's spark advance for cylinder `i`'s charge, ° BTDC: MBT for its flame, less the
-    /// idle torque reserve ([`idle_reserve`]).
+    /// The ECU's spark advance for cylinder `i`'s charge, ° BTDC: MBT for its flame.
     #[cfg(test)]
     fn spark_advance(&self, i: usize) -> f64 {
-        self.def.spark_advance_for(self.cyl[i].flame) * idle_reserve(self.rpm())
+        let share = if self.def.geometry.rotor.is_some() {
+            rotary_spark_share(self.rpm())
+        } else {
+            1.0
+        };
+        self.def.spark_advance_for(self.cyl[i].flame) * share
     }
 
     /// Move the spark trim towards `want` no faster than half the crank's own travel this
@@ -2610,7 +2616,11 @@ impl Engine {
         let blowby_area = BLOWBY_AREA_FRACTION * g.piston_area();
 
         let mut gas_torque = 0.0;
-        let reserve = idle_reserve(self.rpm());
+        let spark_share = if g.rotor.is_some() {
+            rotary_spark_share(self.rpm())
+        } else {
+            1.0
+        };
         let retard = torque_intervention(c.torque_cut, self.charge_share);
         let n_cyl = self.cyl.len();
         for i in 0..n_cyl {
@@ -2921,7 +2931,8 @@ impl Engine {
                 }
             }
             let spark_deg = 720.0
-                - (self.def.spark_advance_for(cs.flame) * reserve + self.idle_spark_deg - retard);
+                - (self.def.spark_advance_for(cs.flame) * spark_share + self.idle_spark_deg
+                    - retard);
             let mut new_burn = false;
             // The spark fires on the first step at or past its angle (within the half cycle
             // after it), so a timing that moved earlier past the crank still fires this charge,
@@ -4164,6 +4175,36 @@ mod tests {
     }
 
     #[test]
+    fn an_idle_does_not_bubble() {
+        // Frames of 21 ms, energy over 600 Hz, 95th percentile over the median:
+        // 2–8 dB in steady idles recorded close to real four-cylinders (Alfa 159, Escort RS1800,
+        // Golf, Cruze; Sonniss GDC). 16–26 dB here with the burn retarded too far.
+        let dt = 1.0 / 384_000.0;
+        let mut e = Engine::new(EngineDef::honda_k20c1(), 800.0, 1);
+        let c = Controls::default();
+        (0..(2.0 / dt) as usize).for_each(|_| {
+            e.step(dt, &c);
+        });
+        let (k, mut low) = (2.0 * PI * 600.0 * dt, 0.0);
+        let high: Vec<f64> = (0..(3.0 / dt) as usize)
+            .map(|_| {
+                let x = e.step(dt, &c);
+                low += (x - low) * k;
+                x - low
+            })
+            .collect();
+        let mut frames: Vec<f64> = high
+            .as_chunks::<8192>()
+            .0
+            .iter()
+            .map(|f| 10.0 * f.iter().map(|v| v * v).sum::<f64>().log10())
+            .collect();
+        frames.sort_by(f64::total_cmp);
+        let burst = frames[frames.len() * 95 / 100] - frames[frames.len() / 2];
+        assert!(burst < 8.0, "{burst} dB");
+    }
+
+    #[test]
     fn cycles_vary_as_measured_engines_do() {
         // Soltau (Proc. IMechE (AD) 1960–61 no. 2, Table 4), wide-open throttle, 2000 rev/min,
         // A/F 14, two compression ratios: mean deviations of the peak pressure 5.54–7.90 % and
@@ -5163,14 +5204,14 @@ mod tests {
         let scale = 0.008_678_7;
         // 780 rpm against 800: err = 0.025; falling at 400 rpm/s (filtered: no new change,
         // so the rate decays by dt/τ = 1/150 → 397.33)
-        let mut e = idling_at(780.0, 0.0, -400.0, -3.0);
+        let mut e = idling_at(780.0, 0.0, -400.0, -8.0);
         e.idle_control(dt, &Controls::default());
         assert_relative_eq!(e.iac_rate, -397.333, max_relative = 1e-5);
         // integral 0.5 · 0.025 · 1e-3 = 1.25e-5; air = scale · (1.25e-5 + 0.05 · 0.025)
         assert_relative_eq!(e.iac_integral, 1.25e-5, max_relative = 1e-9);
         assert_relative_eq!(e.iac, scale * 1.2625e-3, max_relative = 1e-4);
-        // spark: 80 · 0.025 + 10 · 397.33/800 = 6.9667 from the −10° reserve → −3.0333°
-        assert_relative_eq!(e.idle_spark_deg, -3.0333, max_relative = 1e-4);
+        // spark: 80 · 0.025 + 10 · 397.33/800 = 6.9667 from the −15° reserve → −8.0333°
+        assert_relative_eq!(e.idle_spark_deg, -8.0333, max_relative = 1e-4);
         // a new speed reading: 700 → 720 rpm in 1 ms is 20 000 rpm/s, filtered by 1/150
         let mut e = idling_at(720.0, 0.0, 0.0, -10.0);
         e.iac_last_rpm = 700.0;
