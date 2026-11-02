@@ -3335,7 +3335,7 @@ impl Engine {
             // seeded from the engine's own generator: deterministic for a seed
             let base = self.rng;
             self.jets = (0..n_tails)
-                .map(|k| JetNoise::new(base.wrapping_add(k as u64 + 1)).shaken())
+                .map(|k| JetNoise::new(base.wrapping_add(k as u64 + 1)))
                 .collect();
         }
         // The block: every cylinder's pressure shakes the same structure, which radiates it as
@@ -8512,8 +8512,7 @@ mod tests {
         let dry = textured(0.0, 0.0, 0.0, 5000.0, 1.0);
         // the tail jets: zero-mean broadband pressure at the listener. By hand, a 2.0 L at
         // 5000 rpm WOT blows ~0.09 kg/s through a 50 mm tail (u ≈ 81 m/s mean): ≈ 61 dB at 3 m
-        // (0.02 Pa), more with the pulse peaks weighing as u^7.5, and up to
-        // [`crate::jet_noise::EXCITED_JET_GAIN`] = 3 times that below St 1, where its peak is
+        // (0.02 Pa), more with the pulse peaks weighing as u^7.5; measured ≈ 0.04 Pa
         let heard = |flow: f64| {
             let mut d = EngineDef::inline4();
             d.sound.flow_noise = flow;
@@ -8531,7 +8530,7 @@ mod tests {
         };
         let (m, r) = mean_rms_of_difference(&heard(1.0), &heard(0.0));
         assert!(
-            (0.03..0.6).contains(&r) && m.abs() < 0.05 * r,
+            (0.01..0.2).contains(&r) && m.abs() < 0.05 * r,
             "jets: mean {m} rms {r} Pa"
         );
         // intake: the mouth is a sink of the air drawn in, −ṁ/ρ₀. A 2.0 L at 5000 rpm WOT with
