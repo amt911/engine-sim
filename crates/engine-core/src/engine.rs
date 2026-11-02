@@ -351,6 +351,38 @@ impl EngineDef {
         d
     }
 
+    /// VW 1.9 TDI (ALH, Golf IV, 1997–2006): the SDI's block and direct injection with a Garrett
+    /// VNT-15 and an intercooler. 66 kW at 4000 rpm, 210 N·m at 1800–1900 (kfz-tech.de; forum
+    /// quotes of VW's sheet); bore, stroke and ratio from the same family's sheet (Vento 1.9 TDI).
+    /// Not public, estimated: the wheel's sizes, the nozzle's range, the boost, the smoke limit.
+    pub fn vw_tdi() -> Self {
+        let mut d = Self::vw_sdi();
+        d.name = "VW 1.9 TDI (diesel inline-4, VNT turbo)".into();
+        d.combustion = Combustion::Diesel(crate::combustion::DieselDef {
+            // a turbo diesel runs richer than the NA's 1.4: ESTIMATE
+            full_load_lambda: 1.25,
+            // The maker's torque, at a DI diesel's 210 g/kWh (Heywood §1.8, about its best):
+            // 210 N·m at 1900 rpm is 41.8 kW, 2.44 g/s, 63.3 injections/s: 38.5 mg; 66 kW at 4000
+            // is 3.85 g/s, 133 injections/s: 29 mg
+            fuel_stop_kg: vec![(1900.0, 38.5e-6), (4000.0, 29.0e-6)],
+            ..crate::combustion::DieselDef::default()
+        });
+        d.turbo = Some(crate::turbo::TurboDef {
+            // ESTIMATES: a small passenger-diesel wheel, about 0.9 bar over the atmosphere
+            compressor_tip_diameter_m: 0.046,
+            inducer_diameter_m: 0.032,
+            exit_width_m: 0.0035,
+            wastegate_pa: 0.9e5,
+            wastegate_area_m2: 0.0,
+            turbine_area_m2: 1.5e-4,
+            vnt_open_area_m2: 5.0e-4,
+            // no throttle to close against the boost
+            bov_area_m2: 0.0,
+            ..crate::turbo::TurboDef::default()
+        });
+        d
+    }
+
     /// Mazda 13B-MSP RENESIS (RX-8, 2003–2012): two rotors, e 15 mm, R 105 mm, B 80 mm →
     /// 654 cm³ per chamber, CR 10.0, 184 kW at 8200 rpm, 216 N·m at 5500 (Heywood, *ICE
     /// Fundamentals* 2nd ed., Fig. 1.23); side intake and exhaust ports, no overlap. Six
@@ -3109,8 +3141,7 @@ impl Engine {
                 if cs.armed && crate::units::wrap(cur - soi, 720.0) < 360.0 {
                     cs.armed = false;
                     if cs.injected && self.diesel_fuel > 0.0 {
-                        let fuel =
-                            self.diesel_fuel * cs.air_kg / (AFR_STOICH_DIESEL * d.full_load_lambda);
+                        let fuel = self.diesel_fuel * d.full_fuel_kg(rpm_now, cs.air_kg);
                         self.fuel_ledger.into_cylinders += fuel;
                         cs.fuel_kg += fuel;
                         cs.delay = Some((0.0, 0.0));

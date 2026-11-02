@@ -21,6 +21,7 @@ engine:
     soi_idle_btdc_deg: 2.0
     soi_rated_btdc_deg: 12.0
     full_load_lambda: 1.4
+    fuel_stop_kg: []
   intake_valve:
     open_deg: 350.0
     duration_deg: 230.0
@@ -48,6 +49,7 @@ engine:
     primary_length_deviation_m: []
     tail_length_m: 2.0
     tail_diameter_m: 0.05
+    tail_outlets: 1
     muffler_transmission: 1.0
     model: waveguide
     muffler_volume_m3: 0.006
@@ -109,6 +111,7 @@ engine:
     valvetrain: sohc_direct_acting
     roller_followers: false
     valves_per_cylinder: 4
+    valve_density_kg_m3: 7850.0
     rods_per_crankpin: 2
     ring_tension_ratio: 1.0
     liner_roughness: 1.0
@@ -120,6 +123,8 @@ engine:
     block: 1.0
     mechanical: 1.0
     combustion_jitter: 1.0
+    blow_off: 1.0
+    compressor_whine: 1.0
     reverb: 0.0
     leveling: 0.0
     listener_distance_m: 3.0
@@ -150,3 +155,9 @@ engine:
     max_brake_decel_m_s2: 9.0
     shift_time_s: 0.0
     engine_ahead_m: 3.4
+    engine_bay:
+      open_fraction: 0.01
+      liner_thickness_m: 0.02
+      liner_resistivity: 16000.0
+      liner_coverage: 0.25
+  turbo: null

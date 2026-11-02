@@ -183,6 +183,7 @@ engine:
     eta_t: 0.7
     eta_m: 0.95
     turbine_area_m2: 0.0004
+    vnt_open_area_m2: 0.0
     inertia_kgm2: 0.00002
     wastegate_pa: 160000.0
     wastegate_area_m2: 0.001

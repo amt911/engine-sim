@@ -148,6 +148,10 @@ pub struct DieselDef {
     /// Excess air at full fuel (the smoke limit): λ = 1.4–1.6 for a naturally aspirated DI
     /// engine (Heywood 1988, §1.8).
     pub full_load_lambda: f64,
+    /// The pump's full-load stop: the most fuel per injection, kg, at (rpm, kg) points in rising
+    /// speed, interpolated and held past its ends. Empty: only the smoke limit. A turbo diesel's
+    /// air would allow more than the maker lets its driveline see.
+    pub fuel_stop_kg: Vec<(f64, f64)>,
 }
 
 impl Default for DieselDef {
@@ -157,11 +161,29 @@ impl Default for DieselDef {
             soi_idle_btdc_deg: 2.0,
             soi_rated_btdc_deg: 12.0,
             full_load_lambda: 1.4,
+            fuel_stop_kg: Vec::new(),
         }
     }
 }
 
 impl DieselDef {
+    /// The most fuel per injection at `rpm` with `air_kg` trapped, kg: the smoke limit or the
+    /// pump's stop, whichever is less.
+    pub fn full_fuel_kg(&self, rpm: f64, air_kg: f64) -> f64 {
+        let smoke = air_kg / (AFR_STOICH_DIESEL * self.full_load_lambda);
+        let i = self.fuel_stop_kg.partition_point(|p| p.0 < rpm);
+        let stop = match (
+            i.checked_sub(1).and_then(|k| self.fuel_stop_kg.get(k)),
+            self.fuel_stop_kg.get(i),
+        ) {
+            (None, None) => return smoke,
+            (Some(a), None) => a.1,
+            (None, Some(b)) => b.1,
+            (Some(a), Some(b)) => a.1 + (b.1 - a.1) * (rpm - a.0) / (b.0 - a.0),
+        };
+        smoke.min(stop)
+    }
+
     /// Start of injection at `rpm`, ° BTDC, between idle and redline speeds.
     pub fn soi_btdc(&self, rpm: f64, idle_rpm: f64, redline_rpm: f64) -> f64 {
         let x = ((rpm - idle_rpm) / (redline_rpm - idle_rpm).max(1.0)).clamp(0.0, 1.0);
@@ -172,6 +194,27 @@ impl DieselDef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_fuel_is_the_smoke_limit_or_the_pumps_stop_whichever_is_less() {
+        let d = DieselDef {
+            full_load_lambda: 1.25,
+            fuel_stop_kg: vec![(2000.0, 40e-6), (4000.0, 30e-6)],
+            ..DieselDef::default()
+        };
+        // 1 g of air at λ 1.25: 1 / (14.5 × 1.25) = 55.17 mg; the stop is under it
+        assert_relative_eq!(d.full_fuel_kg(3000.0, 1e-3), 35e-6, epsilon = 1e-12);
+        assert_relative_eq!(d.full_fuel_kg(1000.0, 1e-3), 40e-6, epsilon = 1e-12);
+        assert_relative_eq!(d.full_fuel_kg(5000.0, 1e-3), 30e-6, epsilon = 1e-12);
+        // 0.5 g of air: 27.59 mg, under the stop
+        assert_relative_eq!(d.full_fuel_kg(3000.0, 0.5e-3), 27.586e-6, epsilon = 1e-9);
+        // no stop: only the air limits it
+        let na = DieselDef {
+            full_load_lambda: 1.25,
+            ..DieselDef::default()
+        };
+        assert_relative_eq!(na.full_fuel_kg(3000.0, 1e-3), 55.172e-6, epsilon = 1e-9);
+    }
     use approx::assert_relative_eq;
     use proptest::prelude::*;
 

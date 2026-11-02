@@ -241,6 +241,27 @@ mod tests {
     }
 
     #[test]
+    fn the_vw_tdi_boosts_near_what_vw_published() {
+        // 66 kW (88.5 hp) at 4000 rpm, 210 N·m at 1800–1900 (see `EngineDef::vw_tdi`): within 15 %
+        let (t, p) = {
+            let pts = sweep(&EngineDef::vw_tdi());
+            peaks(&pts).unwrap()
+        };
+        assert!(
+            (t.torque_nm / 210.0 - 1.0).abs() < 0.15,
+            "{} N·m at {}",
+            t.torque_nm,
+            t.rpm
+        );
+        assert!(
+            (p.power_hp() / 88.5 - 1.0).abs() < 0.15,
+            "{} hp at {}",
+            p.power_hp(),
+            p.rpm
+        );
+    }
+
+    #[test]
     fn the_vw_sdi_breathes_near_what_vw_published() {
         // VW 1.9 SDI: 125 N·m at 2200–2600 rpm, 47 kW (63 hp) at 4200. Within 15 % of both
         // (the diesel's own spec), the torque flat through the mid range as a diesel's is
