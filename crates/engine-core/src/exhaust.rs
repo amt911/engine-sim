@@ -82,6 +82,10 @@ pub struct ExhaustDef {
     pub primary_length_deviation_m: Vec<f64>,
     pub tail_length_m: f64,
     pub tail_diameter_m: f64,
+    /// Open ends the tail's flow leaves through side by side, each the tail's bore (1 = the pipe
+    /// itself). The pipe's waves and its radiated pulses stay the pipe's; the jet blows at the
+    /// flow over their summed area.
+    pub tail_outlets: u32,
     /// Extra lumped loss on the tail pipe, amplitude kept per pass (1 = none). The muffler
     /// itself is modelled from `muffler_volume_m3` and `muffler_packing`; this field predates
     /// that and stays for files that set it.
@@ -626,6 +630,7 @@ impl Default for ExhaustDef {
             primary_length_deviation_m: Vec::new(),
             tail_length_m: 1.5,
             tail_diameter_m: 0.050,
+            tail_outlets: 1,
             muffler_transmission: 1.0,
             model: ExhaustModel::Waveguide,
             muffler_volume_m3: 0.006,
@@ -715,7 +720,7 @@ impl ExhaustDef {
             }
         }
         ExitLosses {
-            outlet_area: area(self.outlet_diameter()),
+            outlet_area: area(self.outlet_diameter()) * f64::from(self.tail_outlets.max(1)),
             friction,
             laminar,
         }
@@ -763,6 +768,11 @@ impl ExhaustDef {
         self.merge
             .as_ref()
             .map_or_else(|| self.outlet_diameter(), |m| m.outlet_diameter_m)
+    }
+
+    /// Bore of the one jet with the area of all the outlets, m ([`Self::tail_outlets`]).
+    pub fn jet_diameter(&self) -> f64 {
+        self.radiating_diameter() * f64::from(self.tail_outlets.max(1)).sqrt()
     }
 
     /// Length of cylinder `i`'s (0-based) primary, m: `primary_length_m` and its deviation,
@@ -2383,6 +2393,22 @@ mod tests {
         );
         assert!((l.laminar / 13_004.5 - 1.0).abs() < 1e-4, "{}", l.laminar);
         assert!((l.outlet_area - 1.963_495e-3).abs() < 1e-9);
+    }
+
+    #[test]
+    fn side_by_side_outlets_share_the_jet_and_not_the_pipe() {
+        // Two 50 mm outlets: 2·π/4·0.05² = 3.927e-3 m², the area of one Ø70.71 mm jet; the bore
+        // the pipe's sound leaves through stays the pipe's.
+        let mut d = ExhaustDef {
+            tail_outlets: 2,
+            ..ExhaustDef::default()
+        };
+        d.after_collector.clear();
+        assert!((d.exit_losses().outlet_area - 3.926_991e-3).abs() < 1e-8);
+        assert!((d.jet_diameter() - 0.070_711).abs() < 1e-6);
+        assert_eq!(d.radiating_diameter(), 0.05);
+        let old: ExhaustDef = serde_yaml_ng::from_str("tail_diameter_m: 0.05\n").unwrap();
+        assert_eq!(old.tail_outlets, 1);
     }
 
     #[test]

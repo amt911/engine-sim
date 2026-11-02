@@ -1426,9 +1426,14 @@ Ruled out, measuring: cycle-to-cycle variation (already at Soltau's COV; off 22 
 outside the measured COV); road silencers (lines 15 dB, but 8 kHz −17 against −30); steepening off
 (20 dB); the FV exhaust (29 dB, worse); the turbine's wake by Nelson–Morfey (−50 dB, by hand).
 `gas_temperature` helps (17 dB) but takes 1–2 kHz down 4–5 dB; not kept.
-Kept: a shaken jet's broadband amplification, gain 3 below St 1 (`EXCITED_JET_GAIN`), fitted: the
-papers' values are not at hand. 12 dB. **Open:** the LFA's and K20A's excess of lines: their jets
-are too slow for this to reach their floor (no change), so they need another source.
+Then rejected by ear: a shaken jet's gain (3 below St 1), fitted so the lines matched these
+recordings. Its premise was wrong: it credited all their broadband to the jet, though road clips
+also hold tyres and wind, and at spool-in the hiss masked the engine. Reverted. The FK8's flow
+leaves through more than one 57 mm pipe (`tail_outlets`, 2 as an ESTIMATE, the tips' feed bore not
+being published), which takes the jet about 20 dB down: 2-8 kHz over 100-800 Hz is -28 dB over the
+pull, against -17 to -25 in road clips. **Open:** lines at 1-2 kHz are 23 dB against 10-15, without
+broadband to bury them; the main causes of the whistle were elsewhere (equal primaries, fixed by
+the head's uneven tracts). The LFA's and K20A's excess of lines also remains.
 
 Also found on the way: the K20C1 inherited the K20A's port film though it is direct-injected (4.8 kJ
 burnt in the exhaust after a lift-off), and its 50 mm tail (FK8: 57 mm). **Open:** the turbine inlet

@@ -210,6 +210,7 @@ impl EngineDef {
                 primary_length_deviation_m: Vec::new(),
                 tail_length_m: 1.0,
                 tail_diameter_m: 0.045,
+                tail_outlets: 1,
                 muffler_transmission: 1.0,
                 model: ExhaustModel::Waveguide,
                 muffler_volume_m3: 0.003,
@@ -308,6 +309,7 @@ impl EngineDef {
                 collector_diameter_m: 0.05,
                 tail_length_m: 1.6,
                 tail_diameter_m: 0.055,
+                tail_outlets: 1,
                 // Steepening, as every preset: linear pipes (or the exact finite-volume solver)
                 // left a rotary 98–99 % pure tones at 8000 rpm, "a wind instrument", where
                 // recordings of ported 13Bs pulling are 29–51 % (their rasp is the port jet's
@@ -367,6 +369,7 @@ impl EngineDef {
             idle_throttle: 0.018,
             exhaust: ExhaustDef {
                 tail_diameter_m: 0.065,
+                tail_outlets: 1,
                 ..base.exhaust.clone()
             },
             ..base
@@ -506,6 +509,10 @@ impl EngineDef {
         // Engineering, FK8 titanium exhaust); at the turbo's flow the K20A's 50 mm blew its
         // jet 30 % faster (jet noise ∝ u⁸: a hiss over 1 kHz the recordings do not have)
         d.exhaust.tail_diameter_m = 0.057;
+        // the flow leaves through the silencer's tips, not one pipe: the outer two are straight
+        // through (Honda's product planner, via Mod Bargains), 86 mm inside (Tomei). What bore
+        // feeds them is not published, so ESTIMATE: two of the pipe's, the least they can be
+        d.exhaust.tail_outlets = 2;
         for s in &mut d.exhaust.after_collector {
             if let crate::exhaust::Segment::Pipe { diameter_m, .. } = s {
                 *diameter_m = d.exhaust.tail_diameter_m;
@@ -836,6 +843,7 @@ impl EngineDef {
                 // for a longer pipe; 2026-10-31)
                 tail_length_m: 0.50 + 0.38 + 1.00,
                 tail_diameter_m: 0.070,
+                tail_outlets: 1,
                 // Sport muffler with bypass valves: less damping than a road car.
                 muffler_transmission: 1.0,
                 model: ExhaustModel::Waveguide,
@@ -1080,6 +1088,7 @@ impl EngineDef {
                 primary_length_deviation_m: Vec::new(),
                 tail_length_m: 1.3,
                 tail_diameter_m: 0.065,
+                tail_outlets: 1,
                 muffler_transmission: 1.0,
                 model: ExhaustModel::Waveguide,
                 muffler_volume_m3: 0.010,
@@ -1166,6 +1175,7 @@ impl EngineDef {
                 primary_length_deviation_m: Vec::new(),
                 tail_length_m: 2.0,
                 tail_diameter_m: 0.065,
+                tail_outlets: 1,
                 muffler_transmission: 1.0,
                 model: ExhaustModel::Waveguide,
                 muffler_volume_m3: 0.012,
@@ -3529,10 +3539,12 @@ impl Engine {
             None => 0.0,
         };
         let z = crate::exhaust::tail_impedance();
+        let outlets = f64::from(self.def.exhaust.tail_outlets.max(1));
         for (t, &signal) in tails.iter().enumerate() {
             self.tail_dc[t] += (signal - self.tail_dc[t]) * k;
             // the swing rides on the mean; no exit blows past sound (it chokes first)
-            self.tail_u[t] = (u_mean[t] + (signal - self.tail_dc[t]) / z).min(TAIL_SONIC);
+            let swing = (signal - self.tail_dc[t]) / (z * outlets);
+            self.tail_u[t] = (u_mean[t] + swing).min(TAIL_SONIC);
         }
         let mut jets = 0.0;
         let snd = &self.def.sound;
@@ -3540,7 +3552,7 @@ impl Engine {
             && let Some((_, l)) = &self.listener
         {
             let rho = crate::exhaust::tail_reference_density();
-            let d = self.def.exhaust.radiating_diameter();
+            let d = self.def.exhaust.jet_diameter();
             for ((jet, u), r) in self.jets.iter_mut().zip(&self.tail_u).zip(l.distances()) {
                 jets += jet.step(*u, d, rho, *r, dt);
             }
@@ -4390,6 +4402,39 @@ mod tests {
         });
         let (fired, burnt) = (e.combustions() - n, e.afterburn_j() - q);
         assert!(fired == 0 && burnt < 1.0, "{fired} fired, {burnt} J");
+    }
+
+    #[test]
+    fn the_k20c1_blows_out_through_the_fk8s_outlets() {
+        // The FK8's silencer ends in three tips, the outer two straight-through (Honda's product
+        // planner, via Mod Bargains; Tomei lists them 86 mm inside); the K20C1 counts those two.
+        assert_eq!(EngineDef::honda_k20c1().exhaust.tail_outlets, 2);
+    }
+
+    #[test]
+    fn two_outlets_halve_the_jets_speed() {
+        // Continuity at a fixed flow: twice the area, half the speed. On the correlation,
+        // u^7.5·A, that is 2^-7.5·2 = 2^-6.5 in power: −19.6 dB.
+        let speed = |outlets: u32| {
+            let mut d = EngineDef::inline4();
+            d.exhaust.tail_outlets = outlets;
+            let mut e = Engine::new(d, 5000.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(5000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.5, &c);
+            let n = (0.2 / DT) as usize;
+            let mut u = 0.0;
+            for _ in 0..n {
+                e.step(DT, &c);
+                u += e.tail_exit_velocity()[0] / n as f64;
+            }
+            u
+        };
+        let (one, two) = (speed(1), speed(2));
+        assert!((two / one - 0.5).abs() < 0.05, "{one} vs {two} m/s");
     }
 
     #[test]

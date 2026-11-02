@@ -86,6 +86,7 @@ engine:
     - 0.032
     tail_length_m: 1.84
     tail_diameter_m: 0.057
+    tail_outlets: 2
     muffler_transmission: 1.0
     model: waveguide
     muffler_volume_m3: 0.006
