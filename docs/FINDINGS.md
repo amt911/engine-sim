@@ -1435,6 +1435,16 @@ pull, against -17 to -25 in road clips. **Open:** lines at 1-2 kHz are 23 dB aga
 broadband to bury them; the main causes of the whistle were elsewhere (equal primaries, fixed by
 the head's uneven tracts). The LFA's and K20A's excess of lines also remains.
 
+The whistle's main cause: the K20C1's "headifold" casts four very uneven tracts in the head, and
+equal pipes put the pulses in phase. `primary_length_deviation_m` took the strongest tone from -14
+to -21 dB of the total at the end of a pull.
+
+The bubbling at idle: the spark's idle retard was counted twice (a share of MBT plus the reserve),
+for a burn so late that p_EVO reached 1.16-1.37 bar at 1400 K and each cycle's pulse swung 13 dB.
+Pistons now use the reserve alone (15 deg, ESTIMATE); bursts (p95 - median, 600 Hz-3 kHz) 16-26 dB
+to 3.8, recordings 2-8. Rotaries keep the share: without it the Renesis stalls, and that is not
+clean physics (the flame-speed advance is a piston model).
+
 Also found on the way: the K20C1 inherited the K20A's port film though it is direct-injected (4.8 kJ
 burnt in the exhaust after a lift-off), and its 50 mm tail (FK8: 57 mm). **Open:** the turbine inlet
 reaches 3.5–4.5 bar at the top because the estimated inducer (40.6 mm, sources say 46.7) chokes and
