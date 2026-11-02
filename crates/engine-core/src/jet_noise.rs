@@ -27,6 +27,13 @@ const P_REF: f64 = 20e-6;
 const PEAK_STROUHAL: f64 = 0.2;
 /// Quality factor of the band-pass: about two octaves between its −3 dB points.
 const BAND_Q: f64 = 0.7;
+/// A jet shaken by strong tones amplifies its own broadband noise, its lows most (Bechert &
+/// Pfizenmaier, JSV 43, 1975; Ffowcs Williams & Kempton, JFM 84, 1978: the forcing feeds the
+/// shear layer's instability), and a tail pipe's jet is shaken by the whole of each pulse. Both
+/// values ESTIMATES: the gain on the broadband, fitted to the orders' prominence at 1–2 kHz in
+/// recordings of the stock FK8 (dyno and road), and the Strouhal number it fades above.
+pub(crate) const EXCITED_JET_GAIN: f64 = 3.0;
+const EXCITED_JET_STROUHAL: f64 = 1.0;
 
 /// Overall sound pressure level of a round jet of exit velocity `v` (m/s, outflow > 0), exit
 /// diameter `d` (m) and density `rho_jet` (kg/m³), heard at `r` metres (dB re 20 µPa).
@@ -72,6 +79,9 @@ pub struct JetNoise {
     // band-pass state (the SVF's two integrators)
     s1: f64,
     s2: f64,
+    // the shelf of a jet its pulses shake (gain, the low-pass's state)
+    gain: f64,
+    low: f64,
 }
 
 impl JetNoise {
@@ -80,7 +90,15 @@ impl JetNoise {
             rng: seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1,
             s1: 0.0,
             s2: 0.0,
+            gain: 1.0,
+            low: 0.0,
         }
+    }
+
+    /// This jet shaken by the pulses it carries ([`EXCITED_JET_GAIN`]).
+    pub fn shaken(mut self) -> Self {
+        self.gain = EXCITED_JET_GAIN;
+        self
     }
 
     /// Uniform white noise of unit variance (xorshift64*).
@@ -108,7 +126,13 @@ impl JetNoise {
         // sum of its squared impulse response, exact; π·fc/(Q·fs) only while fc ≪ fs)
         let alpha = band_alpha(fc, dt);
         let norm = ((1.0 + alpha) / alpha).sqrt();
-        p_rms * norm * self.band(n, fc, dt)
+        let clean = p_rms * norm * self.band(n, fc, dt);
+        if self.gain == 1.0 {
+            return clean;
+        }
+        let k = (2.0 * PI * EXCITED_JET_STROUHAL * v / d * dt).min(1.0);
+        self.low += (clean - self.low) * k;
+        clean + (self.gain - 1.0) * self.low
     }
 
     /// Band-pass (0 dB peak) at `fc`, Q = BAND_Q: the trapezoidal state-variable filter of
@@ -284,6 +308,35 @@ impl ValveJet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_jet_shaken_by_its_pulses_amplifies_its_lows_and_leaves_its_highs() {
+        // A shelf 1 + (G − 1)·L, G = 3, L the one-pole k/(1 − (1 − k)e^(−jω)) of its corner
+        // St·V/D = 1·150/0.057 = 2632 Hz at 192 kHz, k = 2π·2632/192000 = 0.0861: 3.00 at 100 Hz;
+        // at 20 kHz (ω = 0.6545) L = 0.0861/(0.275 + 0.556j) = 0.0615 − 0.1243j, so
+        // |1.123 − 0.249j| = 1.150 (hand). Same seed, the same noise through both: their
+        // spectra's ratio at a frequency is the shelf.
+        let (v, d, rho, r, dt) = (150.0, 0.057, 0.6, 3.0, 1.0 / 192_000.0);
+        let mut clean = JetNoise::new(7);
+        let mut shaken = JetNoise::new(7).shaken();
+        let n = 192_000;
+        let at = |x: &[f64], f: f64| {
+            let (mut re, mut im) = (0.0, 0.0);
+            for (i, s) in x.iter().enumerate() {
+                let t = i as f64 / n as f64;
+                let w = (PI * t).sin().powi(2) * s;
+                re += w * (2.0 * PI * f * i as f64 * dt).cos();
+                im += w * (2.0 * PI * f * i as f64 * dt).sin();
+            }
+            (re * re + im * im).sqrt()
+        };
+        let x: Vec<f64> = (0..n).map(|_| clean.step(v, d, rho, r, dt)).collect();
+        let y: Vec<f64> = (0..n).map(|_| shaken.step(v, d, rho, r, dt)).collect();
+        let low = at(&y, 100.0) / at(&x, 100.0);
+        let high = at(&y, 20_000.0) / at(&x, 20_000.0);
+        assert!((low - 3.0).abs() < 0.03, "{low}");
+        assert!((high - 1.150).abs() < 0.01, "{high}");
+    }
 
     #[test]
     fn a_choked_exhaust_valve_jet_by_hand() {
