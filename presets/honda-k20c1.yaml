@@ -108,7 +108,7 @@ engine:
     runner_diameter_m: 0.042
     individual_throttles: false
     trumpet_loss: 0.1
-    film_fraction: 0.18
+    film_fraction: 0.0
     film_tau_s: 1.0
     airbox: null
   redline_rpm: 7000.0

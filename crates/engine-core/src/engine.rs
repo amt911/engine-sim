@@ -495,6 +495,9 @@ impl EngineDef {
         d.intake_valve.high = None;
         d.exhaust.primary_length_m = 0.25;
         d.exhaust.primary_length_deviation_m = Vec::new();
+        // direct injection (EngineLabs; Mountune's K20C1 data): the fuel goes into the cylinder,
+        // no port wall holds a film of it (the K20A's port injection did)
+        d.intake.film_fraction = 0.0;
         // the FK8's factory pipework is 57 mm ("standard pipework of just 57mm", Real Speed
         // Engineering, FK8 titanium exhaust); at the turbo's flow the K20A's 50 mm blew its
         // jet 30 % faster (jet noise ∝ u⁸: a hiss over 1 kHz the recordings do not have)
@@ -4295,6 +4298,34 @@ mod tests {
             rms(&jet),
             rms(&off_quiet)
         );
+    }
+
+    #[test]
+    fn a_direct_injected_lift_off_stops_firing_with_its_injections() {
+        // The K20C1 injects into the cylinder (EngineLabs; Mountune's K20C1 data: "direct fuel
+        // injection"): no port wall holds a film for the cylinders to burn after the cut
+        // (Aquino's x–τ is the port-injected engine's). Revved free to its limiter on full boost
+        // and lifted off: after the charges already injected (0.1 s, 5 cycles a cylinder at
+        // 6000 rpm), nothing fires and nothing burns in the exhaust. With the port film it
+        // fired 121 times and burnt 4.8 kJ in the exhaust over that second.
+        let mut e = Engine::new(EngineDef::honda_k20c1(), 3000.0, 1);
+        let dt = 1.0 / 48_000.0;
+        let c = |throttle| Controls {
+            throttle,
+            ..Controls::default()
+        };
+        (0..(2.0 / dt) as usize).for_each(|_| {
+            e.step(dt, &c(1.0));
+        });
+        (0..(0.1 / dt) as usize).for_each(|_| {
+            e.step(dt, &c(0.0));
+        });
+        let (n, q) = (e.combustions(), e.afterburn_j());
+        (0..(0.9 / dt) as usize).for_each(|_| {
+            e.step(dt, &c(0.0));
+        });
+        let (fired, burnt) = (e.combustions() - n, e.afterburn_j() - q);
+        assert!(fired == 0 && burnt < 1.0, "{fired} fired, {burnt} J");
     }
 
     #[test]
