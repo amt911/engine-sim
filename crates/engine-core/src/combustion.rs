@@ -109,7 +109,14 @@ pub struct Watson {
     pub k2: f64,
     pub k3: f64,
     pub k4: f64,
+    /// When each spray's premixed fuel lights after the first signs of ignition, as normalised
+    /// time: all 0 for one burn. Each jet of a multi-hole nozzle autoignites on its own (Dec,
+    /// SAE 970873), so what a smooth curve averages over many cycles is a few sharp lightings.
+    pub spray_delay: [f64; SPRAY_HOLES],
 }
+
+/// A DI nozzle's holes: five on the VW 1.9's two-spring injectors.
+pub const SPRAY_HOLES: usize = 5;
 
 impl Watson {
     /// For an overall equivalence ratio `phi`, a delay of `tau_ms` and engine speed `rpm`:
@@ -123,6 +130,7 @@ impl Watson {
             k2: 5000.0,
             k3,
             k4: 0.79 * k3.powf(0.25),
+            spray_delay: [0.0; SPRAY_HOLES],
         }
     }
 
@@ -132,7 +140,15 @@ impl Watson {
             return 0.0;
         }
         let t = t.min(1.0);
-        let f1 = 1.0 - (1.0 - t.powf(self.k1)).powf(self.k2);
+        let f1 = self
+            .spray_delay
+            .iter()
+            .map(|d| {
+                let t = (t - d).max(0.0);
+                1.0 - (1.0 - t.powf(self.k1)).powf(self.k2)
+            })
+            .sum::<f64>()
+            / SPRAY_HOLES as f64;
         let f2 = 1.0 - (-self.k3 * t.powf(self.k4)).exp();
         self.beta * f1 + (1.0 - self.beta) * f2
     }
@@ -176,6 +192,8 @@ pub struct DieselDef {
     /// speed, interpolated and held past its ends. Empty: only the smoke limit. A turbo diesel's
     /// air would allow more than the maker lets its driveline see.
     pub fuel_stop_kg: Vec<(f64, f64)>,
+    /// How far apart its sprays light within a cycle, ° crank: each draws a delay up to this.
+    pub spray_spread_deg: f64,
 }
 
 impl Default for DieselDef {
@@ -186,6 +204,7 @@ impl Default for DieselDef {
             soi_rated_btdc_deg: 12.0,
             full_load_lambda: 1.4,
             fuel_stop_kg: Vec::new(),
+            spray_spread_deg: 0.0,
         }
     }
 }
@@ -218,6 +237,29 @@ impl DieselDef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_nozzles_sprays_light_apart_and_burn_the_same_fuel() {
+        let one = Watson {
+            beta: 1.0,
+            ..Watson::new(0.3, 2.0, 900.0)
+        };
+        // all five lit 0.1 late is the same burn 0.1 late
+        let late = Watson {
+            spray_delay: [0.1; SPRAY_HOLES],
+            ..one
+        };
+        assert!((late.burned(0.3) - one.burned(0.2)).abs() < 1e-12);
+        // two of five not lit yet: the other three's share at most, 3/5
+        let apart = Watson {
+            spray_delay: [0.0, 0.0, 0.0, 0.5, 0.5],
+            ..one
+        };
+        assert!((apart.burned(0.45) - 0.6 * one.burned(0.45)).abs() < 1e-12);
+        assert!((apart.burned(1.0) - 1.0).abs() < 1e-9);
+        let old: DieselDef = serde_yaml_ng::from_str("cetane: 51.0\n").unwrap();
+        assert_eq!(old.spray_spread_deg, 0.0);
+    }
 
     #[test]
     fn a_chambers_first_mode_is_drapers() {

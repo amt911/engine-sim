@@ -287,7 +287,11 @@ impl EngineDef {
             cylinders: 4,
             firing_order: vec![1, 3, 4, 2],
             layout: Layout::default(),
-            combustion: Combustion::Diesel(crate::combustion::DieselDef::default()),
+            combustion: Combustion::Diesel(crate::combustion::DieselDef {
+                // ESTIMATE, fitted: 4° brings the ALH's same-cylinder hit similarity at 1–2 kHz to 0.77 (recordings 0.70–0.86)
+                spray_spread_deg: 4.0,
+                ..crate::combustion::DieselDef::default()
+            }),
             // one 36 mm intake and one 31 mm exhaust valve, lift a quarter of each (ESTIMATES);
             // a diesel's small overlap: IVO 10° BTDC, IVC 40° ABDC, EVO 45° BBDC, EVC 10° ATDC
             // (typical values; ESTIMATE)
@@ -373,6 +377,7 @@ impl EngineDef {
             // 210 N·m at 1900 rpm is 41.8 kW, 2.44 g/s, 63.3 injections/s: 38.5 mg; 66 kW at 4000
             // is 3.85 g/s, 133 injections/s: 29 mg
             fuel_stop_kg: vec![(1900.0, 38.5e-6), (4000.0, 29.0e-6)],
+            spray_spread_deg: 4.0,
             ..crate::combustion::DieselDef::default()
         });
         d.turbo = Some(crate::turbo::TurboDef {
@@ -3206,7 +3211,19 @@ impl Engine {
                             released: 0.0,
                             fuel_kg: fuel,
                             air_kg: air,
-                            watson: Some(Watson::new(phi, since * 1e3, rpm_now)),
+                            watson: Some(Watson {
+                                spray_delay: std::array::from_fn(|_| {
+                                    0.5 * (xorshift_noise(&mut self.rng) + 1.0)
+                                        * d.spray_spread_deg
+                                        * self.def.sound.combustion_jitter
+                                        / WATSON_DURATION_DEG
+                                }),
+                                // Watson's K₂ fits the whole nozzle's burn, its sprays' spread
+                                // in it: one spray alone is sharper (ESTIMATE: half as wide,
+                                // width ∝ K₂^(−1/K₁) with K₁ ≈ 2)
+                                k2: 4.0 * Watson::new(phi, since * 1e3, rpm_now).k2,
+                                ..Watson::new(phi, since * 1e3, rpm_now)
+                            }),
                         });
                         // the premixed burn's pressure step at about the clearance volume,
                         // (γ − 1)·Q/V, rings the chamber: each lighting strikes it differently
@@ -4768,6 +4785,20 @@ mod tests {
         // the modes keep the mean level of what they replace: within 3 dB
         let ratio = high(&on) / high(&off);
         assert!((0.5..2.0).contains(&ratio), "{ratio}");
+    }
+
+    #[test]
+    fn a_diesels_sprays_change_how_each_cycle_strikes() {
+        let hits = |spread: f64| {
+            let mut d = EngineDef::vw_tdi();
+            if let Combustion::Diesel(x) = &mut d.combustion {
+                x.spray_spread_deg = spread;
+            }
+            let mut e = Engine::new(d, 900.0, 1);
+            let c = Controls::default();
+            (0..72_000).map(|_| e.step(DT, &c)).collect::<Vec<f64>>()
+        };
+        assert_ne!(hits(4.0), hits(0.0));
     }
 
     #[test]
@@ -6816,14 +6847,26 @@ mod tests {
         }
         let n = (1.0 / DT) as usize;
         let (mut fuel, mut lo, mut hi) = (0.0, f64::MAX, 0.0f64);
+        // the mean over a whole cycle (133 ms at 900 rpm) cancels the ripple of the firings
+        let cycle = (0.133 / DT) as usize;
+        let mut rpms = Vec::with_capacity(n);
         for _ in 0..n {
             e.step(DT, &c);
             fuel += e.diesel_fuel / n as f64;
             lo = lo.min(e.rpm());
             hi = hi.max(e.rpm());
+            rpms.push(e.rpm());
         }
-        // a steady idle: within ±60 rpm over a second
-        assert!(hi - lo < 120.0, "idle {lo:.0}–{hi:.0}");
+        let means: Vec<f64> = rpms
+            .windows(cycle)
+            .step_by(cycle / 4)
+            .map(|w| w.iter().sum::<f64>() / cycle as f64)
+            .collect();
+        let hunt = means.iter().cloned().fold(0.0, f64::max)
+            - means.iter().cloned().fold(f64::MAX, f64::min);
+        assert!(hunt < 20.0, "the governor hunts over {hunt:.0} rpm");
+        // the firings' own ripple: four hits a cycle on a light flywheel
+        assert!(hi - lo < 130.0, "idle {lo:.0}–{hi:.0}");
         let rpm = e.rpm();
         assert!((800.0..1000.0).contains(&rpm), "idle {rpm}");
         assert!(e.combustions > 10);

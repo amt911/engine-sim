@@ -22,6 +22,7 @@ engine:
     soi_rated_btdc_deg: 12.0
     full_load_lambda: 1.4
     fuel_stop_kg: []
+    spray_spread_deg: 4.0
   intake_valve:
     open_deg: 350.0
     duration_deg: 230.0
