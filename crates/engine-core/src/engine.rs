@@ -495,6 +495,15 @@ impl EngineDef {
         d.intake_valve.high = None;
         d.exhaust.primary_length_m = 0.25;
         d.exhaust.primary_length_deviation_m = Vec::new();
+        // the FK8's factory pipework is 57 mm ("standard pipework of just 57mm", Real Speed
+        // Engineering, FK8 titanium exhaust); at the turbo's flow the K20A's 50 mm blew its
+        // jet 30 % faster (jet noise ∝ u⁸: a hiss over 1 kHz the recordings do not have)
+        d.exhaust.tail_diameter_m = 0.057;
+        for s in &mut d.exhaust.after_collector {
+            if let crate::exhaust::Segment::Pipe { diameter_m, .. } = s {
+                *diameter_m = d.exhaust.tail_diameter_m;
+            }
+        }
         let turbo = crate::turbo::TurboDef {
             // the gate holds 1.6 bar (23 psi, the FK8's commonly quoted peak boost, not a
             // factory figure); the turbine's and the gate's areas are ESTIMATES fitted to the
@@ -4286,6 +4295,25 @@ mod tests {
             rms(&jet),
             rms(&off_quiet)
         );
+    }
+
+    #[test]
+    fn the_k20c1_breathes_out_through_the_fk8s_57_mm_pipe() {
+        // The FK8's factory pipework is 57 mm (Real Speed Engineering, RSE titanium exhaust for
+        // the FK8: "standard pipework of just 57mm"); the tail and the pipe after the catalyst
+        // are that bore, not the 50 mm of the K20A it is built from.
+        let d = EngineDef::honda_k20c1();
+        assert_eq!(d.exhaust.tail_diameter_m, 0.057);
+        let pipes: Vec<f64> = d
+            .exhaust
+            .after_collector
+            .iter()
+            .filter_map(|s| match s {
+                crate::exhaust::Segment::Pipe { diameter_m, .. } => Some(*diameter_m),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pipes, vec![0.057]);
     }
 
     #[test]

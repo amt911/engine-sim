@@ -81,7 +81,7 @@ engine:
     collector_extra_length_m: []
     primary_length_deviation_m: []
     tail_length_m: 1.84
-    tail_diameter_m: 0.05
+    tail_diameter_m: 0.057
     muffler_transmission: 1.0
     model: waveguide
     muffler_volume_m3: 0.006
@@ -98,7 +98,7 @@ engine:
       wall_m: 0.000165
     - kind: pipe
       length_m: 1.84
-      diameter_m: 0.05
+      diameter_m: 0.057
     merge: null
     steepening: true
     gas_temperature: false
