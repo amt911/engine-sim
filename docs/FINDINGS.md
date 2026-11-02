@@ -1413,3 +1413,25 @@ revs swing ±2–4 dB from one 10 ms window to the next, the render is smooth.
 - `pgrep -f '<pattern>'` inside `bash -c "...<pattern>..."` matches its own shell: a wait loop on
   it never ends.
 
+
+## The K20C1's "whistle": orders standing out of too little noise, in every engine (2026-11-02)
+
+Heard as a strange whistle: clean orders at 1–2.8 kHz through each pull. Measure: per band, the
+top 1 % of an 8192-point frame's bins over its median (noise alone: ≈ 9 dB), on the loudest quarter
+of the frames. At 1–2 kHz: K20C1 render 18; six stock FK8 dyno clips 10–15, three road ones 10–12
+(so not Doppler or wind); K20A dyno clips 11–18, LFA 13–17; our K20A 25, our LFA 30. The octave
+balance already matched: the energy is right, its character is not.
+
+Ruled out, measuring: cycle-to-cycle variation (already at Soltau's COV; off 22 dB, ×3 16 dB but
+outside the measured COV); road silencers (lines 15 dB, but 8 kHz −17 against −30); steepening off
+(20 dB); the FV exhaust (29 dB, worse); the turbine's wake by Nelson–Morfey (−50 dB, by hand).
+`gas_temperature` helps (17 dB) but takes 1–2 kHz down 4–5 dB; not kept.
+Kept: a shaken jet's broadband amplification, gain 3 below St 1 (`EXCITED_JET_GAIN`), fitted: the
+papers' values are not at hand. 12 dB. **Open:** the LFA's and K20A's excess of lines: their jets
+are too slow for this to reach their floor (no change), so they need another source.
+
+Also found on the way: the K20C1 inherited the K20A's port film though it is direct-injected (4.8 kJ
+burnt in the exhaust after a lift-off), and its 50 mm tail (FK8: 57 mm). **Open:** the turbine inlet
+reaches 3.5–4.5 bar at the top because the estimated inducer (40.6 mm, sources say 46.7) chokes and
+the gate stays shut; 46.7 mm gives 371 hp without the ECU's boost taper, which has no source yet.
+So the overrun is louder than the pull, where real FK8s fall 9–14 dB.
