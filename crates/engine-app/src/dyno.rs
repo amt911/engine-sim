@@ -197,14 +197,14 @@ mod tests {
     #[test]
     fn single_cylinder_curve_is_smooth() {
         // A one-cylinder torque pulse is lumpy; without whole-cycle averaging adjacent
-        // points jumped. Adjacent 500 rpm steps must stay within 15 % of the peak.
+        // points jumped up and down. A zigzag is a bend against both neighbours (the second
+        // difference), which must stay within 15 % of the peak; a curve falling past its peak
+        // (the single's 32 → 26 N·m from 5000 to 5500 rpm) is the engine, not the averaging.
         let pts = sweep(&EngineDef::single());
         let peak = peaks(&pts).unwrap().0.torque_nm;
-        for w in pts.windows(2) {
-            assert!(
-                (w[1].torque_nm - w[0].torque_nm).abs() < 0.15 * peak,
-                "{w:?}"
-            );
+        for w in pts.windows(3) {
+            let bend = w[2].torque_nm - 2.0 * w[1].torque_nm + w[0].torque_nm;
+            assert!(bend.abs() < 0.15 * peak, "{w:?}");
         }
     }
 
@@ -250,6 +250,24 @@ mod tests {
         );
         let at_2000 = pts.iter().find(|q| q.rpm == 2000.0).unwrap();
         assert!(at_2000.torque_nm > 0.9 * t.torque_nm, "{at_2000:?}");
+    }
+
+    #[test]
+    fn the_renesis_breathes_near_what_mazda_published() {
+        // 184 kW (247 hp) at 8200 rpm, 216 N·m at 5500 (Heywood 2nd ed., Fig. 1.23): within 15 %
+        let pts = sweep(&EngineDef::mazda_renesis());
+        let (t, p) = peaks(&pts).unwrap();
+        assert!(
+            (t.torque_nm / 216.0 - 1.0).abs() < 0.15,
+            "{} N·m",
+            t.torque_nm
+        );
+        assert!(
+            (p.power_hp() / 247.0 - 1.0).abs() < 0.15,
+            "{} hp",
+            p.power_hp()
+        );
+        assert!(p.rpm >= 7500.0, "power peaks at {} rpm", p.rpm);
     }
 
     #[test]

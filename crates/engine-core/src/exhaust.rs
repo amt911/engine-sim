@@ -151,6 +151,17 @@ pub struct Bypass {
     pub open_rpm: f64,
     /// Valve travel, closed to open, s.
     pub travel_s: f64,
+    /// The silencer's outer wall over its inlet chamber (the first of `closed`): its thickness,
+    /// m (0: no wall radiates), density, kg/m³, and area, m². The gas in the chamber shakes the
+    /// wall, which radiates as well as the tips ("break-out" noise, Munjal, *Acoustics of Ducts
+    /// and Mufflers*, 2nd ed., §9.9): with the valve shut and the chambers taking 60 dB the
+    /// wall is what passes the mid range ([`Shell`]).
+    pub shell_thickness_m: f64,
+    pub shell_density_kg_m3: f64,
+    pub shell_area_m2: f64,
+    /// The wall's first resonance, Hz (0: a limp wall, mass law only). Below it the wall moves
+    /// by its stiffness and passes less than the mass law would (Kinsler et al., §6.4).
+    pub shell_resonance_hz: f64,
 }
 
 impl Default for Bypass {
@@ -163,7 +174,75 @@ impl Default for Bypass {
             baffle_open_area: 1.0,
             open_rpm: 3000.0,
             travel_s: 0.3,
+            shell_thickness_m: 0.0,
+            shell_density_kg_m3: 7850.0,
+            shell_area_m2: 0.0,
+            shell_resonance_hz: 0.0,
         }
+    }
+}
+
+/// A silencer's outer wall as a limp mass driven by the gas inside and loaded by the gas on
+/// both sides: m·dv/dt = p − (Z₁ + Z₂)·v (Kinsler et al., *Fundamentals of Acoustics*, 4th ed.,
+/// §6.4: a partition of surface mass m between media of impedances Z₁, Z₂; its transmission
+/// falls 6 dB per octave above (Z₁ + Z₂)/(2πm), the mass law), held by a stiffness k that puts
+/// its first resonance at f₀ = √(k/m)/2π: m·dv/dt = p − k·x − (Z₁ + Z₂ + c)·v, with the
+/// structure's own damping c = η·√(k·m) at a loss factor η of [`SHELL_LOSS_FACTOR`]. Higher
+/// modes are left out.
+#[derive(Debug, Clone)]
+pub struct Shell {
+    /// Surface mass, kg/m² (0: no wall).
+    mass: f64,
+    area: f64,
+    /// Z₁ + Z₂: the gas inside and the air outside, Pa·s/m.
+    z: f64,
+    /// Stiffness per unit area, Pa/m (0: limp).
+    k: f64,
+    v: f64,
+    x: f64,
+}
+
+/// Structural loss factor of a seamed silencer shell (ESTIMATE: welded steel structures run
+/// 0.01–0.1, Beranek & Vér, *Noise and Vibration Control Engineering*, ch. 14; seams and the
+/// packing against the wall put a silencer at the top of the range).
+const SHELL_LOSS_FACTOR: f64 = 0.1;
+
+/// ρc of the air outside, Pa·s/m (1.204 kg/m³ · 343 m/s, 20 °C).
+const Z_AIR: f64 = 1.204 * 343.0;
+
+impl Shell {
+    /// A wall `thickness_m` thick of `density` kg/m³ over `area_m2`, its first resonance at
+    /// `resonance_hz` (0: limp), the gas inside of impedance `z_gas`.
+    pub fn new(
+        thickness_m: f64,
+        density: f64,
+        area_m2: f64,
+        resonance_hz: f64,
+        z_gas: f64,
+    ) -> Self {
+        let mass = thickness_m * density;
+        Self {
+            mass,
+            area: area_m2,
+            z: z_gas + Z_AIR,
+            k: (2.0 * std::f64::consts::PI * resonance_hz).powi(2) * mass,
+            v: 0.0,
+            x: 0.0,
+        }
+    }
+
+    /// One step driven by the pressure `p` inside (Pa): the volume velocity the wall pushes into
+    /// the air outside, m³/s. Semi-implicit, so a light wall cannot overshoot.
+    pub fn step(&mut self, p: f64, dt: f64) -> f64 {
+        if self.mass <= 0.0 || self.area <= 0.0 {
+            return 0.0;
+        }
+        let (m, k) = (self.mass, self.k);
+        let c = self.z + SHELL_LOSS_FACTOR * (k * m).sqrt();
+        // semi-implicit: v from the force with x advanced by v
+        self.v = (self.v + dt / m * (p - k * self.x)) / (1.0 + dt * c / m + dt * dt * k / m);
+        self.x += self.v * dt;
+        self.v * self.area
     }
 }
 
@@ -272,6 +351,14 @@ impl Valved {
         } else {
             self.radiate_outlets()
         };
+        // the inlet chamber's wall, its volume velocity as the outlets' u·ρc over their area
+        let out_area: f64 = if self.outlets.is_empty() {
+            self.tips.end_areas().1
+        } else {
+            self.outlets.iter().map(|(d, _)| d.end_areas().1).sum()
+        };
+        let chamber = split[1] + self.closed.at_near();
+        let out = out + self.shell.step(chamber, dt) * z / out_area;
         self.closed.send(clamp_wave(split[1]), clamp_wave(meet[0]));
         self.open
             .send(clamp_wave(to_open), clamp_wave(to_tips_from_open));
@@ -1048,6 +1135,8 @@ struct Valved {
     x: f64,
     /// Whether the engine is above `open_rpm` (the valve's target).
     opening: bool,
+    /// [`Bypass::shell_thickness_m`]: the inlet chamber's wall.
+    shell: Shell,
 }
 
 /// Most steps a block of the net's work may hold, and fewest worth handing off (below it the
@@ -1275,6 +1364,13 @@ impl ExhaustNet {
                         travel_s: b.travel_s,
                         x: 0.0,
                         opening: false,
+                        shell: Shell::new(
+                            b.shell_thickness_m,
+                            b.shell_density_kg_m3,
+                            b.shell_area_m2,
+                            b.shell_resonance_hz,
+                            tail_reference_density() * C_TAIL,
+                        ),
                     }
                 });
                 let tail_area = std::f64::consts::PI * 0.25 * def.tail_diameter_m.powi(2);
@@ -1651,6 +1747,49 @@ impl ExhaustNet {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_limp_shell_moves_by_the_mass_law() {
+        // A wall of 4.5 kg/m² (1 mm of titanium) between gas of ρc 250 and air of ρc 413.4
+        // (1.204·343), driven by 1 Pa at 500 Hz: v = p/|Z₁ + Z₂ + jωm| (Kinsler et al.,
+        // *Fundamentals of Acoustics*, §6.4, a limp partition) = 1/|663.4 + j·14137.2| =
+        // 1/14152.8 = 7.0658e-5 m/s; over 0.1 m² that is 7.0658e-6 m³/s.
+        let dt = 1.0 / 192_000.0;
+        let mut s = Shell::new(0.001, 4500.0, 0.1, 0.0, 250.0);
+        let mut peak: f64 = 0.0;
+        let n = (0.2 / dt) as usize;
+        for k in 0..n {
+            let p = (2.0 * std::f64::consts::PI * 500.0 * k as f64 * dt).sin();
+            let q = s.step(p, dt);
+            if k > n / 2 {
+                peak = peak.max(q.abs());
+            }
+        }
+        assert!((peak / 7.0658e-6 - 1.0).abs() < 0.01, "{peak:e}");
+        // no shell given: nothing radiates
+        let mut none = Shell::new(0.0, 4500.0, 0.1, 0.0, 250.0);
+        assert_eq!(none.step(1.0, dt), 0.0);
+    }
+
+    #[test]
+    fn a_stiff_shell_passes_less_below_its_resonance() {
+        // The same wall held at f₀ = 2000 Hz, driven by 1 Pa at 100 Hz: k = (2π·2000)²·4.5 =
+        // 7.1061e8 Pa/m, its damping 0.1·√(k·m) = 5654.9, so v = 1/|(663.4 + 5654.9) +
+        // j(ω·4.5 − k/ω)| = 1/|6318.3 − j·1128145.9| (Kinsler et al., §1.7, a driven damped
+        // oscillator); over 0.1 m², 8.8640e-8 m³/s — 1/400 of what the limp wall passes.
+        let dt = 1.0 / 192_000.0;
+        let mut s = Shell::new(0.001, 4500.0, 0.1, 2000.0, 250.0);
+        let mut peak: f64 = 0.0;
+        let n = (0.5 / dt) as usize;
+        for k in 0..n {
+            let p = (2.0 * std::f64::consts::PI * 100.0 * k as f64 * dt).sin();
+            let q = s.step(p, dt);
+            if k > n / 2 {
+                peak = peak.max(q.abs());
+            }
+        }
+        assert!((peak / 8.8640e-8 - 1.0).abs() < 0.01, "{peak:e}");
+    }
+
     /// Steady transmitted amplitude (re a unit incident sine at `f`) through `duct` with an
     /// anechoic source and termination.
     fn transmission(mut duct: crate::waveguide::Duct, f: f64, dt: f64) -> f64 {
@@ -1829,6 +1968,7 @@ mod tests {
             baffle_open_area: 1.0,
             open_rpm: 3000.0,
             travel_s: 0.3,
+            ..Bypass::default()
         });
         d
     }
@@ -1847,6 +1987,20 @@ mod tests {
             })
             .collect();
         d
+    }
+
+    #[test]
+    fn a_shell_round_trips_and_old_bypasses_have_none() {
+        let old: Bypass = serde_yaml_ng::from_str("open_rpm: 3000.0\n").unwrap();
+        assert_eq!((old.shell_thickness_m, old.shell_resonance_hz), (0.0, 0.0));
+        let mut d = valved_banks();
+        let b = d.merge.as_mut().unwrap().bypass.as_mut().unwrap();
+        (b.shell_thickness_m, b.shell_density_kg_m3) = (0.001, 4510.0);
+        (b.shell_area_m2, b.shell_resonance_hz) = (0.14, 300.0);
+        let json: ExhaustDef = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+        let yaml: ExhaustDef =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&d).unwrap()).unwrap();
+        assert_eq!((json, yaml), (d.clone(), d));
     }
 
     #[test]

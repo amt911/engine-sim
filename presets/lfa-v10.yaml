@@ -32,7 +32,7 @@ engine:
       - 9
       - 10
   intake_valve:
-    open_deg: 340.0
+    open_deg: 380.0
     duration_deg: 270.0
     max_lift_m: 0.0124
     diameter_m: 0.0496
@@ -41,6 +41,26 @@ engine:
     duration_deg: 246.0
     max_lift_m: 0.0103
     diameter_m: 0.0412
+  intake_phaser:
+    range_deg: 40.0
+    rate_deg_s: 60.0
+    map:
+    - rpm: 1000.0
+      full_load_deg: 40.0
+      no_load_deg: 10.0
+    - rpm: 2000.0
+      full_load_deg: 40.0
+      no_load_deg: 40.0
+  exhaust_phaser:
+    range_deg: 32.0
+    rate_deg_s: 60.0
+    map:
+    - rpm: 1000.0
+      full_load_deg: 0.0
+      no_load_deg: 20.0
+    - rpm: 2000.0
+      full_load_deg: 0.0
+      no_load_deg: 0.0
   spark_advance_deg: 28.0
   burn_duration_deg: 45.0
   flywheel_inertia_kgm2: 0.28
@@ -176,6 +196,10 @@ engine:
         baffle_open_area: 0.03
         open_rpm: 3000.0
         travel_s: 0.3
+        shell_thickness_m: 0.001
+        shell_density_kg_m3: 4510.0
+        shell_area_m2: 0.1382300767579509
+        shell_resonance_hz: 300.0
     steepening: true
     gas_temperature: true
   intake:
@@ -194,6 +218,7 @@ engine:
     valvetrain: dohc_direct_acting
     roller_followers: false
     valves_per_cylinder: 4
+    valve_density_kg_m3: 4430.0
     rods_per_crankpin: 2
     ring_tension_ratio: 1.0
     liner_roughness: 1.0
@@ -236,3 +261,8 @@ engine:
     max_brake_decel_m_s2: 10.0
     shift_time_s: 0.2
     engine_ahead_m: 3.2
+    engine_bay:
+      open_fraction: 0.01
+      liner_thickness_m: 0.02
+      liner_resistivity: 16000.0
+      liner_coverage: 0.25

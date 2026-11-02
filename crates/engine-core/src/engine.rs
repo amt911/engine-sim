@@ -156,6 +156,7 @@ impl EngineDef {
                 stroke_m: 0.086,
                 rod_m: 0.143,
                 compression_ratio: 10.0,
+                rotor: None,
             },
             cylinders: 1,
             firing_order: vec![1],
@@ -257,6 +258,7 @@ impl EngineDef {
                 stroke_m: 0.0955,
                 rod_m: 0.144,
                 compression_ratio: 19.5,
+                rotor: None,
             },
             cylinders: 4,
             firing_order: vec![1, 3, 4, 2],
@@ -326,6 +328,127 @@ impl EngineDef {
         d
     }
 
+    /// Mazda 13B-MSP RENESIS (RX-8, 2003–2012): two rotors, e 15 mm, R 105 mm, B 80 mm →
+    /// 654 cm³ per chamber, CR 10.0, 184 kW at 8200 rpm, 216 N·m at 5500 (Heywood, *ICE
+    /// Fundamentals* 2nd ed., Fig. 1.23); side intake and exhaust ports, no overlap. Six
+    /// chambers fired 1-4-2-5-3-6: each rotor's faces 240° of chamber angle apart, the rotors
+    /// 120° (180° of shaft). Not public, estimated: port timing and area, runner, exhaust,
+    /// inertia (spec `docs/superpowers/specs/2026-10-31-rotary-design.md`).
+    pub fn mazda_renesis() -> Self {
+        Self {
+            name: "Mazda 13B RENESIS (two-rotor)".into(),
+            geometry: CylinderGeometry::rotary(0.015, 0.105, 0.080, 10.0),
+            cylinders: 6,
+            firing_order: vec![1, 4, 2, 5, 3, 6],
+            layout: Layout::default(),
+            // Ports as valves, in chamber degrees (⅔ of the shaft's): intake opening at top
+            // centre, closing 70° after bottom (the RENESIS's late-closing auxiliary ports);
+            // exhaust opening 33° before bottom (50° of shaft), closing at top centre. Areas as
+            // one equivalent opening each (lift a quarter of the diameter): three side intake
+            // ports ≈ 2250 mm², two exhaust ≈ 1350 mm². ESTIMATES: 1500/900 mm² made 158 hp at
+            // 6000 rpm; these 224 hp at 8500, the model's usual ≈ 90 % of the published
+            intake_valve: ValveTiming {
+                open_deg: 360.0,
+                duration_deg: 250.0,
+                max_lift_m: 0.0134,
+                diameter_m: 0.0535,
+                high: None,
+            },
+            exhaust_valve: ValveTiming {
+                open_deg: 147.0,
+                duration_deg: 213.0,
+                max_lift_m: 0.0104,
+                diameter_m: 0.0416,
+                high: None,
+            },
+            flywheel_inertia_kgm2: 0.12,
+            plenum_volume_m3: 4.0e-3,
+            throttle_diameter_m: 0.065,
+            idle_throttle: 0.0055,
+            idle_rpm: 800.0,
+            // each rotor's three chambers share its exhaust port: their "primaries" are port
+            // stubs joined at once; the rotor's own pipe is the collector (ESTIMATES)
+            exhaust: ExhaustDef {
+                primary_length_m: 0.06,
+                primary_diameter_m: 0.045,
+                collectors: vec![vec![1, 2, 3], vec![4, 5, 6]],
+                collector_length_m: 0.45,
+                collector_diameter_m: 0.05,
+                tail_length_m: 1.6,
+                tail_diameter_m: 0.055,
+                // Steepening, as every preset: linear pipes (or the exact finite-volume solver)
+                // left a rotary 98–99 % pure tones at 8000 rpm, "a wind instrument", where
+                // recordings of ported 13Bs pulling are 29–51 % (their rasp is the port jet's
+                // turbulence, which no 1D model carries); the steepening's highs land on the
+                // recordings' (above 4 kHz 6 dB under the note, recordings 5–15 dB). FINDINGS
+                // 2026-10-31.
+                steepening: true,
+                ..ExhaustDef::default()
+            },
+            intake: IntakeDef {
+                model: IntakeModel::Fv,
+                // ESTIMATE (0.40 m peaked the power at 6500 rpm)
+                runner_length_m: 0.25,
+                runner_diameter_m: 0.045,
+                ..IntakeDef::default()
+            },
+            redline_rpm: 9000.0,
+            starter_torque_nm: 60.0,
+            vehicle: crate::drivetrain::VehicleDef::inline4(),
+            ..Self::single()
+        }
+        .with_tail_pipe()
+        .with_catalyst()
+    }
+
+    /// A tuned 13B as an RX-7 build (the user's wish, 2026-10-31: more revs and ported for a
+    /// rougher sound; not a real engine's data): the RENESIS's rotors with a bridge-ported
+    /// intake and peripheral exhaust ports — wide, early-opening ports whose overlap gives the
+    /// ported rotary's lumpy "brap" idle — revving to 9500 rpm with no catalyst. Timings in shaft degrees, typical of such builds: intake 75° BTDC to 80°
+    /// ABDC, exhaust 75° BBDC to 48° ATDC (≈ 120° of overlap); port areas 1.5× the RENESIS's;
+    /// a sports silencer instead of the catalyst.
+    pub fn mazda_13b_bridgeport() -> Self {
+        let base = Self::mazda_renesis();
+        let mut d = Self {
+            name: "Mazda 13B RX-7 bridge-port (tuned)".into(),
+            // in chamber degrees, ⅔ of the shaft's: IVO 50° BTDC, IVC 53° ABDC; EVO 50° BBDC,
+            // EVC 32° ATDC
+            intake_valve: ValveTiming {
+                open_deg: 310.0,
+                duration_deg: 283.0,
+                max_lift_m: base.intake_valve.max_lift_m * 1.5f64.sqrt(),
+                diameter_m: base.intake_valve.diameter_m * 1.5f64.sqrt(),
+                high: None,
+            },
+            exhaust_valve: ValveTiming {
+                open_deg: 130.0,
+                duration_deg: 262.0,
+                max_lift_m: base.exhaust_valve.max_lift_m * 1.5f64.sqrt(),
+                diameter_m: base.exhaust_valve.diameter_m * 1.5f64.sqrt(),
+                high: None,
+            },
+            redline_rpm: 9500.0,
+            // the overlap dilutes the idle charge with the exhaust it pushes into the intake:
+            // such builds idle higher on a cracked-open throttle, and lumpy
+            idle_rpm: 1200.0,
+            idle_throttle: 0.018,
+            exhaust: ExhaustDef {
+                tail_diameter_m: 0.065,
+                ..base.exhaust.clone()
+            },
+            ..base
+        };
+        // no catalyst, no silencer: an open 65 mm pipe, as such builds run. The crackle a
+        // straight pipe once had came from the intake port's coupling and the steepening
+        // waveguide (FINDINGS 2026-10-31); a silencer then took the scream with it (1–4 kHz
+        // 33 dB under the note, a bridge port's dyno pull has it 5 dB under). Length: ESTIMATE
+        d.exhaust.after_collector = vec![crate::exhaust::Segment::Pipe {
+            length_m: 1.3,
+            diameter_m: 0.065,
+        }];
+        d
+    }
+
     /// Subaru EJ25 flat-four (EJ251, Impreza 2.5 RS 1999–2005): 99.5 × 79 mm, 2457 cc,
     /// CR 10.0, 165 hp at 5600 rpm, 225 N·m at 4000, SOHC with four valves per cylinder; firing
     /// 1-3-2-4, cylinders 1 and 3 on one bank, 2 and 4 on the other (Subaru EJ engine,
@@ -339,6 +462,7 @@ impl EngineDef {
                 // commonly quoted (not a factory document)
                 rod_m: 0.1305,
                 compression_ratio: 10.0,
+                rotor: None,
             },
             cylinders: 4,
             firing_order: vec![1, 3, 2, 4],
@@ -433,6 +557,7 @@ impl EngineDef {
                 stroke_m: 0.086,
                 rod_m: 0.139,
                 compression_ratio: 11.5,
+                rotor: None,
             },
             cylinders: 4,
             firing_order: vec![1, 3, 4, 2],
@@ -602,6 +727,7 @@ impl EngineDef {
                 stroke_m: 0.079,
                 rod_m: 0.140,
                 compression_ratio: 12.0,
+                rotor: None,
             },
             cylinders: 10,
             firing_order: vec![1, 6, 5, 10, 2, 7, 3, 8, 4, 9],
@@ -624,8 +750,18 @@ impl EngineDef {
             // within the usual 40–70° / 10–45° to the recordings' firing harmonics and the
             // patent's muffler response, the power held in the published range.
             combustion: Combustion::Spark,
+            // That is the timing floored; the cams turn there on dual VVT-i (Toyota). At idle the
+            // intake sits retarded and the exhaust advanced, so the valves barely overlap and
+            // the charge is not half residual: the 1LR-GUE's ranges are not published, those
+            // of Toyota's 1UR-FE V8 with the same system are taken (intake opening 18° ATDC to
+            // 22° BTDC, 40°; exhaust closing 8° BTDC to 24° ATDC, 32°). The base here is the
+            // intake fully retarded; the maps give the high-output timing whenever the pedal is
+            // down and above 2000 rpm, and at a light-load idle open the intake 10° ATDC and
+            // close the exhaust 3° ATDC (7° apart: an ESTIMATE inside those ranges). Rate: the
+            // measured 0.6 s snap to 9000 rpm (see the test) leaves the cams no more than half a
+            // second to reach the high-output timing, ≥ 60 °/s; 30 °/s took 0.73 s.
             intake_valve: ValveTiming {
-                open_deg: 340.0,
+                open_deg: 380.0,
                 duration_deg: 270.0,
                 max_lift_m: 0.0124,
                 diameter_m: 0.0496,
@@ -639,8 +775,38 @@ impl EngineDef {
                 high: None,
             },
             vtec: None,
-            intake_phaser: None,
-            exhaust_phaser: None,
+            intake_phaser: Some(crate::valve::Phaser {
+                range_deg: 40.0,
+                rate_deg_s: 60.0,
+                map: vec![
+                    crate::valve::PhaserPoint {
+                        rpm: 1000.0,
+                        full_load_deg: 40.0,
+                        no_load_deg: 10.0,
+                    },
+                    crate::valve::PhaserPoint {
+                        rpm: 2000.0,
+                        full_load_deg: 40.0,
+                        no_load_deg: 40.0,
+                    },
+                ],
+            }),
+            exhaust_phaser: Some(crate::valve::Phaser {
+                range_deg: 32.0,
+                rate_deg_s: 60.0,
+                map: vec![
+                    crate::valve::PhaserPoint {
+                        rpm: 1000.0,
+                        full_load_deg: 0.0,
+                        no_load_deg: 20.0,
+                    },
+                    crate::valve::PhaserPoint {
+                        rpm: 2000.0,
+                        full_load_deg: 0.0,
+                        no_load_deg: 0.0,
+                    },
+                ],
+            }),
             spark_advance_deg: 28.0,
             burn_duration_deg: 45.0,
             // from the measured unloaded snap, idle to 9000 rpm in 0.6 s (see the test)
@@ -816,6 +982,16 @@ impl EngineDef {
                         open_rpm: 3000.0,
                         // a vacuum diaphragm actuator: ESTIMATE
                         travel_s: 0.3,
+                        // the titanium silencer's wall over its inlet chamber: 1 mm of
+                        // titanium (4510 kg/m³; thickness ESTIMATE, a single-skin shell), the
+                        // chamber's side π·0.22·0.20 m
+                        shell_thickness_m: 0.001,
+                        shell_density_kg_m3: 4510.0,
+                        shell_area_m2: std::f64::consts::PI * 0.22 * 0.20,
+                        // its first resonance: ESTIMATE, set where the shell leaves the held
+                        // 6700 rpm lows at the dyno recording's (docs/FINDINGS.md, 2026-11-01);
+                        // a limp wall puts 12-18 dB over it
+                        shell_resonance_hz: 300.0,
                     }),
                 }),
             },
@@ -838,7 +1014,11 @@ impl EngineDef {
             starter_torque_nm: 150.0,
             // DOHC, four titanium valves a cylinder; Toyota has not published the valve drive, so
             // the usual bucket tappets
-            friction: crate::friction::FrictionDef::default(),
+            friction: crate::friction::FrictionDef {
+                // Ti-6Al-4V
+                valve_density_kg_m3: 4430.0,
+                ..crate::friction::FrictionDef::default()
+            },
             sound: SoundDef::default(),
             overrun_fuel_cut_rpm: 1500.0,
             // Okamoto et al., SAE 2011-01-2024, Table 1: red zone 9000 rpm, shutoff 9500
@@ -865,6 +1045,7 @@ impl EngineDef {
                 stroke_m: 0.081,
                 rod_m: 0.140,
                 compression_ratio: 12.5,
+                rotor: None,
             },
             cylinders: 8,
             firing_order: vec![1, 5, 3, 7, 4, 8, 2, 6],
@@ -949,6 +1130,7 @@ impl EngineDef {
                 stroke_m: 0.092,
                 rod_m: 0.1549,
                 compression_ratio: 10.7,
+                rotor: None,
             },
             cylinders: 8,
             firing_order: vec![1, 8, 7, 2, 6, 5, 4, 3],
@@ -1032,6 +1214,16 @@ impl EngineDef {
     /// half-burned (delay + Wiebe 50 %) scales with the flame, so the advance is
     /// (`spark_advance_deg` + CA50)·ratio − CA50, `spark_advance_deg` being the reference's;
     /// within ±[`MAX_SPARK_ADVANCE_DEG`], as far as an ignition map reaches.
+    /// Each chamber's cycle angle per shaft angle: 1 for pistons, ⅔ for a Wankel (its chamber
+    /// completes four strokes in three turns of the eccentric shaft; Heywood 2nd ed. §1.8).
+    pub fn chamber_ratio(&self) -> f64 {
+        if self.geometry.rotor.is_some() {
+            2.0 / 3.0
+        } else {
+            1.0
+        }
+    }
+
     pub fn spark_advance_for(&self, flame_ratio: f64) -> f64 {
         ((self.spark_advance_deg + CA50_ATDC_DEG) * flame_ratio - CA50_ATDC_DEG)
             .clamp(-MAX_SPARK_ADVANCE_DEG, MAX_SPARK_ADVANCE_DEG)
@@ -1363,11 +1555,64 @@ fn cycle_flame(
     ratio.is_finite().then_some(ratio)
 }
 
-/// The burned share of a trapped charge: the residual less its unburnt fuel and air, over the
-/// trapped mass.
+/// Gas a cylinder pushed back into its intake port: it sits at the valve and is the first the
+/// valve draws again (plug flow in the port; Heywood, *ICE Fundamentals*, §6.4: backflow into
+/// the intake is re-inducted on the next draw). Tracks how much of it is burned.
+#[derive(Debug, Clone, Copy, Default)]
+struct PortReversion {
+    mass_kg: f64,
+    burned_kg: f64,
+}
+
+impl PortReversion {
+    /// `dm` kg pushed back with burned share `burned`.
+    fn push(&mut self, dm: f64, burned: f64) {
+        self.mass_kg += dm;
+        self.burned_kg += dm * burned.clamp(0.0, 1.0);
+    }
+    /// Draw `dm` kg through the port: the burned gas it brings back, kg.
+    fn draw(&mut self, dm: f64) -> f64 {
+        let take = dm.min(self.mass_kg);
+        if take <= 0.0 {
+            return 0.0;
+        }
+        let burned = take * self.burned_kg / self.mass_kg;
+        self.mass_kg -= take;
+        self.burned_kg = (self.burned_kg - burned).max(0.0);
+        burned
+    }
+}
+
+/// `dm` kg through a cylinder's intake valve (< 0: pushed back into the port): what it pushes
+/// back waits at the valve and comes back first ([`PortReversion`]). Returns the burned share of
+/// what comes in. `reinducted_burned_kg` counts the burned gas crossing inwards, net: after the
+/// exhaust closes the cylinder's own gas going out and back was already in its residual.
+fn intake_exchange(cs: &mut CylinderState, dm: f64) -> f64 {
+    if dm < 0.0 {
+        cs.intake_back.push(-dm, cs.comp.burned);
+        cs.reinducted_burned_kg += dm * cs.comp.burned;
+        0.0
+    } else if dm > 0.0 {
+        let b = cs.intake_back.draw(dm);
+        cs.reinducted_burned_kg += b;
+        b / dm
+    } else {
+        0.0
+    }
+}
+
+/// The burned gas in a trapped charge, kg: the residual less its unburnt fuel and air, and the
+/// burned gas the intake gave back after the exhaust closed.
+fn burned_in_charge(cs: &CylinderState) -> f64 {
+    ((cs.residual_kg - cs.residual_unburnt_kg).max(0.0) + cs.reinducted_burned_kg).max(0.0)
+}
+
+/// The burned share of a trapped charge ([`burned_in_charge`] over the trapped mass). A big
+/// overlap pushes the chamber's gas into the intake at idle; drawn again, it dilutes the
+/// charge as much as a residual.
 fn dilution_of(cs: &CylinderState) -> f64 {
     if cs.trapped_kg > 0.0 {
-        (cs.residual_kg - cs.residual_unburnt_kg).max(0.0) / cs.trapped_kg
+        burned_in_charge(cs) / cs.trapped_kg
     } else {
         0.0
     }
@@ -1556,6 +1801,11 @@ struct CylinderState {
     /// Burned share of the gas in the exhaust primary (what a reversion brings back): set by
     /// what leaves the cylinder, like `port_t` (air on overrun, products under power).
     port_xb: f64,
+    /// The cylinder's gas pushed back into its intake port, waiting to be drawn again.
+    intake_back: PortReversion,
+    /// Burned gas the intake gave back since the exhaust closed, net, kg: part of the charge's
+    /// dilution like the residual ([`dilution_of`]), and no air for the ECU to fuel.
+    reinducted_burned_kg: f64,
 }
 
 /// How far the speed may move before the friction's speed terms are recomputed, rpm: at most
@@ -1800,6 +2050,9 @@ pub struct Engine {
     n_banks: usize,
     /// Valve strikes still ringing: (time since the strike, s; its peak force, N).
     seat_strikes: Vec<(f64, f64)>,
+    /// The engine bay round each bank's side of the block ([`crate::engine_bay`]), built with
+    /// the listener.
+    bay: Vec<crate::engine_bay::BayFilter>,
     /// The texture layers' signal this step, in the tails' units, before it is radiated.
     texture_signal: f64,
     /// The turbulent jet at each tail pipe.
@@ -1925,6 +2178,13 @@ fn crossed(prev: f64, cur: f64, a: f64) -> bool {
 impl Engine {
     pub fn new(def: EngineDef, initial_rpm: f64, seed: u64) -> Self {
         let g = def.geometry;
+        // an engine set running at `initial_rpm` has its cams where the map holds them there
+        // with the pedal up (a phaser starting from its stop would take most of a second to
+        // reach a high-speed timing the engine was meant to be running at)
+        let cam = |p: &Option<crate::valve::Phaser>| {
+            p.as_ref().map_or(0.0, |p| p.target(initial_rpm, 0.0))
+        };
+        let cams = (cam(&def.intake_phaser), cam(&def.exhaust_phaser));
         let thermo = crate::thermo::CylinderGas::default();
         let tail_pipes = def.exhaust.groups(def.cylinders).len();
         let cyl = def
@@ -1969,6 +2229,8 @@ impl Engine {
                     mix_stale: true,
                     fresh_share: 1.0,
                     port_xb: 0.0,
+                    intake_back: PortReversion::default(),
+                    reinducted_burned_kg: 0.0,
                 }
             })
             .map(|mut cs: CylinderState| {
@@ -1992,7 +2254,7 @@ impl Engine {
             iac: 0.0,
             iac_integral: 0.0,
             vtec_engaged: false,
-            cam_advance: (0.0, 0.0),
+            cam_advance: cams,
             iac_rate: 0.0,
             idle_spark_deg: 0.0,
             diesel_fuel: 0.0,
@@ -2028,6 +2290,7 @@ impl Engine {
             bank_of: Vec::new(),
             n_banks: 1,
             seat_strikes: Vec::new(),
+            bay: Vec::new(),
             texture_signal: 0.0,
             jets: Vec::new(),
             valve_jets: Vec::new(),
@@ -2189,7 +2452,8 @@ impl Engine {
     /// 500 cc single and a 6.2 L V8.
     fn idle_air_scale(&self) -> f64 {
         let rho = 30e3 / (crate::gas::R_AIR * 300.0);
-        let mdot = rho * self.def.displacement_m3() * self.def.idle_rpm / 120.0;
+        let mdot =
+            rho * self.def.displacement_m3() * self.def.chamber_ratio() * self.def.idle_rpm / 120.0;
         let flux = crate::gas::orifice_mass_flow(1.0, ATM_PA, 300.0, 30e3);
         let full = DISCHARGE_CD * PI * 0.25 * self.def.throttle_diameter_m.powi(2);
         (mdot / flux / full).max(1e-6)
@@ -2283,14 +2547,17 @@ impl Engine {
             at = self.def.friction.at_speed(&self.def.friction_engine(), rpm);
             self.friction_at.set(at);
         }
-        at.fmep(self.plenum_pressure_pa()) * self.def.displacement_m3() / (4.0 * PI)
+        at.fmep(self.plenum_pressure_pa()) * self.def.displacement_m3() * self.def.chamber_ratio()
+            / (4.0 * PI)
             * (self.omega / 5.0).tanh()
     }
 
     /// Advance by `dt` seconds; returns the raw acoustic source sample (Pa).
     pub fn step(&mut self, dt: f64, c: &Controls) -> f64 {
         let g = self.def.geometry;
-        let crank_deg = self.theta.to_degrees();
+        // each chamber's cycle angle: the crank's, or ⅔ of a Wankel's eccentric shaft
+        let shaft_k = self.def.chamber_ratio();
+        let crank_deg = self.theta.to_degrees() * shaft_k;
         let rpm_now = self.rpm();
         // the ECU's throttle demand: the pedal, trimmed by a torque cut's air channel towards
         // the charge whose most retarded burn gives the cut's share
@@ -2318,10 +2585,12 @@ impl Engine {
         let (film_x, film_tau) = (self.def.intake.film_fraction, self.def.intake.film_tau_s);
         let film_x = if film_tau > 0.0 { film_x } else { 0.0 };
         // one intake event per cycle per port: the film evaporates over the cycle's period
-        let film_share =
-            crate::fuel::evaporated_share(4.0 * PI / self.omega.abs().max(1e-3), film_tau);
+        let film_share = crate::fuel::evaporated_share(
+            4.0 * PI / (shaft_k * self.omega.abs()).max(1e-3),
+            film_tau,
+        );
         let wall_area = 2.0 * g.piston_area();
-        let mean_piston_speed = mean_piston_speed(g.stroke_m, self.omega);
+        let mean_piston_speed = mean_piston_speed(g.stroke_m, shaft_k * self.omega);
         match self.def.intake.model {
             IntakeModel::ZeroD => self.intake_net = None,
             IntakeModel::Fv => {
@@ -2333,7 +2602,8 @@ impl Engine {
                             self.cyl.len(),
                             dt,
                         )
-                        .with_scheme(self.fidelity.pipe_scheme),
+                        .with_scheme(self.fidelity.pipe_scheme)
+                        .coupled_to_port(self.def.intake_valve.max_flow_area()),
                     );
                 }
             }
@@ -2417,8 +2687,17 @@ impl Engine {
             // Both valve flows are planned from the same state (Jacobi) and each may close
             // at most half the pressure gap: during overlap, sequential full equalisation
             // with plenum then runner ping-pongs every substep (loud numerical chatter).
-            let a_in = intake_valve.flow_area(cur);
-            let a_ex = exhaust_valve.flow_area(cur);
+            // a rotary's ports open as the rotor's edge sweeps them, a cam's valve on its lift
+            let (a_in, a_ex) = match &g.rotor {
+                Some(r) => {
+                    let sweep = r.port_sweep_m_per_deg();
+                    (
+                        intake_valve.swept_port_area(cur, sweep),
+                        exhaust_valve.swept_port_area(cur, sweep),
+                    )
+                }
+                None => (intake_valve.flow_area(cur), exhaust_valve.flow_area(cur)),
+            };
             // The intake valve draws from the 0D plenum, or from its runner's last cell (1D).
             let f_in = (a_in > 0.0).then(|| match &self.intake_net {
                 Some(net) => plan_exchange(&net.port_volume(i), &cs.gas, a_in, dt, VALVE_RELAX),
@@ -2492,10 +2771,11 @@ impl Engine {
                         self.plenum.energy_j -= f.dm * f.h;
                     }
                 }
+                let burned = intake_exchange(cs, f.dm);
                 // port injection: the charge carries fuel unless the ECU cut its injection
                 // (a diesel breathes air; its fuel is injected at the end of compression)
                 let fresh = Composition {
-                    burned: 0.0,
+                    burned,
                     fuelled: if cs.injected && diesel.is_none() {
                         1.0
                     } else {
@@ -2606,13 +2886,23 @@ impl Engine {
             settle(cs, &th);
 
             // Combustion events.
-            // a valve closing strikes its seat (both kinds: one valve each, conservative)
-            let strike = SEAT_FORCE_N * (rpm_now / SEAT_FORCE_RPM);
-            if crossed(prev, cur, evc) || crossed(prev, cur, ivc) {
+            // a valve closing strikes its seat (both kinds: one valve each, conservative), as hard
+            // as its mass allows: a closing ramp's speed v into a seat of contact stiffness k
+            // peaks at F = v·√(k·m) (a linear contact's half-sine), so a lighter valve than
+            // Zheng's steel one strikes by √(ρ/ρ_steel) (ESTIMATE: the whole equivalent mass
+            // scaling with the valve's material)
+            let strike = SEAT_FORCE_N
+                * (rpm_now / SEAT_FORCE_RPM)
+                * (self.def.friction.valve_density_kg_m3 / crate::friction::STEEL_KG_M3)
+                    .max(0.0)
+                    .sqrt();
+            // (a rotary's ports have no valves to strike)
+            if g.rotor.is_none() && (crossed(prev, cur, evc) || crossed(prev, cur, ivc)) {
                 self.seat_strikes.push((0.0, strike));
             }
             if crossed(prev, cur, evc) {
                 cs.residual_kg = cs.gas.mass_kg;
+                cs.reinducted_burned_kg = 0.0;
             }
             if crossed(prev, cur, ivc) {
                 cs.trapped_kg = cs.gas.mass_kg;
@@ -2630,7 +2920,9 @@ impl Engine {
                 // The ECU meters the fuel for a stoichiometric charge of the fresh air it
                 // finds, compensating the port film (Aquino); a cut injects nothing and the film
                 // still gives back its share. What the last cycle left unburnt stays in.
-                let fresh = (cs.trapped_kg - cs.residual_kg).max(0.0);
+                // the burned gas the intake gave back is no air to fuel
+                let fresh =
+                    (cs.trapped_kg - cs.residual_kg - cs.reinducted_burned_kg.max(0.0)).max(0.0);
                 let air = if diesel.is_some() {
                     fresh
                 } else {
@@ -2787,7 +3079,9 @@ impl Engine {
             settle(cs, &th);
             self.wall_heat_j += q;
 
-            gas_torque += (cs.gas.pressure() - ATM_PA) * g.piston_area() * g.dpos_dtheta(theta_c);
+            // on the shaft: dV/dφ = dV/dψ · dψ/dφ
+            gas_torque +=
+                (cs.gas.pressure() - ATM_PA) * g.piston_area() * g.dpos_dtheta(theta_c) * shaft_k;
 
             cs.cycle_deg = cur;
 
@@ -2928,6 +3222,12 @@ impl Engine {
                 .map(|p| p.0)
                 .collect();
             self.n_banks = self.bank_of.iter().max().map_or(1, |b| b + 1);
+            self.bay = match &self.def.vehicle.engine_bay {
+                Some(b) => (0..self.n_banks)
+                    .map(|_| crate::engine_bay::BayFilter::new(b, dt))
+                    .collect(),
+                None => Vec::new(),
+            };
         }
         let n_tails = match (&self.net, &self.fv, &self.remote.0) {
             (_, Some(fv), _) => fv.last_tails().len(),
@@ -2955,6 +3255,19 @@ impl Engine {
             }
         };
 
+        // what a valve took beyond its runner's reach was never in the runner: its cylinder
+        // gives it back (mass conserved; a starved port otherwise fed its cylinder from nothing)
+        if let Some(net) = &mut self.intake_net {
+            let th = self.thermo;
+            for (i, cs) in self.cyl.iter_mut().enumerate() {
+                let m = net.take_unserved(i);
+                if m > 0.0 {
+                    cylinder_out(cs, m.min(0.5 * cs.gas.mass_kg));
+                    settle(cs, &th);
+                }
+            }
+        }
+
         self.inducted_kg -= throttle_dm;
 
         // The intake mouth is a sink of the air it draws in: a monopole of volume flow
@@ -2981,7 +3294,7 @@ impl Engine {
             self.tail_mach = vec![0.0; n_tails];
         }
         // one engine cycle (two turns), bounded for a stopped or racing crank
-        let k = (dt * self.omega.abs() / (4.0 * PI)).clamp(dt, 1.0);
+        let k = (dt * shaft_k * self.omega.abs() / (4.0 * PI)).clamp(dt, 1.0);
         {
             if self.cyl_mean_flow.len() != self.cyl.len() {
                 self.cyl_mean_flow = vec![0.0; self.cyl.len()];
@@ -3052,20 +3365,31 @@ impl Engine {
             if self
                 .structure
                 .as_ref()
-                .is_none_or(|s| s.0 != dt || s.1.len() != n_banks)
+                .is_none_or(|s| s.0 != dt || s.1.len() != 2 * n_banks)
             {
-                let s = (0..n_banks).map(|_| StructureResponse::new(dt)).collect();
+                let s = (0..2 * n_banks)
+                    .map(|_| StructureResponse::new(dt))
+                    .collect();
                 self.structure = Some((dt, s));
             }
             let seats = seat_force / g.piston_area() / n_banks as f64;
+            // The seats tick in the head, under the valve cover: what they shake radiates up into
+            // the bay's lined top and leaves through the bay (`vehicle.engine_bay`). The
+            // combustion shakes the whole block, whose skirt and sump radiate into the open
+            // underside: it is heard without the bay (ESTIMATE: the bay taken as closed above
+            // the head only; with the whole block behind it the LFA at 6700 rpm full load loses
+            // the 3–4 kHz orders the dyno recording has, docs/FINDINGS.md 2026-11-01).
             if let Some((_, s)) = &mut self.structure {
-                for (b, (out, s)) in block.iter_mut().zip(s.iter_mut()).enumerate() {
+                let (comb, head) = s.split_at_mut(n_banks);
+                for (b, out) in block.iter_mut().enumerate().take(n_banks) {
                     let bank = self.cyl.iter().zip(&self.bank_of).filter(|&(_, &k)| k == b);
                     let p = crate::structure::combustion_drive(
                         bank.map(|(cs, _)| cs.gas.pressure()),
                         g.bore_m,
                     ) / n_banks as f64;
-                    *out = s.process(snd.block * p + snd.mechanical * seats);
+                    let ticks = head[b].process(snd.mechanical * seats);
+                    let ticks = self.bay.get_mut(b).map_or(ticks, |f| f.process(ticks));
+                    *out = comb[b].process(snd.block * p) + ticks;
                 }
             }
         };
@@ -3151,7 +3475,7 @@ impl Engine {
                 self.omega = (self.omega + net / j * dt).max(0.0);
             }
         }
-        self.theta = crate::units::wrap(self.theta + self.omega * dt, 4.0 * PI);
+        self.theta = crate::units::wrap(self.theta + self.omega * dt, 4.0 * PI / shaft_k);
         audio
     }
 
@@ -3875,6 +4199,48 @@ mod tests {
             ..Controls::default()
         };
         run(&mut e, 0.2, &c)
+    }
+
+    /// What the valve seats add to `d`'s sound (with them on, minus off).
+    fn ticks(d: &EngineDef) -> Vec<f64> {
+        let off = seats_only(d.clone(), 0.0, 0.0);
+        seats_only(d.clone(), 1.0, 0.0)
+            .iter()
+            .zip(&off)
+            .map(|(a, b)| a - b)
+            .collect()
+    }
+
+    #[test]
+    fn titanium_valves_strike_their_seats_softer() {
+        // F = v·√(k·m): a valve of 4430 kg/m³ against steel's 7850 strikes by √(4430/7850) =
+        // √0.564331 = 0.751220 of the force, and what the seats add is linear in it
+        let steel = EngineDef::single();
+        let mut ti = steel.clone();
+        ti.friction.valve_density_kg_m3 = 4430.0;
+        let (a, b) = (ticks(&steel), ticks(&ti));
+        let peak = a.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+        assert!(peak > 0.0);
+        for (a, b) in a.iter().zip(&b) {
+            assert!((b - 0.751220 * a).abs() <= 1e-5 * peak, "{a} {b}");
+        }
+    }
+
+    #[test]
+    fn an_engine_bay_muffles_the_valve_ticking() {
+        // The default bay takes 4.0 dB at 63 Hz and 14.2 dB at 4 kHz (`engine_bay`'s tests): the
+        // ticks, broadband, come out between the two, nearer the highs they are made of.
+        let open = EngineDef::single();
+        let mut closed = open.clone();
+        closed.vehicle.engine_bay = Some(crate::engine_bay::EngineBay::default());
+        let rms = |x: &[f64]| (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
+        let loss = 20.0 * (rms(&ticks(&open)) / rms(&ticks(&closed))).log10();
+        assert!((8.0..14.2).contains(&loss), "{loss:.1} dB");
+        // the combustion's path, the block's skirt into the open underside, does not go through it
+        assert_eq!(
+            seats_only(open.clone(), 0.0, 1.0),
+            seats_only(closed, 0.0, 1.0)
+        );
     }
 
     #[test]
@@ -4698,6 +5064,40 @@ mod tests {
         // 2009): unloaded, a stab of the pedal takes the V10 from idle to 9000 rpm in 0.6 s.
         let (t, _) = rev_and_release(EngineDef::lfa_v10(), 8990.0, 0.0);
         assert!((0.5..0.7).contains(&t), "idle to 9000 in {t:.3} s");
+    }
+
+    /// Crank degrees both valves stand open around top centre: exhaust closing past intake
+    /// opening (negative: a gap between them).
+    fn overlap_deg(e: &Engine) -> f64 {
+        let (i, x) = e.valves();
+        crate::units::wrap(x.open_deg + x.duration_deg - i.open_deg + 360.0, 720.0) - 360.0
+    }
+
+    #[test]
+    fn the_lfa_closes_its_overlap_at_idle_and_opens_it_under_load() {
+        // Dual VVT-i (Toyota, 1LR-GUE): at idle the intake cam sits retarded and the exhaust
+        // advanced, so the valves barely overlap (Toyota 1UR-FE, the same system's published
+        // ranges: intake opening 18° ATDC to 22° BTDC, exhaust closing 8° BTDC to 24° ATDC);
+        // floored, the high-output timing (43° of overlap, see the preset).
+        let d = EngineDef::lfa_v10();
+        let mut e = Engine::new(d.clone(), d.idle_rpm, 1);
+        run(&mut e, 4.0, &Controls::default());
+        assert!(overlap_deg(&e) < 0.0, "idle overlap {}", overlap_deg(&e));
+        // the idle's charge: diluted as a warm idle's (Heywood Fig. 6-21: ≈ 20–30 % at 0.3
+        // bar), not at the flame's limit
+        let dil = e.cyl.iter().map(dilution_of).sum::<f64>() / e.cyl.len() as f64;
+        assert!(dil < 0.33, "idle dilution {dil}");
+        let wot = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 3.0, &wot);
+        assert!(
+            (overlap_deg(&e) - 43.0).abs() < 0.5,
+            "WOT overlap {}",
+            overlap_deg(&e)
+        );
     }
 
     /// Overrun fuel cut until injection reactivates near idle, then the idle control takes
@@ -5627,6 +6027,129 @@ mod tests {
             .filter(|s| matches!(s, crate::exhaust::Segment::Muffler { .. }))
             .count();
         assert_eq!(mufflers, 2);
+    }
+
+    #[test]
+    fn the_renesis_matches_heywoods_figures() {
+        let d = EngineDef::mazda_renesis();
+        assert!((d.geometry.displacement() * 1e6 - 654.7).abs() < 0.1);
+        assert_eq!(d.cylinders, 6);
+        assert!((d.chamber_ratio() - 2.0 / 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_rotary_fires_once_per_rotor_per_shaft_turn() {
+        // Heywood 2nd ed. §1.8: "for each eccentric (output) shaft revolution, there is one
+        // torque pulse" per rotor: two rotors, two combustions a turn
+        let rpm = 3000.0;
+        let mut e = Engine::new(EngineDef::mazda_renesis(), rpm, 1);
+        let c = Controls {
+            throttle: 0.5,
+            hold_rpm: Some(rpm),
+            ..Controls::default()
+        };
+        for _ in 0..(0.5 / DT) as usize {
+            e.step(DT, &c);
+        }
+        let before = e.combustions;
+        let secs = 1.0;
+        for _ in 0..(secs / DT) as usize {
+            e.step(DT, &c);
+        }
+        let turns = rpm / 60.0 * secs;
+        let fired = (e.combustions - before) as f64;
+        assert!(
+            (fired / turns - 2.0).abs() < 0.05,
+            "{fired} in {turns} turns"
+        );
+    }
+
+    #[test]
+    fn the_bridge_ported_13b_overlaps_its_ports_and_revs_higher() {
+        let (stock, tuned) = (
+            EngineDef::mazda_renesis(),
+            EngineDef::mazda_13b_bridgeport(),
+        );
+        let (iv, ev) = (&tuned.intake_valve, &tuned.exhaust_valve);
+        // the bridge opens the intake before the exhaust closes: overlap, the "brap" idle
+        let overlap = (ev.open_deg + ev.duration_deg) - iv.open_deg;
+        assert!(overlap > 60.0, "overlap {overlap}° of chamber angle");
+        let s = &stock.intake_valve;
+        assert!(
+            stock.exhaust_valve.open_deg + stock.exhaust_valve.duration_deg - s.open_deg <= 0.0
+        );
+        assert!(iv.diameter_m > s.diameter_m && tuned.redline_rpm > stock.redline_rpm);
+        // an open straight pipe: no catalyst, no silencer
+        assert!(
+            tuned
+                .exhaust
+                .after_collector
+                .iter()
+                .all(|x| matches!(x, crate::exhaust::Segment::Pipe { .. }))
+        );
+        assert_eq!(tuned.geometry, stock.geometry);
+    }
+
+    #[test]
+    fn the_bridge_ported_13b_idles_on_its_overlap() {
+        let mut e = Engine::new(EngineDef::mazda_13b_bridgeport(), 1200.0, 1);
+        let c = Controls::default();
+        for _ in 0..(4.0 / DT) as usize {
+            e.step(DT, &c);
+        }
+        let rpm = e.rpm();
+        assert!((800.0..2000.0).contains(&rpm), "idle {rpm}");
+    }
+
+    #[test]
+    fn gas_pushed_back_into_the_intake_port_is_drawn_again_first() {
+        // 2e-5 kg of 80 % burned gas pushed back, then 1e-5 of 50 %: 2.1e-5 kg burned in
+        // 3e-5. A draw of 1.5e-5 takes half of it: 1.05e-5 kg burned; the next 2e-5 take the
+        // other 1.5e-5 (1.05e-5 burned) then 5e-6 of fresh air.
+        let mut p = PortReversion::default();
+        p.push(2e-5, 0.8);
+        p.push(1e-5, 0.5);
+        assert!((p.draw(1.5e-5) - 1.05e-5).abs() < 1e-18);
+        assert!((p.draw(2e-5) - 1.05e-5).abs() < 1e-18);
+        assert_eq!(p.draw(1e-5), 0.0);
+    }
+
+    #[test]
+    fn only_burned_gas_the_cylinder_lost_before_its_exhaust_closed_dilutes_again() {
+        // pushed back during the overlap (before EVC: not in the residual), drawn after it:
+        // 1e-5 kg at 60 % burned counts, 6e-6 kg
+        let mut e = Engine::new(EngineDef::single(), 1000.0, 1);
+        let cs = &mut e.cyl[0];
+        cs.comp.burned = 0.6;
+        intake_exchange(cs, -1e-5);
+        cs.reinducted_burned_kg = 0.0; // the exhaust closes: the residual is counted
+        assert!(
+            (intake_exchange(cs, 1e-5) - 0.6).abs() < 1e-12,
+            "comes back 60 % burned"
+        );
+        assert!((cs.reinducted_burned_kg - 6e-6).abs() < 1e-18);
+        // after EVC the cylinder's own gas going out and back in was counted in the residual
+        let mut e = Engine::new(EngineDef::single(), 1000.0, 1);
+        let cs = &mut e.cyl[0];
+        cs.comp.burned = 0.3;
+        intake_exchange(cs, -2e-6);
+        intake_exchange(cs, 2e-6);
+        assert!(
+            cs.reinducted_burned_kg.abs() < 1e-18,
+            "{}",
+            cs.reinducted_burned_kg
+        );
+    }
+
+    #[test]
+    fn burned_gas_drawn_back_dilutes_the_flame_and_is_no_air_to_fuel() {
+        // a 1e-5 kg residual and 1e-5 kg of burned gas the intake gave back, in a 4e-5 charge
+        let mut e = Engine::new(EngineDef::single(), 1000.0, 1);
+        e.cyl[0].trapped_kg = 4e-5;
+        e.cyl[0].residual_kg = 1e-5;
+        e.cyl[0].reinducted_burned_kg = 1e-5;
+        assert!((dilution_of(&e.cyl[0]) - 0.5).abs() < 1e-12);
+        assert!((burned_in_charge(&e.cyl[0]) - 2e-5).abs() < 1e-18);
     }
 
     #[test]
@@ -7677,8 +8200,8 @@ mod tests {
     fn only_the_fresh_charge_burns() {
         // At part throttle the residual (the mass left when the exhaust valve closed) is a fair
         // share of what is trapped (measured 7.3 % here): each burn's energy is the fresh
-        // charge's, (m_IVC − m_EVC)/(1 + AFR)·LHV·η, within the ±4 % cycle variation — the
-        // whole trapped mass's would be 7.9 % more.
+        // charge's, (m_IVC − m_EVC − burned gas drawn back)/(1 + AFR)·LHV·η, within the ±4 %
+        // cycle variation — the whole trapped mass's would be 7.9 % more.
         let mut e = Engine::new(EngineDef::inline4(), 3000.0, 1);
         let c = Controls {
             throttle: 0.15,
@@ -7692,7 +8215,8 @@ mod tests {
             e.step(DT, &c);
             let cs = &e.cyl[0];
             if !was_burning && let Some(b) = &cs.burn {
-                let fresh = cs.trapped_kg - cs.residual_kg;
+                // less the burned gas the intake gave back after the exhaust closed
+                let fresh = cs.trapped_kg - cs.residual_kg - cs.reinducted_burned_kg.max(0.0);
                 assert!(
                     cs.residual_kg > 0.05 * cs.trapped_kg,
                     "residual {} of {}",

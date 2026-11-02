@@ -58,6 +58,8 @@ engine:
       - 8
     collector_length_m: 0.3
     collector_diameter_m: 0.075
+    collector_extra_length_m: []
+    primary_length_deviation_m: []
     tail_length_m: 2.0
     tail_diameter_m: 0.065
     muffler_transmission: 1.0
@@ -78,6 +80,8 @@ engine:
       length_m: 2.0
       diameter_m: 0.065
     merge: null
+    steepening: true
+    gas_temperature: false
   intake:
     model: zero_d
     runner_length_m: 0.3
@@ -86,12 +90,15 @@ engine:
     trumpet_loss: 0.1
     film_fraction: 0.18
     film_tau_s: 1.0
+    airbox: null
   redline_rpm: 6600.0
+  shutoff_rpm: 0.0
   starter_torque_nm: 200.0
   friction:
     valvetrain: ohv
     roller_followers: true
     valves_per_cylinder: 2
+    valve_density_kg_m3: 7850.0
     rods_per_crankpin: 2
     ring_tension_ratio: 1.0
     liner_roughness: 1.0
@@ -134,3 +141,8 @@ engine:
     max_brake_decel_m_s2: 10.0
     shift_time_s: 0.0
     engine_ahead_m: 3.5
+    engine_bay:
+      open_fraction: 0.01
+      liner_thickness_m: 0.02
+      liner_resistivity: 16000.0
+      liner_coverage: 0.25

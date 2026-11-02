@@ -1158,3 +1158,214 @@ the two engines fitted to their own recordings away from them: the LFA's full-th
 engines are 1970s two-valve designs; a pent-roof four-valve chamber burns faster. The engine's
 own recordings win over a population average: the burn stays as it was. (Tried for the diesel's
 "revving sounds like petrol": the petrol engines' high-speed excitation is not the cause to fix.)
+## A straight pipe on big ports crackles with shocks (2026-10-31)
+
+The first tuned 13B (bridge-port, peripheral exhaust, straight pipe) sounded "fatal" through the
+gears: above 4 kHz its sound sat only 5 dB under the note below 1 kHz (stock RENESIS: 38 dB under).
+None of the added sources (flow noise, valve jets, intake, block, mechanical) carried it; with the
+exhaust's steepening off it fell to 32 dB under. The pulses of its large, early ports steepen into
+shocks over the whole pipe, and a radiated shock is a crack: the sticky-particle shocks are right,
+the preset was not. One packed straight-through silencer (no catalyst) brings it back to 36 dB
+under. A straight-piped preset needs the same check.
+
+## The steepening waveguide crackles on a rotary's blowdowns above ≈ 7000 rpm (2026-10-31)
+
+The tuned 13B still "sounded bad from third gear" with a silencer: in third it runs 6500–8800 rpm
+at full load, and held at 8000 rpm its sound above 4 kHz sat 8 dB under the note with a crest
+factor of 3.7 (crackle); the stock RENESIS did the same above ≈ 7000 rpm. Against the exhaust's
+finite-volume solver (the exact non-linear one, offline): FV 25 dB under, crest 2.0; linear
+waveguide 34 dB, crest 1.9. The steepening waveguide overshoots on these pulses (a chamber of 654 cm³
+blowing down through a port in a few degrees); the rotary presets run linear pipes until it is
+checked against FV on strong pulses (roadmap). The ports and shocks of the preset were not the cause.
+
+## A starved intake port froze into a 4600 K plug and halved the engine (2026-10-31)
+
+The tuned 13B "sounded bad from third gear on" — only in the gears scene, never held on the dyno.
+Cloning the engine at the moment and holding it: half the torque (99 vs 225 N·m), for good (no
+recovery with the ignition off, the pedal up or 3000 rpm). Its state: one intake runner at
+3500–4600 K, still (above any flame: energy made by the numerics). It formed at the 2→3 shift, at
+≈ 9000 rpm with the throttle shut: the bridge port's overlap blew the cylinders' gas back into the
+runners. Two faults in the valve's coupling to the 1D runner, whose cell is only updated once per
+FV step (several physics steps):
+1. the valve drew the port cell as the FV step began, so gas pushed back and drawn again within the
+   step left at the cold cell's enthalpy and its heat stayed with no mass (`port_volume` now draws
+   the backflow's mixture, at the cell's pressure);
+2. a draw beyond the runner's flux limit (half the port cell per FV step) was taken by the
+   cylinder but never given by the runner — mass made from nothing, which kept the hot cell from
+   ever being flushed (`take_unserved`: the cylinder gives the excess back).
+With both, the 13B pulls clean through the gears (above 4 kHz 35 dB under the note); the RENESIS
+and the dyno figures are unchanged. Found by cloning the engine (`Engine: Clone + Debug`) at the
+bad moment and diffing it against a fresh one — worth repeating for any "only in the scene" bug.
+
+## A valve on a frozen port cell whistles at half the FV rate (2026-10-31)
+
+The tuned 13B idled with a steady 11.3 kHz whistle (≈ 8–16 dB over its neighbours). Not a sound
+source (each `sound.*` off: the same), not the exhaust (a silencer: the same): fewer intake overlap
+degrees lowered it. 11 294 Hz is exactly half the intake FV rate at Reference (384 kHz / 17
+substeps); FV steps every 4 substeps took it away, every 8 moved it to 24 kHz. The valve trades
+with the port cell as the FV step began — a frozen reservoir — for the whole step, and the runner
+then takes the lump: a port that passes more than the runner's own section (the 13B's 1.34×; every
+poppet preset 0.77–0.96) empties that cell faster than the duct refills it, and the lump overshoots.
+Tried and dropped: the valve seeing the cell live (less its draw, plus the refill measured over the
+last FV step). It cured the whistle and kept the dyno, but the refill lags a step, so a throttled
+idle starved: the RENESIS fell into a stall after its start flare and the drive scene rendered
+silence (a held-speed render hid it). Seeing only the backflow live stalled it too. The cure kept:
+such a port couples on an FV step of 4 physics steps (`IntakeFv::coupled_to_port`, from the
+valve's largest flow area); the others keep the CFL step (4 substeps everywhere cost the LFA 23 %
+CPU for ≤ 0.4 dB). Test the rotaries' free idle at Reference (`the_rotaries_idle_on_their_own…`).
+
+## Gas the overlap pushed into the intake came back as fresh air (2026-10-31)
+
+The tuned 13B "idled" at 950–2200 rpm whatever its idle bleed (down to a fifth): its idle sat over
+the 1500 rpm overrun cut, which cut, dropped and refuelled it. The overlap pushes the chamber's gas
+into the intake; drawn back, it was counted as air — metered fuel and burnt again, energy from
+nothing — and not as dilution (20 % where the chamber was mostly exhaust). Now the gas pushed back
+waits at the valve and comes back first (plug flow, Heywood §6.4), with its burned share
+(`PortReversion`); what comes back after the exhaust closed, net, dilutes the flame and is no air
+to fuel. With it the 13B stalled on its old bleed, as a bridge port does: such builds idle on a
+cracked throttle (0.018, 1200 rpm: lumpy 1080–1700 rpm, CoV of its pulses 0.40 against 0.35
+recorded). Every other preset's idle within 1.6 dB per band, and steadier (K20A 663–1362 →
+764–922 rpm). Note: the dilution fit holds at its 40 % value beyond (`laminar_flame_speed`), so a
+charge this diluted burns slowly but never misfires.
+
+## A rotary on linear pipes sounds like a wind instrument (2026-10-31)
+
+With linear pipes the rotaries were 98 % pure tones at 8000 rpm (share of 300–5000 Hz power in
+peaks 10 dB over a 200 Hz median; spectral flatness −20 dB); recordings of ported 13Bs pulling:
+29–51 %, −6 to −9 dB. The exact finite-volume exhaust is no better (99 %): their rasp is the port
+jet's turbulence, which no 1D model carries, and the jet-noise models give it 35 dB under the
+pulses. The steepening waveguide, as every other preset uses, lands on the recordings (70 %, −8 dB,
+above 4 kHz 6 dB under the note against 5–15 dB). Its highs come from the wrong mechanism (the
+shocks it forms are sharper than the exact solver's): a turbulent port-jet source at a measured
+level would be the right one.
+
+## The same render gave an idle and a stall on two runs (2026-10-31, open)
+
+A probe of the RENESIS's free idle at Reference (`Simulation::with_quality`, seed 1, preset
+vehicle) idled at 800 rpm on one run and stalled on the next with no code between them. Not
+chased yet: a thread (exhaust or detached runners) whose result depends on timing would break the
+determinism `engine-core` promises.
+
+## The idles are quiet, but not for want of manifold pressure (2026-10-31)
+
+Idle at Reference sits at 22–34 kPa in the manifold for every piston preset (K20A 29, LFA 29, the
+V8s 22–29) — a warm engine's usual range — so a quiet idle is not a starved manifold. A car's
+electrical load through the alternator (400 W at 55 %, 8.7 N·m at 800 rpm) raised it only 3–5
+kPa and stalled the single, the RENESIS and the bridge-ported 13B: dropped. The RENESIS's quiet
+idle is in its chamber: 17 kPa at intake close against 26 kPa in the manifold, about half of the
+trapped mass its residual (~50 % dilution), a burn barely over the compression's (6.7 bar peak)
+and the exhaust port opening below the atmosphere (0.79 bar): no blowdown to hear. Next: why the
+chamber fills to only two thirds of the manifold at idle (port timing and areas are ESTIMATES).
+
+## Idle lacks the orders above firing, 20–40 dB; not for the reasons first tried (2026-10-31, open)
+
+Against a clean exhaust-mic recording (Sonniss, Skoda Octavia 1.6, idle and blips), the inline-4's
+idle relative to its blip is right below 150 Hz (−19 vs −10/−12 dB, near) but 12–17 dB short at
+500–2000 Hz, 6–8 dB at 2–6 kHz, 20 dB above. The LFA's idle at 3 m is 55 dB against the
+inline-4's 76 (equal at 3000 rpm full throttle, 99 dB); its cycle orders above the firing are
+22–66 dB under it where recordings of real LFAs idling have them 5–29 dB under. Ruled out, each
+measured: the manifold (22–34 kPa, normal), the spark (the LFA idles 15° BTDC, 35° from its MBT),
+its silencers (none: the same 54 dB), the cycle itself (pressure at exhaust opening ≈ 1 bar, as
+an Otto cycle at 0.3 bar by hand gives: no blowdown at idle, in a real engine either) and cycle
+variability (CoV of imep at idle 5 % i4, 8 % K20A, 17 % LFA — real 5–10 %). Left: the per-cycle
+pulse is smooth (a V10's ten 245° exhaust events overlap 3–4 deep and their 75 Hz nearly cancel),
+and what roughens a real idle — valvetrain and injector ticks, the idle air's hiss, the block —
+is 30–40 dB under the exhaust here (block and valve seats together 45 dB at 3 m at idle). Note:
+YouTube idles carry street noise in those bands; prefer the Sonniss recordings.
+
+## Idle against its blip: the inline-4 is near, the LFA loses it in its muffler (2026-10-31, open)
+
+Measured relative to the firing tone instead of the blip, the inline-4's idle has the recording's
+balance (Skoda exhaust mic, bands 400–1000/1000–2000/2000–6000/6000+ Hz re the firing tone: real
+−27/−36/−37/−43 dB, render −30/−31/−32/−49), and the 500–2000 Hz content of the real idle is
+broadband, not harmonics (harmonic share at chance level): no missing orders to chase there.
+Idle to free-rev blip in the drive render: inline-4 13–18 dB (Skoda 12), K20A 16–25, crossplane
+V8 28–36, LFA 36–39 (YouTube LFAs, compressed, 16–27). Probed at the source (`port_flow`, raw
+`Engine::step`, temporary test, removed): the LFA's valves give a firing-order flow only 6.6 dB
+under the inline-4's, and its firing frequency radiates better, yet its output is 30 dB under.
+Ablations at free idle: no merge +19 dB at the firing order (+22 dB rms); bypass forced open
++6.5 dB; steepening off or gas temperature off ±0–3 dB. The closed path of the rear muffler and
+its measured tip loss (JP 2008-169751 A, Fig. 6: 8–15 dB at 50–100 Hz) do most of it.
+The LFA's idle also burns at the dilution clamp (0.41, burn 87° against 30° at full load; the
+inline-4 0.29, V8 0.31): 43° of fixed overlap at 30 kPa. The real 1LR-GUE has dual VVT-i, which
+on Toyota engines closes the overlap at idle (1UR-FE: exhaust closing to 8° BTDC); 30° later
+intake and 20° earlier exhaust gave dilution 0.27, burn 63°, +6.5 dB firing. Not applied: the
+LFA's sound is approved, its cam ranges are not published, and a phaser at 30 °/s would slow
+the measured 0.6 s snap to 9000 rpm. Every idle's pressure at exhaust opening is ≈ 0.8–1 bar:
+no blowdown (fuel per cycle 5 mg in the inline-4, a 2.0 L idle's 0.6–1 L/h).
+
+## Road silencers on the road presets: closer to recordings by the numbers, worse by ear (2026-11-01)
+
+At full throttle through the gears the K20A, inline-4 and crossplane V8 carry 4–16 kHz at −4 to
+−11 dB re their loudest octave; tail-pipe recordings (Sonniss 911 SC, Pantera, Viper race V10,
+R33, V70; four K20A road clips) −10 to −41, the K20A's median −32. The excess is the steepening
+shocks (K20A held 6000 WOT, steepening off: 2–16 kHz from −8…−15 to −26…−39 dB) on a tail that
+is a straight pipe. `road_exhaust`'s two packed cans in the same tail length took the K20A's
+highs to −14 dB at the same power (206 hp at 8000), but the user heard it as "fatal, muy
+callado": reverted. A muffler that cuts the highs is not the answer the ear accepts; the shocks'
+spectrum itself (sharper than the exact solver's, see "rotary on linear pipes") is the next suspect.
+Also measured and not kept: the collector junctions' flow noise (Nelson–Morfey, the stalled
+feat/duct-flow-noise branch) is 45–49 dB under the exhaust at 6000 WOT — inaudible.
+The LFA's drive scene sits mostly on the rev limiter in neutral: its orders there are the fuel
+cut's, not the engine's; judge the LFA's harmonics on `gears` or `held:`, where orders 1–40 sit
+inside the spread of the real car's dyno and road clips.
+
+## The steepening waveguide's highs are its own: the exact solver has none of them (2026-11-01)
+
+K20A held 6000 rpm WOT, bands 2/4/8/16 kHz re the loudest octave: steepening waveguide −8/−10/−10/
+−15 dB, the finite-volume exhaust −25/−36/−40/−45, linear −26/−28/−33/−39. The FV result is
+converged (4 cm and 1 cm cells within 3 dB) and is not its wall friction (friction 0: within 3
+dB): the exact 1D solution does not form the shocks the simple-wave line forms on these pulses.
+Through the gears the FV K20A's bands (hi 4–16 kHz −28 dB) fall inside the four road clips'
+(−13…−41) and match one of them band for band. The simple-wave line overshoots on strong pulses
+here as on the rotaries (above). Sent to the user as an A/B (current vs FV) before changing
+anything: the user's ear rejected the last cut of these highs (road silencers).
+
+Verdict and follow-up (2026-11-01): the user's ear prefers the current steepening line ("el
+exacto suena muy raro"). Checked alone, the steepening pipe is right: one right-running
+sin² pulse (1.5 ms) through 2 m of 750 K pipe, at the far end, 4–16 kHz re 0.1–1 kHz,
+steepening vs FV: 0.1 atm −42/−35 dB, 0.3 atm −17.3/−18.4, 0.6 atm −17.2/−17.8; rise times
+21–26 µs vs 10 µs (one FV cell), peaks within 2 %. So the K20A's 20–30 dB gap is not the
+simple-wave line; it is somewhere else in the two exhausts (catalyst, junction, valve
+boundary, mean flow), not yet located. Kept as is (throwaway probe, not committed).
+
+
+## Idle "static" and the LFA's limiter, measured (2026-11-01, open)
+
+User: every idle sounds like static, too quiet and without thump; the LFA in `drive` sounds
+synthetic at the limiter. Held idle by source (sources off one at a time): the K20A's content above
+500 Hz is non-harmonic (noise share −1…−4 dB), from the combustion jitter's cycle-to-cycle
+spread — as in a real exterior idle (VW Golf, Sonniss: −3…−4 dB), but the Golf has 10–12 dB more
+250–1000 Hz against its firing tone. The LFA's exhaust passes nothing above 125 Hz at idle
+(−79…−94 dB re its 63 Hz octave; bypass removed −23…−35): its whole 1–4 kHz is the valve seats'
+clicks (−16 dB re the exhaust overall at 3 m) and the intake. The valve's closed path matches 1D
+expansion-chamber theory for its ESTIMATED chambers (3 chambers, area ratio 28: ≈ 62 dB at 500
+Hz by hand, 61 rendered); a 3 % leak past the shut valve lifts the exhaust's 250 Hz by 40 dB but
+stays under the clicks; 55 or 70 mm tubes +0.4/+1.8 dB. Idle leveling (+12 dB) was heard as
+louder static. The limiter: floored in neutral the LFA saws 9260 ↔ 9600 rpm every 105 ms (cut
+70 ms, 4800 rpm/s down; fuelled 35 ms), the level dips only 3 dB in the cut because the ITB
+intake (as loud as the exhaust at 8800 WOT) does not depend on combustion; YouTube LFAs at high
+revs swing ±2–4 dB from one 10 ms window to the next, the render is smooth.
+
+## The idle "static" was the valve ticking heard with no engine bay (2026-11-01)
+
+- **By ear:** the user's A/B (LFA idle all / no valve seats / no intake) — the static goes with
+  the seats. Four YouTube LFA idles (wR8FwJVFXOQ, fNuTMJDx9CM, DvbqhuOV5As, fg80tB-wApc) put
+  2 kHz at −28…−40 and 4 kHz at −34…−43 dB re the total; the render had −21 / −16, ~20 dB over,
+  and without the seats it sat inside the range. So the seats are about right at the engine and
+  wrong at the listener: the block radiated as if the car had no body.
+- **Fix:** `vehicle.engine_bay` (`engine_bay.rs`): the bay as a leaky enclosure, IL = 10 lg(1 +
+  ᾱ/τ̄), a Delany–Bazley hood liner over a quarter of it and 1 % open — 4 dB at 63 Hz, 14 dB at
+  4 kHz, under the 16–27 dB measured hoods take (Ibarra et al. 2017); only the block's path
+  (the seats ticking in the head; combustion and the intake mouth and tails pass outside it: with the whole block behind the bay the LFA guard at 6700 WOT went 9.6 → 12.1 dB RMS off the dyno orders). Plus `friction.valve_density_kg_m3`:
+  the strike scales √(ρ/ρ_steel), the LFA's titanium valves −2.5 dB. LFA idle 4 kHz −15 → −30 dB
+  re the loudest octave; 6700 WOT within 2 dB. The user preferred it to the open engine ("suena
+  aún raro, pero bien").
+- **Not used:** a Maekawa/ISO 9613-2 diffraction over the body — with the default ear (3 m, 1.6
+  m high) the line from the engine clears the LFA's deck, so it adds nothing there.
+- **Still open, measured:** the render's band under the firing frequency (8 Hz–0.8 f₁) is −11.5
+  dB re the total, the phone recordings −23…−41; it is the cycle-to-cycle burn (−23 dB without
+  `combustion_jitter`). Phone mics roll off there, so this is not yet a finding against the
+  model. The recordings also idle at 1000–1200 rpm (cold starts) against the preset's 900.
+- **Shell:** the silencer's wall now has `shell_resonance_hz` (LFA 300, ESTIMATE, kept where the
+  6700 lows stay at the dyno clip's; a limp wall put 12–18 dB over them).

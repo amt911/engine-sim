@@ -301,9 +301,10 @@ impl GearPull {
             PullPhase::Idle | PullPhase::Lift | PullPhase::Done => (0.0, false),
             PullPhase::Launch => (1.0, true),
             // while the clutch slips the driver holds the revs: at a launch near the launch revs
-            // (on the throttle up to 15 % over them, off by 45 %); after a shift where the
-            // clutch came up (half throttle there, full 10 % under, off 10 % over), as the
-            // clutch still short of the engine's torque would let it flare to the limiter.
+            // (on the throttle up to 15 % over them, off by 45 %); after a shift under where
+            // the clutch came up (none there, full 10 % under) as the clutch pulls them down to
+            // the new gear's: throttle there flared the engine over them, the clutch still short
+            // of its torque.
             // An automated gearbox holds the engine's torque low until its clutch locks
             // (Glielmo et al. 2006, Fig. 10). Locked, flat out
             PullPhase::Pull if !locked && self.gear == 1 => {
@@ -315,7 +316,7 @@ impl GearPull {
             }
             PullPhase::Pull if !locked && self.shift_time > 0.0 && self.gear > 1 => (1.0, false),
             PullPhase::Pull if !locked => (
-                (0.5 + (self.takeup - rpm) / (0.2 * self.takeup)).clamp(0.0, 1.0),
+                ((self.takeup - rpm) / (0.1 * self.takeup)).clamp(0.0, 1.0),
                 false,
             ),
             PullPhase::Pull => (1.0, false),
@@ -694,17 +695,16 @@ mod tests {
         for _ in 0..30 {
             step(5000.0, false);
         }
-        // second gear in at 5000 rpm, the clutch still slipping: on the throttle, but holding
-        // the revs where the clutch came up — more as the clutch pulls them down, none if they
-        // flare (with the clutch still short of the engine's torque, full throttle ran the
-        // engine to its limiter)
+        // second gear in at 5000 rpm, the clutch still slipping: the clutch pulls the revs down
+        // to the new gear's, the driver comes in under where it came up — none there (half
+        // throttle there flared a bridge-ported 13B 500 rpm with its clutch barely biting: an
+        // odd surge at every shift), half 5 % under, full 10 % under
         let (thr, d) = step(5000.0, false);
         assert_eq!((d.gear, d.clutch_pedal), (2, false));
-        assert!(thr > 0.2 && thr < 1.0, "{thr}");
-        let (lower, _) = step(4500.0, false);
-        assert!(lower > thr, "{lower} vs {thr}");
+        assert_eq!(thr, 0.0);
+        assert!((step(4750.0, false).0 - 0.5).abs() < 1e-9);
         assert_eq!(step(5600.0, false).0, 0.0);
-        assert_eq!(step(4000.0, false).0, 1.0);
+        assert_eq!(step(4500.0, false).0, 1.0);
         // locked: flat out
         assert_eq!(step(4000.0, true).0, 1.0);
     }

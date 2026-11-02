@@ -309,6 +309,8 @@ mod tests {
             (Preset::LfaV10, 1.0),
             (Preset::FlatplaneV8, 1.0),
             (Preset::CrossplaneV8, 0.3),
+            (Preset::MazdaRenesis, 0.0),
+            (Preset::Mazda13bBridgeport, 0.3),
         ] {
             let mut sim = Simulation::with_quality(
                 preset.def(),
