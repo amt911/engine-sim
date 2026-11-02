@@ -1479,3 +1479,17 @@ burnt in the exhaust after a lift-off), and its 50 mm tail (FK8: 57 mm). **Open:
 reaches 3.5–4.5 bar at the top because the estimated inducer (40.6 mm, sources say 46.7) chokes and
 the gate stays shut; 46.7 mm gives 371 hp without the ECU's boost taper, which has no source yet.
 So the overrun is louder than the pull, where real FK8s fall 9–14 dB.
+
+## 2026-11-02 — Idle realism is in the time structure, not in the band levels
+
+**Symptom.** TDI idle "sounds like a fart" with band levels already within a few dB of ALH recordings.
+**Measured.** Three things octave spectra hide: (1) waveform similarity between successive hits, 1.00
+against 0.5–0.65 real, higher for the same cylinder four hits on: a block filter shared by all cylinders
+makes copies; (2) the same cylinder's hit repeating exactly each cycle; (3) the gap between hits: 37 dB
+under the hit at 1–6 kHz against 13 dB real, and the real gap is Gaussian noise (kurtosis 2.8), no impacts.
+Four petrol idle recordings show the same floor, flatter still (loud-to-quiet 7–10 dB), with 250 Hz–4 kHz
+some 15–25 dB over our I4s.
+**Tried and rejected by ear.** A 90 ms block tail fills the gaps by the numbers and sounds like a room ("a
+fart in a toilet"). Filling gaps with reverberation is wrong however well the envelope metric likes it.
+**Kept.** `sound.block_modes` for (1), `spray_spread_deg` for (2). (3) is open: prototype clips only, the
+source is not identified. Phone and YouTube recordings cannot judge below about 125 Hz.
