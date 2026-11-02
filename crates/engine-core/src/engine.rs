@@ -20,7 +20,7 @@ use crate::jet_noise::JetNoise;
 use crate::layout::Layout;
 use crate::listener::Listener;
 use crate::sound::SoundDef;
-use crate::structure::StructureResponse;
+use crate::structure::{BlockModes, StructureResponse};
 use crate::thermo::Composition;
 use crate::units::{ATM_PA, deg_to_rad, rad_s_to_rpm, rpm_to_rad_s};
 use crate::valve::ValveTiming;
@@ -345,6 +345,8 @@ impl EngineDef {
             },
             ..Self::single()
         };
+        // Its block is what is heard at idle, and each cylinder strikes it in its own place.
+        d.sound.block_modes = 1.0;
         // A road car's exhaust: catalyst, centre and rear silencers sized by the rule of thumb
         // ([`crate::exhaust::road_exhaust`], 45 mm pipes; ESTIMATE). An open pipe left the
         // exhaust 36–45 dB over the block below 250 Hz.
@@ -2181,6 +2183,8 @@ pub struct Engine {
     /// The block's structure response per bank at the step it was built for
     /// ([`crate::structure`]; each bank's side radiates its own cylinders' combustion).
     structure: Option<(f64, Vec<StructureResponse>)>,
+    /// Each bank's wall modes, and a buffer of its cylinders' pressures.
+    block_modes: Option<(f64, Vec<BlockModes>, Vec<f64>)>,
     /// Each cylinder's bank ([`crate::layout::Layout::place`]) and the number of banks, kept
     /// with the listener (rebuilt with it).
     bank_of: Vec<usize>,
@@ -2455,6 +2459,7 @@ impl Engine {
             tail_pipes,
             listener: None,
             structure: None,
+            block_modes: None,
             bank_of: Vec::new(),
             n_banks: 1,
             seat_strikes: Vec::new(),
@@ -3690,12 +3695,37 @@ impl Engine {
                 let (comb, head) = s.split_at_mut(n_banks);
                 for (b, out) in block.iter_mut().enumerate().take(n_banks) {
                     let bank = self.cyl.iter().zip(&self.bank_of).filter(|&(_, &k)| k == b);
-                    let p = crate::structure::combustion_drive(
-                        bank.map(|(cs, _)| {
+                    let voice = snd.block_modes;
+                    let p = if voice > 0.0 {
+                        let n = self.cyl.len();
+                        if self.block_modes.as_ref().is_none_or(|m| m.0 != dt) {
+                            let modes = (0..n_banks)
+                                .map(|_| BlockModes::new(n / n_banks, dt))
+                                .collect();
+                            self.block_modes = Some((dt, modes, Vec::with_capacity(n)));
+                        }
+                        // just filled when missing
+                        let Some(bm) = self.block_modes.as_mut() else {
+                            continue;
+                        };
+                        bm.2.clear();
+                        bm.2.extend(bank.map(|(cs, _)| {
                             cs.gas.pressure() + cs.ring.iter().map(|z| z.0).sum::<f64>()
-                        }),
-                        g.bore_m,
-                    ) / n_banks as f64;
+                        }));
+                        let mean = bm.2.iter().sum::<f64>() / bm.2.len().max(1) as f64;
+                        let modal = bm.1[b].process(&bm.2);
+                        crate::structure::combustion_drive(
+                            [(1.0 - voice) * mean + voice * modal],
+                            g.bore_m,
+                        ) / n_banks as f64
+                    } else {
+                        crate::structure::combustion_drive(
+                            bank.map(|(cs, _)| {
+                                cs.gas.pressure() + cs.ring.iter().map(|z| z.0).sum::<f64>()
+                            }),
+                            g.bore_m,
+                        ) / n_banks as f64
+                    };
                     let ticks = head[b].process(snd.mechanical * seats);
                     let ticks = self.bay.get_mut(b).map_or(ticks, |f| f.process(ticks));
                     *out = comb[b].process(snd.block * p) + ticks;
@@ -4723,6 +4753,21 @@ mod tests {
         let off = high(&tdi_idle(|s| s.chamber_ring = 0.0, 2.5));
         // the second difference weighs the highs: at least 6 dB more of them with the ringing
         assert!(on > 4.0 * off, "{on} with, {off} without");
+    }
+
+    #[test]
+    fn a_diesels_cylinders_each_strike_the_block_in_their_own_voice_at_the_same_level() {
+        let high = |x: &[f64]| {
+            x.windows(3)
+                .map(|w| (w[2] - 2.0 * w[1] + w[0]).powi(2))
+                .sum::<f64>()
+        };
+        let on = tdi_idle(|_| {}, 2.5);
+        let off = tdi_idle(|s| s.block_modes = 0.0, 2.5);
+        assert_ne!(on, off);
+        // the modes keep the mean level of what they replace: within 3 dB
+        let ratio = high(&on) / high(&off);
+        assert!((0.5..2.0).contains(&ratio), "{ratio}");
     }
 
     #[test]

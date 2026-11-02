@@ -232,6 +232,7 @@ engine:
     mechanical: 1.0
     combustion_jitter: 1.0
     chamber_ring: 1.0
+    block_modes: 0.0
     blow_off: 1.0
     compressor_whine: 1.0
     reverb: 0.0
