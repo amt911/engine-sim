@@ -1445,6 +1445,11 @@ Pistons now use the reserve alone (15 deg, ESTIMATE); bursts (p95 - median, 600 
 to 3.8, recordings 2-8. Rotaries keep the share: without it the Renesis stalls, and that is not
 clean physics (the flame-speed advance is a piston model).
 
+The compressor's whine: Z·N with six main blades (Sriganesh et al. 2022), about 14.5 kHz at full
+boost. Stock FK8 road clips show no tone there above their floor (under -50 dB of the whole; the
+dyno clips' peaks do not track the revs), and no published level was found, so its level is an
+ESTIMATE under that bound: -54 dB over the pull. Audible only as a faint top; `sound.compressor_whine`.
+
 Also found on the way: the K20C1 inherited the K20A's port film though it is direct-injected (4.8 kJ
 burnt in the exhaust after a lift-off), and its 50 mm tail (FK8: 57 mm). **Open:** the turbine inlet
 reaches 3.5–4.5 bar at the top because the estimated inducer (40.6 mm, sources say 46.7) chokes and

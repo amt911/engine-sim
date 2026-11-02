@@ -31,7 +31,9 @@ const WASTEGATE_SPAN_PA: f64 = 10_000.0;
 pub struct TurboDef {
     /// Compressor wheel's tip diameter, m.
     pub compressor_tip_diameter_m: f64,
-    /// Compressor blades (full + splitter): the whine's blade-passing order.
+    /// Main compressor blades (splitters not counted): the whine's blade-passing order, Z·N
+    /// (Sriganesh, Dehner & Selamet, Noise Control Eng. J. 70(2), 2022: 8–12 kHz at 80–120 krpm
+    /// on an automotive wheel of six).
     pub blades: u32,
     /// Slip factor σ of the backswept impeller (Wiesner/Stanitz: 0.85–0.9).
     pub slip: f64,
@@ -70,7 +72,7 @@ impl Default for TurboDef {
     fn default() -> Self {
         Self {
             compressor_tip_diameter_m: 0.05,
-            blades: 12,
+            blades: 6,
             slip: 0.9,
             backsweep_deg: 35.0,
             exit_width_m: 0.004,
@@ -196,6 +198,37 @@ pub struct TurboState {
     /// drain a swing of its pressure (the compressor's characteristic, the engine's and the
     /// valve's draw) — the low-pass between the throttle's flow and the compressor's.
     pub charge_tau_s: f64,
+}
+
+/// The compressor's tone heard at 1 m at [`WHINE_TIP_SPEED`], Pa rms. ESTIMATE: no published level
+/// was found; stock FK8 road recordings show no tone at Z·N above their floor, so it is set under
+/// that bound (−50 dB of the whole): −54 dB over the K20C1's pull through the gears.
+const WHINE_P_RMS: f64 = 0.025;
+/// Tip speed of [`WHINE_P_RMS`], m/s: about the FK8's wheel at full boost.
+const WHINE_TIP_SPEED: f64 = 440.0;
+/// Pressure against tip speed: the fan law's sound power ∝ U^5.5 (Madison's; ESTIMATE for a
+/// compressor), so pressure ∝ U^2.75.
+const WHINE_SPEED_EXPONENT: f64 = 2.75;
+
+/// The compressor's blade-passing tone at 1 m, Pa: a sine at Z·N. Keeps its phase across a
+/// changing speed; silent at or above Nyquist, where a sample rate cannot carry it.
+#[derive(Debug, Clone, Default)]
+pub struct CompressorTone {
+    phase: f64,
+}
+
+impl CompressorTone {
+    pub fn step(&mut self, def: &TurboDef, shaft_rpm: f64, dt: f64) -> f64 {
+        use std::f64::consts::{PI, SQRT_2};
+        let revs = shaft_rpm.max(0.0) / 60.0;
+        let f = f64::from(def.blades) * revs;
+        if f * dt >= 0.5 {
+            return 0.0;
+        }
+        self.phase = (self.phase + 2.0 * PI * f * dt) % (2.0 * PI);
+        let u = PI * def.compressor_tip_diameter_m * revs;
+        SQRT_2 * WHINE_P_RMS * (u / WHINE_TIP_SPEED).powf(WHINE_SPEED_EXPONENT) * self.phase.sin()
+    }
 }
 
 /// A turbocharger's running state: its shaft's kinetic energy and its charge air's pressure.
@@ -387,6 +420,32 @@ mod tests {
         // to the 3.5th: 2.984905
         assert!((compressor_ratio(400.0, 0.75, 0.9, 293.0) - 2.984905).abs() < 1e-5);
         assert_eq!(compressor_ratio(0.0, 0.75, 0.9, 293.0), 1.0);
+    }
+
+    #[test]
+    fn the_whine_is_a_tone_at_blade_passing_that_grows_with_tip_speed() {
+        // Six blades at 120 krpm: 6·2000 = 12 kHz, 24 000 sign changes a second. A 58 mm wheel at
+        // 144 870 rpm has π·0.058·2414.5 = 440 m/s, the reference: 25 mPa rms. Half the speed:
+        // 2^−2.75 = 0.1487 of that. Above Nyquist: silence.
+        let def = TurboDef {
+            blades: 6,
+            compressor_tip_diameter_m: 0.058,
+            ..TurboDef::default()
+        };
+        let dt = 1.0 / 384_000.0;
+        let run = |rpm: f64| -> Vec<f64> {
+            let mut t = CompressorTone::default();
+            (0..384_000).map(|_| t.step(&def, rpm, dt)).collect()
+        };
+        let x = run(120_000.0);
+        let changes = x.windows(2).filter(|w| w[0] * w[1] < 0.0).count();
+        assert!((changes as f64 - 24_000.0).abs() < 2.0, "{changes}");
+        let rms = |x: &[f64]| (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
+        assert!((rms(&run(144_870.0)) / 0.025 - 1.0).abs() < 1e-3);
+        assert!((rms(&run(72_435.0)) / 0.025 - 0.1487).abs() < 1e-3);
+        let mut t = CompressorTone::default();
+        assert_eq!(t.step(&def, 144_870.0, 1.0 / 20_000.0), 0.0);
+        assert_eq!(rms(&run(0.0)), 0.0);
     }
 
     #[test]

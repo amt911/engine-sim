@@ -136,6 +136,7 @@ engine:
     mechanical: 1.0
     combustion_jitter: 1.0
     blow_off: 1.0
+    compressor_whine: 1.0
     reverb: 0.0
     leveling: 0.0
     listener_distance_m: 3.0
@@ -174,7 +175,7 @@ engine:
       liner_coverage: 0.25
   turbo:
     compressor_tip_diameter_m: 0.058
-    blades: 12
+    blades: 6
     slip: 0.9
     backsweep_deg: 35.0
     exit_width_m: 0.005

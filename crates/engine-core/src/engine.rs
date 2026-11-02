@@ -2073,6 +2073,7 @@ pub struct Engine {
     turbo_mean: (f64, f64, f64),
     /// The blow-off valve's jet ([`crate::jet_noise`]).
     bov_jet: JetNoise,
+    compressor_tone: crate::turbo::CompressorTone,
     /// The exhaust's mean-flow losses after the collector (from its segments).
     exit_losses: Option<crate::exhaust::ExitLosses>,
     /// Mean exit Mach number of each tail (its open end absorbs sound with it).
@@ -2307,6 +2308,7 @@ impl Engine {
             compressor_flow: 0.0,
             turbo_mean: (0.0, crate::intake_fv::AMBIENT_T_K, 0.0),
             bov_jet: JetNoise::new(seed.wrapping_add(0xB0F)),
+            compressor_tone: crate::turbo::CompressorTone::default(),
             exit_losses: None,
             tail_mach: Vec::new(),
             cyl_mean_flow: Vec::new(),
@@ -3439,7 +3441,15 @@ impl Engine {
                     }
                     _ => 0.0,
                 };
-                rest + l.from_engine_at(n_banks, at_mouth + bov)
+                // the compressor's tone, heard from the engine with the mouths
+                let whine = match (&self.def.turbo, self.turbo_state) {
+                    (Some(t), Some(s)) if snd.compressor_whine > 0.0 => {
+                        let p = self.compressor_tone.step(t, s.shaft_rpm, dt);
+                        snd.compressor_whine * l.spread_from_1m_at(n_banks, p)
+                    }
+                    _ => 0.0,
+                };
+                rest + l.from_engine_at(n_banks, at_mouth + bov + whine)
             }
             None => 0.0,
         };
@@ -4402,6 +4412,41 @@ mod tests {
         });
         let (fired, burnt) = (e.combustions() - n, e.afterburn_j() - q);
         assert!(fired == 0 && burnt < 1.0, "{fired} fired, {burnt} J");
+    }
+
+    #[test]
+    fn a_turbo_engine_is_heard_with_its_compressors_tone_at_blade_passing() {
+        // With and without the tone, the physics the same: their difference is a tone at Z·N of
+        // the shaft alone, here 6 blades at the speed the turbo reports.
+        let run = |whine: f64| {
+            let mut d = EngineDef {
+                turbo: Some(crate::turbo::TurboDef::default()),
+                ..EngineDef::inline4()
+            };
+            d.sound.compressor_whine = whine;
+            let mut e = Engine::new(d, 4000.0, 1);
+            let dt = 1.0 / 192_000.0;
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(4000.0),
+                ..Controls::default()
+            };
+            let x: Vec<f64> = (0..(1.2 / dt) as usize).map(|_| e.step(dt, &c)).collect();
+            (x, e.turbo().expect("a turbo").shaft_rpm)
+        };
+        let ((on, rpm), (off, _)) = (run(1.0), run(0.0));
+        let tail = on.len() - 19_200;
+        let diff: Vec<f64> = on[tail..]
+            .iter()
+            .zip(&off[tail..])
+            .map(|(a, b)| a - b)
+            .collect();
+        let changes = diff.windows(2).filter(|w| w[0] * w[1] < 0.0).count() as f64;
+        // 0.1 s, two sign changes a cycle
+        let f = changes / (2.0 * 0.1);
+        let expected = 6.0 * rpm / 60.0;
+        assert!(expected > 1000.0, "the shaft spins: {rpm} rpm");
+        assert!((f / expected - 1.0).abs() < 0.05, "{f} Hz vs {expected} Hz");
     }
 
     #[test]
