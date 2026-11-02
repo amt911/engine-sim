@@ -73,13 +73,17 @@ engine:
   idle_throttle: 0.0055
   idle_rpm: 800.0
   exhaust:
-    primary_length_m: 0.25
+    primary_length_m: 0.13
     primary_diameter_m: 0.04
     collectors: []
     collector_length_m: 0.25
     collector_diameter_m: 0.055
     collector_extra_length_m: []
-    primary_length_deviation_m: []
+    primary_length_deviation_m:
+    - 0.032
+    - -0.032
+    - -0.032
+    - 0.032
     tail_length_m: 1.84
     tail_diameter_m: 0.057
     muffler_transmission: 1.0

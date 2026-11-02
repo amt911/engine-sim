@@ -493,8 +493,12 @@ impl EngineDef {
         d.redline_rpm = 7000.0;
         d.vtec = None;
         d.intake_valve.high = None;
-        d.exhaust.primary_length_m = 0.25;
-        d.exhaust.primary_length_deviation_m = Vec::new();
+        // its four tracts cast into one outlet in the head, of very uneven lengths (JE Pistons / 4
+        // Piston Racing on the K20C1 head); ESTIMATE from the 94 mm bore pitch and 80 mm of port:
+        // 93 mm inner, 162 mm outer (equal 0.25 m pipes put every pulse in phase: a whistle of
+        // the firing harmonics at 1–1.6 kHz over 6000 rpm)
+        d.exhaust.primary_length_m = 0.13;
+        d.exhaust.primary_length_deviation_m = vec![0.032, -0.032, -0.032, 0.032];
         // direct injection (EngineLabs; Mountune's K20C1 data): the fuel goes into the cylinder,
         // no port wall holds a film of it (the K20A's port injection did)
         d.intake.film_fraction = 0.0;
@@ -4298,6 +4302,25 @@ mod tests {
             rms(&jet),
             rms(&off_quiet)
         );
+    }
+
+    #[test]
+    fn the_k20c1_casts_its_uneven_primaries_in_its_head() {
+        // Four tracts cast into one outlet in the head, of very uneven lengths (JE Pistons / 4
+        // Piston Racing's K20C1 head; BTCC's "Race Engine of the Year"). By hand from its 94 mm
+        // bore pitch, the outlet central, 80 mm of port: inner √(47² + 80²) = 93 mm, outer
+        // √(141² + 80²) = 162 mm; the mean of the pipes 0.13 m, ±0.032 m.
+        let d = EngineDef::honda_k20c1();
+        let lengths: Vec<f64> = d
+            .exhaust
+            .primary_length_deviation_m
+            .iter()
+            .map(|x| d.exhaust.primary_length_m + x)
+            .collect();
+        assert_eq!(lengths.len(), 4);
+        for (l, want) in lengths.iter().zip([0.162, 0.098, 0.098, 0.162]) {
+            assert!((l - want).abs() < 1e-9, "{lengths:?}");
+        }
     }
 
     #[test]
