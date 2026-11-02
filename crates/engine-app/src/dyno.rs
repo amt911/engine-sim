@@ -11,6 +11,9 @@ pub const STEP_RPM: f64 = 500.0;
 /// Time to let each new speed settle before measuring, s: >= 5 time constants (0.15 s) of the
 /// engine's torque average, so under 1 % of the previous point is left.
 const SETTLE_S: f64 = 0.8;
+/// The same for a turbocharged engine, s: a steady-state point waits for steady boost, whose
+/// shaft takes seconds to settle at low speed.
+const TURBO_SETTLE_S: f64 = 4.0;
 /// Minimum averaging window, s; rounded up to whole engine cycles (see [`measure_steps`]).
 const MEASURE_S: f64 = 0.4;
 /// Physics step, s (same as the app at 48 kHz × 4).
@@ -55,7 +58,12 @@ pub fn sweep_speeds(redline_rpm: f64) -> Vec<f64> {
 pub fn sweep(def: &EngineDef) -> Vec<DynoPoint> {
     let speeds = sweep_speeds(def.redline_rpm);
     let mut engine = Engine::new(def.clone(), START_RPM, 1);
-    let settle = (SETTLE_S / DT) as usize;
+    let settle_s = if def.turbo.is_some() {
+        TURBO_SETTLE_S
+    } else {
+        SETTLE_S
+    };
+    let settle = (settle_s / DT) as usize;
     speeds
         .into_iter()
         .map(|rpm| {
@@ -268,6 +276,27 @@ mod tests {
             p.power_hp()
         );
         assert!(p.rpm >= 7500.0, "power peaks at {} rpm", p.rpm);
+    }
+
+    #[test]
+    fn the_k20c1_boosts_near_what_honda_published() {
+        // 400 N·m from 2500 rpm, 228 kW (306 hp) at 6500 (Honda, Civic Type R FK8 press kit
+        // 2017): within 15 %, its torque up by 2500 rpm (boost by then) and not at 1000 (none)
+        let pts = sweep(&EngineDef::honda_k20c1());
+        let (t, p) = peaks(&pts).unwrap();
+        assert!(
+            (t.torque_nm / 400.0 - 1.0).abs() < 0.15,
+            "{} N·m",
+            t.torque_nm
+        );
+        assert!(
+            (p.power_hp() / 306.0 - 1.0).abs() < 0.15,
+            "{} hp",
+            p.power_hp()
+        );
+        let at = |rpm: f64| pts.iter().find(|x| x.rpm == rpm).unwrap().torque_nm;
+        assert!(at(2500.0) > 0.85 * 400.0, "{} N·m at 2500", at(2500.0));
+        assert!(at(1000.0) < 0.5 * t.torque_nm);
     }
 
     #[test]

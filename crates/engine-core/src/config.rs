@@ -222,6 +222,10 @@ pub fn validate(def: &EngineDef) -> Result<(), ConfigError> {
          of its length), Ø 5–300 mm",
     );
     check(
+        (1..=8).contains(&x.tail_outlets),
+        "exhaust outlets: 1–8 side by side",
+    );
+    check(
         within(x.muffler_transmission, 0.05, 1.0),
         "muffler transmission must be 0.05–1",
     );
@@ -475,6 +479,7 @@ mod tests {
                 "exhaust",
                 Box::new(|d| d.exhaust.tail_diameter_m = f64::NAN),
             ),
+            ("outlets", Box::new(|d| d.exhaust.tail_outlets = 0)),
             (
                 "intake valve",
                 Box::new(|d| d.intake_valve.open_deg = f64::NAN),

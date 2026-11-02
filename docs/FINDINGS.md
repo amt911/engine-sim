@@ -1369,3 +1369,113 @@ revs swing ±2–4 dB from one 10 ms window to the next, the render is smooth.
   model. The recordings also idle at 1000–1200 rpm (cold starts) against the preset's 900.
 - **Shell:** the silencer's wall now has `shell_resonance_hz` (LFA 300, ESTIMATE, kept where the
   6700 lows stay at the dyno clip's; a limp wall put 12–18 dB over them).
+
+## Turbo: what cost the K20C1 its power, in order (2026-11-01)
+
+- **The turbo must see mean flows.** Fed each 0.33 ms block's flows, the intercooler's Δp ∝ ṁ²
+  on the intake pulses sank the boost to its floor and the shaft ran away to NaN. Averaged over
+  50 ms (the volumes between damp the pulses; mean-value models, Hendricks SAE 890564) it is
+  stable.
+- **The backswept work's flow term uses the exit density** (Dixon & Hall: c_m2 = ṁ/(ρ₂A₂)); at
+  the inlet's it halves the boost a compressor can make at flow.
+- **A turbine is not a narrow pipe in a linear waveguide.** A 22 mm "nozzle" pipe in the line,
+  on top of the turbine's mean back pressure, reflected the pulses back to the valves: the
+  K20C1 made 228 N·m at 6500 rpm with 1.4 bar of boost (trapped air 1.66× the NA engine's,
+  torque 1.18×). Without it: 381 N·m. The turbine is its mean back pressure only until a
+  measured turbine transmission (Tiikoja et al., SAE 2011-01-1525) is at hand.
+- Not the cause (measured): friction's gas loading (+2 N·m), pumping (~9 kW), misfires (none),
+  spark clamping (none), overlap (an earlier EVC lost power).
+- The dyno waits 4 s a point for a turbo engine (steady boost).
+
+## A manual upshift hung at the old gear's revs (2026-11-01) — superseded, see below
+
+- **Reverted the same day:** the driver changes below (synchronised take-up, lift lead) treated
+  symptoms; the shift burst was the turbo model's (next section). The vacuum-referenced,
+  recirculating bypass valve stays.
+
+- The gears scene's driver held the revs at where the clutch came up while it took up: every
+  manual preset (K20A too) sat ~0.6 s at the old gear's speed, then the locking clutch dragged it
+  down at once. With a turbo the hang was worse: the boosted manifold kept the engine pulling
+  with the clutch down (6815 → 6954 rpm), and the pedal-triggered blow-off valve chattered with
+  the driver's 0.3/0/0.3 throttle. Fix: the driver lets the revs fall to the next gear's speed at
+  the road speed the shift began at (rpm × r_next/r_prev) and comes in under it; the blow-off
+  valve opens on the manifold falling 0.3 bar under the boost (its diaphragm), not on the pedal.
+  K20C1: the revs now fall 6900 → 4800 in ~0.5 s and pull up again.
+- Follow-up (same day): the gears scene's driver clutched in the same step it lifted; a turbo
+  engine's manifold, still at 2.4 bar, kept ~180 N·m for a tenth and flared the free engine
+  250 rpm (heard as a blip at every shift). The driver now lifts first and clutches 0.1 s later.
+  The turbo's bypass valve recirculates by default (factory practice): its jet is heard only
+  with `bov_recirculating: false` (an aftermarket blow-off valve).
+
+## The K20C1's shift burst was the turbo model, not the driver (2026-11-01)
+
+- **Measure against recordings before iterating.** Three driver fixes in a row each moved the
+  burst without curing it; spectrograms of real FK8 pulls showed none, ablation pinned it to the
+  turbo (gone with `turbo: null`), and its spectrum gave it away: exactly 3000 and 9000 Hz.
+- **A bang-bang valve on an algebraic boost is a period-two limit cycle.** The boost was the
+  compressor's instant delivery: the blow-off valve opened at a turbo step, the boost fell 75 kPa,
+  the valve shut at the next — a square wave at half the update rate (384 kHz / 64 / 2 = 3 kHz),
+  through the wastegate into the turbine inlet too. The boost is now the charge air's pressure
+  (`charge_volume_m3`, filling and emptying).
+- **Anything updated every N steps and taken at once is a tone at rate/N.** At Reference (8
+  substeps) the 64-step updates were a 6 kHz tone, 52 dB over a boosted exhaust's floor: the
+  area changes' flow resistance stepping a 75 kPa DC wave was most of it. Slow quantities now
+  follow over 2 ms (`GAIN_TAU_S`, `TURBO_SEEN_TAU_S`, `TURBINE_R_TAU_S`). A 26 dB 6 kHz line
+  remains in every engine's exhaust-only render at Reference, turbo or not (each mean applied
+  every step leaves it too): its cause is still open; in a full mix it is 5-16 dB over the floor.
+- **A turbo engine's intake mouth is behind its charge air.** Radiated straight from the throttle
+  the K20C1's intake was 10-12 dB over its tail and fell silent at every lift-off (24 dB holes);
+  the charge air is a ~20 ms low-pass (`charge_tau_s`).
+- **A turbine needs its acoustics, not only its mean.** Without it, a lift-off's valve blow-back
+  reached the tail whole (13-16 dB over the pull); `TurbineJunction` (R = dp03/dṁ on the pulses).
+- **A compressor needs its choke** (inducer sonic flow): without it boost held to the redline and
+  the K20C1 made 356 hp against 306.
+- **Renders are normalised to their peak**: compare levels across variants only with the
+  normalisation off (a scratch switch), or a loud artefact sinks everything else.
+- **Acceleration videos are onboard**: the cabin takes 15-30 dB off 1-8 kHz; compare timbre with
+  outside recordings (stock-exhaust sound checks), not with 0-100 runs.
+- `pgrep -f '<pattern>'` inside `bash -c "...<pattern>..."` matches its own shell: a wait loop on
+  it never ends.
+
+
+## The K20C1's "whistle": orders standing out of too little noise, in every engine (2026-11-02)
+
+Heard as a strange whistle: clean orders at 1–2.8 kHz through each pull. Measure: per band, the
+top 1 % of an 8192-point frame's bins over its median (noise alone: ≈ 9 dB), on the loudest quarter
+of the frames. At 1–2 kHz: K20C1 render 18; six stock FK8 dyno clips 10–15, three road ones 10–12
+(so not Doppler or wind); K20A dyno clips 11–18, LFA 13–17; our K20A 25, our LFA 30. The octave
+balance already matched: the energy is right, its character is not.
+
+Ruled out, measuring: cycle-to-cycle variation (already at Soltau's COV; off 22 dB, ×3 16 dB but
+outside the measured COV); road silencers (lines 15 dB, but 8 kHz −17 against −30); steepening off
+(20 dB); the FV exhaust (29 dB, worse); the turbine's wake by Nelson–Morfey (−50 dB, by hand).
+`gas_temperature` helps (17 dB) but takes 1–2 kHz down 4–5 dB; not kept.
+Then rejected by ear: a shaken jet's gain (3 below St 1), fitted so the lines matched these
+recordings. Its premise was wrong: it credited all their broadband to the jet, though road clips
+also hold tyres and wind, and at spool-in the hiss masked the engine. Reverted. The FK8's flow
+leaves through more than one 57 mm pipe (`tail_outlets`, 2 as an ESTIMATE, the tips' feed bore not
+being published), which takes the jet about 20 dB down: 2-8 kHz over 100-800 Hz is -28 dB over the
+pull, against -17 to -25 in road clips. **Open:** lines at 1-2 kHz are 23 dB against 10-15, without
+broadband to bury them; the main causes of the whistle were elsewhere (equal primaries, fixed by
+the head's uneven tracts). The LFA's and K20A's excess of lines also remains.
+
+The whistle's main cause: the K20C1's "headifold" casts four very uneven tracts in the head, and
+equal pipes put the pulses in phase. `primary_length_deviation_m` took the strongest tone from -14
+to -21 dB of the total at the end of a pull.
+
+The bubbling at idle: the spark's idle retard was counted twice (a share of MBT plus the reserve),
+for a burn so late that p_EVO reached 1.16-1.37 bar at 1400 K and each cycle's pulse swung 13 dB.
+Pistons now use the reserve alone (15 deg, ESTIMATE); bursts (p95 - median, 600 Hz-3 kHz) 16-26 dB
+to 3.8, recordings 2-8. Rotaries keep the share: without it the Renesis stalls, and that is not
+clean physics (the flame-speed advance is a piston model).
+
+The compressor's whine: Z·N with six main blades (Sriganesh et al. 2022), about 14.5 kHz at full
+boost. Stock FK8 road clips show no tone there above their floor (under -50 dB of the whole; the
+dyno clips' peaks do not track the revs), and no published level was found, so its level is an
+ESTIMATE under that bound: -54 dB over the pull. Audible only as a faint top; `sound.compressor_whine`.
+
+Also found on the way: the K20C1 inherited the K20A's port film though it is direct-injected (4.8 kJ
+burnt in the exhaust after a lift-off), and its 50 mm tail (FK8: 57 mm). **Open:** the turbine inlet
+reaches 3.5–4.5 bar at the top because the estimated inducer (40.6 mm, sources say 46.7) chokes and
+the gate stays shut; 46.7 mm gives 371 hp without the ECU's boost taper, which has no source yet.
+So the overrun is louder than the pull, where real FK8s fall 9–14 dB.

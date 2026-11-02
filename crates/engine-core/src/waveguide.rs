@@ -243,6 +243,12 @@ impl DelayLine {
     pub fn is_nonlinear(&self) -> bool {
         self.arrivals.is_some()
     }
+    /// A non-linear line's values travel at c + k·x from now on (a linear line stays linear).
+    pub fn set_k(&mut self, k: f64) {
+        if let Some(a) = &mut self.arrivals {
+            a.k = k;
+        }
+    }
     /// Whole steps a value pushed now takes at least to arrive: the delay's, or on a non-linear
     /// line half of it (its loudest values travel at most twice as fast).
     pub fn whole_steps(&self) -> usize {
@@ -311,6 +317,10 @@ pub struct Pipe {
     pub fwd: DelayLine,
     pub bwd: DelayLine,
     gain: f64,
+    /// The per-trip factor the waves take now: `gain` followed over [`GAIN_TAU_S`].
+    gain_now: f64,
+    /// `gain_now`'s share of the way to `gain` per step.
+    gain_follow: f64,
     /// Per-trip factor without flow (`gain` is it times the flow's friction loss).
     still_gain: f64,
     length_m: f64,
@@ -318,6 +328,8 @@ pub struct Pipe {
     /// The speed of sound it was built for, m/s, and its gas's now ([`Pipe::set_sound_speed`]).
     sound_speed: f64,
     gas_c: f64,
+    /// Its gas's mean pressure, Pa ([`Pipe::set_mean_pressure`]).
+    mean_pa: f64,
     dt: f64,
     /// The walls' loss above 200 Hz on each line ([`Pipe::viscothermal`]).
     walls: Option<Box<[WallLoss; 2]>>,
@@ -333,6 +345,11 @@ struct Stage {
     wall: Option<WallLoss>,
     line: DelayLine,
 }
+
+/// A pipe's friction loss follows each new mean flow over this, s: the flows arrive every few
+/// dozen steps, and a pipe carrying a strong mean (its flow's DC wave) stepped by each new loss
+/// was a click train at the update rate (6 kHz at 384 kHz). The friction moves over cycles.
+const GAIN_TAU_S: f64 = 0.002;
 
 /// Longest segment of a steepening pipe, m. A full-load blowdown pulse forms a shock within about
 /// x̄ = c²/(βωu) (60 kPa rising in 1 ms in 900 K gas: 600²/(1.2·6283·254) = 0.19 m; Hamilton &
@@ -452,11 +469,14 @@ impl Pipe {
             fwd: DelayLine::new(delay),
             bwd: DelayLine::new(delay),
             gain: (1.0 - loss_per_m).powf(length_m),
+            gain_now: (1.0 - loss_per_m).powf(length_m),
+            gain_follow: (dt / GAIN_TAU_S).min(1.0),
             still_gain: (1.0 - loss_per_m).powf(length_m),
             length_m,
             diameter_m,
             sound_speed,
             gas_c: sound_speed,
+            mean_pa: crate::units::ATM_PA,
             dt,
             walls: None,
             chain: None,
@@ -531,6 +551,23 @@ impl Pipe {
         self.bwd = DelayLine::nonlinear(delay, k);
         self
     }
+    /// The pipe's gas is at a mean pressure of `p` Pa from now on (a turbine's inlet, upstream of
+    /// it): its waves steepen at k = (γ+1)/(2γp) ([`Pipe::nonlinear`]) — a pressure swing is
+    /// that much less of the gas's own — and a mass flow is ṁ/(ρcA), ρc = γp/c, of Mach number
+    /// ([`Pipe::set_mean_flow`], at its next call).
+    pub fn set_mean_pressure(&mut self, p: f64) {
+        self.mean_pa = p;
+        let gamma = crate::gas::GAMMA;
+        let rho_c = gamma * p / self.sound_speed;
+        let k = (gamma + 1.0) / (2.0 * rho_c * self.sound_speed);
+        self.fwd.set_k(k);
+        self.bwd.set_k(k);
+        if let Some(chain) = &mut self.chain {
+            for st in chain.iter_mut().flatten() {
+                st.line.set_k(k);
+            }
+        }
+    }
     /// Room in its lines for gas as slow as `c_min` m/s ([`Pipe::set_sound_speed`]). Call it
     /// last, on a pipe that has not carried a wave yet.
     pub fn with_room(mut self, c_min: f64) -> Self {
@@ -578,6 +615,7 @@ impl Pipe {
     /// Extra per-trip amplitude factor (e.g. a muffler in this pipe).
     pub fn with_extra_gain(mut self, g: f64) -> Self {
         self.gain *= g;
+        self.gain_now *= g;
         self.still_gain *= g;
         self
     }
@@ -588,7 +626,7 @@ impl Pipe {
     /// per metre (M = U/c; Darcy f of [`crate::exhaust_fv::PIPE_FRICTION`]):
     /// the faster the gas, the more a pipe's resonances are worn down.
     pub fn set_mean_flow(&mut self, mass_flow: f64) {
-        let rho_c = crate::gas::GAMMA * crate::units::ATM_PA / self.gas_c;
+        let rho_c = crate::gas::GAMMA * self.mean_pa / self.gas_c;
         let mach = (mass_flow / (rho_c * self.area_m2)).abs();
         let alpha = crate::exhaust_fv::PIPE_FRICTION * mach / (2.0 * self.diameter_m);
         self.gain = self.still_gain * (-alpha * self.length_m).exp();
@@ -596,11 +634,11 @@ impl Pipe {
 
     /// Wave arriving at the far end this step.
     pub fn at_far(&self) -> f64 {
-        self.last(0).read() * self.gain
+        self.last(0).read() * self.gain_now
     }
     /// Wave arriving back at the near end this step.
     pub fn at_near(&self) -> f64 {
-        self.last(1).read() * self.gain
+        self.last(1).read() * self.gain_now
     }
     /// The line a direction ends in (`0` away from the near end, `1` back to it).
     fn last(&self, dir: usize) -> &DelayLine {
@@ -613,15 +651,22 @@ impl Pipe {
     /// [`Pipe::at_near`] as it will read after the next `send` (at the current gain), if the
     /// pipe is at least two steps long.
     pub fn at_near_next(&self) -> Option<f64> {
-        self.last(1).read_next().map(|x| x * self.gain)
+        self.last(1).read_next().map(|x| x * self.gain_now)
     }
     /// [`Pipe::at_near`] as it will read after `ahead` more `send`s (at the current gain), if
     /// those sends are not among the values it interpolates.
     pub fn at_near_ahead(&self, ahead: usize) -> Option<f64> {
-        self.bwd.read_ahead(ahead).map(|x| x * self.gain)
+        self.bwd.read_ahead(ahead).map(|x| x * self.gain_now)
     }
     /// Send this step's outgoing waves: `from_near` into `fwd`, `from_far` into `bwd`.
+    /// One step of the friction following its mean flow ([`GAIN_TAU_S`]); [`Pipe::send`] takes
+    /// it, a copy that only reads the pipe's lines takes it itself.
+    pub fn follow_gain(&mut self) {
+        self.gain_now += (self.gain - self.gain_now) * self.gain_follow;
+    }
+
     pub fn send(&mut self, from_near: f64, from_far: f64) {
+        self.follow_gain();
         if let Some(chain) = &mut self.chain {
             // each segment takes what the one before it delivers this step (read before pushed)
             for (dir, stages) in chain.iter_mut().enumerate() {
@@ -667,6 +712,8 @@ pub struct Duct {
     /// The gas's mean mass flow from the first pipe to the last, kg/s: what its plain area
     /// changes lose ([`area_change_resistance`]).
     mean_flow: f64,
+    /// The mean flow its area changes resist now: `mean_flow` followed over [`GAIN_TAU_S`].
+    mean_now: f64,
     /// What happens at each inner node, between pipe k and k + 1.
     nodes: Vec<Node>,
 }
@@ -886,6 +933,7 @@ impl Duct {
         Self {
             pipes,
             mean_flow: 0.0,
+            mean_now: 0.0,
             nodes: Vec::new(),
         }
     }
@@ -950,6 +998,9 @@ impl Duct {
     /// Send this step's waves into the ends; the inner area changes scatter what arrives at
     /// them this step.
     pub fn send(&mut self, from_near: f64, from_far: f64) {
+        if let Some(p) = self.pipes.first() {
+            self.mean_now += (self.mean_flow - self.mean_now) * p.gain_follow;
+        }
         let n = self.pipes.len();
         let mut into_near = from_near;
         for k in 0..n {
@@ -967,10 +1018,10 @@ impl Duct {
                         let q = 2.0 * (incoming[0] - incoming[1]) / (z1 + z2 + *r);
                         out = [incoming[0] - z1 * q, incoming[1] + z2 * q];
                     }
-                    _ if self.mean_flow != 0.0 && areas[0] != areas[1] => {
+                    _ if self.mean_now != 0.0 && areas[0] != areas[1] => {
                         // the mean flow loses pressure crossing the change: a resistance
                         let c = self.pipes[k].sound_speed;
-                        let r = area_change_resistance(areas[0], areas[1], self.mean_flow, c);
+                        let r = area_change_resistance(areas[0], areas[1], self.mean_now, c);
                         let rho_c = crate::gas::GAMMA * crate::units::ATM_PA / c;
                         let (z1, z2) = (rho_c / areas[0], rho_c / areas[1]);
                         let q = 2.0 * (incoming[0] - incoming[1]) / (z1 + z2 + r);
@@ -999,6 +1050,55 @@ pub fn junction(areas: &[f64], incoming: &[f64], outgoing: &mut [f64]) -> f64 {
         *o = pj - p;
     }
     pj
+}
+
+/// Time constant of the mean flow a [`TurbineJunction`] lets through unresisted, s: the turbo's
+/// own (its inlet's mean pressure follows its mean flow over it, `engine::TURBO_FLOW_TAU_S`).
+pub const TURBINE_MEAN_TAU_S: f64 = 0.05;
+/// A [`TurbineJunction`]'s resistance follows each new value over this, s: they arrive every
+/// few dozen steps, and taken at once each stepped the waves (a click train at the update rate).
+pub const TURBINE_R_TAU_S: f64 = 0.002;
+
+/// A turbine between two pipes, compact: its inlet's pressure follows the flow through it as
+/// its nozzle's characteristic, δp₀₃ = R·δṁ with R = dp₀₃/dṁ (Pa per kg/s,
+/// [`crate::turbo::TurboState::turbine_dp_dm`]; quasi-steady, the wheel's passage being short
+/// against the waves), a series element on the pulses (Munjal, *Acoustics of Ducts and
+/// Mufflers*, §2.3). The mean flow passes it unresisted: the mean drop across the turbine is the
+/// engine's to set, as its ports' back pressure. Waves p = (c/A)·ṁ on either side.
+#[derive(Debug, Clone)]
+pub struct TurbineJunction {
+    r: f64,
+    target: f64,
+    mean: f64,
+    follow: f64,
+    follow_r: f64,
+}
+
+impl TurbineJunction {
+    pub fn new(dt: f64) -> Self {
+        Self {
+            r: 0.0,
+            target: 0.0,
+            mean: 0.0,
+            follow: (dt / TURBINE_MEAN_TAU_S).min(1.0),
+            follow_r: (dt / TURBINE_R_TAU_S).min(1.0),
+        }
+    }
+
+    /// R = dp₀₃/dṁ, Pa per kg/s, from now on (reached over [`TURBINE_R_TAU_S`]).
+    pub fn set_resistance(&mut self, r: f64) {
+        self.target = r.max(0.0);
+    }
+
+    /// The waves `incoming` from pipes of `areas` (upstream first) in gas of sound speed `c`,
+    /// writing the outgoing ones: 2(p₁ − p₂) − (z₁ + z₂)·ṁ = R·(ṁ − ṁ̄), z = c/A.
+    pub fn process(&mut self, areas: &[f64; 2], incoming: &[f64; 2], c: f64, out: &mut [f64; 2]) {
+        self.r += (self.target - self.r) * self.follow_r;
+        let z = [c / areas[0], c / areas[1]];
+        let m = (2.0 * (incoming[0] - incoming[1]) + self.r * self.mean) / (z[0] + z[1] + self.r);
+        self.mean += self.follow * (m - self.mean);
+        *out = [incoming[0] - z[0] * m, incoming[1] + z[1] * m];
+    }
 }
 
 /// Acoustic resistance, Pa·s/m³ (pressure drop over volume flow), of a sudden change of area
@@ -1371,6 +1471,10 @@ mod tests {
                 Pipe::new(len, d2, 500.0, dt, 0.0),
             ]);
             duct.set_mean_flow(flow);
+            // the friction settles over 2 ms (`GAIN_TAU_S`): 6000 silent steps
+            for _ in 0..6000 {
+                duct.send(0.0, 0.0);
+            }
             let gains = duct.pipes[0].gain * duct.pipes[1].gain;
             let mut peak: f64 = 0.0;
             for k in 0..64 {
@@ -1489,6 +1593,66 @@ mod tests {
         assert!((p.gain / still - 0.951_229).abs() < 1e-5);
         p.set_mean_flow(0.0);
         assert_eq!(p.gain, still);
+    }
+
+    #[test]
+    fn a_pipes_friction_moves_without_a_click() {
+        // The mean flows arrive every few dozen steps; a pipe carrying a strong mean (its
+        // flow's DC wave, 75 kPa in a boosted collector) stepped by each new friction was a click
+        // train at the update rate. The loss follows over 2 ms: one step at 192 kHz moves it
+        // 1/384 of the way.
+        let dt = 1.0 / 192_000.0;
+        let a = std::f64::consts::PI * 0.25 * 0.05 * 0.05;
+        let mut p = Pipe::new(1.0, 0.05, 500.0, dt, 0.03);
+        for _ in 0..2000 {
+            p.send(1000.0, 0.0);
+        }
+        let before = p.at_far();
+        p.set_mean_flow(0.2 * 283.71 * a);
+        p.send(1000.0, 0.0);
+        let step = (p.at_far() - before).abs();
+        // the whole change is 1000·0.97·(1 − 0.951229) ≈ 47 Pa
+        assert!(step < 0.5, "{step}");
+        for _ in 0..20_000 {
+            p.send(1000.0, 0.0);
+        }
+        assert!(
+            (p.at_far() - 1000.0 * 0.97 * 0.951_229).abs() < 0.05,
+            "{}",
+            p.at_far()
+        );
+    }
+
+    #[test]
+    fn an_area_changes_resistance_moves_without_a_click() {
+        // A duct carrying its flow's DC wave across an area change: each new mean flow changes
+        // the change's resistance; taken at once it stepped the waves every few dozen steps (a
+        // click train, 26 dB of the boosted K20C1's 6 kHz tone). It follows over 2 ms.
+        let dt = 1.0 / 192_000.0;
+        let len = 500.0 * dt * 8.0;
+        let d1 = (4.0 * 0.002 / std::f64::consts::PI).sqrt();
+        let d2 = (4.0 * 0.008 / std::f64::consts::PI).sqrt();
+        let mut duct = Duct::new(vec![
+            Pipe::new(len, d1, 500.0, dt, 0.0),
+            Pipe::new(len, d2, 500.0, dt, 0.0),
+        ]);
+        duct.set_mean_flow(0.05);
+        for _ in 0..20_000 {
+            duct.send(1000.0, 0.0);
+        }
+        let before = duct.pipes[1].at_far();
+        duct.set_mean_flow(0.1);
+        let mut first: f64 = 0.0;
+        for _ in 0..20 {
+            duct.send(1000.0, 0.0);
+            first = first.max((duct.pipes[1].at_far() - before).abs());
+        }
+        for _ in 0..20_000 {
+            duct.send(1000.0, 0.0);
+        }
+        let whole = (duct.pipes[1].at_far() - before).abs();
+        assert!(whole > 1.0, "{whole}");
+        assert!(first < 0.1 * whole, "{first} of {whole}");
     }
 
     #[test]
@@ -1697,6 +1861,10 @@ mod tests {
             Pipe::new(1.0, 0.05, 500.0, dt, 0.0),
         ]);
         d.set_mean_flow(0.2 * 283.71 * a);
+        // the friction settles over 2 ms (`GAIN_TAU_S`): 6000 silent steps
+        for _ in 0..6000 {
+            d.send(0.0, 0.0);
+        }
         let mut got: f64 = 0.0;
         for k in 0..2_000 {
             got = got.max(d.at_far().abs());
@@ -1810,6 +1978,58 @@ mod tests {
     }
 
     #[test]
+    fn a_pipe_under_pressure_steepens_its_waves_as_much_less() {
+        // A wave steepens at k·x = (γ+1)/(2γp)·x (Msallam et al. 2000, eqs. 1–2): in gas at 3
+        // atmospheres (a turbine's inlet) a pulse three times as strong steepens as one at an
+        // atmosphere, so it arrives the same shape, three times as strong
+        let dt = 1.0 / 96_000.0;
+        let build = || Pipe::new(1.5, 0.04, 600.0, dt, 0.0).steepening();
+        let (mut atm, mut high) = (build(), build());
+        high.set_mean_pressure(3.0 * crate::units::ATM_PA);
+        let pulse = |n: usize| 20_000.0 * (std::f64::consts::PI * n as f64 / 40.0).sin().max(0.0);
+        for n in 0..600 {
+            let x = if n < 40 { pulse(n) } else { 0.0 };
+            let (a, b) = (atm.at_far(), high.at_far());
+            assert!(
+                (3.0 * a - b).abs() < 1e-6 * 20_000.0,
+                "step {n}: {a} vs {b}"
+            );
+            atm.send(x, 0.0);
+            high.send(3.0 * x, 0.0);
+        }
+        // and the strong pulse at an atmosphere arrives otherwise: steeper, sooner
+        let (mut plain, mut high) = (build(), build());
+        high.set_mean_pressure(3.0 * crate::units::ATM_PA);
+        let mut diff: f64 = 0.0;
+        for n in 0..600 {
+            let x = if n < 40 { 3.0 * pulse(n) } else { 0.0 };
+            diff = diff.max((plain.at_far() - high.at_far()).abs());
+            plain.send(x, 0.0);
+            high.send(x, 0.0);
+        }
+        assert!(diff > 1000.0, "{diff}");
+    }
+
+    #[test]
+    fn a_pipe_under_pressure_flows_slower_for_its_mass_flow() {
+        // The friction follows the mean Mach number ṁ/(ρcA), ρc = γp/c: at 3 atmospheres a mass
+        // flow is a third of the Mach number it is at one
+        let dt = 1.0 / 192_000.0;
+        let a = std::f64::consts::PI * 0.25 * 0.05 * 0.05;
+        let mut atm = Pipe::new(1.0, 0.05, 500.0, dt, 0.03);
+        let mut high = Pipe::new(1.0, 0.05, 500.0, dt, 0.03);
+        high.set_mean_pressure(3.0 * crate::units::ATM_PA);
+        atm.set_mean_flow(0.2 * 283.71 * a);
+        high.set_mean_flow(3.0 * 0.2 * 283.71 * a);
+        assert!(
+            (atm.gain - high.gain).abs() < 1e-12,
+            "{} {}",
+            atm.gain,
+            high.gain
+        );
+    }
+
+    #[test]
     fn room_alone_changes_nothing() {
         let dt = 1.0 / 96_000.0;
         let build = |room: bool, steep: bool| {
@@ -1829,6 +2049,67 @@ mod tests {
                 b.send(s, -s);
             }
         }
+    }
+
+    #[test]
+    fn a_turbine_resists_the_pulses_and_passes_the_mean_flow() {
+        // A compact resistance R (Pa per kg/s) between pipes of area A, waves p = (c/A)·ṁ: a
+        // pulse meets R against the two pipes' 2c/A, transmitted 1/(1 + R·A/2c) and reflected
+        // the rest; at R·A/2c = 1 half each way (Munjal, *Acoustics of Ducts and Mufflers*, §2.3,
+        // a series element). The mean flow passes untouched: its pressure is the turbine's
+        // inlet's, which the engine sets.
+        let (a, c) = (2e-3, 600.0);
+        let dt = 1.0 / 96_000.0;
+        let mut t = TurbineJunction::new(dt);
+        t.set_resistance(2.0 * c / a);
+        // the mean first: a steady wave through, after the mean has followed it (1 s ≫ 50 ms)
+        let mut out = [0.0; 2];
+        for _ in 0..96_000 {
+            t.process(&[a, a], &[1000.0, 0.0], c, &mut out);
+        }
+        assert!((out[1] - 1000.0).abs() < 1.0, "{out:?}");
+        assert!(out[0].abs() < 1.0, "{out:?}");
+        // then a 1 kHz pulse train on it: half passes, half comes back
+        let (mut through, mut back): (f64, f64) = (0.0, 0.0);
+        for n in 0..960 {
+            let s = 100.0 * (2.0 * std::f64::consts::PI * 1000.0 * n as f64 * dt).sin();
+            t.process(&[a, a], &[1000.0 + s, 0.0], c, &mut out);
+            through = through.max(out[1] - 1000.0);
+            back = back.max(out[0]);
+        }
+        assert!((through - 50.0).abs() < 1.0, "{through}");
+        assert!((back - 50.0).abs() < 1.0, "{back}");
+    }
+
+    #[test]
+    fn a_turbines_resistance_moves_without_a_click() {
+        // Its slope arrives every few dozen steps: taken at once, each new value stepped the
+        // waves (a click train at the update rate). It follows over 2 ms: after one step at
+        // 96 kHz a change has gone 1/192 of the way.
+        let (a, c) = (2e-3, 600.0);
+        let dt = 1.0 / 96_000.0;
+        let mut t = TurbineJunction::new(dt);
+        let mut out = [0.0; 2];
+        for _ in 0..96_000 {
+            t.process(&[a, a], &[1000.0, 0.0], c, &mut out);
+        }
+        let before = out[1];
+        t.set_resistance(2.0 * c / a);
+        // a pulse rides on the mean: the resistance acts on it
+        t.process(&[a, a], &[1100.0, 0.0], c, &mut out);
+        let first = out[1] - before;
+        // fully applied, a 100 Pa pulse passes half (see above); unresisted, all of it
+        assert!(first > 99.0, "{first}");
+    }
+
+    #[test]
+    fn a_turbine_without_resistance_is_the_area_junction() {
+        let dt = 1.0 / 96_000.0;
+        let mut t = TurbineJunction::new(dt);
+        let (mut out, mut plain) = ([0.0; 2], [0.0; 2]);
+        t.process(&[1e-3, 3e-3], &[700.0, -200.0], 600.0, &mut out);
+        junction(&[1e-3, 3e-3], &[700.0, -200.0], &mut plain);
+        assert!((out[0] - plain[0]).abs() < 1e-9 && (out[1] - plain[1]).abs() < 1e-9);
     }
 
     #[test]

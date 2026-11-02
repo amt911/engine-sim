@@ -877,6 +877,7 @@ mod tests {
             primary_diameter_m: 0.05,
             collector_diameter_m: 0.05,
             tail_diameter_m: 0.05,
+            tail_outlets: 1,
             ..def()
         };
         let w = 2.0 * std::f64::consts::PI * 600.0;
