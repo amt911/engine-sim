@@ -238,6 +238,24 @@ mod tests {
             .collect()
     }
 
+    /// Where each primary ends: the primaries are laid first, cylinder by cylinder, so walking
+    /// the pipe runs and cutting at each primary's length finds them.
+    fn primary_ends(d: &EngineDef, pipes: &[(Vec3, Vec3)]) -> Vec<Vec3> {
+        let mut ends = Vec::new();
+        let mut acc = 0.0;
+        for (a, b) in pipes {
+            acc += (*b - *a).length();
+            if (acc - d.exhaust.primary_length(ends.len()) as f32).abs() < 1e-4 {
+                ends.push(*b);
+                acc = 0.0;
+                if ends.len() == d.cylinders {
+                    break;
+                }
+            }
+        }
+        ends
+    }
+
     fn length(t: &[(Vec3, Vec3)]) -> f32 {
         t.iter().map(|(a, b)| (*b - *a).length()).sum()
     }
@@ -274,22 +292,8 @@ mod tests {
         d.exhaust.tail_length_m = 0.0;
         let mut out = Vec::new();
         exhaust(&d, &mut out);
-        // the primaries are laid first, cylinder by cylinder; their ends are where the next
-        // primary's first run starts (or the collectors' first run, after the fourth)
         let pipes = tubes(&out, Part::Pipe);
-        let p = d.exhaust.primary_length(0) as f32;
-        let mut acc = 0.0;
-        let mut ends = Vec::new();
-        for (a, b) in &pipes {
-            acc += (*b - *a).length();
-            if (acc - p).abs() < 1e-4 {
-                ends.push(*b);
-                acc = 0.0;
-            }
-            if ends.len() == 4 {
-                break;
-            }
-        }
+        let ends = primary_ends(&d, &pipes);
         assert_eq!(ends.len(), 4);
         let want = 0.5 * (ends[0] + ends[3]);
         assert!(
@@ -343,18 +347,19 @@ mod tests {
 
     #[test]
     fn a_cylinder_left_out_of_the_groups_still_gets_its_primary() {
+        // groups 1-2 and 3: cylinder 4 is drawn and joins the last group, whose collector then
+        // starts between cylinders 3's and 4's primary ends
         let mut d = EngineDef::inline4();
         d.exhaust.collectors = vec![vec![1, 2], vec![3]];
         let mut out = Vec::new();
         exhaust(&d, &mut out);
-        // cylinder 4's port (x = 3 pitches) starts a pipe
-        let b = d.geometry.bore_m as f32;
-        let x4 = 3.0 * PITCH_BORES as f32 * b;
         let pipes = tubes(&out, Part::Pipe);
+        let ends = primary_ends(&d, &pipes);
+        assert_eq!(ends.len(), 4, "cylinder 4's primary is drawn");
+        let want = 0.5 * (ends[2] + ends[3]);
         assert!(
-            pipes
-                .iter()
-                .any(|(a, _)| (a.x - x4).abs() < 1e-6 && (a.z + 0.65 * b).abs() < 1e-6)
+            pipes.iter().any(|(a, _)| (*a - want).length() < 1e-5),
+            "no collector at {want}"
         );
     }
 
