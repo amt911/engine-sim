@@ -22,6 +22,8 @@ pass() {
   local out=$1 timeout=$2; shift 2
   export HEAVY_UNIT="engine-sim-mutants-$$-$(basename "$out")"
   scripts/yield-cpu.sh "$HEAVY_UNIT.scope" >"$TMPDIR/yield-$$.log" 2>&1 &
+  # no debug info: a mutant's rebuild at opt-level 2 takes ~7 s without it, ~9.5 s with it
+  CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_DEV_DEBUG=0 \
   NEXTEST_TEST_THREADS=2 CARGO_BUILD_JOBS=4 scripts/heavy.sh \
     cargo mutants -p engine-core -j 3 --timeout "$timeout" -o "$out" "$@" | tail -1
 }
