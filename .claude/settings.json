@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/mutants-periodic.sh due",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
