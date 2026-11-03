@@ -154,6 +154,7 @@ starving, timeouts were scored as killed mutants and the result meant nothing.
 | UI plots | `egui_plot` | torque/power curves, p–V, pressure traces |
 | Audio out | `cpal` | device I/O; callback only pops samples |
 | Lock-free | `rtrb` | SPSC ring buffer sim → audio |
+| 3D view | `glam`, `bytemuck` | camera and transform maths; GPU vertex layouts (wgpu through eframe) |
 | SIMD | `wide` | four cells at once in the 1D pipes' WENO reconstruction (SSE2 baseline, bit-identical) |
 | Config | `serde` + `serde_json` + `serde_yaml_ng` | engine import/export (JSON/YAML) |
 | CLI | `clap` | `--engine`, `--headless`, `--wav` |
@@ -175,7 +176,8 @@ Planned (add when the phase needs them, then update this table): `fft-convolver`
 │   │                  #   gearbox (drivetrain: vehicle, clutch), engine definition (serde) + presets. 100% deterministic, f64.
 │   ├── engine-audio/  # pure DSP (DC blocker, filters, radiation, later convolution) + cpal output
 │   │                  #   behind an `AudioSink` boundary.
-│   └── engine-app/    # binary `engine-sim`: eframe UI, sim thread, CLI, headless renderer.
+│   └── engine-app/    # binary `engine-sim`: eframe UI, sim thread, CLI, headless renderer,
+│                      #   3D view (view3d/: camera, meshes, scene from the definition, wgpu).
 ├── presets/           # built-in engines as YAML (`--save`); a test keeps them equal to the code
 ├── scripts/           # smoke.sh, heavy.sh, verify-pr.sh
 └── docs/              # specs, research, agents/, FINDINGS, FACTS

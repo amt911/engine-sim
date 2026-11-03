@@ -15,7 +15,9 @@
 - **Real binary:** `scripts/smoke.sh` (see real-environment verification).
 - **Coverage:** `cargo llvm-cov`. **Excluded with reason:** `engine-app/src/main.rs` and the
   egui painting code (pixels are checked by kittest snapshots and the smoke, not by line coverage),
-  `engine-audio/src/device.rs` (needs a real sound card; covered by the smoke).
+  `engine-audio/src/device.rs` (needs a real sound card; covered by the smoke),
+  `engine-app/src/view3d/render.rs` (wgpu pipelines and passes: need a GPU device; checked by
+  the `render_3d_screens` off-screen renders, the `bench_3d_frame` bench and the smoke).
 - **Mutation:** `cargo mutants -p engine-core` inside the cgroup (`scripts/heavy.sh`).
 
 ### Run before declaring done

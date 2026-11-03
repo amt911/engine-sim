@@ -219,4 +219,93 @@ mod tests {
             "a click on the disabled 3D does nothing"
         );
     }
+
+    /// Frame cost of the 3D view on this machine: the LFA V10 (the most parts) at 1920 × 1080,
+    /// 600 frames per detail level. CPU = refilling the instances + `prepare`; GPU = submit to
+    /// done. The budget (spec): CPU ≤ 2 ms p99, GPU ≤ 4 ms at High. Needs a GPU (or lavapipe):
+    /// `cargo test --release -p engine-app bench_3d_frame -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_3d_frame() {
+        use super::super::render;
+        use eframe::egui_wgpu::{CallbackTrait, ScreenDescriptor, wgpu};
+        use egui_kittest::wgpu as kw;
+        use std::time::Instant;
+        let rs = kw::create_render_state(
+            kw::default_wgpu_setup(),
+            eframe::egui_wgpu::RendererOptions::PREDICTABLE,
+        );
+        render::install(&rs);
+        let def = EngineDef::lfa_v10();
+        let mut snap = crate::sim::Simulation::with_quality(
+            def.clone(),
+            def.vehicle.clone(),
+            48_000.0,
+            1,
+            crate::quality::Quality::Low,
+        )
+        .snapshot();
+        let screen = ScreenDescriptor {
+            size_in_pixels: [1920, 1080],
+            pixels_per_point: 1.0,
+        };
+        println!("adapter: {:?}", rs.adapter.get_info().name);
+        for detail in [Detail::Low, Detail::Medium, Detail::High] {
+            let mut st = View3dState {
+                available: true,
+                ..View3dState::default()
+            };
+            st.governor.set_manual(Some(detail));
+            st.sync(&def);
+            let (mut cpu, mut gpu) = (Vec::new(), Vec::new());
+            for f in 0..600 {
+                for (i, c) in snap.cylinders.iter_mut().enumerate() {
+                    c.cycle_deg = (f as f64 * 7.0 + 72.0 * i as f64) % 720.0;
+                    c.piston_m = def.geometry.piston_position(c.cycle_deg.to_radians());
+                }
+                let t0 = Instant::now();
+                st.fill(&snap, 1920.0 / 1080.0);
+                let frame = render::Frame3d {
+                    shared: st.shared.clone(),
+                    size_px: [1920, 1080],
+                    key: render::MeshKey {
+                        def_version: st.def_version,
+                        segments: detail.segments(),
+                        e_over_r: 0.0,
+                    },
+                };
+                let mut enc = rs.device.create_command_encoder(&Default::default());
+                {
+                    let mut r = rs.renderer.write();
+                    frame.prepare(
+                        &rs.device,
+                        &rs.queue,
+                        &screen,
+                        &mut enc,
+                        &mut r.callback_resources,
+                    );
+                }
+                let t1 = Instant::now();
+                rs.queue.submit([enc.finish()]);
+                rs.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                let t2 = Instant::now();
+                if f >= 60 {
+                    cpu.push((t1 - t0).as_secs_f64() * 1e3);
+                    gpu.push((t2 - t1).as_secs_f64() * 1e3);
+                }
+            }
+            let stat = |v: &mut Vec<f64>| {
+                v.sort_by(f64::total_cmp);
+                (
+                    v.iter().sum::<f64>() / v.len() as f64,
+                    v[v.len() * 99 / 100],
+                )
+            };
+            let (c, g) = (stat(&mut cpu), stat(&mut gpu));
+            println!(
+                "{detail:?}: cpu mean {:.3} ms p99 {:.3} ms · gpu mean {:.3} ms p99 {:.3} ms",
+                c.0, c.1, g.0, g.1
+            );
+        }
+    }
 }
