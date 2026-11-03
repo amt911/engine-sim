@@ -17,8 +17,27 @@ pub enum ViewMode {
     ThreeD,
 }
 
+/// The layers drawn over the engine (the user's toggles).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Layers {
+    /// Each chamber's charge, coloured by its temperature, glowing while it burns.
+    pub combustion: bool,
+    /// The engine opened along (inline) or across (V, rotary) its cylinders.
+    pub cutaway: bool,
+}
+
+impl Default for Layers {
+    fn default() -> Self {
+        Self {
+            combustion: true,
+            cutaway: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct View3dState {
+    pub layers: Layers,
     pub mode: ViewMode,
     /// Whether the renderer is installed (a wgpu device exists); without it the view is 2D.
     pub available: bool,
@@ -35,6 +54,7 @@ pub struct View3dState {
 impl Default for View3dState {
     fn default() -> Self {
         Self {
+            layers: Layers::default(),
             mode: ViewMode::ThreeD,
             available: false,
             camera: None,
@@ -72,7 +92,13 @@ impl View3dState {
         if let Ok(mut sh) = self.shared.lock() {
             sh.instances.clear();
             sh.instances.extend_from_slice(&s.static_parts);
-            sh.instances.extend_from_slice(&self.moving);
+            let combustion = self.layers.combustion;
+            sh.instances.extend(
+                self.moving
+                    .iter()
+                    .filter(|i| combustion || i.part != scene::Part::Charge),
+            );
+            sh.clip = self.layers.cutaway.then(|| scene::cut_plane(&snap.def));
             if let Some(c) = &self.camera {
                 sh.view_proj = c.view_proj(aspect);
             }
@@ -123,6 +149,10 @@ pub fn bar(ui: &mut egui::Ui, st: &mut View3dState) {
             if choice != st.governor.manual() {
                 st.governor.set_manual(choice);
             }
+            ui.menu_button("Layers", |ui| {
+                ui.checkbox(&mut st.layers.combustion, "Combustion");
+                ui.checkbox(&mut st.layers.cutaway, "Cut-away");
+            });
             ui.small("drag: turn · wheel: zoom · double-click: reframe");
         }
     });
@@ -321,5 +351,53 @@ mod tests {
                 c.0, c.1, g.0, g.1
             );
         }
+    }
+
+    #[test]
+    fn the_layers_menu_toggles_combustion_and_the_cut() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let st = View3dState {
+            available: true,
+            ..View3dState::default()
+        };
+        let mut h = Harness::new_ui_state(|ui, s: &mut View3dState| bar(ui, s), st);
+        h.get_by_label("Layers").click();
+        h.run();
+        h.get_by_label("Cut-away").click();
+        h.run();
+        assert!(h.state().layers.cutaway);
+        if h.query_by_label("Combustion").is_none() {
+            h.get_by_label("Layers").click();
+            h.run();
+        }
+        h.get_by_label("Combustion").click();
+        h.run();
+        assert!(!h.state().layers.combustion);
+    }
+
+    #[test]
+    fn layers_shape_the_frame() {
+        let def = EngineDef::inline4();
+        let mut st = View3dState::default();
+        st.sync(&def);
+        let snap = crate::sim::Simulation::new(def, 48_000.0, 1).snapshot();
+        st.fill(&snap, 1.5);
+        let count = |st: &View3dState| {
+            let sh = st.shared.lock().unwrap();
+            (
+                sh.instances
+                    .iter()
+                    .filter(|i| i.part == scene::Part::Charge)
+                    .count(),
+                sh.clip,
+            )
+        };
+        assert_eq!(count(&st), (4, None));
+        st.layers = Layers {
+            combustion: false,
+            cutaway: true,
+        };
+        st.fill(&snap, 1.5);
+        assert_eq!(count(&st), (0, Some((glam::Vec3::Z, 0.0))));
     }
 }

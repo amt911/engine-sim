@@ -301,6 +301,29 @@ pub fn build(def: &EngineDef) -> Scene {
     }
 }
 
+/// The cut-away plane for this engine (normal, offset; the side n·p > offset is cut away): an
+/// inline engine is opened lengthwise through its cylinders' axes (its front half, toward the
+/// camera's start, goes); a V, flat or rotary engine across its last cylinder or rotor, which
+/// shows the V or the rotor in section.
+pub fn cut_plane(def: &EngineDef) -> (Vec3, f32) {
+    let g = def.geometry;
+    if let Some(rotor) = g.rotor {
+        let rotors = def.cylinders.div_ceil(3).max(1);
+        return (Vec3::X, (rotors - 1) as f32 * 1.5 * rotor.width_m as f32);
+    }
+    if def.layout.bank_angle_deg > 0.0 {
+        let cols = def
+            .layout
+            .place(def.cylinders)
+            .iter()
+            .map(|p| p.1)
+            .max()
+            .unwrap_or(0);
+        return (Vec3::X, cols as f32 * PITCH_BORES as f32 * g.bore_m as f32);
+    }
+    (Vec3::Z, 0.0)
+}
+
 /// A radius about `centre` of at least `radius` that holds every part's both ends (a unit mesh
 /// spans y 0..1 or −½..½ in its own frame: both ends are checked).
 fn holding(parts: &[Instance], centre: Vec3, radius: f32) -> f32 {
@@ -757,5 +780,22 @@ mod tests {
         let c = out.iter().find(|i| i.part == Part::Charge).unwrap();
         let (s2, _, _) = c.model.to_scale_rotation_translation();
         assert!((s2.y - clear - 2.0 * r).abs() < 1e-5, "{s2}");
+    }
+
+    #[test]
+    fn the_cut_goes_through_the_cylinders() {
+        // inline: the plane of the axes (z = 0); a V: across its last pair of cylinders, 3
+        // pitches along for the cross-plane (4 per bank); a rotary: across its second rotor
+        assert_eq!(cut_plane(&EngineDef::inline4()), (Vec3::Z, 0.0));
+        let v8 = EngineDef::crossplane_v8();
+        let x = 3.0 * PITCH_BORES as f32 * v8.geometry.bore_m as f32;
+        let (n, d) = cut_plane(&v8);
+        assert_eq!(n, Vec3::X);
+        assert!((d - x).abs() < 1e-6);
+        let rx = EngineDef::mazda_renesis();
+        let w = rx.geometry.rotor.unwrap().width_m as f32;
+        let (n, d) = cut_plane(&rx);
+        assert_eq!(n, Vec3::X);
+        assert!((d - 1.5 * w).abs() < 1e-6);
     }
 }
