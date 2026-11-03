@@ -555,6 +555,12 @@ impl Pipe {
     /// it): its waves steepen at k = (γ+1)/(2γp) ([`Pipe::nonlinear`]) — a pressure swing is
     /// that much less of the gas's own — and a mass flow is ṁ/(ρcA), ρc = γp/c, of Mach number
     /// ([`Pipe::set_mean_flow`], at its next call).
+    /// Its gas's mean pressure, Pa.
+    #[cfg(test)]
+    pub(crate) fn mean_pressure(&self) -> f64 {
+        self.mean_pa
+    }
+
     pub fn set_mean_pressure(&mut self, p: f64) {
         self.mean_pa = p;
         let gamma = crate::gas::GAMMA;

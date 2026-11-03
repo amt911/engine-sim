@@ -1970,6 +1970,31 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn a_turbines_inlet_pressure_reaches_the_primaries_collectors_and_probe() {
+        let mut net = ExhaustNet::new(&ExhaustDef::default(), 4, 1.0 / 48_000.0);
+        let mut probe = ArrivalProbe::new(&net);
+        net.set_mean_pressure(2.0e5);
+        assert!(net.primaries.iter().all(|p| p.mean_pressure() == 2.0e5));
+        assert!(
+            net.branches
+                .iter()
+                .all(|b| b.collector.mean_pressure() == 2.0e5)
+        );
+        probe.set_mean_pressure(1.5e5);
+        assert!(probe.pipes.iter().all(|p| p.mean_pressure() == 1.5e5));
+    }
+
+    #[test]
+    fn a_turbine_follows_the_collectors_only_with_a_positive_slope() {
+        let mut net = ExhaustNet::new(&ExhaustDef::default(), 4, 1.0 / 48_000.0);
+        net.set_turbine_resistance(0.0);
+        assert!(net.branches.iter().all(|b| b.turbine.is_none()));
+        net.set_turbine_resistance(500.0);
+        assert!(!net.branches.is_empty());
+        assert!(net.branches.iter().all(|b| b.turbine.is_some()));
+    }
+
     /// Two one-cylinder banks of plain pipes, joined into one outlet duct when `merged`.
     fn two_banks(merged: bool) -> ExhaustDef {
         ExhaustDef {
