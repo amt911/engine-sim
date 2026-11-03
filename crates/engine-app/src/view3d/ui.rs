@@ -183,4 +183,40 @@ mod tests {
         st.sync(&d);
         assert_eq!(st.def_version, 2);
     }
+
+    #[test]
+    fn view_toggle_switches_to_2d_and_back() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let st = View3dState {
+            available: true,
+            ..View3dState::default()
+        };
+        let mut h = Harness::new_ui_state(|ui, s: &mut View3dState| bar(ui, s), st);
+        h.get_by_label("2D").click();
+        h.run();
+        assert_eq!(h.state().mode, ViewMode::TwoD);
+        assert!(
+            h.query_by_label("Detail").is_none(),
+            "no detail choice in 2D"
+        );
+        h.get_by_label("3D").click();
+        h.run();
+        assert_eq!(h.state().mode, ViewMode::ThreeD);
+        assert!(h.query_by_label("Detail").is_some());
+    }
+
+    #[test]
+    fn without_a_gpu_the_3d_button_is_off() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let mut h =
+            Harness::new_ui_state(|ui, s: &mut View3dState| bar(ui, s), View3dState::default());
+        h.run();
+        assert!(h.query_by_label("2D").is_none());
+        h.get_by_label("3D").click();
+        h.run();
+        assert!(
+            !h.state().shows_3d(),
+            "a click on the disabled 3D does nothing"
+        );
+    }
 }
