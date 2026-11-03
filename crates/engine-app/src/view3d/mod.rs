@@ -5,5 +5,6 @@ pub mod camera;
 pub mod detail;
 pub mod mesh;
 pub mod render;
+pub mod routing;
 pub mod scene;
 pub mod ui;
