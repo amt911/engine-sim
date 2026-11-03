@@ -10,6 +10,7 @@ mod quality;
 mod runner;
 mod sim;
 mod view;
+mod view3d;
 
 use clap::Parser;
 use controls::{Preset, UiState};
