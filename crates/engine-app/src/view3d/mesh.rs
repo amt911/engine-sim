@@ -223,6 +223,35 @@ pub fn half_liner(segments: u32) -> Mesh {
     m
 }
 
+/// A ball of radius 1 about the origin: `segments` round, `segments / 2` from pole to pole,
+/// smooth normals (the bends between a pipe's runs).
+pub fn sphere(segments: u32) -> Mesh {
+    let (s, t) = (segments.max(4), (segments / 2).max(2));
+    let mut m = Mesh::default();
+    for j in 0..=t {
+        // the poles exact: sin π in f32 is 1e-7, enough to give the last row's slivers a
+        // direction
+        let (sv, cv) = match j {
+            0 => (0.0, 1.0),
+            _ if j == t => (0.0, -1.0),
+            _ => (std::f32::consts::PI * j as f32 / t as f32).sin_cos(),
+        };
+        for i in 0..=s {
+            let u = TAU * i as f32 / s as f32;
+            let p = [sv * u.cos(), cv, sv * u.sin()];
+            m.push(p, p);
+        }
+    }
+    let row = s + 1;
+    for j in 0..t {
+        for i in 0..s {
+            let (a, b) = (j * row + i, (j + 1) * row + i);
+            m.indices.extend([a, a + 1, b, b, a + 1, b + 1]);
+        }
+    }
+    m
+}
+
 /// A crank web of a throw of unit radius: a rounded end round the pin at (0, 1) (radius 0.45)
 /// and a counterweight arc of radius 1.1 under the main journal at the origin, in (x, z),
 /// extruded from y = 0 to 1.
@@ -283,6 +312,7 @@ mod tests {
             rotor(8),
             half_liner(16),
             crank_web(8),
+            sphere(12),
         ]
     }
 
