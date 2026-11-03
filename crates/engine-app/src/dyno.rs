@@ -241,6 +241,47 @@ mod tests {
     }
 
     #[test]
+    fn the_vw_tdi_boosts_near_what_vw_published() {
+        // 66 kW (88.5 hp) at 4000 rpm, 210 N·m at 1800–1900 (see `EngineDef::vw_tdi`): within 15 %
+        let (t, p) = {
+            let pts = sweep(&EngineDef::vw_tdi());
+            peaks(&pts).unwrap()
+        };
+        assert!(
+            (t.torque_nm / 210.0 - 1.0).abs() < 0.15,
+            "{} N·m at {}",
+            t.torque_nm,
+            t.rpm
+        );
+        assert!(
+            (p.power_hp() / 88.5 - 1.0).abs() < 0.15,
+            "{} hp at {}",
+            p.power_hp(),
+            p.rpm
+        );
+    }
+
+    #[test]
+    fn the_vw_sdi_breathes_near_what_vw_published() {
+        // VW 1.9 SDI: 125 N·m at 2200–2600 rpm, 47 kW (63 hp) at 4200. Within 15 % of both
+        // (the diesel's own spec), the torque flat through the mid range as a diesel's is
+        let pts = sweep(&EngineDef::vw_sdi());
+        let (t, p) = peaks(&pts).unwrap();
+        assert!(
+            (t.torque_nm / 125.0 - 1.0).abs() < 0.15,
+            "{} N·m",
+            t.torque_nm
+        );
+        assert!(
+            (p.power_hp() / 63.0 - 1.0).abs() < 0.15,
+            "{} hp",
+            p.power_hp()
+        );
+        let at_2000 = pts.iter().find(|q| q.rpm == 2000.0).unwrap();
+        assert!(at_2000.torque_nm > 0.9 * t.torque_nm, "{at_2000:?}");
+    }
+
+    #[test]
     fn the_renesis_breathes_near_what_mazda_published() {
         // 184 kW (247 hp) at 8200 rpm, 216 N·m at 5500 (Heywood 2nd ed., Fig. 1.23): within 15 %
         let pts = sweep(&EngineDef::mazda_renesis());

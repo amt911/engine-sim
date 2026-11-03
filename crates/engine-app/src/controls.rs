@@ -16,6 +16,8 @@ pub enum Preset {
     HondaK20aTuned,
     HondaK20c1,
     SubaruEj25,
+    VwSdi,
+    VwTdi,
     MazdaRenesis,
     Mazda13bBridgeport,
     LfaV10,
@@ -24,13 +26,15 @@ pub enum Preset {
 }
 
 impl Preset {
-    pub const ALL: [Preset; 11] = [
+    pub const ALL: [Preset; 13] = [
         Preset::Single,
         Preset::Inline4,
         Preset::HondaK20a,
         Preset::HondaK20aTuned,
         Preset::HondaK20c1,
         Preset::SubaruEj25,
+        Preset::VwSdi,
+        Preset::VwTdi,
         Preset::MazdaRenesis,
         Preset::Mazda13bBridgeport,
         Preset::LfaV10,
@@ -45,6 +49,8 @@ impl Preset {
             Preset::HondaK20aTuned => EngineDef::honda_k20a_tuned(),
             Preset::HondaK20c1 => EngineDef::honda_k20c1(),
             Preset::SubaruEj25 => EngineDef::subaru_ej25(),
+            Preset::VwSdi => EngineDef::vw_sdi(),
+            Preset::VwTdi => EngineDef::vw_tdi(),
             Preset::MazdaRenesis => EngineDef::mazda_renesis(),
             Preset::Mazda13bBridgeport => EngineDef::mazda_13b_bridgeport(),
             Preset::LfaV10 => EngineDef::lfa_v10(),
@@ -65,6 +71,8 @@ impl Preset {
             Preset::HondaK20aTuned => "honda-k20a-tuned",
             Preset::HondaK20c1 => "honda-k20c1",
             Preset::SubaruEj25 => "subaru-ej25",
+            Preset::VwSdi => "vw-sdi",
+            Preset::VwTdi => "vw-tdi",
             Preset::MazdaRenesis => "mazda-renesis",
             Preset::Mazda13bBridgeport => "mazda-13b-bridgeport",
             Preset::LfaV10 => "lfa-v10",
@@ -83,6 +91,8 @@ impl Preset {
             Preset::HondaK20aTuned => "Honda K20A tuned (VTEC, 9200 rpm)",
             Preset::HondaK20c1 => "Honda K20C1 2.0 turbo (Type R)",
             Preset::SubaruEj25 => "Subaru EJ25 2.5 (boxer)",
+            Preset::VwSdi => "VW 1.9 SDI (diesel)",
+            Preset::VwTdi => "VW 1.9 TDI (diesel turbo)",
             Preset::MazdaRenesis => "Mazda 13B RENESIS (rotary)",
             Preset::Mazda13bBridgeport => "Mazda 13B RX-7 bridge-port (tuned)",
             Preset::LfaV10 => "Lexus LFA V10",
