@@ -2,5 +2,8 @@
 //! (camera, meshes, the parts from the definition and the snapshot) and a thin wgpu renderer.
 
 pub mod camera;
+pub mod detail;
 pub mod mesh;
+pub mod render;
 pub mod scene;
+pub mod ui;

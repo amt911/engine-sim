@@ -47,7 +47,15 @@ pub struct EngineApp {
 }
 
 impl EngineApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, state: UiState, quit_after: Option<f64>) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        mut state: UiState,
+        quit_after: Option<f64>,
+    ) -> Self {
+        if let Some(rs) = cc.wgpu_render_state.as_ref() {
+            crate::view3d::render::install(rs);
+            state.view3d.available = true;
+        }
         let sim = SimHandle::spawn(
             state.def.clone(),
             state.vehicle.clone(),
@@ -214,7 +222,14 @@ pub fn layout(
         .default_size(220.0)
         .show(ui, |ui| view::gauges(ui, snap, audio));
     egui::Panel::bottom("plots").show(ui, |ui| view::plots(ui, snap, &state.dyno_curve));
-    egui::CentralPanel::default().show(ui, |ui| view::engine(ui, snap));
+    egui::CentralPanel::default().show(ui, |ui| {
+        crate::view3d::ui::bar(ui, &mut state.view3d);
+        if state.view3d.shows_3d() {
+            crate::view3d::ui::show(ui, &mut state.view3d, snap);
+        } else {
+            view::engine(ui, snap);
+        }
+    });
     action
 }
 
@@ -344,6 +359,70 @@ mod tests {
             let img = h.render().expect("render");
             img.save(out.join(format!("{}.png", preset.slug())))
                 .unwrap();
+        }
+    }
+
+    /// The engine in 3D, off-screen, for the presets of every kind (inline, V, rotary), saved to
+    /// `target/screens/engine-3d-<preset>.png` and checked to hold a drawn engine. Needs a GPU
+    /// (or lavapipe): `cargo test -p engine-app render_3d_screens -- --ignored`.
+    #[test]
+    #[ignore]
+    fn render_3d_screens() {
+        use egui_kittest::wgpu as kw;
+        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/screens");
+        std::fs::create_dir_all(&out).unwrap();
+        for preset in [
+            Preset::Inline4,
+            Preset::CrossplaneV8,
+            Preset::LfaV10,
+            Preset::MazdaRenesis,
+        ] {
+            let mut sim = Simulation::with_quality(
+                preset.def(),
+                preset.vehicle(),
+                48_000.0,
+                1,
+                crate::quality::Quality::Low,
+            );
+            let mut buf = vec![0.0f32; 24_000];
+            sim.render(&mut buf);
+            let snap = sim.snapshot();
+            let mut state = UiState::with_engine(preset.def());
+            state.view3d.available = true;
+            let rs = kw::create_render_state(
+                kw::default_wgpu_setup(),
+                eframe::egui_wgpu::RendererOptions::PREDICTABLE,
+            );
+            crate::view3d::render::install(&rs);
+            let mut h = egui_kittest::Harness::builder()
+                .with_size(egui::vec2(1400.0, 860.0))
+                .renderer(kw::WgpuTestRenderer::from_render_state(rs))
+                .build_ui(|ui| {
+                    layout(ui, &mut state, &snap, &Ok(48_000), false);
+                });
+            h.run();
+            let img = h.render().expect("render");
+            img.save(out.join(format!("engine-3d-{}.png", preset.slug())))
+                .unwrap();
+            // the centre of the window (between the side panels, over the plots) is mostly the
+            // 3D view: more than 5 % of it must differ from the background
+            let (mut drawn, mut all) = (0usize, 0usize);
+            let (w, hgt) = img.dimensions();
+            for y in hgt / 10..hgt / 2 {
+                for x in w * 3 / 10..w * 7 / 10 {
+                    let p = img.get_pixel(x, y).0;
+                    let d = (p[0] as i32 - 24).abs()
+                        + (p[1] as i32 - 26).abs()
+                        + (p[2] as i32 - 30).abs();
+                    drawn += usize::from(d > 30);
+                    all += 1;
+                }
+            }
+            assert!(
+                drawn * 20 > all,
+                "{}: {drawn} of {all} pixels drawn",
+                preset.slug()
+            );
         }
     }
 }

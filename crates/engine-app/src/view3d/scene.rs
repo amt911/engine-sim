@@ -103,10 +103,12 @@ pub fn build(def: &EngineDef) -> Scene {
         let rotors = def.cylinders.div_ceil(3).max(1);
         for k in 0..rotors {
             let x = k as f32 * 1.5 * w;
-            // the housing mesh has generating radius 1 and e/R baked in: scale by R
-            let m = Mat4::from_translation(Vec3::new(x - 0.05 * w, 0.0, 0.0))
+            // the housing as its back plate (the epitrochoid, 0.1 width thick, behind the
+            // rotor), so the rotor turning in front stays visible until the cut-away layer;
+            // the mesh has generating radius 1 and e/R baked in: scale by R
+            let m = Mat4::from_translation(Vec3::new(x - 0.7 * w, 0.0, 0.0))
                 * Mat4::from_mat3(rotary_frame())
-                * Mat4::from_scale(Vec3::new(r, 1.1 * w, r));
+                * Mat4::from_scale(Vec3::new(r, 0.1 * w, r));
             out.push(Instance {
                 part: Part::Housing,
                 model: m,

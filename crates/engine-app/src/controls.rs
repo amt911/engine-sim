@@ -124,6 +124,8 @@ pub struct UiState {
     pub quality: QualityChoice,
     pub quality_dirty: bool,
     pub quality_running: Option<Quality>,
+    /// The engine view: 2D or 3D, its camera and detail.
+    pub view3d: crate::view3d::ui::View3dState,
 }
 
 impl UiState {
@@ -186,6 +188,7 @@ impl Default for UiState {
             quality: QualityChoice::Auto,
             quality_dirty: false,
             quality_running: None,
+            view3d: Default::default(),
             dyno_curve: Vec::new(),
             dyno_running: false,
             dyno_request: false,
