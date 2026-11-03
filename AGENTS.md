@@ -200,7 +200,7 @@ cargo test --workspace                                  # all tests
 cargo clippy --workspace --all-targets -- -D warnings   # lint (gate)
 cargo fmt --all --check                                 # format (gate)
 scripts/coverage.sh                                     # coverage gate (80% lines)
-scripts/mutants.sh --in-diff <(git diff main...HEAD -- crates/engine-core)  # PR mutation gate
+scripts/mutants.sh --in-diff <(git diff vX.Y.Z..main -- crates/engine-core)  # periodic run since the last one
 scripts/mutants.sh                                      # full run (hours; floor 90%, ratchet)
 scripts/smoke.sh                                        # real-environment smoke
 ```
@@ -219,6 +219,11 @@ Stack and conventions: [docs/agents/testing.md](docs/agents/testing.md).
 - **Mutation gate: 60% minimum** over `engine-core`; current floor **90%** (`scripts/mutants.sh`,
   measured 92.4% on 2026-10-21) — a ratchet, raised with the score, never lowered. See
   [Mutation gate — the 60% floor](docs/agents/quality-beyond-coverage.md#mutation-gate--the-60-floor-and-it-only-goes-up).
+  **Cadence (user, 2026-11-03): it does not block PRs.** A PR merges on the fast gates (fmt,
+  clippy, tests, coverage, smoke) and its verify-pr verdict; the mutation run goes over
+  everything merged since the last one, weekly or when the machine is free, and its misses are
+  pinned in a follow-up PR. A PR touching delicate physics may add a sample of its diff
+  (`scripts/mutants.sh --in-diff … --shard 0/8`, minutes).
 - **The "E2E" of this project is the real binary**: headless render (WAV non-silent, finite, at the
   right firing frequency) + GUI launch smoke in `scripts/smoke.sh`, and `egui_kittest` tests that
   drive the editor widgets (click, drag sliders, read the state they changed).
