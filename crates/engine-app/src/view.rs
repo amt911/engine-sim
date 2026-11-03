@@ -124,7 +124,7 @@ pub(crate) fn housing_point(alpha: f64, e: f64, r: f64) -> (f64, f64) {
 /// up against the housing's waist (the spark plugs), largest at ψ = 180°. Apex k sits at
 /// rotor angle θ + 120°·k with θ = 30° + ψ/2, the centre on the eccentric at 3θ, so every apex
 /// rides on the housing: housing_point(θ + 120°·k).
-fn rotor_pose(psi_deg: f64, e: f64, r: f64) -> ((f64, f64), [(f64, f64); 3]) {
+pub(crate) fn rotor_pose(psi_deg: f64, e: f64, r: f64) -> ((f64, f64), [(f64, f64); 3]) {
     let theta = (30.0 + 0.5 * psi_deg).to_radians();
     let c = (e * (3.0 * theta).cos(), e * (3.0 * theta).sin());
     let apex = |k: f64| {
