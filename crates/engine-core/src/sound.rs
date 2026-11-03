@@ -29,6 +29,12 @@ pub struct SoundDef {
     /// Cycle-to-cycle combustion variability: 1 = the measured spreads of Heywood §9.4.2 (each
     /// cycle's charge, mixture, residual and turbulence near the plug), 0 = every cycle alike.
     pub combustion_jitter: f64,
+    /// A turbo's blow-off valve venting on a lift-off ([`crate::turbo`]): the jet of the air it
+    /// lets out. 1 = physical, 0 = off.
+    pub blow_off: f64,
+    /// A turbo's compressor tone ([`crate::turbo::CompressorTone`]). 1 = its estimated level,
+    /// 0 = off.
+    pub compressor_whine: f64,
     /// Wet level of a room / car-body reverb applied in the voice; 0 (outdoors) by default.
     pub reverb: f64,
     /// How much the voice lifts quiet passages (idle) toward the full-load level, in dB:
@@ -80,6 +86,8 @@ impl Default for SoundDef {
             block: 1.0,
             mechanical: 1.0,
             combustion_jitter: 1.0,
+            blow_off: 1.0,
+            compressor_whine: 1.0,
             reverb: 0.0,
             leveling: 0.0,
             listener_distance_m: 3.0,

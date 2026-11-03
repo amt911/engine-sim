@@ -97,6 +97,7 @@ engine:
     block: 1.0
     mechanical: 1.0
     combustion_jitter: 1.0
+    blow_off: 1.0
     reverb: 0.0
     leveling: 0.0
     listener_distance_m: 3.0
@@ -132,3 +133,4 @@ engine:
       liner_thickness_m: 0.02
       liner_resistivity: 16000.0
       liner_coverage: 0.25
+  turbo: null
