@@ -41,6 +41,32 @@ impl Default for Layers {
     }
 }
 
+/// A handle in the hand: its value as it moves, from its value when it was taken.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Drag {
+    pub handle: super::handles::Handle,
+    pub start: f64,
+    pub value: f64,
+    /// Pixels the pointer has moved along the handle's on-screen axis.
+    pub along_px: f32,
+    /// The handle's axis on screen (unit) and how many pixels a metre along it covers.
+    pub dir: egui::Vec2,
+    pub px_per_m: f32,
+}
+
+/// Where world point `p` shows in `rect` for `view_proj` (None behind the camera).
+fn to_screen(view_proj: glam::Mat4, rect: egui::Rect, p: glam::Vec3) -> Option<egui::Pos2> {
+    let c = view_proj * p.extend(1.0);
+    if c.w <= 1e-6 {
+        return None;
+    }
+    let (x, y) = (c.x / c.w, c.y / c.w);
+    Some(egui::pos2(
+        rect.left() + 0.5 * (x + 1.0) * rect.width(),
+        rect.top() + 0.5 * (1.0 - y) * rect.height(),
+    ))
+}
+
 /// The flow marks run at this share of the gas's speed, so they can be followed by eye.
 pub const FLOW_SCALE: f32 = 0.05;
 
@@ -55,6 +81,10 @@ fn marks(d: Detail) -> usize {
 
 #[derive(Debug, Clone)]
 pub struct View3dState {
+    /// Where the clicked part's handles stood on screen last frame (what each edits).
+    pub handle_spots: Vec<(super::handles::Field, egui::Pos2)>,
+    /// A handle being dragged.
+    pub drag: Option<Drag>,
     /// The clicked part (its index among the frame's instances) and where its card stands.
     pub selected: Option<(usize, egui::Pos2)>,
     /// How far round its pipe each pipe's flow marks have run (0..1).
@@ -76,6 +106,8 @@ pub struct View3dState {
 impl Default for View3dState {
     fn default() -> Self {
         Self {
+            handle_spots: Vec::new(),
+            drag: None,
             selected: None,
             phases: Vec::new(),
             layers: Layers::default(),
@@ -93,6 +125,17 @@ impl Default for View3dState {
 }
 
 impl View3dState {
+    /// The index of the first drawn `part` in the frame (tests pick parts by kind).
+    #[cfg(test)]
+    pub fn first(&self, part: scene::Part) -> Option<usize> {
+        self.shared
+            .lock()
+            .ok()?
+            .instances
+            .iter()
+            .position(|i| i.part == part)
+    }
+
     /// The view to draw: 3D only when asked for and a renderer exists.
     pub fn shows_3d(&self) -> bool {
         self.available && self.mode == ViewMode::ThreeD
@@ -298,10 +341,69 @@ pub fn bar(ui: &mut egui::Ui, st: &mut View3dState) {
 }
 
 /// The 3D engine in the rest of the panel.
-pub fn show(ui: &mut egui::Ui, st: &mut View3dState, snap: &Snapshot) {
+pub fn show(
+    ui: &mut egui::Ui,
+    st: &mut View3dState,
+    snap: &Snapshot,
+    edit: &mut EngineDef,
+    dirty: &mut bool,
+) {
     st.sync(&snap.def);
     let (rect, resp) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
-    if let Some(c) = st.camera.as_mut() {
+    // the handles of the clicked part, on screen
+    let handles: Vec<(super::handles::Handle, egui::Pos2)> = match (st.selected, &st.scene) {
+        (Some((k, _)), Some(scene)) => st
+            .shared
+            .lock()
+            .ok()
+            .map(|sh| {
+                super::handles::handles(&snap.def, scene, &sh.instances, k)
+                    .into_iter()
+                    .filter_map(|h| to_screen(sh.view_proj, rect, h.at).map(|p| (h, p)))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    st.handle_spots.clear();
+    st.handle_spots
+        .extend(handles.iter().map(|(h, p)| (h.field, *p)));
+    if resp.drag_started()
+        && let Some(pos) = resp.interact_pointer_pos()
+        && let Some((h, at)) = handles
+            .iter()
+            .find(|(_, p)| p.distance(pos) < 12.0)
+            .copied()
+    {
+        let vp = st.shared.lock().map(|sh| sh.view_proj).unwrap_or_default();
+        if let Some(tip) = to_screen(vp, rect, h.at + 0.01 * h.axis) {
+            let v = (tip - at) / 0.01;
+            let start = h.field.get(&snap.def);
+            st.drag = Some(Drag {
+                handle: h,
+                start,
+                value: start,
+                along_px: 0.0,
+                dir: v.normalized(),
+                px_per_m: v.length(),
+            });
+        }
+    }
+    if let Some(d) = st.drag.as_mut() {
+        d.along_px += resp.drag_delta().dot(d.dir);
+        d.value = super::handles::dragged(&d.handle, d.start, d.along_px, d.px_per_m);
+        if resp.drag_stopped() {
+            // the engine takes it now, once: a valid engine is rebuilt, the editor follows
+            let mut next = edit.clone();
+            d.handle.field.set(&mut next, d.value);
+            if engine_core::config::validate(&next).is_ok() && next != *edit {
+                *edit = next;
+                *dirty = true;
+            }
+            st.drag = None;
+            st.selected = None;
+        }
+    } else if let Some(c) = st.camera.as_mut() {
         let d = resp.drag_delta();
         c.drag(-d.x, d.y);
         if resp.hovered() {
@@ -360,7 +462,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut View3dState, snap: &Snapshot) {
             .ok()
             .and_then(|sh| super::card::card(&snap.def, scene, &sh.instances, k));
         if let Some(c) = card {
-            egui::Area::new(egui::Id::new("part_card"))
+            egui::Area::new(egui::Id::unique("part_card"))
                 .fixed_pos(pos + egui::vec2(14.0, 8.0))
                 .show(ui.ctx(), |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
@@ -374,6 +476,38 @@ pub fn show(ui: &mut egui::Ui, st: &mut View3dState, snap: &Snapshot) {
                         });
                     });
                 });
+        }
+    }
+    // the handles over the scene, and the value in the hand
+    {
+        let p = ui.painter_at(rect);
+        for (h, at) in &handles {
+            p.circle(
+                *at,
+                7.0,
+                egui::Color32::from_rgb(255, 214, 64),
+                egui::Stroke::new(1.5, egui::Color32::BLACK),
+            );
+            p.text(
+                *at + egui::vec2(10.0, -10.0),
+                egui::Align2::LEFT_BOTTOM,
+                h.field.label(),
+                egui::FontId::proportional(11.0),
+                egui::Color32::from_rgb(255, 214, 64),
+            );
+        }
+        if let Some(d) = st.drag {
+            p.text(
+                rect.left_top() + egui::vec2(12.0, 12.0),
+                egui::Align2::LEFT_TOP,
+                format!(
+                    "{}: {} (release to apply)",
+                    d.handle.field.label(),
+                    d.handle.field.show(d.value)
+                ),
+                egui::FontId::proportional(14.0),
+                egui::Color32::from_rgb(255, 214, 64),
+            );
         }
     }
     // over the scene: painted after its callback
