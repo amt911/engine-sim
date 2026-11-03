@@ -1674,6 +1674,19 @@ fn spark_advance_deg(def: &EngineDef, flame: f64, rpm: f64) -> f64 {
     def.spark_advance_for(flame) * share
 }
 
+/// The blow-off valve's jet: (velocity m/s, bore m, density kg/m³) of the air `s` vents through
+/// a valve of `area` m², at the delivered air's density p/(R·T) — continuity, v = ṁ/ρA.
+fn bov_jet(s: &crate::turbo::TurboState, area: f64) -> (f64, f64, f64) {
+    let rho = s.boost_pa / (crate::gas::R_AIR * s.boost_t_k);
+    (s.bov_m_dot / (rho * area), (4.0 * area / PI).sqrt(), rho)
+}
+
+/// The acoustic velocity a tail's pressure swing `p` Pa drives out of each of its `outlets`
+/// exits of impedance `z` (Pa·s/m): u = p/(z·n), the swing shared between them.
+fn tail_swing_velocity(p: f64, z: f64, outlets: f64) -> f64 {
+    p / (z * outlets)
+}
+
 /// A first-order lag: `prev` moved toward `target` by `dt` over the time constant `tau`, at
 /// most all the way (explicit Euler, clamped so a long step never overshoots).
 fn lag(prev: f64, target: f64, dt: f64, tau: f64) -> f64 {
@@ -3455,9 +3468,7 @@ impl Engine {
                     (Some(t), Some(s))
                         if snd.blow_off > 0.0 && t.bov_area_m2 > 0.0 && !t.bov_recirculating =>
                     {
-                        let rho = s.boost_pa / (crate::gas::R_AIR * s.boost_t_k);
-                        let v = s.bov_m_dot / (rho * t.bov_area_m2);
-                        let d = (4.0 * t.bov_area_m2 / PI).sqrt();
+                        let (v, d, rho) = bov_jet(&s, t.bov_area_m2);
                         let p = self.bov_jet.step(v, d, rho, 1.0, dt);
                         snd.blow_off * l.spread_from_1m_at(n_banks, p)
                     }
@@ -3575,7 +3586,7 @@ impl Engine {
         for (t, &signal) in tails.iter().enumerate() {
             self.tail_dc[t] += (signal - self.tail_dc[t]) * k;
             // the swing rides on the mean; no exit blows past sound (it chokes first)
-            let swing = (signal - self.tail_dc[t]) / (z * outlets);
+            let swing = tail_swing_velocity(signal - self.tail_dc[t], z, outlets);
             self.tail_u[t] = (u_mean[t] + swing).min(TAIL_SONIC);
         }
         let mut jets = 0.0;
@@ -4341,6 +4352,28 @@ mod tests {
         }
         let (tt, tn) = (e.torque_nm(), n.torque_nm());
         assert!(tt > 1.5 * tn, "turbo {tt:.0} N·m, NA {tn:.0}");
+    }
+
+    #[test]
+    fn a_blow_off_jet_and_a_tails_swing_by_hand() {
+        // 2 bar at 300 K: ρ = 2e5 / (287.05·300) = 2.3225 kg/m³; 0.02 kg/s through 3 cm²
+        // leaves at 0.02 / (2.3225·3e-4) = 28.70 m/s from a 19.54 mm bore (√(4·3e-4/π))
+        let s = crate::turbo::TurboState {
+            boost_pa: 2e5,
+            boost_t_k: 300.0,
+            turbine_inlet_pa: ATM_PA,
+            shaft_rpm: 0.0,
+            bov_m_dot: 0.02,
+            turbine_dp_dm: 0.0,
+            charge_tau_s: 0.05,
+        };
+        let (v, d, rho) = bov_jet(&s, 3e-4);
+        assert_relative_eq!(rho, 2.3225, max_relative = 2e-4);
+        assert_relative_eq!(v, 28.70, max_relative = 2e-4);
+        assert_relative_eq!(d, 0.019544, max_relative = 2e-4);
+        // 400 Pa on 400 Pa·s/m: 1 m/s from one exit, half from each of two
+        assert_relative_eq!(tail_swing_velocity(400.0, 400.0, 1.0), 1.0);
+        assert_relative_eq!(tail_swing_velocity(400.0, 400.0, 2.0), 0.5);
     }
 
     #[test]
