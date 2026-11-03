@@ -10,6 +10,7 @@ mod quality;
 mod runner;
 mod sim;
 mod view;
+mod view3d;
 
 use clap::Parser;
 use controls::{Preset, UiState};
@@ -68,6 +69,9 @@ struct Cli {
     /// machine with cores to spare; slower anywhere the cores are shared (laptops).
     #[arg(long)]
     threads: bool,
+    /// The engine view to start with: 3d (when the GPU allows it) or 2d.
+    #[arg(long, default_value = "3d", value_parser = ["2d", "3d"])]
+    view: String,
 }
 
 fn main() -> ExitCode {
@@ -155,11 +159,14 @@ fn main() -> ExitCode {
         }
         return ExitCode::SUCCESS;
     }
-    let state = UiState {
+    let mut state = UiState {
         preset: cli.engine.is_none().then_some(preset),
         quality: cli.quality,
         ..UiState::with_engine(def)
     };
+    if cli.view == "2d" {
+        state.view3d.mode = view3d::ui::ViewMode::TwoD;
+    }
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1200.0, 760.0])

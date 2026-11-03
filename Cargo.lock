@@ -1183,11 +1183,13 @@ name = "engine-app"
 version = "0.0.1"
 dependencies = [
  "approx",
+ "bytemuck",
  "clap",
  "eframe",
  "egui_kittest",
  "engine-audio",
  "engine-core",
+ "glam",
  "hound",
  "rfd",
  "rtrb",
@@ -1534,6 +1536,15 @@ dependencies = [
  "khronos_api",
  "log",
  "xml-rs",
+]
+
+[[package]]
+name = "glam"
+version = "0.34.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54af5066834d6c2d404eb26ea036a15b15d9ff80db510b9a73ff95ab07f30831"
+dependencies = [
+ "bytemuck",
 ]
 
 [[package]]
