@@ -110,6 +110,90 @@ impl StructureResponse {
     }
 }
 
+/// The block's wall modes, for the part of its response a smoothed SRF cannot hold: which
+/// cylinder struck it. All cylinders shake the same modes, each in proportion to the mode's
+/// shape where that cylinder sits, so each has its own voice (the same mode set's frequency
+/// response at a different point; Priede's and Anderton's curves average those away). Modes
+/// are spaced evenly (a plate's modal density is constant with frequency; Cremer & Heckl,
+/// *Structure-Borne Sound*), each a unit-peak resonance scaled so their random-phase sum keeps
+/// a flat mean power: the SRF, applied after, sets the level. Below the first mode the block
+/// moves whole, the same for every cylinder.
+#[derive(Debug, Clone)]
+pub struct BlockModes {
+    modes: Vec<Section>,
+    /// `shape[k][c]`: mode `k`'s scaled participation for cylinder `c`.
+    shape: Vec<Vec<f64>>,
+    rigid: Section,
+}
+
+/// First mode and spacing, Hz (ESTIMATE: a block's first wall modes lie near 300 Hz; the spacing
+/// is a density that gives each critical band several modes).
+const MODE_FIRST_HZ: f64 = 300.0;
+const MODE_SPACING_HZ: f64 = 100.0;
+const MODE_COUNT: usize = 80;
+/// Modal damping ratio (ESTIMATE: of the order of cast iron with bolted joints). T60 = 6.9/(ζω),
+/// 37 ms at 1 kHz: a longer one sounds like a room, the failed 90 ms tail of 2026-11-02.
+const MODE_DAMPING: f64 = 0.03;
+
+impl BlockModes {
+    /// `n_cyl` cylinders in a row, stepped every `dt` seconds.
+    pub fn new(n_cyl: usize, dt: f64) -> Self {
+        // the golden ratio keeps the frequencies from lining up
+        const GOLD: f64 = 0.618_033_988_75;
+        let mut modes = Vec::with_capacity(MODE_COUNT);
+        let mut shape = Vec::with_capacity(MODE_COUNT);
+        let mut seed = 0x9E37_79B9_7F4A_7C15_u64;
+        for k in 0..MODE_COUNT {
+            let jitter = (k as f64 * GOLD).fract() - 0.5;
+            let f = MODE_FIRST_HZ + (k as f64 + jitter) * MODE_SPACING_HZ;
+            let w = 2.0 * PI * f;
+            let z = MODE_DAMPING;
+            // 2ζωs/(s² + 2ζωs + ω²): unit peak; mean power over the spacing πζf/Δ
+            let scale = (MODE_SPACING_HZ / (PI * z * f)).sqrt();
+            modes.push(Section::bilinear(
+                [0.0, 2.0 * z * w, 0.0],
+                [w * w, 2.0 * z * w, 1.0],
+                dt,
+            ));
+            // At these orders a mode's value at a point is as good as random, and it has to be:
+            // a smooth pattern along the block keeps neighbours in step, and where modes overlap
+            // they cancel (11 dB down at 2–4 kHz, measured).
+            shape.push(
+                (0..n_cyl)
+                    .map(|_| {
+                        seed ^= seed << 13;
+                        seed ^= seed >> 7;
+                        seed ^= seed << 17;
+                        let draw = (seed >> 11) as f64 / (1u64 << 53) as f64;
+                        scale * std::f64::consts::SQRT_2 * (2.0 * PI * draw).cos()
+                    })
+                    .collect(),
+            );
+        }
+        let w = 2.0 * PI * MODE_FIRST_HZ;
+        let rigid = Section::bilinear([1.0, 0.0, 0.0], [1.0, 1.414 / w, 1.0 / (w * w)], dt);
+        Self {
+            modes,
+            shape,
+            rigid,
+        }
+    }
+
+    /// One step: each cylinder's pressure, Pa; the pressure the block's response should see (the
+    /// mean of the cylinders, as [`combustion_drive`], with each one's own voice above the
+    /// first mode).
+    pub fn process(&mut self, cylinders_pa: &[f64]) -> f64 {
+        let n = cylinders_pa.len().max(1) as f64;
+        let mean = cylinders_pa.iter().sum::<f64>() / n;
+        let mut out = self.rigid.process(mean);
+        for (m, sh) in self.modes.iter_mut().zip(&self.shape) {
+            let u = sh.iter().zip(cylinders_pa).map(|(a, p)| a * p).sum::<f64>() / n;
+            out += m.process(u);
+        }
+        out
+    }
+}
+
 /// What drives the block's response: one cylinder's pressure, the engine's own number of
 /// cylinders already in the measured attenuation (Anderton, *Relation between combustion system
 /// and engine noise*, SAE 790270, eq. 3: P² = (cylinder pressure × bore²)²/S, with S measured on
@@ -131,6 +215,71 @@ pub fn combustion_drive(cylinders_pa: impl IntoIterator<Item = f64>, bore_m: f64
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Mean output power of a unit sine of `f` Hz into cylinder `c` of 4, alone (undoing the mean).
+    fn modal_power(f: f64, c: usize) -> f64 {
+        let dt = 1.0 / 48_000.0;
+        let mut m = BlockModes::new(4, dt);
+        let mut input = [0.0; 4];
+        let n = 4800;
+        let mut sum = 0.0;
+        for i in 0..n {
+            input[c] = 4.0 * (2.0 * PI * f * i as f64 * dt).sin();
+            let y = m.process(&input);
+            if i >= n / 2 {
+                sum += y * y;
+            }
+        }
+        sum / (n / 2) as f64 * 2.0
+    }
+
+    #[test]
+    fn the_wall_modes_keep_the_mean_power_of_what_they_replace() {
+        // By hand: a unit-peak resonance's noise bandwidth is πζf, so `Δ/(πζf)` scales each to
+        // 1 over its spacing, and a shape of √2·cos(random) has mean square 1: unit mean power.
+        let mut sum = 0.0;
+        let mut count = 0;
+        for k in 0..60 {
+            for c in 0..4 {
+                sum += modal_power(1000.0 + 50.0 * k as f64 + 7.0, c);
+                count += 1;
+            }
+        }
+        let db = 10.0 * (sum / count as f64).log10();
+        assert!(db.abs() < 2.0, "{db} dB");
+    }
+
+    #[test]
+    fn below_its_first_mode_the_block_moves_whole() {
+        let (a, b) = (modal_power(60.0, 0), modal_power(60.0, 3));
+        assert!((10.0 * (a / b).log10()).abs() < 1.0, "{a} {b}");
+    }
+
+    #[test]
+    fn each_cylinder_strikes_the_block_in_its_own_voice_and_always_the_same_one() {
+        let dt = 1.0 / 48_000.0;
+        let strike = |c: usize| {
+            let mut m = BlockModes::new(4, dt);
+            let mut out = Vec::new();
+            for i in 0..1200 {
+                let mut p = [0.0; 4];
+                if i == 0 {
+                    p[c] = 4.0;
+                }
+                out.push(m.process(&p));
+            }
+            out.windows(2).map(|w| w[1] - w[0]).collect::<Vec<f64>>()
+        };
+        let corr = |a: &[f64], b: &[f64]| {
+            let d = |x: &[f64], y: &[f64]| x.iter().zip(y).map(|(p, q)| p * q).sum::<f64>();
+            d(a, b) / (d(a, a) * d(b, b)).sqrt()
+        };
+        assert_eq!(strike(2), strike(2));
+        for (a, b) in [(0, 1), (0, 2), (1, 3), (2, 3)] {
+            let r = corr(&strike(a), &strike(b));
+            assert!(r.abs() < 0.5, "cylinders {a} and {b}: {r}");
+        }
+    }
 
     #[test]
     fn the_block_is_driven_by_one_cylinders_pressure_scaled_to_the_bore() {

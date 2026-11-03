@@ -29,6 +29,12 @@ pub struct SoundDef {
     /// Cycle-to-cycle combustion variability: 1 = the measured spreads of Heywood §9.4.2 (each
     /// cycle's charge, mixture, residual and turbulence near the plug), 0 = every cycle alike.
     pub combustion_jitter: f64,
+    /// The chamber's gas ringing after a diesel lights ([`crate::combustion::RING_MODES`]): 1 =
+    /// its estimated level, 0 = off. No effect on a spark engine.
+    pub chamber_ring: f64,
+    /// How much the block answers each cylinder with its own voice
+    /// ([`crate::structure::BlockModes`]): 0 = all alike, 1 = by its wall modes.
+    pub block_modes: f64,
     /// A turbo's blow-off valve venting on a lift-off ([`crate::turbo`]): the jet of the air it
     /// lets out. 1 = physical, 0 = off.
     pub blow_off: f64,
@@ -85,6 +91,8 @@ impl Default for SoundDef {
             valve_jet: 1.0,
             block: 1.0,
             mechanical: 1.0,
+            chamber_ring: 1.0,
+            block_modes: 0.0,
             combustion_jitter: 1.0,
             blow_off: 1.0,
             compressor_whine: 1.0,
@@ -173,8 +181,10 @@ mod tests {
         assert_eq!(old.block, 1.0);
         let s = SoundDef {
             block: 0.25,
+            block_modes: 0.5,
             ..SoundDef::default()
         };
+        assert_eq!(old.block_modes, 0.0);
         let json: SoundDef = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         let yaml: SoundDef =
             serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&s).unwrap()).unwrap();
