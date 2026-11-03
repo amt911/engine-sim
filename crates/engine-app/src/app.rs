@@ -445,4 +445,76 @@ mod tests {
                 .unwrap();
         }
     }
+
+    /// Clicking the 3D engine picks the part under the pointer and opens its card; Escape closes
+    /// it. Needs a GPU (or lavapipe): `cargo test -p engine-app clicking_the_engine -- --ignored`.
+    #[test]
+    #[ignore]
+    fn clicking_the_engine_opens_a_card() {
+        use egui_kittest::kittest::Queryable;
+        use egui_kittest::wgpu as kw;
+        let preset = Preset::Inline4;
+        let sim = Simulation::with_quality(
+            preset.def(),
+            preset.vehicle(),
+            48_000.0,
+            1,
+            crate::quality::Quality::Low,
+        );
+        let snap = sim.snapshot();
+        let mut state = UiState::with_engine(preset.def());
+        state.view3d.available = true;
+        let rs = kw::create_render_state(
+            kw::default_wgpu_setup(),
+            eframe::egui_wgpu::RendererOptions::PREDICTABLE,
+        );
+        crate::view3d::render::install(&rs);
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1400.0, 860.0))
+            .renderer(kw::WgpuTestRenderer::from_render_state(rs))
+            .build_ui_state(
+                |ui, state: &mut UiState| {
+                    layout(ui, state, &snap, &Ok(48_000), false);
+                },
+                state,
+            );
+        h.run();
+        // the middle of the view, where the camera looks: the engine
+        let centre = egui::pos2(0.5 * (420.0 + 1180.0), 0.5 * (40.0 + 700.0));
+        h.hover_at(centre);
+        h.run();
+        h.event(egui::Event::PointerButton {
+            pos: centre,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.event(egui::Event::PointerButton {
+            pos: centre,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run();
+        assert!(
+            h.state().view3d.selected.is_some(),
+            "nothing picked at the view's centre"
+        );
+        let titles = [
+            "Cylinder",
+            "Connecting rod",
+            "Crankshaft",
+            "Plenum",
+            "Intake runner",
+            "Cylinder head",
+            "Block",
+        ];
+        assert!(
+            titles.iter().any(|t| h.query_by_label(t).is_some()),
+            "no card"
+        );
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert!(h.state().view3d.selected.is_none());
+    }
 }

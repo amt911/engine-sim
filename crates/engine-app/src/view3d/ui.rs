@@ -55,6 +55,8 @@ fn marks(d: Detail) -> usize {
 
 #[derive(Debug, Clone)]
 pub struct View3dState {
+    /// The clicked part (its index among the frame's instances) and where its card stands.
+    pub selected: Option<(usize, egui::Pos2)>,
     /// How far round its pipe each pipe's flow marks have run (0..1).
     phases: Vec<f32>,
     pub layers: Layers,
@@ -74,6 +76,7 @@ pub struct View3dState {
 impl Default for View3dState {
     fn default() -> Self {
         Self {
+            selected: None,
             phases: Vec::new(),
             layers: Layers::default(),
             mode: ViewMode::ThreeD,
@@ -169,6 +172,12 @@ impl View3dState {
                             color: c,
                         });
                     }
+                }
+            }
+            // the clicked part a little brighter
+            if let Some(i) = self.selected.and_then(|(k, _)| sh.instances.get_mut(k)) {
+                for c in &mut i.color[..3] {
+                    *c = (*c * 1.35 + 0.08).min(1.0);
                 }
             }
             sh.clip = self.layers.cutaway.then(|| scene::cut_plane(&snap.def));
@@ -328,6 +337,45 @@ pub fn show(ui: &mut egui::Ui, st: &mut View3dState, snap: &Snapshot) {
     };
     ui.painter()
         .add(egui_wgpu::Callback::new_paint_callback(rect, frame));
+    // a click picks the part under the pointer (another click on nothing, or Escape, lets go)
+    if resp.clicked()
+        && let Some(pos) = resp.interact_pointer_pos()
+    {
+        let ndc = (
+            2.0 * (pos.x - rect.left()) / rect.width().max(1.0) - 1.0,
+            1.0 - 2.0 * (pos.y - rect.top()) / rect.height().max(1.0),
+        );
+        st.selected = st.shared.lock().ok().and_then(|sh| {
+            let (o, d) = super::pick::ray(sh.view_proj, ndc)?;
+            super::pick::pick(&sh.instances, o, d).map(|(k, _)| (k, pos))
+        });
+    }
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        st.selected = None;
+    }
+    if let (Some((k, pos)), Some(scene)) = (st.selected, &st.scene) {
+        let card = st
+            .shared
+            .lock()
+            .ok()
+            .and_then(|sh| super::card::card(&snap.def, scene, &sh.instances, k));
+        if let Some(c) = card {
+            egui::Area::new(egui::Id::new("part_card"))
+                .fixed_pos(pos + egui::vec2(14.0, 8.0))
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.strong(&c.title);
+                        egui::Grid::new("part_card_rows").show(ui, |ui| {
+                            for (label, value) in &c.rows {
+                                ui.label(label);
+                                ui.label(value);
+                                ui.end_row();
+                            }
+                        });
+                    });
+                });
+        }
+    }
     // over the scene: painted after its callback
     if st.layers.temperature {
         legend(ui, rect, snap.pipes.is_empty());
