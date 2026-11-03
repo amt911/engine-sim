@@ -145,6 +145,9 @@ pub struct IntakeFv {
     plenum: GasVolume,
     /// The surge tank and its ducts, if the engine has one.
     airbox: Option<Airbox>,
+    /// What the intake's mouths draw from: the atmosphere, or a compressor's delivery
+    /// ([`IntakeFv::set_inlet`]).
+    inlet: Upstream,
     /// Discharge-coefficient factor of the trumpet entry, 1/√(1 + k).
     trumpet_cd: f64,
     pub substeps: usize,
@@ -215,13 +218,12 @@ impl Airbox {
     /// at its other end (both Benson junction ends), and the box takes what they bring.
     /// Returns the air that came in at the mouths, kg (negative: blown out), and the mouths'
     /// sound source c·Σρu.
-    fn breathe(&mut self, h: f64) -> (f64, f64) {
+    fn breathe(&mut self, h: f64, inlet: Upstream) -> (f64, f64) {
         let up = self.upstream();
-        let rho_atm = Upstream::ATMOSPHERE.rho;
         let (mut inducted, mut at_mouths) = (0.0, 0.0);
         for duct in &mut self.ducts {
             let n = duct.cells.len();
-            duct.left = Boundary::State(junction_ghost(duct.prim(0), ATM_PA, rho_atm, -1.0));
+            duct.left = Boundary::State(junction_ghost(duct.prim(0), inlet.p, inlet.rho, -1.0));
             duct.right = Boundary::State(junction_ghost(duct.prim(n - 1), up.p, up.rho, 1.0));
             duct.step(h);
             let (mouth, into) = duct.end_flux;
@@ -441,6 +443,15 @@ fn itb_runners_step(
 }
 
 impl IntakeFv {
+    /// The mouths draw from `p_pa`, `t_k` (a compressor's delivery after its intercooler)
+    /// instead of the atmosphere.
+    pub fn set_inlet(&mut self, p_pa: f64, t_k: f64) {
+        self.inlet = Upstream {
+            p: p_pa,
+            rho: p_pa / (R_AIR * t_k),
+        };
+    }
+
     /// Step every runner with `scheme`.
     pub fn with_scheme(mut self, scheme: crate::fv::Scheme) -> Self {
         for p in &mut self.runners {
@@ -483,6 +494,7 @@ impl IntakeFv {
             individual: def.individual_throttles,
             plenum: GasVolume::at(ATM_PA, AMBIENT_T_K, plenum_volume_m3.max(1e-5)),
             airbox: def.airbox.as_ref().map(|b| Airbox::new(b, init)),
+            inlet: Upstream::ATMOSPHERE,
             trumpet_cd: 1.0 / (1.0 + def.trumpet_loss.max(0.0)).sqrt(),
             substeps,
             dt_fv: substeps as f64 * dt,
@@ -590,6 +602,7 @@ impl IntakeFv {
     /// trumpets, at the throttle for a plenum, or at the duct mouths with an air box), held
     /// between FV steps.
     pub fn step(&mut self, throttle_area: f64) -> f64 {
+        let inlet = self.inlet;
         self.count += 1;
         self.inducted = 0.0;
         if self.count < self.substeps {
@@ -620,10 +633,7 @@ impl IntakeFv {
             // the box's state is held over the FV step for the runners (the step is a few
             // tens of µs; the box holds litres); the ducts and the box then follow substep by
             // substep
-            let up = self
-                .airbox
-                .as_ref()
-                .map_or(Upstream::ATMOSPHERE, Airbox::upstream);
+            let up = self.airbox.as_ref().map_or(self.inlet, Airbox::upstream);
             if let Some(r) = self.remote.0.as_mut() {
                 // the detached runners go first: they step while these do
                 r.acc.clear();
@@ -674,7 +684,7 @@ impl IntakeFv {
                         // the trumpets took it from the box; the ducts breathe behind them
                         b.gas.mass_kg -= drawn;
                         b.gas.energy_j -= energy;
-                        let (in_at_mouths, at_mouths) = b.breathe(h);
+                        let (in_at_mouths, at_mouths) = b.breathe(h, inlet);
                         self.inducted += in_at_mouths;
                         radiated += at_mouths / k as f64;
                     }
@@ -714,6 +724,7 @@ impl IntakeFv {
 
     /// One substep of a plenum intake (ITBs: [`itb_runners_step`]).
     fn substep(&mut self, h: f64, throttle_area: f64) -> f64 {
+        let inlet = self.inlet;
         let a = self.a_runner;
         // The flow cannot enter through more area than the duct offers.
         let a_eff = throttle_area.max(0.0) * self.trumpet_cd;
@@ -726,8 +737,8 @@ impl IntakeFv {
                     temperature_k: b.gas.temperature(),
                 },
                 None => crate::gas::Reservoir {
-                    pressure_pa: ATM_PA,
-                    temperature_k: AMBIENT_T_K,
+                    pressure_pa: self.inlet.p,
+                    temperature_k: self.inlet.p / (self.inlet.rho * R_AIR),
                 },
             };
             let flow = crate::gas::plan_with_reservoir(&self.plenum, &reservoir, a_eff, h, 1.0);
@@ -737,7 +748,7 @@ impl IntakeFv {
                 Some(b) => {
                     b.gas.mass_kg += dm;
                     b.gas.energy_j += dm * flow.h;
-                    let (in_at_mouths, at_mouths) = b.breathe(h);
+                    let (in_at_mouths, at_mouths) = b.breathe(h, inlet);
                     self.inducted += in_at_mouths;
                     radiated += at_mouths;
                 }

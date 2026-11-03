@@ -297,6 +297,14 @@ impl Resources {
             .insert(MeshKind::Housing, build(mesh::housing(key.e_over_r, 4 * s)));
         self.meshes
             .insert(MeshKind::Rotor, build(mesh::rotor(s.div_ceil(2))));
+        self.meshes.insert(
+            MeshKind::HousingRing,
+            build(mesh::housing_ring(key.e_over_r, 4 * s)),
+        );
+        self.meshes
+            .insert(MeshKind::Liner, build(mesh::half_liner(s)));
+        self.meshes
+            .insert(MeshKind::Web, build(mesh::crank_web(s.div_ceil(2))));
         self.key = Some(key);
     }
 
@@ -354,12 +362,7 @@ impl Resources {
     fn stage(&mut self, instances: &[Instance]) {
         self.staging.clear();
         self.ranges.clear();
-        for kind in [
-            MeshKind::Cylinder,
-            MeshKind::Cuboid,
-            MeshKind::Housing,
-            MeshKind::Rotor,
-        ] {
+        for kind in MeshKind::ALL {
             let start = self.staging.len() as u32;
             for i in instances.iter().filter(|i| i.part.mesh() == kind) {
                 self.staging.push(GpuInstance {

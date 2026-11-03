@@ -123,17 +123,122 @@ fn prism(ring: &[(f32, f32)]) -> Mesh {
     m
 }
 
-/// A Wankel housing's epitrochoid for eccentricity `e_over_r` (generating radius 1), extruded:
-/// the same curve the 2D view draws ([`crate::view::housing_point`]).
-pub fn housing(e_over_r: f32, segments: u32) -> Mesh {
+/// The epitrochoid (generating radius 1, eccentricity `e_over_r`) as a closed outline
+/// running as (cos θ, sin θ) with θ growing: the same curve the 2D view draws
+/// ([`crate::view::housing_point`]).
+fn epitrochoid(e_over_r: f32, segments: u32) -> Vec<(f32, f32)> {
     let s = segments.max(8);
-    let ring: Vec<(f32, f32)> = (0..=s)
+    (0..=s)
         .map(|i| {
             let (x, y) =
                 crate::view::housing_point(TAU as f64 * i as f64 / s as f64, e_over_r as f64, 1.0);
             (x as f32, y as f32)
         })
+        .collect()
+}
+
+/// A Wankel housing's side plate: the epitrochoid extruded (generating radius 1).
+pub fn housing(e_over_r: f32, segments: u32) -> Mesh {
+    prism(&epitrochoid(e_over_r, segments))
+}
+
+/// A Wankel housing's rotor housing: a wall 0.22 thick round the epitrochoid bore, open through,
+/// so the rotor turning inside is seen.
+pub fn housing_ring(e_over_r: f32, segments: u32) -> Mesh {
+    let inner = epitrochoid(e_over_r, segments);
+    let outer: Vec<(f32, f32)> = inner
+        .iter()
+        .map(|&(x, z)| {
+            let r = (x * x + z * z).sqrt().max(1e-6);
+            (x + 0.22 * x / r, z + 0.22 * z / r)
+        })
         .collect();
+    ring_prism(&outer, &inner)
+}
+
+/// The band between two closed outlines of the same point count (outer, inner; both running as
+/// (cos θ, sin θ) with θ growing), extruded from y = 0 to 1: outer wall facing out, inner wall
+/// facing the hole, flat faces at both ends.
+fn ring_prism(outer: &[(f32, f32)], inner: &[(f32, f32)]) -> Mesh {
+    let mut m = prism_walls(outer, 1.0);
+    let walls = prism_walls(inner, -1.0);
+    let base = m.vertices.len() as u32;
+    m.vertices.extend(walls.vertices);
+    m.indices.extend(walls.indices.iter().map(|i| i + base));
+    for (y, ny) in [(0.0f32, -1.0f32), (1.0, 1.0)] {
+        for (o, i) in outer.windows(2).zip(inner.windows(2)) {
+            let n = [0.0, ny, 0.0];
+            let a = m.push([o[0].0, y, o[0].1], n);
+            let b = m.push([o[1].0, y, o[1].1], n);
+            let c = m.push([i[0].0, y, i[0].1], n);
+            let d = m.push([i[1].0, y, i[1].1], n);
+            if ny > 0.0 {
+                m.indices.extend([a, c, b, b, c, d]);
+            } else {
+                m.indices.extend([a, b, c, b, d, c]);
+            }
+        }
+    }
+    m
+}
+
+/// The walls of an extruded closed outline (no caps); `facing` 1 = outward, −1 = inward.
+fn prism_walls(ring: &[(f32, f32)], facing: f32) -> Mesh {
+    let mut m = Mesh::default();
+    for w in ring.windows(2) {
+        let ((x0, z0), (x1, z1)) = (w[0], w[1]);
+        let (dx, dz) = (x1 - x0, z1 - z0);
+        let l = (dx * dx + dz * dz).sqrt().max(1e-12);
+        let n = [facing * dz / l, 0.0, -facing * dx / l];
+        let a = m.push([x0, 0.0, z0], n);
+        let b = m.push([x0, 1.0, z0], n);
+        let c = m.push([x1, 0.0, z1], n);
+        let d = m.push([x1, 1.0, z1], n);
+        if facing > 0.0 {
+            m.indices.extend([a, b, c, c, b, d]);
+        } else {
+            m.indices.extend([a, c, b, c, d, b]);
+        }
+    }
+    m
+}
+
+/// A cylinder liner cut along its axis: the back half (z ≤ 0) of a tube of outer radius 1 and
+/// inner 0.92, y from 0 to 1, so the piston in it stays in view.
+pub fn half_liner(segments: u32) -> Mesh {
+    let s = segments.max(4);
+    let arc = |r: f32| -> Vec<(f32, f32)> {
+        (0..=s)
+            .map(|i| {
+                let a = std::f32::consts::PI * (1.0 + i as f32 / s as f32);
+                (r * a.cos(), r * a.sin())
+            })
+            .collect()
+    };
+    let mut m = prism_walls(&arc(1.0), 1.0);
+    let inner = prism_walls(&arc(0.92), -1.0);
+    let base = m.vertices.len() as u32;
+    m.vertices.extend(inner.vertices);
+    m.indices.extend(inner.indices.iter().map(|i| i + base));
+    m
+}
+
+/// A crank web of a throw of unit radius: a rounded end round the pin at (0, 1) (radius 0.45)
+/// and a counterweight arc of radius 1.1 under the main journal at the origin, in (x, z),
+/// extruded from y = 0 to 1.
+pub fn crank_web(segments: u32) -> Mesh {
+    let s = segments.max(4);
+    let mut ring = Vec::with_capacity(2 * s as usize + 2);
+    for i in 0..=s {
+        let a = std::f32::consts::PI * i as f32 / s as f32;
+        ring.push((0.45 * a.cos(), 1.0 + 0.45 * a.sin()));
+    }
+    let (a0, a1) = (std::f32::consts::PI + 0.6, TAU - 0.6);
+    for i in 0..=s {
+        let a = a0 + (a1 - a0) * i as f32 / s as f32;
+        ring.push((1.1 * a.cos(), 1.1 * a.sin()));
+    }
+    ring.push(ring[0]);
     prism(&ring)
 }
 
@@ -170,7 +275,15 @@ mod tests {
     use super::*;
 
     fn all() -> Vec<Mesh> {
-        vec![cylinder(16), cuboid(), housing(0.15, 64), rotor(8)]
+        vec![
+            cylinder(16),
+            cuboid(),
+            housing(0.15, 64),
+            housing_ring(0.15, 64),
+            rotor(8),
+            half_liner(16),
+            crank_web(8),
+        ]
     }
 
     #[test]
@@ -238,7 +351,7 @@ mod tests {
     #[test]
     fn side_normals_point_outward() {
         // every side face's normal points away from the axis (dot with its position > 0)
-        for m in [housing(0.15, 64), rotor(8), cylinder(12)] {
+        for m in [housing(0.15, 64), rotor(8), cylinder(12), crank_web(8)] {
             for v in m.vertices.iter().filter(|v| v.normal[1] == 0.0) {
                 let d = v.pos[0] * v.normal[0] + v.pos[2] * v.normal[2];
                 assert!(d > 0.0, "{v:?}");
@@ -260,5 +373,45 @@ mod tests {
                 assert!(n.dot(vn) > 0.0, "{t:?}");
             }
         }
+    }
+
+    #[test]
+    fn the_housing_ring_is_open_round_its_epitrochoid() {
+        // the bore's wall lies on the epitrochoid (1 + e on the major axis), the outside 0.22
+        // further out, and nothing in between near the centre: the rotor shows
+        let m = housing_ring(0.15, 64);
+        let r = |v: &Vertex| (v.pos[0] * v.pos[0] + v.pos[2] * v.pos[2]).sqrt();
+        let min = m.vertices.iter().map(r).fold(f32::MAX, f32::min);
+        let max = m.vertices.iter().map(r).fold(0.0f32, f32::max);
+        assert!((min - 0.85).abs() < 2e-3, "{min}");
+        assert!((max - 1.37).abs() < 1e-4, "{max}");
+    }
+
+    #[test]
+    fn the_liner_is_only_its_back_half() {
+        let m = half_liner(16);
+        assert!(
+            m.vertices.iter().all(|v| v.pos[2] <= 1e-6),
+            "a vertex in front"
+        );
+        // the inside faces the bore's axis
+        for v in m.vertices.iter().filter(|v| {
+            let r = (v.pos[0] * v.pos[0] + v.pos[2] * v.pos[2]).sqrt();
+            (r - 0.92).abs() < 1e-5
+        }) {
+            assert!(
+                v.pos[0] * v.normal[0] + v.pos[2] * v.normal[2] < 0.0,
+                "{v:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_web_reaches_round_the_pin_and_under_the_journal() {
+        let m = crank_web(8);
+        let top = m.vertices.iter().map(|v| v.pos[2]).fold(f32::MIN, f32::max);
+        let bottom = m.vertices.iter().map(|v| v.pos[2]).fold(f32::MAX, f32::min);
+        assert!((top - 1.45).abs() < 1e-5, "{top}");
+        assert!((bottom + 1.1).abs() < 1e-3, "{bottom}");
     }
 }

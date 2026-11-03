@@ -88,6 +88,10 @@ pub struct EngineDef {
     /// carried their vehicle get a generic car, never whatever was loaded before.
     #[serde(default = "crate::drivetrain::VehicleDef::default")]
     pub vehicle: crate::drivetrain::VehicleDef,
+    /// A turbocharger between the exhaust and the intake ([`crate::turbo`]); none: naturally
+    /// aspirated. Files without it have none.
+    #[serde(default)]
+    pub turbo: Option<crate::turbo::TurboDef>,
 }
 
 fn default_idle_rpm() -> f64 {
@@ -106,6 +110,22 @@ impl Default for EngineDef {
 /// with a rigid head).
 const SEAT_FORCE_N: f64 = 292.0;
 const SEAT_FORCE_RPM: f64 = 2500.0;
+/// Engine steps per turbocharger step (quasi-steady; at 192 kHz, ~0.33 ms).
+const TURBO_EVERY: usize = 64;
+/// The turbo sees the engine's flows averaged over this, s: the pulses die in the volumes
+/// between (manifold, boost pipe), as mean-value engine models take them (Hendricks, SAE
+/// 890564; ESTIMATE: a few cycles at idle, many at speed).
+const TURBO_FLOW_TAU_S: f64 = 0.05;
+/// What the engine sees of the turbo follows its steps over this, s: the turbo's state moves
+/// on 50 ms means, so the lag is nothing; as a staircase every [`TURBO_EVERY`] steps it was a
+/// click train at the update rate (6 kHz at 384 kHz). 2 ms takes a 6 kHz step train down by
+/// ωτ ≈ 75, 37 dB.
+const TURBO_SEEN_TAU_S: f64 = 0.002;
+/// How far the manifold's pressure must fall under the boost to open a turbo's blow-off
+/// valve, Pa: its diaphragm sees the manifold on one side and the boost on the other, held by
+/// a spring (ESTIMATE: aftermarket and OEM valves crack at 5–10 inHg, 17–34 kPa; over the
+/// throttle's drop at full load).
+const BOV_CRACK_PA: f64 = 30_000.0;
 /// Duration of the strike, s: the impulse m·Δv of the valve's equivalent mass (292 N /
 /// 4474 m/s², Zheng Fig. 21: 0.065 kg) against a closing-ramp speed of ~0.3 m/s at 2500 rpm
 /// (an estimate: ramps of ~0.02 mm/° at 15 000 °/s), as a half-sine of the peak:
@@ -190,6 +210,7 @@ impl EngineDef {
                 primary_length_deviation_m: Vec::new(),
                 tail_length_m: 1.0,
                 tail_diameter_m: 0.045,
+                tail_outlets: 1,
                 muffler_transmission: 1.0,
                 model: ExhaustModel::Waveguide,
                 muffler_volume_m3: 0.003,
@@ -211,6 +232,7 @@ impl EngineDef {
             shutoff_rpm: 0.0,
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::single(),
+            turbo: None,
         }
     }
 
@@ -232,6 +254,7 @@ impl EngineDef {
             redline_rpm: 7000.0,
             starter_torque_nm: 60.0,
             vehicle: crate::drivetrain::VehicleDef::inline4(),
+            turbo: None,
             ..Self::single()
         }
         .with_tail_pipe()
@@ -286,6 +309,7 @@ impl EngineDef {
                 collector_diameter_m: 0.05,
                 tail_length_m: 1.6,
                 tail_diameter_m: 0.055,
+                tail_outlets: 1,
                 // Steepening, as every preset: linear pipes (or the exact finite-volume solver)
                 // left a rotary 98–99 % pure tones at 8000 rpm, "a wind instrument", where
                 // recordings of ported 13Bs pulling are 29–51 % (their rasp is the port jet's
@@ -305,6 +329,7 @@ impl EngineDef {
             redline_rpm: 9000.0,
             starter_torque_nm: 60.0,
             vehicle: crate::drivetrain::VehicleDef::inline4(),
+            turbo: None,
             ..Self::single()
         }
         .with_tail_pipe()
@@ -344,6 +369,7 @@ impl EngineDef {
             idle_throttle: 0.018,
             exhaust: ExhaustDef {
                 tail_diameter_m: 0.065,
+                tail_outlets: 1,
                 ..base.exhaust.clone()
             },
             ..base
@@ -422,6 +448,7 @@ impl EngineDef {
             redline_rpm: 6200.0,
             starter_torque_nm: 60.0,
             vehicle: crate::drivetrain::VehicleDef::inline4(),
+            turbo: None,
             friction: crate::friction::FrictionDef {
                 valvetrain: crate::friction::Valvetrain::SohcRockerArm,
                 ..crate::friction::FrictionDef::default()
@@ -449,6 +476,65 @@ impl EngineDef {
         if let Some(v) = &mut d.vtec {
             v.engage_rpm = 5500.0;
         }
+        d
+    }
+
+    /// Honda K20C1 (Civic Type R, FK8): the K20A's block and head as fitted, turbocharged.
+    /// Published: 1996 cc, 86 × 85.9 mm, CR 9.8, 320 PS (228 kW) at 6500 rpm, 400 N·m from 2500
+    /// to 4500 rpm, 7000 rpm redline, a mono-scroll turbo with an electric wastegate (Honda
+    /// press kit, 2017). Its exhaust VTEC is not modelled (the K20A's exhaust lobes are not
+    /// either) and its intake keeps the K20A's low lobe; the integrated 4-into-1 manifold
+    /// (ESTIMATE 0.25 m primaries) leads straight to the turbine. The turbine is its mean back
+    /// pressure only: a pipe of its nozzle's bore in the line reflected the pulses back to the
+    /// valves and cost a third of the power at 6500 rpm on top of that pressure (a turbine's
+    /// measured transmission, Tiikoja et al. SAE 2011-01-1525, is not at hand).
+    pub fn honda_k20c1() -> Self {
+        let mut d = Self::honda_k20a();
+        d.name = "Honda K20C1 2.0 turbo (Civic Type R)".into();
+        d.geometry.stroke_m = 0.0859;
+        d.geometry.compression_ratio = 9.8;
+        d.redline_rpm = 7000.0;
+        d.vtec = None;
+        d.intake_valve.high = None;
+        // its four tracts cast into one outlet in the head, of very uneven lengths (JE Pistons / 4
+        // Piston Racing on the K20C1 head); ESTIMATE from the 94 mm bore pitch and 80 mm of port:
+        // 93 mm inner, 162 mm outer (equal 0.25 m pipes put every pulse in phase: a whistle of
+        // the firing harmonics at 1–1.6 kHz over 6000 rpm)
+        d.exhaust.primary_length_m = 0.13;
+        d.exhaust.primary_length_deviation_m = vec![0.032, -0.032, -0.032, 0.032];
+        // direct injection (EngineLabs; Mountune's K20C1 data): the fuel goes into the cylinder,
+        // no port wall holds a film of it (the K20A's port injection did)
+        d.intake.film_fraction = 0.0;
+        // the FK8's factory pipework is 57 mm ("standard pipework of just 57mm", Real Speed
+        // Engineering, FK8 titanium exhaust); at the turbo's flow the K20A's 50 mm blew its
+        // jet 30 % faster (jet noise ∝ u⁸: a hiss over 1 kHz the recordings do not have)
+        d.exhaust.tail_diameter_m = 0.057;
+        // the flow leaves through the silencer's tips, not one pipe: the outer two are straight
+        // through (Honda's product planner, via Mod Bargains), 86 mm inside (Tomei). What bore
+        // feeds them is not published, so ESTIMATE: two of the pipe's, the least they can be
+        d.exhaust.tail_outlets = 2;
+        for s in &mut d.exhaust.after_collector {
+            if let crate::exhaust::Segment::Pipe { diameter_m, .. } = s {
+                *diameter_m = d.exhaust.tail_diameter_m;
+            }
+        }
+        let turbo = crate::turbo::TurboDef {
+            // the gate holds 1.6 bar (23 psi, the FK8's commonly quoted peak boost, not a
+            // factory figure); the turbine's and the gate's areas are ESTIMATES fitted to the
+            // published torque (a small turbine for the low end, a large gate to hold it)
+            wastegate_pa: 1.6e5,
+            turbine_area_m2: 4.0e-4,
+            wastegate_area_m2: 1.0e-3,
+            // a larger compressor than the default's for 0.22 kg/s at peak power: the stock
+            // MHI wheel's 58 mm exducer (an upgrade's 65 mm is "+7 mm over stock", Hybrid Racing,
+            // MHI Stage 2 for FK8); ESTIMATE its 5 mm exit and its inducer at 0.7 of the exducer
+            compressor_tip_diameter_m: 0.058,
+            exit_width_m: 0.005,
+            inducer_diameter_m: 0.0406,
+            ..crate::turbo::TurboDef::default()
+        };
+        d.turbo = Some(turbo);
+        d.vehicle = crate::drivetrain::VehicleDef::civic_type_r_fk8();
         d
     }
 
@@ -531,6 +617,7 @@ impl EngineDef {
             redline_rpm: 8400.0,
             starter_torque_nm: 60.0,
             vehicle: crate::drivetrain::VehicleDef::inline4(),
+            turbo: None,
             // engages at 6000 rpm (Integra Type R DC5; Wikipedia, Honda K engine); its
             // hysteresis and the pedal it waits for are estimates (no factory figure found)
             vtec: Some(crate::valve::Vtec {
@@ -756,6 +843,7 @@ impl EngineDef {
                 // for a longer pipe; 2026-10-31)
                 tail_length_m: 0.50 + 0.38 + 1.00,
                 tail_diameter_m: 0.070,
+                tail_outlets: 1,
                 // Sport muffler with bypass valves: less damping than a road car.
                 muffler_transmission: 1.0,
                 model: ExhaustModel::Waveguide,
@@ -934,6 +1022,7 @@ impl EngineDef {
             shutoff_rpm: 9500.0,
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::lfa_v10(),
+            turbo: None,
         }
         // its own bank lines (above), the catalyst first
         .with_tail_pipe()
@@ -999,6 +1088,7 @@ impl EngineDef {
                 primary_length_deviation_m: Vec::new(),
                 tail_length_m: 1.3,
                 tail_diameter_m: 0.065,
+                tail_outlets: 1,
                 muffler_transmission: 1.0,
                 model: ExhaustModel::Waveguide,
                 muffler_volume_m3: 0.010,
@@ -1020,6 +1110,7 @@ impl EngineDef {
             shutoff_rpm: 0.0,
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::flatplane_v8(),
+            turbo: None,
         }
         .with_tail_pipe()
         .with_catalyst()
@@ -1084,6 +1175,7 @@ impl EngineDef {
                 primary_length_deviation_m: Vec::new(),
                 tail_length_m: 2.0,
                 tail_diameter_m: 0.065,
+                tail_outlets: 1,
                 muffler_transmission: 1.0,
                 model: ExhaustModel::Waveguide,
                 muffler_volume_m3: 0.012,
@@ -1110,6 +1202,7 @@ impl EngineDef {
             shutoff_rpm: 0.0,
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::crossplane_v8(),
+            turbo: None,
         }
         .with_tail_pipe()
         .with_catalyst()
@@ -1340,8 +1433,10 @@ const IAC_KI_PER_S: f64 = 0.5;
 const IAC_MIN: f64 = -0.95;
 const IAC_MAX_AREA: f64 = 0.03;
 /// Spark path: idle timing sits this far retarded from the engine's advance, and the loop
-/// moves it by up to the reserve each way, degrees.
-const IDLE_SPARK_RESERVE_DEG: f64 = 10.0;
+/// moves it by up to the reserve each way, degrees. All the retard there is: multiplied by a
+/// further low-speed share of the advance as well, the burn ended so late (1400 K and 1.3 bar at
+/// the exhaust's opening) that each cycle's scatter became a 13 dB swing of the pulse.
+const IDLE_SPARK_RESERVE_DEG: f64 = 15.0;
 const IDLE_SPARK_KP_DEG: f64 = 80.0;
 const IDLE_SPARK_KD_DEG_S: f64 = 10.0;
 /// Time constant of the speed-rate filter, s: longer than a firing interval at idle, so the
@@ -1560,12 +1655,64 @@ fn flame_ratio(
     here / reference
 }
 
-/// The share of the MBT advance an ECU's map gives at `rpm`: × (0.35 + 0.65·rpm/4000) up to 1.
-/// Below full speed the spark runs retarded from MBT so the idle control has a torque reserve
-/// to take from the spark at once (Bosch, *Gasoline Engine Management*, "idle-speed control");
-/// it is the low-speed shape the spark map had before the flame set MBT.
-fn idle_reserve(rpm: f64) -> f64 {
+/// The share of the flame's MBT advance a rotary's map gives at `rpm`: × (0.35 + 0.65·rpm/4000) up
+/// to 1 (ESTIMATE; the low-speed shape the map had before the flame set MBT). The flame's scale is
+/// a piston chamber's: at a rotor's idle it advances the spark so far the Renesis stalls. A piston
+/// engine takes none of this: its idle retard is [`IDLE_SPARK_RESERVE_DEG`] alone.
+fn rotary_spark_share(rpm: f64) -> f64 {
     (0.35 + 0.65 * rpm.max(0.0) / 4000.0).min(1.0)
+}
+
+/// The ECU's spark advance for a charge burning at `flame`, ° BTDC, at `rpm`: MBT for its flame,
+/// a rotor's scaled by [`rotary_spark_share`].
+fn spark_advance_deg(def: &EngineDef, flame: f64, rpm: f64) -> f64 {
+    let share = if def.geometry.rotor.is_some() {
+        rotary_spark_share(rpm)
+    } else {
+        1.0
+    };
+    def.spark_advance_for(flame) * share
+}
+
+/// The blow-off valve's jet: (velocity m/s, bore m, density kg/m³) of the air `s` vents through
+/// a valve of `area` m², at the delivered air's density p/(R·T) — continuity, v = ṁ/ρA.
+fn bov_jet(s: &crate::turbo::TurboState, area: f64) -> (f64, f64, f64) {
+    let rho = s.boost_pa / (crate::gas::R_AIR * s.boost_t_k);
+    (s.bov_m_dot / (rho * area), (4.0 * area / PI).sqrt(), rho)
+}
+
+/// The acoustic velocity a tail's pressure swing `p` Pa drives out of each of its `outlets`
+/// exits of impedance `z` (Pa·s/m): u = p/(z·n), the swing shared between them.
+fn tail_swing_velocity(p: f64, z: f64, outlets: f64) -> f64 {
+    p / (z * outlets)
+}
+
+/// A first-order lag: `prev` moved toward `target` by `dt` over the time constant `tau`, at
+/// most all the way (explicit Euler, clamped so a long step never overshoots).
+fn lag(prev: f64, target: f64, dt: f64, tau: f64) -> f64 {
+    prev + (target - prev) * (dt / tau).min(1.0)
+}
+
+/// The turbo's mean flows (exhaust kg/s, its temperature K, air kg/s) followed over
+/// [`TURBO_FLOW_TAU_S`] by what the engine pushed and drew in `acc` = (steps, exhaust kg,
+/// exhaust kg·K, air kg) of `dt` each. The temperature keeps its last mean while no exhaust left.
+fn turbo_mean_flows(
+    mean: (f64, f64, f64),
+    acc: (usize, f64, f64, f64),
+    dt: f64,
+) -> (f64, f64, f64) {
+    let (n, ex, ex_t, air) = acc;
+    let span = n as f64 * dt;
+    let t = if ex > 0.0 {
+        lag(mean.1, ex_t / ex, span, TURBO_FLOW_TAU_S)
+    } else {
+        mean.1
+    };
+    (
+        lag(mean.0, ex / span, span, TURBO_FLOW_TAU_S),
+        t,
+        lag(mean.2, air / span, span, TURBO_FLOW_TAU_S),
+    )
 }
 
 /// Net imep relative to its value at MBT timing for a combustion retarded `retard_deg` crank
@@ -1964,6 +2111,21 @@ pub struct Engine {
     remote: RemoteSlot,
     /// Mean backpressure each tail puts on its cylinders' exhaust ports, Pa.
     tail_backpressure: Vec<f64>,
+    /// The turbocharger, its state as of its last step, and what the engine has sent it since:
+    /// steps, exhaust kg, exhaust kg·K, air drawn kg ([`TURBO_EVERY`]).
+    turbo: Option<crate::turbo::Turbo>,
+    turbo_state: Option<crate::turbo::TurboState>,
+    /// What the engine sees of it: `turbo_state` followed over [`TURBO_SEEN_TAU_S`].
+    turbo_seen: Option<crate::turbo::TurboState>,
+    turbo_acc: (usize, f64, f64, f64),
+    /// The compressor's flow, kg/s: the throttle's through the charge air ([`Engine::step`]).
+    compressor_flow: f64,
+    /// The flows the turbo sees, averaged over [`TURBO_FLOW_TAU_S`]: exhaust kg/s, its
+    /// temperature K, air drawn kg/s.
+    turbo_mean: (f64, f64, f64),
+    /// The blow-off valve's jet ([`crate::jet_noise`]).
+    bov_jet: JetNoise,
+    compressor_tone: crate::turbo::CompressorTone,
     /// The exhaust's mean-flow losses after the collector (from its segments).
     exit_losses: Option<crate::exhaust::ExitLosses>,
     /// Mean exit Mach number of each tail (its open end absorbs sound with it).
@@ -2068,6 +2230,7 @@ fn crossed(prev: f64, cur: f64, a: f64) -> bool {
 
 impl Engine {
     pub fn new(def: EngineDef, initial_rpm: f64, seed: u64) -> Self {
+        let turbo = def.turbo.as_ref().map(crate::turbo::Turbo::new);
         let g = def.geometry;
         // an engine set running at `initial_rpm` has its cams where the map holds them there
         // with the pedal up (a phaser starting from its stop would take most of a second to
@@ -2190,6 +2353,14 @@ impl Engine {
             tails_buf: Vec::new(),
             remote: RemoteSlot(None),
             tail_backpressure: Vec::new(),
+            turbo,
+            turbo_state: None,
+            turbo_seen: None,
+            turbo_acc: (0, 0.0, 0.0, 0.0),
+            compressor_flow: 0.0,
+            turbo_mean: (0.0, crate::intake_fv::AMBIENT_T_K, 0.0),
+            bov_jet: JetNoise::new(seed.wrapping_add(0xB0F)),
+            compressor_tone: crate::turbo::CompressorTone::default(),
             exit_losses: None,
             tail_mach: Vec::new(),
             cyl_mean_flow: Vec::new(),
@@ -2341,11 +2512,10 @@ impl Engine {
         self.limiter_cut = rpm >= red || (self.limiter_cut && rpm > red - LIMITER_HYSTERESIS_RPM);
     }
 
-    /// The ECU's spark advance for cylinder `i`'s charge, ° BTDC: MBT for its flame, less the
-    /// idle torque reserve ([`idle_reserve`]).
+    /// The ECU's spark advance for cylinder `i`'s charge, ° BTDC: MBT for its flame.
     #[cfg(test)]
     fn spark_advance(&self, i: usize) -> f64 {
-        self.def.spark_advance_for(self.cyl[i].flame) * idle_reserve(self.rpm())
+        spark_advance_deg(&self.def, self.cyl[i].flame, self.rpm())
     }
 
     /// Move the spark trim towards `want` no faster than half the crank's own travel this
@@ -2505,7 +2675,7 @@ impl Engine {
         let blowby_area = BLOWBY_AREA_FRACTION * g.piston_area();
 
         let mut gas_torque = 0.0;
-        let reserve = idle_reserve(self.rpm());
+        let spark_rpm = self.rpm();
         let retard = torque_intervention(c.torque_cut, self.charge_share);
         let n_cyl = self.cyl.len();
         for i in 0..n_cyl {
@@ -2520,7 +2690,11 @@ impl Engine {
                 .position(|g| g.contains(&i))
                 .and_then(|t| self.tail_backpressure.get(t))
                 .copied()
-                .unwrap_or(0.0);
+                .unwrap_or(0.0)
+                // the turbine's inlet, the restriction the exhaust passes first
+                + self
+                    .turbo_seen
+                    .map_or(0.0, |s| s.turbine_inlet_pa - ATM_PA);
             let prev = self.cyl[i].cycle_deg;
             let cur = crate::units::wrap(crank_deg - self.cyl[i].offset_deg, 720.0);
             let theta_c = deg_to_rad(cur);
@@ -2708,6 +2882,11 @@ impl Engine {
                 let a_wall = PI * ex.primary_diameter_m * ex.primary_length_m;
                 cs.port_t = port_gas_temperature(cs.port_t, m, dm, t_in, cs.wall_t, a_wall, dt);
                 if dm > 0.0 {
+                    // what leaves for the turbine, at the port's temperature
+                    self.turbo_acc.1 += dm;
+                    self.turbo_acc.2 += dm * cs.port_t;
+                }
+                if dm > 0.0 {
                     cs.port_xb = (m * cs.port_xb + dm * cs.comp.burned) / (m + dm);
                 }
                 let r =
@@ -2807,7 +2986,8 @@ impl Engine {
                 }
             }
             let spark_deg = 720.0
-                - (self.def.spark_advance_for(cs.flame) * reserve + self.idle_spark_deg - retard);
+                - (spark_advance_deg(&self.def, cs.flame, spark_rpm) + self.idle_spark_deg
+                    - retard);
             let mut new_burn = false;
             // The spark fires on the first step at or past its angle (within the half cycle
             // after it), so a timing that moved earlier past the crank still fires this charge,
@@ -2941,6 +3121,10 @@ impl Engine {
         // Acoustic source: what the tail pipes radiate.
         // advance the exhaust; what each tail radiates is read below (`last_tails`)
         let rpm = self.rpm();
+        // the gas before a turbine is at its inlet's pressure, its pulses that much less of it
+        let upstream_pa = self.turbo_seen.map_or(ATM_PA, |s| s.turbine_inlet_pa);
+        // and its pulses meet the turbine's nozzle on their way to the tail
+        let turbine_dp_dm = self.turbo_seen.map_or(0.0, |s| s.turbine_dp_dm);
         match (&mut self.net, &mut self.fv, &mut self.remote.0) {
             (_, Some(fv), _) => {
                 fv.set_outflow_mach(&self.tail_mach);
@@ -2958,7 +3142,13 @@ impl Engine {
                 if due {
                     self.friction_age = 0;
                 }
-                let mean = due.then_some((&self.cyl_mean_flow[..], &self.tail_mean_flow[..], rpm));
+                let mean = due.then_some(crate::exhaust::NetMeans {
+                    cylinders: &self.cyl_mean_flow,
+                    branches: &self.tail_mean_flow,
+                    rpm,
+                    upstream_pa,
+                    turbine_dp_dm,
+                });
                 if due {
                     net.set_port_temperature(&self.cyl_port_k);
                 }
@@ -2981,12 +3171,16 @@ impl Engine {
                     r.stage.mean.extend_from_slice(&self.cyl_mean_flow);
                     r.stage.mean.extend_from_slice(&self.tail_mean_flow);
                     r.stage.mean.push(rpm);
+                    r.stage.mean.push(upstream_pa);
+                    r.stage.mean.push(turbine_dp_dm);
+                    r.probe.set_mean_pressure(upstream_pa);
                     r.probe.set_mean_flow(&self.cyl_mean_flow);
                 }
                 r.taken += 1;
                 if r.stage.steps == r.block {
                     r.hand_over();
                 }
+                r.probe.advance();
                 r.probe
                     .arriving((r.taken - r.applied) as usize, &mut r.arriving);
             }
@@ -3040,15 +3234,59 @@ impl Engine {
                 } else {
                     throttle_area
                 };
+                if let Some(s) = self.turbo_seen {
+                    net.set_inlet(s.boost_pa, s.boost_t_k);
+                }
                 let induction = net.step(area);
                 (-net.last_inducted(), induction, net.drawn_rate())
             }
             None => {
-                let dm = exchange_with_reservoir(&mut self.plenum, &self.atm, throttle_area, dt);
+                // the throttle draws from the compressor's delivery, if there is a turbo
+                let supply = self.turbo_seen.map_or(self.atm, |s| Reservoir {
+                    pressure_pa: s.boost_pa,
+                    temperature_k: s.boost_t_k,
+                });
+                let dm = exchange_with_reservoir(&mut self.plenum, &supply, throttle_area, dt);
                 // `dm` is the atmosphere's change: negative drawing in
                 (dm, 0.0, -dm / dt)
             }
         };
+
+        // The turbo, stepped every [`TURBO_EVERY`] steps on what the engine sent it meanwhile
+        // (quasi-steady: its shaft's lag is tenths of a second)
+        // the blow-off valve's diaphragm: open while the manifold is under the boost by its
+        // spring (the throttle shut, or nearly, on boost)
+        let bov_open = self
+            .turbo_state
+            .is_some_and(|s| s.boost_pa - self.plenum_pressure_pa() > BOV_CRACK_PA);
+        if let Some(t) = &mut self.turbo {
+            self.turbo_acc.0 += 1;
+            self.turbo_acc.3 += drawn.max(0.0) * dt;
+            if self.turbo_acc.0 >= TURBO_EVERY {
+                let span = self.turbo_acc.0 as f64 * dt;
+                let m = turbo_mean_flows(self.turbo_mean, self.turbo_acc, dt);
+                self.turbo_mean = m;
+                self.turbo_state = Some(t.step(m.0, m.1, m.2, bov_open, span));
+                self.turbo_acc = (0, 0.0, 0.0, 0.0);
+            }
+        }
+
+        // what the engine sees of the turbo follows its steps continuously
+        if let Some(target) = self.turbo_state {
+            self.turbo_seen = Some(match self.turbo_seen {
+                Some(s) => {
+                    let f = |a: f64, b: f64| lag(a, b, dt, TURBO_SEEN_TAU_S);
+                    crate::turbo::TurboState {
+                        boost_pa: f(s.boost_pa, target.boost_pa),
+                        boost_t_k: f(s.boost_t_k, target.boost_t_k),
+                        turbine_inlet_pa: f(s.turbine_inlet_pa, target.turbine_inlet_pa),
+                        turbine_dp_dm: f(s.turbine_dp_dm, target.turbine_dp_dm),
+                        ..target
+                    }
+                }
+                None => target,
+            });
+        }
 
         // what a valve took beyond its runner's reach was never in the runner: its cylinder
         // gives it back (mass conserved; a starved port otherwise fed its cylinder from nothing)
@@ -3069,8 +3307,17 @@ impl Engine {
         // −ṁ/ρ₀ (1D: what the trumpets take in; 0D: the throttle's flow), heard from the
         // tails' mean distance — no gain chosen by ear. `sound.intake` scales it (1 = physical).
         let snd = &self.def.sound;
-        // `drawn`: the mouth's mass flow into the engine, kg/s (1D: held between FV steps)
-        let intake_flow = -snd.intake * drawn / AIR_DENSITY;
+        // `drawn`: the mouth's mass flow into the engine, kg/s (1D: held between FV steps). With
+        // a turbo the air filter's flow is the compressor's: the throttle's swings reach it
+        // through the charge air's low-pass (`TurboState::charge_tau_s`)
+        let heard = match self.turbo_state {
+            Some(s) => {
+                self.compressor_flow = lag(self.compressor_flow, drawn, dt, s.charge_tau_s);
+                self.compressor_flow
+            }
+            None => drawn,
+        };
+        let intake_flow = -snd.intake * heard / AIR_DENSITY;
         self.texture_signal = intake_flow;
         // each tail's jet: its exit velocity u = (ρc·u)/ρc, its own distance to the listener
         // Exit velocity at each tail: the mean is mass continuity, ṁ/(ρA), with ṁ the exhaust
@@ -3213,7 +3460,29 @@ impl Engine {
                     rest += l.from_engine_at(b, l.spread_from_1m_at(b, p));
                 }
                 let at_mouth = l.radiate_mouth_at(n_banks, intake_flow, mouth_area);
-                rest + l.from_engine_at(n_banks, at_mouth)
+                // a turbo's blow-off valve venting to the air on a lift-off (a recirculating one
+                // vents into the intake, unheard): the jet of what it lets out,
+                // through its own bore at the delivered air's density (the turbulent mixing
+                // noise as at the tails), heard from the engine with the mouths
+                let bov = match (&self.def.turbo, self.turbo_state) {
+                    (Some(t), Some(s))
+                        if snd.blow_off > 0.0 && t.bov_area_m2 > 0.0 && !t.bov_recirculating =>
+                    {
+                        let (v, d, rho) = bov_jet(&s, t.bov_area_m2);
+                        let p = self.bov_jet.step(v, d, rho, 1.0, dt);
+                        snd.blow_off * l.spread_from_1m_at(n_banks, p)
+                    }
+                    _ => 0.0,
+                };
+                // the compressor's tone, heard from the engine with the mouths
+                let whine = match (&self.def.turbo, self.turbo_state) {
+                    (Some(t), Some(s)) if snd.compressor_whine > 0.0 => {
+                        let p = self.compressor_tone.step(t, s.shaft_rpm, dt);
+                        snd.compressor_whine * l.spread_from_1m_at(n_banks, p)
+                    }
+                    _ => 0.0,
+                };
+                rest + l.from_engine_at(n_banks, at_mouth + bov + whine)
             }
             None => 0.0,
         };
@@ -3313,10 +3582,12 @@ impl Engine {
             None => 0.0,
         };
         let z = crate::exhaust::tail_impedance();
+        let outlets = f64::from(self.def.exhaust.tail_outlets.max(1));
         for (t, &signal) in tails.iter().enumerate() {
             self.tail_dc[t] += (signal - self.tail_dc[t]) * k;
             // the swing rides on the mean; no exit blows past sound (it chokes first)
-            self.tail_u[t] = (u_mean[t] + (signal - self.tail_dc[t]) / z).min(TAIL_SONIC);
+            let swing = tail_swing_velocity(signal - self.tail_dc[t], z, outlets);
+            self.tail_u[t] = (u_mean[t] + swing).min(TAIL_SONIC);
         }
         let mut jets = 0.0;
         let snd = &self.def.sound;
@@ -3324,7 +3595,7 @@ impl Engine {
             && let Some((_, l)) = &self.listener
         {
             let rho = crate::exhaust::tail_reference_density();
-            let d = self.def.exhaust.radiating_diameter();
+            let d = self.def.exhaust.jet_diameter();
             for ((jet, u), r) in self.jets.iter_mut().zip(&self.tail_u).zip(l.distances()) {
                 jets += jet.step(*u, d, rho, *r, dt);
             }
@@ -3508,6 +3779,12 @@ impl Engine {
     }
 
     /// Gauge pressure in cylinder `i`'s exhaust port (waves standing at the valve), Pa.
+    /// The turbocharger as the engine sees it now (its steps followed continuously), if it has
+    /// one.
+    pub fn turbo(&self) -> Option<crate::turbo::TurboState> {
+        self.turbo_seen
+    }
+
     pub fn exhaust_port_gauge(&self, i: usize) -> f64 {
         match (&self.net, &self.fv) {
             (_, Some(fv)) => fv.port_state(i).0 - ATM_PA,
@@ -3953,6 +4230,36 @@ mod tests {
     }
 
     #[test]
+    fn an_idle_does_not_bubble() {
+        // Frames of 21 ms, energy over 600 Hz, 95th percentile over the median:
+        // 2–8 dB in steady idles recorded close to real four-cylinders (Alfa 159, Escort RS1800,
+        // Golf, Cruze; Sonniss GDC). 16–26 dB here with the burn retarded too far.
+        let dt = 1.0 / 384_000.0;
+        let mut e = Engine::new(EngineDef::honda_k20c1(), 800.0, 1);
+        let c = Controls::default();
+        (0..(2.0 / dt) as usize).for_each(|_| {
+            e.step(dt, &c);
+        });
+        let (k, mut low) = (2.0 * PI * 600.0 * dt, 0.0);
+        let high: Vec<f64> = (0..(3.0 / dt) as usize)
+            .map(|_| {
+                let x = e.step(dt, &c);
+                low += (x - low) * k;
+                x - low
+            })
+            .collect();
+        let mut frames: Vec<f64> = high
+            .as_chunks::<8192>()
+            .0
+            .iter()
+            .map(|f| 10.0 * f.iter().map(|v| v * v).sum::<f64>().log10())
+            .collect();
+        frames.sort_by(f64::total_cmp);
+        let burst = frames[frames.len() * 95 / 100] - frames[frames.len() / 2];
+        assert!(burst < 8.0, "{burst} dB");
+    }
+
+    #[test]
     fn cycles_vary_as_measured_engines_do() {
         // Soltau (Proc. IMechE (AD) 1960–61 no. 2, Table 4), wide-open throttle, 2000 rev/min,
         // A/F 14, two compression ratios: mean deviations of the peak pressure 5.54–7.90 % and
@@ -4004,6 +4311,568 @@ mod tests {
             .zip(&off)
             .map(|(a, b)| a - b)
             .collect()
+    }
+
+    #[test]
+    fn a_turbo_boosts_the_charge_after_a_lag() {
+        // The inline-4 held at 4000 rpm, full throttle, with the default turbo: the boost builds
+        // over tenths of a second (the shaft's inertia), then the denser charge makes more torque
+        // than the same engine breathing the atmosphere — with ~1 bar of boost, half as much
+        // again at least (the turbine's back pressure and the hotter charge take some of the
+        // doubled density back)
+        let na = EngineDef::inline4();
+        let turbo = EngineDef {
+            turbo: Some(crate::turbo::TurboDef::default()),
+            ..na.clone()
+        };
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(4000.0),
+            ..Controls::default()
+        };
+        let mut e = Engine::new(turbo, 4000.0, 1);
+        let dt = 1.0 / 48_000.0;
+        let mut boost = Vec::new();
+        for k in 0..(3.0 / dt) as usize {
+            e.step(dt, &c);
+            if k % 480 == 0 {
+                boost.push(e.turbo().map_or(ATM_PA, |s| s.boost_pa) - ATM_PA);
+            }
+            // flat out the manifold sits within the throttle's drop of the boost: the blow-off
+            // valve stays shut
+            assert_eq!(e.turbo().map_or(0.0, |s| s.bov_m_dot), 0.0, "vents at {k}");
+        }
+        let last = *boost.last().unwrap();
+        assert!(last > 0.5e5, "boost {last} Pa");
+        let t90 = boost.iter().position(|&b| b >= 0.9 * last).unwrap() as f64 * 0.01;
+        assert!(t90 > 0.1, "boost at 90 % after {t90} s");
+        let mut n = Engine::new(na, 4000.0, 1);
+        for _ in 0..(3.0 / dt) as usize {
+            n.step(dt, &c);
+        }
+        let (tt, tn) = (e.torque_nm(), n.torque_nm());
+        assert!(tt > 1.5 * tn, "turbo {tt:.0} N·m, NA {tn:.0}");
+    }
+
+    #[test]
+    fn a_blow_off_jet_and_a_tails_swing_by_hand() {
+        // 2 bar at 300 K: ρ = 2e5 / (287.05·300) = 2.3225 kg/m³; 0.02 kg/s through 3 cm²
+        // leaves at 0.02 / (2.3225·3e-4) = 28.70 m/s from a 19.54 mm bore (√(4·3e-4/π))
+        let s = crate::turbo::TurboState {
+            boost_pa: 2e5,
+            boost_t_k: 300.0,
+            turbine_inlet_pa: ATM_PA,
+            shaft_rpm: 0.0,
+            bov_m_dot: 0.02,
+            turbine_dp_dm: 0.0,
+            charge_tau_s: 0.05,
+        };
+        let (v, d, rho) = bov_jet(&s, 3e-4);
+        assert_relative_eq!(rho, 2.3225, max_relative = 2e-4);
+        assert_relative_eq!(v, 28.70, max_relative = 2e-4);
+        assert_relative_eq!(d, 0.019544, max_relative = 2e-4);
+        // 400 Pa on 400 Pa·s/m: 1 m/s from one exit, half from each of two
+        assert_relative_eq!(tail_swing_velocity(400.0, 400.0, 1.0), 1.0);
+        assert_relative_eq!(tail_swing_velocity(400.0, 400.0, 2.0), 0.5);
+    }
+
+    #[test]
+    fn a_lag_moves_its_share_of_the_gap_and_never_past_it() {
+        // dt/τ of the gap per step, by hand: 1/4 of 0→1, 1/4 of 2→6; a step longer than τ lands
+        // on the target
+        assert_relative_eq!(lag(0.0, 1.0, 1.0, 4.0), 0.25);
+        assert_relative_eq!(lag(2.0, 6.0, 1.0, 4.0), 3.0);
+        assert_relative_eq!(lag(0.0, 1.0, 8.0, 4.0), 1.0);
+    }
+
+    #[test]
+    fn the_turbo_follows_the_engines_mean_flows_over_50_ms() {
+        // 64 steps at 48 kHz span 1/750 s, k = span / 0.05 s = 1/37.5, by hand. The engine pushed
+        // 0.2 kg/s at 1000 K and drew 0.3 kg/s against means of 0.1 kg/s, 900 K, 0.1 kg/s:
+        // each mean moves 1/37.5 of its gap
+        let dt = 1.0 / 48_000.0;
+        let span = 64.0 * dt;
+        let ex = 0.2 * span;
+        let m = turbo_mean_flows((0.1, 900.0, 0.1), (64, ex, ex * 1000.0, 0.3 * span), dt);
+        assert_relative_eq!(m.0, 0.1 + 0.1 / 37.5, max_relative = 1e-12);
+        assert_relative_eq!(m.1, 900.0 + 100.0 / 37.5, max_relative = 1e-12);
+        assert_relative_eq!(m.2, 0.1 + 0.2 / 37.5, max_relative = 1e-12);
+        // nothing left: the flow decays, the temperature keeps its last mean
+        let m = turbo_mean_flows((0.1, 900.0, 0.1), (64, 0.0, 0.0, 0.0), dt);
+        assert_relative_eq!(m.0, 0.1 - 0.1 / 37.5, max_relative = 1e-12);
+        assert_eq!(m.1, 900.0);
+    }
+
+    #[test]
+    fn a_rotors_spark_follows_its_map_and_a_pistons_takes_mbt() {
+        // the Renesis at 2000 rpm: 0.35 + 0.65·2000/4000 = 0.675 of MBT; at 8000, all of it; a
+        // piston engine always all of it
+        let r = EngineDef::mazda_renesis();
+        let mbt = r.spark_advance_for(1.0);
+        assert!(mbt > 10.0, "MBT {mbt}°");
+        assert_relative_eq!(spark_advance_deg(&r, 1.0, 2000.0), 0.675 * mbt);
+        assert_relative_eq!(spark_advance_deg(&r, 1.0, 8000.0), mbt);
+        let p = EngineDef::inline4();
+        assert_relative_eq!(spark_advance_deg(&p, 1.0, 2000.0), p.spark_advance_for(1.0));
+    }
+
+    #[test]
+    fn the_engine_sees_the_turbo_through_a_2_ms_lag_and_steps_it_every_64_steps() {
+        let dt = 1.0 / 48_000.0;
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        let mut e = Engine::new(EngineDef::honda_k20c1(), 3000.0, 1);
+        for _ in 0..2400 {
+            e.step(dt, &c);
+        }
+        let s0 = e.turbo_seen.expect("a turbo engine sees its turbo");
+        let target = crate::turbo::TurboState {
+            boost_pa: s0.boost_pa + 10_000.0,
+            boost_t_k: s0.boost_t_k + 10.0,
+            turbine_inlet_pa: s0.turbine_inlet_pa + 10_000.0,
+            turbine_dp_dm: s0.turbine_dp_dm + 1000.0,
+            ..s0
+        };
+        e.turbo_state = Some(target);
+        e.turbo_acc.0 = 0;
+        e.step(dt, &c);
+        // not a 64th step: the turbo holds its state
+        assert_eq!(e.turbo_state, Some(target));
+        // dt / 2 ms = 1/96 of each gap, by hand
+        let s = e.turbo_seen.unwrap();
+        assert_relative_eq!(
+            s.boost_pa - s0.boost_pa,
+            10_000.0 / 96.0,
+            max_relative = 1e-9
+        );
+        assert_relative_eq!(s.boost_t_k - s0.boost_t_k, 10.0 / 96.0, max_relative = 1e-9);
+        assert_relative_eq!(
+            s.turbine_inlet_pa - s0.turbine_inlet_pa,
+            10_000.0 / 96.0,
+            max_relative = 1e-9
+        );
+        assert_relative_eq!(
+            s.turbine_dp_dm - s0.turbine_dp_dm,
+            1000.0 / 96.0,
+            max_relative = 1e-9
+        );
+        // the 64th step moves the turbo and starts a new span
+        e.turbo_acc.0 = TURBO_EVERY - 1;
+        e.step(dt, &c);
+        assert_ne!(e.turbo_state, Some(target));
+        assert_eq!(e.turbo_acc.0, 0);
+    }
+
+    #[test]
+    fn the_exhaust_pushes_against_the_turbines_inlet() {
+        // The inline-4 at 3000 rpm, full throttle, its ports seeing 1 bar more at the turbine's
+        // inlet (the intake at the atmosphere): the pistons push the exhaust out against it, about
+        // V_d·Δp/4π = 2.0e-3·1e5/4π ≈ 16 N·m of pumping work by hand; at least half of it shows
+        let run = |inlet_pa: f64| {
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(3000.0),
+                ..Controls::default()
+            };
+            let mut e = Engine::new(EngineDef::inline4(), 3000.0, 1);
+            let seen = crate::turbo::TurboState {
+                boost_pa: ATM_PA,
+                boost_t_k: crate::intake_fv::AMBIENT_T_K,
+                turbine_inlet_pa: inlet_pa,
+                shaft_rpm: 0.0,
+                bov_m_dot: 0.0,
+                turbine_dp_dm: 0.0,
+                charge_tau_s: 0.05,
+            };
+            let dt = 1.0 / 48_000.0;
+            let mut sum = 0.0;
+            let n = 48_000;
+            for k in 0..n {
+                e.turbo_seen = Some(seen);
+                e.step(dt, &c);
+                if k >= n / 2 {
+                    sum += e.torque_nm();
+                }
+            }
+            sum / (n / 2) as f64
+        };
+        let (free, back) = (run(ATM_PA), run(ATM_PA + 1e5));
+        assert!(
+            free - back > 8.0,
+            "free {free:.1} N·m, against 1 bar {back:.1}"
+        );
+    }
+
+    #[test]
+    fn a_lift_off_under_boost_blows_off() {
+        // A turbo engine heard with its blow-off valve's jet (`sound.blow_off` 1) and without
+        // (0), the physics the same: identical while the pedal is down (the valve is shut), apart
+        // once it lifts under boost
+        let run = |blow_off: f64| {
+            let mut d = EngineDef {
+                turbo: Some(crate::turbo::TurboDef {
+                    bov_recirculating: false,
+                    ..crate::turbo::TurboDef::default()
+                }),
+                ..EngineDef::inline4()
+            };
+            d.sound.blow_off = blow_off;
+            let mut e = Engine::new(d, 4000.0, 1);
+            let dt = 1.0 / 48_000.0;
+            let on = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(4000.0),
+                ..Controls::default()
+            };
+            let off = Controls {
+                throttle: 0.0,
+                ..on
+            };
+            let a: Vec<f64> = (0..(2.0 / dt) as usize).map(|_| e.step(dt, &on)).collect();
+            let b: Vec<f64> = (0..(0.3 / dt) as usize).map(|_| e.step(dt, &off)).collect();
+            (a, b)
+        };
+        let (on_heard, off_heard) = run(1.0);
+        let (on_quiet, off_quiet) = run(0.0);
+        assert_eq!(on_heard, on_quiet);
+        let rms = |x: &[f64]| (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
+        let jet: Vec<f64> = off_heard
+            .iter()
+            .zip(&off_quiet)
+            .map(|(a, b)| a - b)
+            .collect();
+        assert!(
+            rms(&jet) > 0.01 * rms(&off_quiet),
+            "{} vs {}",
+            rms(&jet),
+            rms(&off_quiet)
+        );
+    }
+
+    #[test]
+    fn the_k20c1_casts_its_uneven_primaries_in_its_head() {
+        // Four tracts cast into one outlet in the head, of very uneven lengths (JE Pistons / 4
+        // Piston Racing's K20C1 head; BTCC's "Race Engine of the Year"). By hand from its 94 mm
+        // bore pitch, the outlet central, 80 mm of port: inner √(47² + 80²) = 93 mm, outer
+        // √(141² + 80²) = 162 mm; the mean of the pipes 0.13 m, ±0.032 m.
+        let d = EngineDef::honda_k20c1();
+        let lengths: Vec<f64> = d
+            .exhaust
+            .primary_length_deviation_m
+            .iter()
+            .map(|x| d.exhaust.primary_length_m + x)
+            .collect();
+        assert_eq!(lengths.len(), 4);
+        for (l, want) in lengths.iter().zip([0.162, 0.098, 0.098, 0.162]) {
+            assert!((l - want).abs() < 1e-9, "{lengths:?}");
+        }
+    }
+
+    #[test]
+    fn a_direct_injected_lift_off_stops_firing_with_its_injections() {
+        // The K20C1 injects into the cylinder (EngineLabs; Mountune's K20C1 data: "direct fuel
+        // injection"): no port wall holds a film for the cylinders to burn after the cut
+        // (Aquino's x–τ is the port-injected engine's). Revved free to its limiter on full boost
+        // and lifted off: after the charges already injected (0.1 s, 5 cycles a cylinder at
+        // 6000 rpm), nothing fires and nothing burns in the exhaust. With the port film it
+        // fired 121 times and burnt 4.8 kJ in the exhaust over that second.
+        let mut e = Engine::new(EngineDef::honda_k20c1(), 3000.0, 1);
+        let dt = 1.0 / 48_000.0;
+        let c = |throttle| Controls {
+            throttle,
+            ..Controls::default()
+        };
+        (0..(2.0 / dt) as usize).for_each(|_| {
+            e.step(dt, &c(1.0));
+        });
+        (0..(0.1 / dt) as usize).for_each(|_| {
+            e.step(dt, &c(0.0));
+        });
+        let (n, q) = (e.combustions(), e.afterburn_j());
+        (0..(0.9 / dt) as usize).for_each(|_| {
+            e.step(dt, &c(0.0));
+        });
+        let (fired, burnt) = (e.combustions() - n, e.afterburn_j() - q);
+        assert!(fired == 0 && burnt < 1.0, "{fired} fired, {burnt} J");
+    }
+
+    #[test]
+    fn a_turbo_engine_is_heard_with_its_compressors_tone_at_blade_passing() {
+        // With and without the tone, the physics the same: their difference is a tone at Z·N of
+        // the shaft alone, here 6 blades at the speed the turbo reports.
+        let run = |whine: f64| {
+            let mut d = EngineDef {
+                turbo: Some(crate::turbo::TurboDef::default()),
+                ..EngineDef::inline4()
+            };
+            d.sound.compressor_whine = whine;
+            let mut e = Engine::new(d, 4000.0, 1);
+            let dt = 1.0 / 192_000.0;
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(4000.0),
+                ..Controls::default()
+            };
+            let x: Vec<f64> = (0..(1.2 / dt) as usize).map(|_| e.step(dt, &c)).collect();
+            (x, e.turbo().expect("a turbo").shaft_rpm)
+        };
+        let ((on, rpm), (off, _)) = (run(1.0), run(0.0));
+        let tail = on.len() - 19_200;
+        let diff: Vec<f64> = on[tail..]
+            .iter()
+            .zip(&off[tail..])
+            .map(|(a, b)| a - b)
+            .collect();
+        let changes = diff.windows(2).filter(|w| w[0] * w[1] < 0.0).count() as f64;
+        // 0.1 s, two sign changes a cycle
+        let f = changes / (2.0 * 0.1);
+        let expected = 6.0 * rpm / 60.0;
+        assert!(expected > 1000.0, "the shaft spins: {rpm} rpm");
+        assert!((f / expected - 1.0).abs() < 0.05, "{f} Hz vs {expected} Hz");
+    }
+
+    #[test]
+    fn the_k20c1_blows_out_through_the_fk8s_outlets() {
+        // The FK8's silencer ends in three tips, the outer two straight-through (Honda's product
+        // planner, via Mod Bargains; Tomei lists them 86 mm inside); the K20C1 counts those two.
+        assert_eq!(EngineDef::honda_k20c1().exhaust.tail_outlets, 2);
+    }
+
+    #[test]
+    fn two_outlets_halve_the_jets_speed() {
+        // Continuity at a fixed flow: twice the area, half the speed. On the correlation,
+        // u^7.5·A, that is 2^-7.5·2 = 2^-6.5 in power: −19.6 dB.
+        let speed = |outlets: u32| {
+            let mut d = EngineDef::inline4();
+            d.exhaust.tail_outlets = outlets;
+            let mut e = Engine::new(d, 5000.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(5000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.5, &c);
+            let n = (0.2 / DT) as usize;
+            let mut u = 0.0;
+            for _ in 0..n {
+                e.step(DT, &c);
+                u += e.tail_exit_velocity()[0] / n as f64;
+            }
+            u
+        };
+        let (one, two) = (speed(1), speed(2));
+        assert!((two / one - 0.5).abs() < 0.05, "{one} vs {two} m/s");
+    }
+
+    #[test]
+    fn the_k20c1_breathes_out_through_the_fk8s_57_mm_pipe() {
+        // The FK8's factory pipework is 57 mm (Real Speed Engineering, RSE titanium exhaust for
+        // the FK8: "standard pipework of just 57mm"); the tail and the pipe after the catalyst
+        // are that bore, not the 50 mm of the K20A it is built from.
+        let d = EngineDef::honda_k20c1();
+        assert_eq!(d.exhaust.tail_diameter_m, 0.057);
+        let pipes: Vec<f64> = d
+            .exhaust
+            .after_collector
+            .iter()
+            .filter_map(|s| match s {
+                crate::exhaust::Segment::Pipe { diameter_m, .. } => Some(*diameter_m),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pipes, vec![0.057]);
+    }
+
+    #[test]
+    fn a_lift_off_under_boost_lets_the_boost_down_through_its_volume() {
+        // The boost is the pressure of the air between compressor and throttle (intercooler and
+        // pipes, 5 L): it moves at dp/dt = RT/V·(ṁ in − ṁ out), at most 287·320/0.005·0.3 kg/s ≈
+        // 5.5 MPa/s, 7.4 kPa over one turbo step at 48 kHz (64 steps, 1.33 ms). Taken as the
+        // compressor's instant delivery it jumped 75 kPa at every step after a lift-off, the
+        // blow-off valve shut and open by turns (a 3 kHz square wave at 384 kHz: heard as a
+        // burst at every shift).
+        let mut e = Engine::new(EngineDef::honda_k20c1(), 6500.0, 1);
+        let dt = 1.0 / 48_000.0;
+        let on = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(6500.0),
+            ..Controls::default()
+        };
+        let off = Controls {
+            throttle: 0.0,
+            ..on
+        };
+        (0..(2.5 / dt) as usize).for_each(|_| {
+            e.step(dt, &on);
+        });
+        let boost = |e: &Engine| e.turbo().expect("a turbo").boost_pa;
+        let full = boost(&e);
+        assert!(full > ATM_PA + 1e5, "{full}");
+        let (mut last, mut jump): (f64, f64) = (full, 0.0);
+        (0..(0.5 / dt) as usize).for_each(|_| {
+            e.step(dt, &off);
+            jump = jump.max((boost(&e) - last).abs());
+            last = boost(&e);
+        });
+        assert!(jump < 10e3, "{jump}");
+        // and with the throttle shut it does not climb (the shaft still spinning, the open
+        // valve holds it near the compressor's delivery through it)
+        assert!(last < full, "{last} vs {full}");
+    }
+
+    #[test]
+    fn a_lift_off_under_boost_is_quieter_than_the_pull() {
+        // Throttle shut on full boost: 0.4 bar in the manifold against 2.5 bar before the
+        // turbine, the valves blow back and forth — pulses the turbine's nozzle meets before the
+        // tail (a series element R = dp₀₃/dṁ, transmitting 1/(1 + R·A/2c): about a fifth at a
+        // lift-off's low flow and high inlet pressure). Without it they reached the tail whole and
+        // every shift was 13–16 dB over the pull it interrupted; a real car's falls silent.
+        let mut e = Engine::new(EngineDef::honda_k20c1(), 6500.0, 1);
+        let dt = 1.0 / 48_000.0;
+        let on = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(6500.0),
+            ..Controls::default()
+        };
+        let off = Controls {
+            throttle: 0.0,
+            ..on
+        };
+        let rms = |x: &[f64]| (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
+        (0..(2.0 / dt) as usize).for_each(|_| {
+            e.step(dt, &on);
+        });
+        let pull: Vec<f64> = (0..(0.5 / dt) as usize).map(|_| e.step(dt, &on)).collect();
+        let lift: Vec<f64> = (0..(0.4 / dt) as usize).map(|_| e.step(dt, &off)).collect();
+        assert!(rms(&lift) < rms(&pull), "{} vs {}", rms(&lift), rms(&pull));
+    }
+
+    #[test]
+    fn a_turbo_engines_induction_pulses_die_in_its_charge_air() {
+        // What reaches the air filter is the compressor's flow, not the throttle's: between them
+        // the charge air (5 L) is a compliance C = V/(RT) drained by the compressor's and the
+        // engine's conductances, a low-pass of τ = C/(1/R_c + ṁ/p) ≈ 20 ms — the firing at 100 Hz
+        // passes 1/√(1 + (2π·100·0.02)²) ≈ 0.08 of it. Taken straight from the throttle, the
+        // K20C1's boosted pull was 10-12 dB louder at its intake than at its tail.
+        let swing = |turbo: bool| {
+            let mut d = EngineDef::honda_k20c1();
+            if !turbo {
+                d.turbo = None;
+            }
+            let mut e = Engine::new(d, 3000.0, 1);
+            let dt = 1.0 / 48_000.0;
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(3000.0),
+                ..Controls::default()
+            };
+            (0..(2.0 / dt) as usize).for_each(|_| {
+                e.step(dt, &c);
+            });
+            let x: Vec<f64> = (0..(0.4 / dt) as usize)
+                .map(|_| {
+                    e.step(dt, &c);
+                    e.texture_signal
+                })
+                .collect();
+            let mean = x.iter().sum::<f64>() / x.len() as f64;
+            (x.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / x.len() as f64).sqrt()
+        };
+        let (boosted, natural) = (swing(true), swing(false));
+        assert!(boosted < 0.25 * natural, "{boosted} vs {natural}");
+    }
+
+    #[test]
+    fn the_ports_see_the_turbine_inlet_move_smoothly() {
+        // The turbo steps every 64 engine steps on 50 ms means: handed over as a staircase, its
+        // inlet pressure stepped the ports' back pressure and the turbine's resistance every 64
+        // steps — a click train heard as a tone at the update rate (6 kHz at 384 kHz, with its
+        // 12 kHz harmonic). What the engine sees follows it continuously.
+        let mut e = Engine::new(EngineDef::honda_k20c1(), 5000.0, 1);
+        let dt = 1.0 / 48_000.0;
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(5000.0),
+            ..Controls::default()
+        };
+        (0..(1.0 / dt) as usize).for_each(|_| {
+            e.step(dt, &c);
+        });
+        let seen = |e: &Engine| e.turbo().expect("a turbo").turbine_inlet_pa;
+        let mut last = seen(&e);
+        let mut held = 0;
+        let n = 6400;
+        for _ in 0..n {
+            e.step(dt, &c);
+            if seen(&e) == last {
+                held += 1;
+            }
+            last = seen(&e);
+        }
+        assert!(held < n / 10, "held {held} of {n} steps");
+    }
+
+    #[test]
+    fn the_k20c1_rides_in_a_civic_type_r() {
+        // Its own car: the FK8's six ratios and final drive, and a clutch that holds the
+        // engine's torque — the hatchback's 350 N·m clutch slipped under the turbo's ~445 N·m and
+        // the gears scene sat at 6000 rpm in every gear
+        let v = EngineDef::honda_k20c1().vehicle;
+        assert_eq!(
+            v.gear_ratios,
+            vec![3.625, 2.115, 1.529, 1.125, 0.911, 0.734]
+        );
+        assert_eq!(v.final_drive, 4.105);
+        assert!(v.clutch_capacity_nm > 445.0, "{}", v.clutch_capacity_nm);
+    }
+
+    #[test]
+    fn a_recirculating_bypass_valve_is_not_heard() {
+        // the factory valve vents into the intake: the same lift-off, heard or not, is the same
+        let run = |blow_off: f64| {
+            let mut d = EngineDef {
+                turbo: Some(crate::turbo::TurboDef::default()),
+                ..EngineDef::inline4()
+            };
+            d.sound.blow_off = blow_off;
+            let mut e = Engine::new(d, 4000.0, 1);
+            let dt = 1.0 / 48_000.0;
+            let on = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(4000.0),
+                ..Controls::default()
+            };
+            let off = Controls {
+                throttle: 0.0,
+                ..on
+            };
+            for _ in 0..(2.0 / dt) as usize {
+                e.step(dt, &on);
+            }
+            (0..(0.3 / dt) as usize)
+                .map(|_| (e.step(dt, &off), e.turbo().map_or(0.0, |s| s.bov_m_dot)))
+                .collect::<Vec<_>>()
+        };
+        let (heard, quiet) = (run(1.0), run(0.0));
+        assert!(heard.iter().any(|v| v.1 > 0.0), "it vents");
+        assert_eq!(heard, quiet);
+    }
+
+    #[test]
+    fn a_turbo_round_trips_and_old_files_have_none() {
+        let old: EngineDef = serde_yaml_ng::from_str("cylinders: 4\n").unwrap();
+        assert_eq!(old.turbo, None);
+        let d = EngineDef {
+            turbo: Some(crate::turbo::TurboDef::default()),
+            ..EngineDef::inline4()
+        };
+        let json: EngineDef = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+        let yaml: EngineDef =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&d).unwrap()).unwrap();
+        assert_eq!((json, yaml), (d.clone(), d));
     }
 
     #[test]
@@ -4610,14 +5479,14 @@ mod tests {
         let scale = 0.008_678_7;
         // 780 rpm against 800: err = 0.025; falling at 400 rpm/s (filtered: no new change,
         // so the rate decays by dt/τ = 1/150 → 397.33)
-        let mut e = idling_at(780.0, 0.0, -400.0, -3.0);
+        let mut e = idling_at(780.0, 0.0, -400.0, -8.0);
         e.idle_control(dt, &Controls::default());
         assert_relative_eq!(e.iac_rate, -397.333, max_relative = 1e-5);
         // integral 0.5 · 0.025 · 1e-3 = 1.25e-5; air = scale · (1.25e-5 + 0.05 · 0.025)
         assert_relative_eq!(e.iac_integral, 1.25e-5, max_relative = 1e-9);
         assert_relative_eq!(e.iac, scale * 1.2625e-3, max_relative = 1e-4);
-        // spark: 80 · 0.025 + 10 · 397.33/800 = 6.9667 from the −10° reserve → −3.0333°
-        assert_relative_eq!(e.idle_spark_deg, -3.0333, max_relative = 1e-4);
+        // spark: 80 · 0.025 + 10 · 397.33/800 = 6.9667 from the −15° reserve → −8.0333°
+        assert_relative_eq!(e.idle_spark_deg, -8.0333, max_relative = 1e-4);
         // a new speed reading: 700 → 720 rpm in 1 ms is 20 000 rpm/s, filtered by 1/150
         let mut e = idling_at(720.0, 0.0, 0.0, -10.0);
         e.iac_last_rpm = 700.0;

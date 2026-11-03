@@ -222,6 +222,10 @@ pub fn validate(def: &EngineDef) -> Result<(), ConfigError> {
          of its length), Ø 5–300 mm",
     );
     check(
+        (1..=8).contains(&x.tail_outlets),
+        "exhaust outlets: 1–8 side by side",
+    );
+    check(
         within(x.muffler_transmission, 0.05, 1.0),
         "muffler transmission must be 0.05–1",
     );
@@ -475,6 +479,7 @@ mod tests {
                 "exhaust",
                 Box::new(|d| d.exhaust.tail_diameter_m = f64::NAN),
             ),
+            ("outlets", Box::new(|d| d.exhaust.tail_outlets = 0)),
             (
                 "intake valve",
                 Box::new(|d| d.intake_valve.open_deg = f64::NAN),
@@ -637,6 +642,43 @@ mod tests {
             let mut o = default_firing_order(n);
             o.sort();
             assert_eq!(o, (1..=n).collect::<Vec<_>>(), "n = {n}");
+        }
+    }
+}
+
+/// The shipped preset files hold the built-ins exactly (engine-app checks it through its own
+/// loader too; this one runs with the core alone, as the mutation gate does).
+#[cfg(test)]
+mod shipped_presets {
+    use super::*;
+    use crate::engine::EngineDef;
+
+    #[test]
+    fn the_built_ins_are_what_the_preset_files_say() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../presets");
+        type BuiltIn = (&'static str, fn() -> EngineDef);
+        let built_ins: [BuiltIn; 11] = [
+            ("single", EngineDef::single),
+            ("inline4", EngineDef::inline4),
+            ("honda-k20a", EngineDef::honda_k20a),
+            ("honda-k20a-tuned", EngineDef::honda_k20a_tuned),
+            ("honda-k20c1", EngineDef::honda_k20c1),
+            ("subaru-ej25", EngineDef::subaru_ej25),
+            ("mazda-renesis", EngineDef::mazda_renesis),
+            ("mazda-13b-bridgeport", EngineDef::mazda_13b_bridgeport),
+            ("lfa-v10", EngineDef::lfa_v10),
+            ("v8-flatplane", EngineDef::flatplane_v8),
+            ("v8-crossplane", EngineDef::crossplane_v8),
+        ];
+        for (slug, def) in built_ins {
+            let path = dir.join(format!("{slug}.yaml"));
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(
+                from_str(&text, Format::Yaml).unwrap(),
+                def(),
+                "{} is stale: regenerate with --save",
+                path.display()
+            );
         }
     }
 }
