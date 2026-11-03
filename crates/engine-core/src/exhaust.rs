@@ -2021,7 +2021,9 @@ mod tests {
             tails.extend_from_slice(&direct.tails);
         }
         assert_eq!(out.tails, tails);
-        // the last step's means took hold: its turbine joined the collectors
+        // the last step's flows are the ones the net follows, its turbine joined the collectors
+        assert_eq!(blocked.mean_flows, direct.mean_flows);
+        assert_eq!(blocked.mean_flows.0, means[1].0);
         assert!(blocked.branches.iter().all(|b| b.turbine.is_some()));
     }
 
