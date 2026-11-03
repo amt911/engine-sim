@@ -1810,6 +1810,58 @@ fn rotary_spark_share(rpm: f64) -> f64 {
     (0.35 + 0.65 * rpm.max(0.0) / 4000.0).min(1.0)
 }
 
+/// The ECU's spark advance for a charge burning at `flame`, ° BTDC, at `rpm`: MBT for its flame,
+/// a rotor's scaled by [`rotary_spark_share`].
+fn spark_advance_deg(def: &EngineDef, flame: f64, rpm: f64) -> f64 {
+    let share = if def.geometry.rotor.is_some() {
+        rotary_spark_share(rpm)
+    } else {
+        1.0
+    };
+    def.spark_advance_for(flame) * share
+}
+
+/// The blow-off valve's jet: (velocity m/s, bore m, density kg/m³) of the air `s` vents through
+/// a valve of `area` m², at the delivered air's density p/(R·T) — continuity, v = ṁ/ρA.
+fn bov_jet(s: &crate::turbo::TurboState, area: f64) -> (f64, f64, f64) {
+    let rho = s.boost_pa / (crate::gas::R_AIR * s.boost_t_k);
+    (s.bov_m_dot / (rho * area), (4.0 * area / PI).sqrt(), rho)
+}
+
+/// The acoustic velocity a tail's pressure swing `p` Pa drives out of each of its `outlets`
+/// exits of impedance `z` (Pa·s/m): u = p/(z·n), the swing shared between them.
+fn tail_swing_velocity(p: f64, z: f64, outlets: f64) -> f64 {
+    p / (z * outlets)
+}
+
+/// A first-order lag: `prev` moved toward `target` by `dt` over the time constant `tau`, at
+/// most all the way (explicit Euler, clamped so a long step never overshoots).
+fn lag(prev: f64, target: f64, dt: f64, tau: f64) -> f64 {
+    prev + (target - prev) * (dt / tau).min(1.0)
+}
+
+/// The turbo's mean flows (exhaust kg/s, its temperature K, air kg/s) followed over
+/// [`TURBO_FLOW_TAU_S`] by what the engine pushed and drew in `acc` = (steps, exhaust kg,
+/// exhaust kg·K, air kg) of `dt` each. The temperature keeps its last mean while no exhaust left.
+fn turbo_mean_flows(
+    mean: (f64, f64, f64),
+    acc: (usize, f64, f64, f64),
+    dt: f64,
+) -> (f64, f64, f64) {
+    let (n, ex, ex_t, air) = acc;
+    let span = n as f64 * dt;
+    let t = if ex > 0.0 {
+        lag(mean.1, ex_t / ex, span, TURBO_FLOW_TAU_S)
+    } else {
+        mean.1
+    };
+    (
+        lag(mean.0, ex / span, span, TURBO_FLOW_TAU_S),
+        t,
+        lag(mean.2, air / span, span, TURBO_FLOW_TAU_S),
+    )
+}
+
 /// Net imep relative to its value at MBT timing for a combustion retarded `retard_deg` crank
 /// degrees from MBT (Heywood, *Internal Combustion Engine Fundamentals*, 2nd ed., eq. 9.29: a
 /// fit over many fuels, mixtures, compression ratios and loads of naturally aspirated SI
@@ -2664,12 +2716,7 @@ impl Engine {
     /// The ECU's spark advance for cylinder `i`'s charge, ° BTDC: MBT for its flame.
     #[cfg(test)]
     fn spark_advance(&self, i: usize) -> f64 {
-        let share = if self.def.geometry.rotor.is_some() {
-            rotary_spark_share(self.rpm())
-        } else {
-            1.0
-        };
-        self.def.spark_advance_for(self.cyl[i].flame) * share
+        spark_advance_deg(&self.def, self.cyl[i].flame, self.rpm())
     }
 
     /// Move the spark trim towards `want` no faster than half the crank's own travel this
@@ -2833,11 +2880,7 @@ impl Engine {
         let blowby_area = BLOWBY_AREA_FRACTION * g.piston_area();
 
         let mut gas_torque = 0.0;
-        let spark_share = if g.rotor.is_some() {
-            rotary_spark_share(self.rpm())
-        } else {
-            1.0
-        };
+        let spark_rpm = self.rpm();
         let retard = torque_intervention(c.torque_cut, self.charge_share);
         let diesel = self.def.combustion.diesel().cloned();
         let n_cyl = self.cyl.len();
@@ -3160,7 +3203,7 @@ impl Engine {
                 }
             }
             let spark_deg = 720.0
-                - (self.def.spark_advance_for(cs.flame) * spark_share + self.idle_spark_deg
+                - (spark_advance_deg(&self.def, cs.flame, spark_rpm) + self.idle_spark_deg
                     - retard);
             let mut new_burn = false;
             // The spark fires on the first step at or past its angle (within the half cycle
@@ -3542,15 +3585,9 @@ impl Engine {
             self.turbo_acc.0 += 1;
             self.turbo_acc.3 += drawn.max(0.0) * dt;
             if self.turbo_acc.0 >= TURBO_EVERY {
-                let (n, ex, ex_t, air) = self.turbo_acc;
-                let span = n as f64 * dt;
-                let k = (span / TURBO_FLOW_TAU_S).min(1.0);
-                let m = &mut self.turbo_mean;
-                m.0 += (ex / span - m.0) * k;
-                if ex > 0.0 {
-                    m.1 += (ex_t / ex - m.1) * k;
-                }
-                m.2 += (air / span - m.2) * k;
+                let span = self.turbo_acc.0 as f64 * dt;
+                let m = turbo_mean_flows(self.turbo_mean, self.turbo_acc, dt);
+                self.turbo_mean = m;
                 self.turbo_state = Some(t.step(m.0, m.1, m.2, bov_open, span));
                 self.turbo_acc = (0, 0.0, 0.0, 0.0);
             }
@@ -3558,10 +3595,9 @@ impl Engine {
 
         // what the engine sees of the turbo follows its steps continuously
         if let Some(target) = self.turbo_state {
-            let k = (dt / TURBO_SEEN_TAU_S).min(1.0);
             self.turbo_seen = Some(match self.turbo_seen {
                 Some(s) => {
-                    let f = |a: f64, b: f64| a + (b - a) * k;
+                    let f = |a: f64, b: f64| lag(a, b, dt, TURBO_SEEN_TAU_S);
                     crate::turbo::TurboState {
                         boost_pa: f(s.boost_pa, target.boost_pa),
                         boost_t_k: f(s.boost_t_k, target.boost_t_k),
@@ -3598,8 +3634,7 @@ impl Engine {
         // through the charge air's low-pass (`TurboState::charge_tau_s`)
         let heard = match self.turbo_state {
             Some(s) => {
-                self.compressor_flow +=
-                    (drawn - self.compressor_flow) * (dt / s.charge_tau_s).min(1.0);
+                self.compressor_flow = lag(self.compressor_flow, drawn, dt, s.charge_tau_s);
                 self.compressor_flow
             }
             None => drawn,
@@ -3782,9 +3817,7 @@ impl Engine {
                     (Some(t), Some(s))
                         if snd.blow_off > 0.0 && t.bov_area_m2 > 0.0 && !t.bov_recirculating =>
                     {
-                        let rho = s.boost_pa / (crate::gas::R_AIR * s.boost_t_k);
-                        let v = s.bov_m_dot / (rho * t.bov_area_m2);
-                        let d = (4.0 * t.bov_area_m2 / PI).sqrt();
+                        let (v, d, rho) = bov_jet(&s, t.bov_area_m2);
                         let p = self.bov_jet.step(v, d, rho, 1.0, dt);
                         snd.blow_off * l.spread_from_1m_at(n_banks, p)
                     }
@@ -3902,7 +3935,7 @@ impl Engine {
         for (t, &signal) in tails.iter().enumerate() {
             self.tail_dc[t] += (signal - self.tail_dc[t]) * k;
             // the swing rides on the mean; no exit blows past sound (it chokes first)
-            let swing = (signal - self.tail_dc[t]) / (z * outlets);
+            let swing = tail_swing_velocity(signal - self.tail_dc[t], z, outlets);
             self.tail_u[t] = (u_mean[t] + swing).min(TAIL_SONIC);
         }
         let mut jets = 0.0;
@@ -4668,6 +4701,158 @@ mod tests {
         }
         let (tt, tn) = (e.torque_nm(), n.torque_nm());
         assert!(tt > 1.5 * tn, "turbo {tt:.0} N·m, NA {tn:.0}");
+    }
+
+    #[test]
+    fn a_blow_off_jet_and_a_tails_swing_by_hand() {
+        // 2 bar at 300 K: ρ = 2e5 / (287.05·300) = 2.3225 kg/m³; 0.02 kg/s through 3 cm²
+        // leaves at 0.02 / (2.3225·3e-4) = 28.70 m/s from a 19.54 mm bore (√(4·3e-4/π))
+        let s = crate::turbo::TurboState {
+            boost_pa: 2e5,
+            boost_t_k: 300.0,
+            turbine_inlet_pa: ATM_PA,
+            shaft_rpm: 0.0,
+            bov_m_dot: 0.02,
+            turbine_dp_dm: 0.0,
+            charge_tau_s: 0.05,
+        };
+        let (v, d, rho) = bov_jet(&s, 3e-4);
+        assert_relative_eq!(rho, 2.3225, max_relative = 2e-4);
+        assert_relative_eq!(v, 28.70, max_relative = 2e-4);
+        assert_relative_eq!(d, 0.019544, max_relative = 2e-4);
+        // 400 Pa on 400 Pa·s/m: 1 m/s from one exit, half from each of two
+        assert_relative_eq!(tail_swing_velocity(400.0, 400.0, 1.0), 1.0);
+        assert_relative_eq!(tail_swing_velocity(400.0, 400.0, 2.0), 0.5);
+    }
+
+    #[test]
+    fn a_lag_moves_its_share_of_the_gap_and_never_past_it() {
+        // dt/τ of the gap per step, by hand: 1/4 of 0→1, 1/4 of 2→6; a step longer than τ lands
+        // on the target
+        assert_relative_eq!(lag(0.0, 1.0, 1.0, 4.0), 0.25);
+        assert_relative_eq!(lag(2.0, 6.0, 1.0, 4.0), 3.0);
+        assert_relative_eq!(lag(0.0, 1.0, 8.0, 4.0), 1.0);
+    }
+
+    #[test]
+    fn the_turbo_follows_the_engines_mean_flows_over_50_ms() {
+        // 64 steps at 48 kHz span 1/750 s, k = span / 0.05 s = 1/37.5, by hand. The engine pushed
+        // 0.2 kg/s at 1000 K and drew 0.3 kg/s against means of 0.1 kg/s, 900 K, 0.1 kg/s:
+        // each mean moves 1/37.5 of its gap
+        let dt = 1.0 / 48_000.0;
+        let span = 64.0 * dt;
+        let ex = 0.2 * span;
+        let m = turbo_mean_flows((0.1, 900.0, 0.1), (64, ex, ex * 1000.0, 0.3 * span), dt);
+        assert_relative_eq!(m.0, 0.1 + 0.1 / 37.5, max_relative = 1e-12);
+        assert_relative_eq!(m.1, 900.0 + 100.0 / 37.5, max_relative = 1e-12);
+        assert_relative_eq!(m.2, 0.1 + 0.2 / 37.5, max_relative = 1e-12);
+        // nothing left: the flow decays, the temperature keeps its last mean
+        let m = turbo_mean_flows((0.1, 900.0, 0.1), (64, 0.0, 0.0, 0.0), dt);
+        assert_relative_eq!(m.0, 0.1 - 0.1 / 37.5, max_relative = 1e-12);
+        assert_eq!(m.1, 900.0);
+    }
+
+    #[test]
+    fn a_rotors_spark_follows_its_map_and_a_pistons_takes_mbt() {
+        // the Renesis at 2000 rpm: 0.35 + 0.65·2000/4000 = 0.675 of MBT; at 8000, all of it; a
+        // piston engine always all of it
+        let r = EngineDef::mazda_renesis();
+        let mbt = r.spark_advance_for(1.0);
+        assert!(mbt > 10.0, "MBT {mbt}°");
+        assert_relative_eq!(spark_advance_deg(&r, 1.0, 2000.0), 0.675 * mbt);
+        assert_relative_eq!(spark_advance_deg(&r, 1.0, 8000.0), mbt);
+        let p = EngineDef::inline4();
+        assert_relative_eq!(spark_advance_deg(&p, 1.0, 2000.0), p.spark_advance_for(1.0));
+    }
+
+    #[test]
+    fn the_engine_sees_the_turbo_through_a_2_ms_lag_and_steps_it_every_64_steps() {
+        let dt = 1.0 / 48_000.0;
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        let mut e = Engine::new(EngineDef::honda_k20c1(), 3000.0, 1);
+        for _ in 0..2400 {
+            e.step(dt, &c);
+        }
+        let s0 = e.turbo_seen.expect("a turbo engine sees its turbo");
+        let target = crate::turbo::TurboState {
+            boost_pa: s0.boost_pa + 10_000.0,
+            boost_t_k: s0.boost_t_k + 10.0,
+            turbine_inlet_pa: s0.turbine_inlet_pa + 10_000.0,
+            turbine_dp_dm: s0.turbine_dp_dm + 1000.0,
+            ..s0
+        };
+        e.turbo_state = Some(target);
+        e.turbo_acc.0 = 0;
+        e.step(dt, &c);
+        // not a 64th step: the turbo holds its state
+        assert_eq!(e.turbo_state, Some(target));
+        // dt / 2 ms = 1/96 of each gap, by hand
+        let s = e.turbo_seen.unwrap();
+        assert_relative_eq!(
+            s.boost_pa - s0.boost_pa,
+            10_000.0 / 96.0,
+            max_relative = 1e-9
+        );
+        assert_relative_eq!(s.boost_t_k - s0.boost_t_k, 10.0 / 96.0, max_relative = 1e-9);
+        assert_relative_eq!(
+            s.turbine_inlet_pa - s0.turbine_inlet_pa,
+            10_000.0 / 96.0,
+            max_relative = 1e-9
+        );
+        assert_relative_eq!(
+            s.turbine_dp_dm - s0.turbine_dp_dm,
+            1000.0 / 96.0,
+            max_relative = 1e-9
+        );
+        // the 64th step moves the turbo and starts a new span
+        e.turbo_acc.0 = TURBO_EVERY - 1;
+        e.step(dt, &c);
+        assert_ne!(e.turbo_state, Some(target));
+        assert_eq!(e.turbo_acc.0, 0);
+    }
+
+    #[test]
+    fn the_exhaust_pushes_against_the_turbines_inlet() {
+        // The inline-4 at 3000 rpm, full throttle, its ports seeing 1 bar more at the turbine's
+        // inlet (the intake at the atmosphere): the pistons push the exhaust out against it, about
+        // V_d·Δp/4π = 2.0e-3·1e5/4π ≈ 16 N·m of pumping work by hand; at least half of it shows
+        let run = |inlet_pa: f64| {
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(3000.0),
+                ..Controls::default()
+            };
+            let mut e = Engine::new(EngineDef::inline4(), 3000.0, 1);
+            let seen = crate::turbo::TurboState {
+                boost_pa: ATM_PA,
+                boost_t_k: crate::intake_fv::AMBIENT_T_K,
+                turbine_inlet_pa: inlet_pa,
+                shaft_rpm: 0.0,
+                bov_m_dot: 0.0,
+                turbine_dp_dm: 0.0,
+                charge_tau_s: 0.05,
+            };
+            let dt = 1.0 / 48_000.0;
+            let mut sum = 0.0;
+            let n = 48_000;
+            for k in 0..n {
+                e.turbo_seen = Some(seen);
+                e.step(dt, &c);
+                if k >= n / 2 {
+                    sum += e.torque_nm();
+                }
+            }
+            sum / (n / 2) as f64
+        };
+        let (free, back) = (run(ATM_PA), run(ATM_PA + 1e5));
+        assert!(
+            free - back > 8.0,
+            "free {free:.1} N·m, against 1 bar {back:.1}"
+        );
     }
 
     #[test]
