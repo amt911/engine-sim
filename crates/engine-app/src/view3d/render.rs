@@ -275,7 +275,6 @@ impl Resources {
     }
 
     fn upload_meshes(&mut self, device: &wgpu::Device, key: MeshKey) {
-        let s = key.segments;
         let build = |m: Mesh| GpuMesh {
             vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("3d mesh"),
@@ -290,21 +289,9 @@ impl Resources {
             count: m.indices.len() as u32,
         };
         self.meshes.clear();
-        self.meshes
-            .insert(MeshKind::Cylinder, build(mesh::cylinder(s)));
-        self.meshes.insert(MeshKind::Cuboid, build(mesh::cuboid()));
-        self.meshes
-            .insert(MeshKind::Housing, build(mesh::housing(key.e_over_r, 4 * s)));
-        self.meshes
-            .insert(MeshKind::Rotor, build(mesh::rotor(s.div_ceil(2))));
-        self.meshes.insert(
-            MeshKind::HousingRing,
-            build(mesh::housing_ring(key.e_over_r, 4 * s)),
-        );
-        self.meshes
-            .insert(MeshKind::Liner, build(mesh::half_liner(s)));
-        self.meshes
-            .insert(MeshKind::Web, build(mesh::crank_web(s.div_ceil(2))));
+        for kind in MeshKind::ALL {
+            self.meshes.insert(kind, build(unit_mesh(kind, key)));
+        }
         self.key = Some(key);
     }
 
@@ -392,6 +379,22 @@ impl Resources {
         if let Some((buf, _)) = &self.instances {
             queue.write_buffer(buf, 0, bytemuck::cast_slice(&self.staging));
         }
+    }
+}
+
+/// The unit mesh of each kind at the key's detail (an exhaustive match: a new kind cannot be
+/// left without its mesh, as the pipes' ball joints once were).
+pub fn unit_mesh(kind: MeshKind, key: MeshKey) -> Mesh {
+    let s = key.segments;
+    match kind {
+        MeshKind::Cylinder => mesh::cylinder(s),
+        MeshKind::Cuboid => mesh::cuboid(),
+        MeshKind::Housing => mesh::housing(key.e_over_r, 4 * s),
+        MeshKind::HousingRing => mesh::housing_ring(key.e_over_r, 4 * s),
+        MeshKind::Rotor => mesh::rotor(s.div_ceil(2)),
+        MeshKind::Liner => mesh::half_liner(s),
+        MeshKind::Web => mesh::crank_web(s.div_ceil(2)),
+        MeshKind::Sphere => mesh::sphere(s.div_ceil(2)),
     }
 }
 
@@ -484,6 +487,19 @@ impl egui_wgpu::CallbackTrait for Frame3d {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_kind_has_a_mesh() {
+        let key = MeshKey {
+            def_version: 1,
+            segments: 12,
+            e_over_r: 0.15,
+        };
+        for kind in MeshKind::ALL {
+            let m = unit_mesh(kind, key);
+            assert!(!m.indices.is_empty(), "{kind:?}");
+        }
+    }
 
     #[test]
     fn target_size_is_never_zero() {

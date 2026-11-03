@@ -59,7 +59,7 @@ impl View3dState {
         if self.drawn.as_ref() != Some(def) {
             self.def_version += 1;
             let s = scene::build(def);
-            self.camera = Some(OrbitCamera::framing(s.bounds.0, s.bounds.1, start_yaw(def)));
+            self.camera = Some(OrbitCamera::framing(s.focus.0, s.focus.1, start_yaw(def)));
             self.scene = Some(s);
             self.drawn = Some(def.clone());
         }
@@ -143,8 +143,8 @@ pub fn show(ui: &mut egui::Ui, st: &mut View3dState, snap: &Snapshot) {
         && let Some(s) = &st.scene
     {
         st.camera = Some(OrbitCamera::framing(
-            s.bounds.0,
-            s.bounds.1,
+            s.focus.0,
+            s.focus.1,
             st.drawn.as_ref().map_or(0.6, start_yaw),
         ));
     }

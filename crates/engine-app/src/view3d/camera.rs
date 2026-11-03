@@ -24,14 +24,14 @@ pub struct OrbitCamera {
 }
 
 impl OrbitCamera {
-    /// Looking at a sphere of `radius` around `center` from `yaw`, a little from above, close
-    /// enough that the sphere fills the height (the parts sit well inside their bounding sphere).
+    /// Looking at a sphere of `radius` around `center` from `yaw`, a little from above, far
+    /// enough that the whole sphere shows (5 % margin).
     pub fn framing(center: Vec3, radius: f32, yaw: f32) -> Self {
         Self {
             target: center,
             yaw,
             pitch: 0.3,
-            distance: (0.85 * radius / (0.5 * FOV_Y).sin()).clamp(MIN_DISTANCE, MAX_DISTANCE),
+            distance: (1.05 * radius / (0.5 * FOV_Y).sin()).clamp(MIN_DISTANCE, MAX_DISTANCE),
         }
     }
 
@@ -129,9 +129,9 @@ mod tests {
 
     #[test]
     fn framing_fits_a_sphere() {
-        // 0.85·r / sin(22.5°) = 0.85 / 0.382683 = 2.22116
+        // 1.05·r / sin(22.5°) = 1.05 / 0.382683 = 2.74378
         let c = OrbitCamera::framing(Vec3::ONE, 1.0, 0.4);
-        assert!((c.distance - 2.22116).abs() < 1e-4, "{}", c.distance);
+        assert!((c.distance - 2.74378).abs() < 1e-4, "{}", c.distance);
         assert_eq!((c.target, c.yaw), (Vec3::ONE, 0.4));
     }
 }

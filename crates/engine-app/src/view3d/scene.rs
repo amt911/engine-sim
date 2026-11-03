@@ -32,18 +32,38 @@ pub enum Part {
     ApexSeal,
     Eccentric,
     Plug,
+    Pipe,
+    Joint,
+    Silencer,
+    Catalyst,
+    Resonator,
+    Runner,
+    Trumpet,
+    Plenum,
+    Throttle,
+    Airbox,
+    Turbine,
+    Compressor,
+    Intercooler,
 }
 
 impl Part {
     /// Which unit mesh draws it.
     pub fn mesh(self) -> MeshKind {
         match self {
-            Part::Block | Part::Head | Part::Rod | Part::ApexSeal => MeshKind::Cuboid,
+            Part::Block
+            | Part::Head
+            | Part::Rod
+            | Part::ApexSeal
+            | Part::Plenum
+            | Part::Airbox
+            | Part::Intercooler => MeshKind::Cuboid,
             Part::Liner => MeshKind::Liner,
             Part::Web => MeshKind::Web,
             Part::Housing => MeshKind::HousingRing,
             Part::SidePlate => MeshKind::Housing,
             Part::Rotor => MeshKind::Rotor,
+            Part::Joint => MeshKind::Sphere,
             _ => MeshKind::Cylinder,
         }
     }
@@ -58,10 +78,11 @@ pub enum MeshKind {
     Rotor,
     Liner,
     Web,
+    Sphere,
 }
 
 impl MeshKind {
-    pub const ALL: [MeshKind; 7] = [
+    pub const ALL: [MeshKind; 8] = [
         MeshKind::Cylinder,
         MeshKind::Cuboid,
         MeshKind::Housing,
@@ -69,6 +90,7 @@ impl MeshKind {
         MeshKind::Rotor,
         MeshKind::Liner,
         MeshKind::Web,
+        MeshKind::Sphere,
     ];
 }
 
@@ -82,8 +104,10 @@ pub struct Instance {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Scene {
     pub static_parts: Vec<Instance>,
-    /// Centre and radius of a sphere holding every part in every position.
+    /// Centre and radius of a sphere holding every part in every position, pipes included.
     pub bounds: (Vec3, f32),
+    /// The same for the engine itself (block, head, crank train): what the camera starts on.
+    pub focus: (Vec3, f32),
 }
 
 /// Cylinder pitch along the crank, bores (a drawing choice: the file has no bore spacing).
@@ -102,12 +126,23 @@ const INTAKE: [f32; 4] = [0.31, 0.59, 1.0, 1.0];
 const EXHAUST: [f32; 4] = [1.0, 0.43, 0.31, 1.0];
 
 /// Turn of each bank about the crank, rad.
-fn bank_tilt(def: &EngineDef, bank: usize) -> f32 {
+pub(crate) fn bank_tilt(def: &EngineDef, bank: usize) -> f32 {
     if def.layout.bank_angle_deg <= 0.0 {
         return 0.0;
     }
     let h = (0.5 * def.layout.bank_angle_deg.clamp(0.0, 180.0)).to_radians() as f32;
     if bank == 0 { -h } else { h }
+}
+
+/// Which side of its bank's head (+1 = +z, −1 = −z in the bank's frame) a cylinder's exhaust
+/// leaves: outboard on a V or flat engine; on an inline engine the back (−z), behind the liners'
+/// halves, so the camera's side shows the pistons (and the intake).
+pub(crate) fn exhaust_side(def: &EngineDef, bank: usize) -> f32 {
+    if bank == 1 && def.layout.bank_angle_deg > 0.0 {
+        1.0
+    } else {
+        -1.0
+    }
 }
 
 /// A unit cylinder (radius 1, y 0..1) stretched from `a` to `b` with `radius`.
@@ -189,13 +224,15 @@ pub fn build(def: &EngineDef) -> Scene {
             ),
             color: CRANK,
         });
-        let bounds = (
-            Vec3::new(0.5 * len, 0.0, 0.0),
-            (0.5 * len + w).hypot(1.6 * r) * 1.05,
-        );
+        let centre = Vec3::new(0.5 * len, 0.0, 0.0);
+        let radius = (0.5 * len + w).hypot(1.6 * r) * 1.05;
+        let charge_to = super::ducts::intake(def, &mut out);
+        let focus = enclosing(&out);
+        super::ducts::exhaust(def, charge_to, &mut out);
         return Scene {
+            bounds: (centre, holding(&out, centre, radius)),
+            focus,
             static_parts: out,
-            bounds,
         };
     }
     let (r, l, b) = (g.crank_radius() as f32, g.rod_m as f32, g.bore_m as f32);
@@ -250,10 +287,51 @@ pub fn build(def: &EngineDef) -> Scene {
     });
     let reach = deck + 0.35 * b;
     let radius = (0.5 * span + 0.7 * b).hypot(reach.max(1.2 * r + 0.5 * b)) * 1.05;
+    let centre = Vec3::new(0.5 * span, 0.0, 0.0);
+    let charge_to = super::ducts::intake(def, &mut out);
+    let focus = enclosing(&out);
+    super::ducts::exhaust(def, charge_to, &mut out);
     Scene {
+        bounds: (centre, holding(&out, centre, radius)),
+        focus,
         static_parts: out,
-        bounds: (Vec3::new(0.5 * span, 0.0, 0.0), radius),
     }
+}
+
+/// A radius about `centre` of at least `radius` that holds every part's both ends (a unit mesh
+/// spans y 0..1 or −½..½ in its own frame: both ends are checked).
+fn holding(parts: &[Instance], centre: Vec3, radius: f32) -> f32 {
+    parts
+        .iter()
+        .flat_map(|i| {
+            [
+                i.model.transform_point3(Vec3::ZERO),
+                i.model.transform_point3(Vec3::Y),
+            ]
+        })
+        .map(|p| (p - centre).length() * 1.05)
+        .fold(radius, f32::max)
+}
+
+/// The sphere round the box that holds every part's both ends: the camera's start, centred on
+/// what is drawn rather than on the crank.
+fn enclosing(parts: &[Instance]) -> (Vec3, f32) {
+    let (lo, hi) = parts
+        .iter()
+        .flat_map(|i| {
+            [
+                i.model.transform_point3(Vec3::ZERO),
+                i.model.transform_point3(Vec3::Y),
+            ]
+        })
+        .fold(
+            (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)),
+            |(lo, hi), p| (lo.min(p), hi.max(p)),
+        );
+    if lo.x > hi.x {
+        return (Vec3::ZERO, 1.0);
+    }
+    (0.5 * (lo + hi), 0.5 * (hi - lo).length().max(1e-3))
 }
 
 /// The moving parts for the cylinders' current state, written into `out` (cleared first; it
@@ -360,9 +438,10 @@ pub fn moving(def: &EngineDef, cylinders: &[CylinderView], out: &mut Vec<Instanc
                 CRANK,
             );
         }
+        let side = exhaust_side(def, bank);
         for (dz, lift, part, color) in [
-            (-0.25, c.intake_lift_m, Part::IntakeValve, INTAKE),
-            (0.25, c.exhaust_lift_m, Part::ExhaustValve, EXHAUST),
+            (-0.25 * side, c.intake_lift_m, Part::IntakeValve, INTAKE),
+            (0.25 * side, c.exhaust_lift_m, Part::ExhaustValve, EXHAUST),
         ] {
             let face = deck - lift as f32;
             let z = dz * b;
@@ -579,6 +658,59 @@ mod tests {
             moving(&d, &views(&d, |_| deg), &mut out);
             assert!(!out.is_empty());
             assert_eq!((out.capacity(), out.as_ptr()), (1000, ptr));
+        }
+    }
+
+    #[test]
+    fn the_camera_starts_on_the_engine_and_its_intake() {
+        // centred on what is drawn above and below the crank, not on the crank, and holding it
+        for d in [
+            EngineDef::inline4(),
+            EngineDef::lfa_v10(),
+            EngineDef::mazda_renesis(),
+        ] {
+            let s = build(&d);
+            let (c, r) = s.focus;
+            assert!(
+                c.y > 0.0,
+                "{}: the intake rises over the crank: {c}",
+                d.name
+            );
+            let plenum_or_trumpets = s
+                .static_parts
+                .iter()
+                .filter(|i| matches!(i.part, Part::Plenum | Part::Trumpet | Part::Runner));
+            for i in plenum_or_trumpets {
+                let p = i.model.transform_point3(Vec3::ZERO);
+                assert!(
+                    (p - c).length() <= r + 1e-5,
+                    "{}: {p} out of {c} r {r}",
+                    d.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bounds_cover_the_pipes() {
+        for d in [
+            EngineDef::single(),
+            EngineDef::inline4(),
+            EngineDef::honda_k20c1(),
+            EngineDef::subaru_ej25(),
+            EngineDef::lfa_v10(),
+            EngineDef::crossplane_v8(),
+            EngineDef::mazda_renesis(),
+        ] {
+            let s = build(&d);
+            for i in &s.static_parts {
+                for p in [
+                    i.model.transform_point3(Vec3::ZERO),
+                    i.model.transform_point3(Vec3::Y),
+                ] {
+                    assert!((p - s.bounds.0).length() <= s.bounds.1, "{}: {p}", d.name);
+                }
+            }
         }
     }
 }

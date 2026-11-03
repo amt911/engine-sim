@@ -376,6 +376,8 @@ mod tests {
             Preset::CrossplaneV8,
             Preset::LfaV10,
             Preset::MazdaRenesis,
+            Preset::HondaK20c1,
+            Preset::SubaruEj25,
         ] {
             let mut sim = Simulation::with_quality(
                 preset.def(),
