@@ -42,6 +42,9 @@ fn fs_scene(i: VOut) -> @location(0) vec4<f32> {
     let n = normalize(i.n);
     let lambert = max(dot(n, g.light.xyz), 0.0);
     let shade = g.light.w + (1.0 - g.light.w) * lambert;
-    // colours are display (sRGB-like) values and the target is not sRGB: shade in linear light
-    return vec4<f32>(i.color.rgb * pow(shade, 1.0 / 2.2), 1.0);
+    // colours are display (sRGB-like) values and the target is not sRGB: shade in linear light;
+    // a part's own light (1 − alpha) shows its colour whatever the lighting
+    let own = 1.0 - i.color.a;
+    let lit = mix(pow(shade, 1.0 / 2.2), 1.0, own);
+    return vec4<f32>(i.color.rgb * lit, 1.0);
 }

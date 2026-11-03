@@ -45,6 +45,7 @@ pub enum Part {
     Turbine,
     Compressor,
     Intercooler,
+    Charge,
 }
 
 impl Part {
@@ -94,6 +95,8 @@ impl MeshKind {
     ];
 }
 
+/// A placed unit mesh. `color` is sRGB; its fourth value is 1 − the part's own light: 1 for every
+/// lit part, down to 0 for a charge burning (drawn at full colour whatever the lighting).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Instance {
     pub part: Part,
@@ -406,6 +409,18 @@ pub fn moving(def: &EngineDef, cylinders: &[CylinderView], out: &mut Vec<Instanc
                 color,
             })
         };
+        // the charge between the crown and the head, coloured by its temperature, glowing
+        // while it burns
+        let mut gas = super::colormap::temperature(c.temperature_k);
+        if c.burning {
+            gas[3] = 0.0;
+        }
+        put(
+            Part::Charge,
+            Mat4::from_translation(Vec3::new(x, crown, 0.0))
+                * Mat4::from_scale(Vec3::new(0.49 * b, (deck - crown).max(1e-4), 0.49 * b)),
+            gas,
+        );
         put(
             Part::Piston,
             Mat4::from_translation(Vec3::new(x, crown - 0.6 * b, 0.0))
@@ -712,5 +727,35 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_charge_fills_the_chamber_and_glows_while_it_burns() {
+        let d = EngineDef::inline4();
+        let g = d.geometry;
+        let (r, l, b) = (g.crank_radius() as f32, g.rod_m as f32, g.bore_m as f32);
+        let clear = (g.clearance_volume() / g.piston_area()) as f32;
+        let mut v = views(&d, |_| 0.0);
+        v[0].temperature_k = 2000.0;
+        v[0].burning = true;
+        let mut out = Vec::new();
+        moving(&d, &v, &mut out);
+        let charges: Vec<_> = out.iter().filter(|i| i.part == Part::Charge).collect();
+        assert_eq!(charges.len(), 4);
+        // at TDC: from the crown (r + l + 0.35 b) up the clearance height to the deck
+        let (s, _, t) = charges[0].model.to_scale_rotation_translation();
+        assert!((t.y - (r + l + 0.35 * b)).abs() < 1e-6, "{t}");
+        assert!((s.y - clear).abs() < 1e-6, "{s}");
+        assert_eq!(charges[0].color[3], 0.0, "burning: its own light");
+        assert_eq!(charges[1].color[3], 1.0);
+        assert_eq!(
+            charges[0].color[..3],
+            super::super::colormap::temperature(2000.0)[..3]
+        );
+        // at BDC the charge is a stroke taller
+        moving(&d, &views(&d, |_| 180.0), &mut out);
+        let c = out.iter().find(|i| i.part == Part::Charge).unwrap();
+        let (s2, _, _) = c.model.to_scale_rotation_translation();
+        assert!((s2.y - clear - 2.0 * r).abs() < 1e-5, "{s2}");
     }
 }
