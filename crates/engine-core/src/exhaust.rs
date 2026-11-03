@@ -82,6 +82,10 @@ pub struct ExhaustDef {
     pub primary_length_deviation_m: Vec<f64>,
     pub tail_length_m: f64,
     pub tail_diameter_m: f64,
+    /// Open ends the tail's flow leaves through side by side, each the tail's bore (1 = the pipe
+    /// itself). The pipe's waves and its radiated pulses stay the pipe's; the jet blows at the
+    /// flow over their summed area.
+    pub tail_outlets: u32,
     /// Extra lumped loss on the tail pipe, amplitude kept per pass (1 = none). The muffler
     /// itself is modelled from `muffler_volume_m3` and `muffler_packing`; this field predates
     /// that and stays for files that set it.
@@ -626,6 +630,7 @@ impl Default for ExhaustDef {
             primary_length_deviation_m: Vec::new(),
             tail_length_m: 1.5,
             tail_diameter_m: 0.050,
+            tail_outlets: 1,
             muffler_transmission: 1.0,
             model: ExhaustModel::Waveguide,
             muffler_volume_m3: 0.006,
@@ -715,7 +720,7 @@ impl ExhaustDef {
             }
         }
         ExitLosses {
-            outlet_area: area(self.outlet_diameter()),
+            outlet_area: area(self.outlet_diameter()) * f64::from(self.tail_outlets.max(1)),
             friction,
             laminar,
         }
@@ -763,6 +768,11 @@ impl ExhaustDef {
         self.merge
             .as_ref()
             .map_or_else(|| self.outlet_diameter(), |m| m.outlet_diameter_m)
+    }
+
+    /// Bore of the one jet with the area of all the outlets, m ([`Self::tail_outlets`]).
+    pub fn jet_diameter(&self) -> f64 {
+        self.radiating_diameter() * f64::from(self.tail_outlets.max(1)).sqrt()
     }
 
     /// Length of cylinder `i`'s (0-based) primary, m: `primary_length_m` and its deviation,
@@ -818,6 +828,9 @@ struct Branch {
     /// Muffler can and tail pipe.
     tail: Duct,
     end: OpenEnd,
+    /// A turbine between the collector and the tail, once the engine has said so
+    /// ([`ExhaustNet::set_turbine_resistance`]).
+    turbine: Option<crate::waveguide::TurbineJunction>,
 }
 
 /// ρc of the primaries' gas, Pa·s/m: an ideal gas at an atmosphere whose speed of sound is
@@ -1167,6 +1180,19 @@ impl BlockIn {
     }
 }
 
+/// The means an [`ExhaustNet`] follows, handed every few dozen steps ([`ExhaustNet::prepare`]):
+/// mass flows, kg/s, per cylinder and per branch; the engine speed, rpm; the gas's mean pressure
+/// before the collectors' end, Pa ([`ExhaustNet::set_mean_pressure`]); and a turbine's slope
+/// there, Pa per kg/s (0: none, [`ExhaustNet::set_turbine_resistance`]).
+#[derive(Debug, Clone, Copy)]
+pub struct NetMeans<'a> {
+    pub cylinders: &'a [f64],
+    pub branches: &'a [f64],
+    pub rpm: f64,
+    pub upstream_pa: f64,
+    pub turbine_dp_dm: f64,
+}
+
 /// What the net did over a [`BlockIn`]: per step, the wave each primary's collector end sent
 /// back toward its valve (steps × valves) and the radiated tail signals (steps × tails).
 #[derive(Debug, Clone, Default)]
@@ -1254,6 +1280,13 @@ impl ArrivalProbe {
         }
     }
 
+    /// The primaries' gas is at `p` Pa from now on (as in [`ExhaustNet::set_mean_pressure`]).
+    pub fn set_mean_pressure(&mut self, p: f64) {
+        for pipe in &mut self.pipes {
+            pipe.set_mean_pressure(p);
+        }
+    }
+
     /// The net's results for steps the copy has not taken yet: `from_far` (steps × valves).
     pub fn push(&mut self, from_far: &[f64]) {
         let n = self.pipes.len();
@@ -1261,6 +1294,14 @@ impl ArrivalProbe {
             for (p, &w) in self.pipes.iter_mut().zip(step) {
                 p.bwd.push(w);
             }
+        }
+    }
+
+    /// One step taken: the primaries' friction follows its mean flow as the net's does
+    /// ([`Pipe::follow_gain`]); once per step, where the net sends.
+    pub fn advance(&mut self) {
+        for p in &mut self.pipes {
+            p.follow_gain();
         }
     }
 
@@ -1319,6 +1360,7 @@ impl ExhaustNet {
                 ),
                 tail: after_collector(def, dt, lining_m),
                 end: OpenEnd::new(def.tail_diameter_m, dt),
+                turbine: None,
             })
             .collect();
         Self {
@@ -1488,6 +1530,37 @@ impl ExhaustNet {
         heat.tails = tails;
     }
 
+    /// The mean pressure, Pa, of the gas in the primaries and the collectors: a turbine's inlet
+    /// pressure when a turbine follows the collectors, the atmosphere without one (what follows
+    /// the collectors stays at the atmosphere's). See [`Pipe::set_mean_pressure`].
+    pub fn set_mean_pressure(&mut self, p: f64) {
+        for pipe in &mut self.primaries {
+            pipe.set_mean_pressure(p);
+        }
+        for b in &mut self.branches {
+            b.collector.set_mean_pressure(p);
+        }
+    }
+
+    /// A turbine follows each collector, its inlet's pressure rising with the flow at `dp_dm` Pa
+    /// per kg/s ([`crate::turbo::TurboState::turbine_dp_dm`]): the collector meets the tail
+    /// through it ([`crate::waveguide::TurbineJunction`]). None until a positive slope is given (a
+    /// net without a turbo is left as it was).
+    pub fn set_turbine_resistance(&mut self, dp_dm: f64) {
+        let dt = self.dt;
+        for b in &mut self.branches {
+            match &mut b.turbine {
+                Some(t) => t.set_resistance(dp_dm),
+                None if dp_dm > 0.0 => {
+                    let mut t = crate::waveguide::TurbineJunction::new(dt);
+                    t.set_resistance(dp_dm);
+                    b.turbine = Some(t);
+                }
+                None => {}
+            }
+        }
+    }
+
     /// Mean mass flows, kg/s: through each cylinder's primary and each branch's collector and
     /// what follows it (their turbulent friction, [`Pipe::set_mean_flow`]).
     pub fn set_mean_flow(&mut self, per_cylinder: &[f64], per_branch: &[f64]) {
@@ -1566,11 +1639,13 @@ impl ExhaustNet {
     /// The start of a step: the tails' outflow Mach and, when given, the mean flows the pipes'
     /// friction follows — what [`Engine`](crate::engine::Engine) applies before each
     /// [`ExhaustNet::step`].
-    pub fn prepare(&mut self, mach: &[f64], mean: Option<(&[f64], &[f64], f64)>) {
+    pub fn prepare(&mut self, mach: &[f64], mean: Option<NetMeans>) {
         self.set_outflow_mach(mach);
-        if let Some((cyl, branch, rpm)) = mean {
-            self.set_mean_flow(cyl, branch);
-            self.set_engine_speed(rpm);
+        if let Some(m) = mean {
+            self.set_mean_pressure(m.upstream_pa);
+            self.set_turbine_resistance(m.turbine_dp_dm);
+            self.set_mean_flow(m.cylinders, m.branches);
+            self.set_engine_speed(m.rpm);
         }
     }
 
@@ -1624,8 +1699,14 @@ impl ExhaustNet {
         for s in 0..input.steps {
             let mean = if input.has_mean[s] {
                 let (cyl, rest) = input.mean[mean_at..].split_at(n);
-                mean_at += n + m + 1;
-                Some((cyl, &rest[..m], rest[m]))
+                mean_at += n + m + 3;
+                Some(NetMeans {
+                    cylinders: cyl,
+                    branches: &rest[..m],
+                    rpm: rest[m],
+                    upstream_pa: rest[m + 1],
+                    turbine_dp_dm: rest[m + 2],
+                })
             } else {
                 None
             };
@@ -1680,11 +1761,14 @@ impl ExhaustNet {
             }
             let collector_near = clamp_wave(outgoing[b.members.len()]);
             let mut two = [0.0; 2];
-            junction(
-                &[b.collector.area_m2, b.tail.end_areas().0],
-                &[b.collector.at_far(), b.tail.at_near()],
-                &mut two,
-            );
+            let areas = [b.collector.area_m2, b.tail.end_areas().0];
+            let incoming = [b.collector.at_far(), b.tail.at_near()];
+            match &mut b.turbine {
+                Some(t) => t.process(&areas, &incoming, C_PRIMARY, &mut two),
+                None => {
+                    junction(&areas, &incoming, &mut two);
+                }
+            }
             b.collector.send(collector_near, clamp_wave(two[0]));
             match &mut self.shared {
                 // the tail's far end meets the shared duct below
@@ -1885,6 +1969,88 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_block_reads_each_steps_means_where_the_engine_packed_them() {
+        // Three steps, the first and the last carrying means (cylinders, branches, rpm, the
+        // turbine's inlet pressure and slope packed one after another): the block must give the
+        // same as handing them over step by step, bit for bit
+        let def = ExhaustDef::default();
+        let dt = 1.0 / 48_000.0;
+        let mut direct = ExhaustNet::new(&def, 4, dt);
+        let mut blocked = direct.clone();
+        let (n, m) = (direct.primaries.len(), direct.tails.len());
+        let means = [
+            (vec![0.010; n], vec![0.040; m], 900.0, 1.2e5, 0.0),
+            (vec![0.030; n], vec![0.120; m], 3000.0, 1.8e5, 800.0),
+        ];
+        let mut input = BlockIn {
+            steps: 3,
+            ..BlockIn::default()
+        };
+        for s in 0..3 {
+            input
+                .flows
+                .extend((0..n).map(|i| 0.02 * (s * n + i + 1) as f64));
+            input.mach.extend(std::iter::repeat_n(0.01, m));
+            let carry = s != 1;
+            input.has_mean.push(carry);
+            if carry {
+                let (c, b, rpm, up, dp) = &means[s / 2];
+                input.mean.extend_from_slice(c);
+                input.mean.extend_from_slice(b);
+                input.mean.extend_from_slice(&[*rpm, *up, *dp]);
+            }
+        }
+        let mut out = BlockOut::default();
+        blocked.run_block(&input, &mut out);
+        let mut tails = Vec::new();
+        for s in 0..3 {
+            let mean = (s != 1).then(|| {
+                let (c, b, rpm, up, dp) = &means[s / 2];
+                NetMeans {
+                    cylinders: c,
+                    branches: b,
+                    rpm: *rpm,
+                    upstream_pa: *up,
+                    turbine_dp_dm: *dp,
+                }
+            });
+            direct.prepare(&input.mach[s * m..(s + 1) * m], mean);
+            direct.step(&input.flows[s * n..(s + 1) * n]);
+            tails.extend_from_slice(&direct.tails);
+        }
+        assert_eq!(out.tails, tails);
+        // the last step's flows are the ones the net follows, its turbine joined the collectors
+        assert_eq!(blocked.mean_flows, direct.mean_flows);
+        assert_eq!(blocked.mean_flows.0, means[1].0);
+        assert!(blocked.branches.iter().all(|b| b.turbine.is_some()));
+    }
+
+    #[test]
+    fn a_turbines_inlet_pressure_reaches_the_primaries_collectors_and_probe() {
+        let mut net = ExhaustNet::new(&ExhaustDef::default(), 4, 1.0 / 48_000.0);
+        let mut probe = ArrivalProbe::new(&net);
+        net.set_mean_pressure(2.0e5);
+        assert!(net.primaries.iter().all(|p| p.mean_pressure() == 2.0e5));
+        assert!(
+            net.branches
+                .iter()
+                .all(|b| b.collector.mean_pressure() == 2.0e5)
+        );
+        probe.set_mean_pressure(1.5e5);
+        assert!(probe.pipes.iter().all(|p| p.mean_pressure() == 1.5e5));
+    }
+
+    #[test]
+    fn a_turbine_follows_the_collectors_only_with_a_positive_slope() {
+        let mut net = ExhaustNet::new(&ExhaustDef::default(), 4, 1.0 / 48_000.0);
+        net.set_turbine_resistance(0.0);
+        assert!(net.branches.iter().all(|b| b.turbine.is_none()));
+        net.set_turbine_resistance(500.0);
+        assert!(!net.branches.is_empty());
+        assert!(net.branches.iter().all(|b| b.turbine.is_some()));
+    }
 
     /// Two one-cylinder banks of plain pipes, joined into one outlet duct when `merged`.
     fn two_banks(merged: bool) -> ExhaustDef {
@@ -2240,6 +2406,7 @@ mod tests {
             }
             let flows = [0.02 * (s as f64 * 0.37).sin(); 4];
             net.step(&flows);
+            probe.advance();
             if s == 300 {
                 let mean = [0.05, 0.04, 0.03, 0.02];
                 net.set_mean_flow(&mean, &[0.1]);
@@ -2308,6 +2475,22 @@ mod tests {
         );
         assert!((l.laminar / 13_004.5 - 1.0).abs() < 1e-4, "{}", l.laminar);
         assert!((l.outlet_area - 1.963_495e-3).abs() < 1e-9);
+    }
+
+    #[test]
+    fn side_by_side_outlets_share_the_jet_and_not_the_pipe() {
+        // Two 50 mm outlets: 2·π/4·0.05² = 3.927e-3 m², the area of one Ø70.71 mm jet; the bore
+        // the pipe's sound leaves through stays the pipe's.
+        let mut d = ExhaustDef {
+            tail_outlets: 2,
+            ..ExhaustDef::default()
+        };
+        d.after_collector.clear();
+        assert!((d.exit_losses().outlet_area - 3.926_991e-3).abs() < 1e-8);
+        assert!((d.jet_diameter() - 0.070_711).abs() < 1e-6);
+        assert_eq!(d.radiating_diameter(), 0.05);
+        let old: ExhaustDef = serde_yaml_ng::from_str("tail_diameter_m: 0.05\n").unwrap();
+        assert_eq!(old.tail_outlets, 1);
     }
 
     #[test]
