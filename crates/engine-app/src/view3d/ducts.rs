@@ -221,6 +221,132 @@ pub fn exhaust(def: &EngineDef, out: &mut Vec<Instance>) -> Vec<Vec3> {
     tail_ends
 }
 
+const DUCT: [f32; 4] = [0.55, 0.62, 0.70, 1.0];
+const AIRBOX: [f32; 4] = [0.16, 0.16, 0.18, 1.0];
+const THROTTLE: [f32; 4] = [0.78, 0.79, 0.82, 1.0];
+
+/// A box of `size` (x, y, z) centred on `c`.
+fn boxed(c: Vec3, size: Vec3) -> Mat4 {
+    Mat4::from_scale_rotation_translation(size, glam::Quat::IDENTITY, c)
+}
+
+/// The intake's instances, appended to `out`: a runner from each port (the head's other side
+/// from the exhaust, so into a V's valley), rising to a plenum box of the defined volume that
+/// spans the engine, its throttle body at one end, and the air box with its inlet ducts; with
+/// individual throttles, no plenum: a trumpet on each runner.
+pub fn intake(def: &EngineDef, out: &mut Vec<Instance>) {
+    let g = def.geometry;
+    let it = &def.intake;
+    let n = def.cylinders;
+    let b = g.bore_m as f32;
+    let (r, l) = (g.crank_radius() as f32, g.rod_m as f32);
+    let deck = r + l + 0.35 * b + (g.clearance_volume() / g.piston_area()) as f32;
+    let pitch = PITCH_BORES as f32 * b;
+    let place = def.layout.place(n);
+    let dr = it.runner_diameter_m as f32;
+    let len = it.runner_length_m as f32;
+    let mut runs = Vec::new();
+    let mut ends = Vec::with_capacity(n);
+    for i in 0..n {
+        runs.clear();
+        let start = if let Some(rotor) = g.rotor {
+            // a rotary's intake ports are in its side housings: the intake leaves the far side
+            let x = (i / 3) as f32 * 1.5 * rotor.width_m as f32;
+            let reach = (rotor.generating_radius_m + rotor.eccentricity_m) as f32;
+            Vec3::new(x, -0.3 * reach, -reach)
+        } else {
+            let (bank, pos) = place.get(i).copied().unwrap_or((0, i));
+            let side = -exhaust_side(def, bank);
+            Mat4::from_rotation_x(bank_tilt(def, bank)).transform_point3(Vec3::new(
+                pos as f32 * pitch,
+                deck + 0.175 * b,
+                side * 0.65 * b,
+            ))
+        };
+        let out_dir = if start.z >= 0.0 { Vec3::Z } else { Vec3::NEG_Z };
+        // out of the port, then up, folding outwards
+        let stub = route(
+            start,
+            out_dir,
+            Vec3::Y,
+            lane(dr),
+            len.min(0.5 * b),
+            0.5 * b,
+            &mut runs,
+        );
+        let end = route(
+            stub,
+            Vec3::Y,
+            out_dir,
+            lane(dr),
+            (len - 0.5 * b).max(0.0),
+            0.35,
+            &mut runs,
+        );
+        tube(&runs, 0.5 * dr, Part::Runner, DUCT, out);
+        if it.individual_throttles {
+            // a trumpet on each runner: flared to 1.4 bores at its mouth
+            out.push(Instance {
+                part: Part::Trumpet,
+                model: rod_between(end, end + 0.6 * dr * Vec3::Y, 0.7 * dr),
+                color: THROTTLE,
+            });
+        }
+        ends.push(end);
+    }
+    if it.individual_throttles || ends.is_empty() {
+        return;
+    }
+    // the plenum: as long as the runners' spread along the crank (at least a bore), its other
+    // two sides equal, holding the defined volume, just above the runners' ends
+    let lo = ends.iter().map(|e| e.x).fold(f32::MAX, f32::min);
+    let hi = ends.iter().map(|e| e.x).fold(f32::MIN, f32::max);
+    let lx = (hi - lo + 2.0 * dr).max(b);
+    let v = def.plenum_volume_m3.max(1e-6) as f32;
+    let side = (v / lx).sqrt();
+    let mean = ends.iter().sum::<Vec3>() / ends.len() as f32;
+    let centre = Vec3::new(0.5 * (lo + hi), mean.y + 0.5 * side, mean.z);
+    out.push(Instance {
+        part: Part::Plenum,
+        model: boxed(centre, Vec3::new(lx, side, side)),
+        color: DUCT,
+    });
+    // the throttle body on the plenum's front end, its bore the throttle's
+    let dt = def.throttle_diameter_m as f32;
+    let tb = Vec3::new(lo - 0.5 * (lx - (hi - lo)), centre.y, centre.z);
+    out.push(Instance {
+        part: Part::Throttle,
+        model: rod_between(tb, tb - Vec3::new(1.5 * dt, 0.0, 0.0), 0.5 * dt + 0.006),
+        color: THROTTLE,
+    });
+    // the air box ahead of the throttle, holding its volume (a cube), with its inlet ducts
+    if let Some(ab) = &it.airbox {
+        let a = (ab.volume_m3.max(1e-6) as f32).cbrt();
+        let c = tb - Vec3::new(1.5 * dt + 0.5 * a, 0.0, 0.0);
+        out.push(Instance {
+            part: Part::Airbox,
+            model: boxed(c, Vec3::splat(a)),
+            color: AIRBOX,
+        });
+        let dd = ab.duct_diameter_m as f32;
+        for k in 0..ab.ducts {
+            runs.clear();
+            let dz = (k as f32 - 0.5 * (ab.ducts as f32 - 1.0)) * 1.5 * dd;
+            let start = c - Vec3::new(0.5 * a, 0.0, -dz);
+            route(
+                start,
+                Vec3::NEG_X,
+                Vec3::Y,
+                lane(dd),
+                ab.duct_length_m as f32,
+                0.5,
+                &mut runs,
+            );
+            tube(&runs, 0.5 * dd, Part::Runner, AIRBOX, out);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -401,5 +527,64 @@ mod tests {
             assert!(!ends.is_empty(), "{}", d.name);
             assert!(out.iter().all(|i| i.model.is_finite()), "{}", d.name);
         }
+    }
+
+    #[test]
+    fn the_plenum_holds_its_volume() {
+        let d = EngineDef::inline4();
+        let mut out = Vec::new();
+        intake(&d, &mut out);
+        let p: Vec<_> = out.iter().filter(|i| i.part == Part::Plenum).collect();
+        assert_eq!(p.len(), 1);
+        let (s, _, _) = p[0].model.to_scale_rotation_translation();
+        assert!(
+            ((s.x * s.y * s.z) as f64 - d.plenum_volume_m3).abs() < 1e-9,
+            "{s}"
+        );
+    }
+
+    #[test]
+    fn each_runner_is_its_length_long() {
+        let d = EngineDef::inline4();
+        let mut out = Vec::new();
+        intake(&d, &mut out);
+        let runners = tubes(&out, Part::Runner);
+        let want = 4.0 * d.intake.runner_length_m as f32;
+        assert!(
+            (length(&runners) - want).abs() < 1e-4,
+            "{} vs {want}",
+            length(&runners)
+        );
+    }
+
+    #[test]
+    fn itbs_draw_trumpets_not_a_plenum() {
+        let d = EngineDef::lfa_v10();
+        assert!(d.intake.individual_throttles);
+        let mut out = Vec::new();
+        intake(&d, &mut out);
+        assert!(!out.iter().any(|i| i.part == Part::Plenum));
+        assert_eq!(out.iter().filter(|i| i.part == Part::Trumpet).count(), 10);
+    }
+
+    #[test]
+    fn an_air_box_has_its_volume_and_ducts() {
+        let mut d = EngineDef::inline4();
+        d.intake.airbox = Some(engine_core::intake_fv::AirboxDef {
+            volume_m3: 8e-3,
+            ducts: 2,
+            duct_length_m: 0.3,
+            duct_diameter_m: 0.06,
+        });
+        let mut out = Vec::new();
+        intake(&d, &mut out);
+        let ab: Vec<_> = out.iter().filter(|i| i.part == Part::Airbox).collect();
+        assert_eq!(ab.len(), 1);
+        let (s, _, _) = ab[0].model.to_scale_rotation_translation();
+        assert!((s.x * s.y * s.z - 8e-3).abs() < 1e-9, "{s}");
+        // the ducts: two runs of 0.3 m after the runners' 4 × runner length
+        let runners = length(&tubes(&out, Part::Runner));
+        let want = 4.0 * d.intake.runner_length_m as f32 + 2.0 * 0.3;
+        assert!((runners - want).abs() < 1e-4, "{runners} vs {want}");
     }
 }

@@ -37,13 +37,20 @@ pub enum Part {
     Silencer,
     Catalyst,
     Resonator,
+    Runner,
+    Trumpet,
+    Plenum,
+    Throttle,
+    Airbox,
 }
 
 impl Part {
     /// Which unit mesh draws it.
     pub fn mesh(self) -> MeshKind {
         match self {
-            Part::Block | Part::Head | Part::Rod | Part::ApexSeal => MeshKind::Cuboid,
+            Part::Block | Part::Head | Part::Rod | Part::ApexSeal | Part::Plenum | Part::Airbox => {
+                MeshKind::Cuboid
+            }
             Part::Liner => MeshKind::Liner,
             Part::Web => MeshKind::Web,
             Part::Housing => MeshKind::HousingRing,
@@ -212,10 +219,12 @@ pub fn build(def: &EngineDef) -> Scene {
         });
         let centre = Vec3::new(0.5 * len, 0.0, 0.0);
         let radius = (0.5 * len + w).hypot(1.6 * r) * 1.05;
+        super::ducts::intake(def, &mut out);
+        let focus = enclosing(&out);
         super::ducts::exhaust(def, &mut out);
         return Scene {
             bounds: (centre, holding(&out, centre, radius)),
-            focus: (centre, radius),
+            focus,
             static_parts: out,
         };
     }
@@ -272,10 +281,12 @@ pub fn build(def: &EngineDef) -> Scene {
     let reach = deck + 0.35 * b;
     let radius = (0.5 * span + 0.7 * b).hypot(reach.max(1.2 * r + 0.5 * b)) * 1.05;
     let centre = Vec3::new(0.5 * span, 0.0, 0.0);
+    super::ducts::intake(def, &mut out);
+    let focus = enclosing(&out);
     super::ducts::exhaust(def, &mut out);
     Scene {
         bounds: (centre, holding(&out, centre, radius)),
-        focus: (centre, radius),
+        focus,
         static_parts: out,
     }
 }
@@ -293,6 +304,27 @@ fn holding(parts: &[Instance], centre: Vec3, radius: f32) -> f32 {
         })
         .map(|p| (p - centre).length() * 1.05)
         .fold(radius, f32::max)
+}
+
+/// The sphere round the box that holds every part's both ends: the camera's start, centred on
+/// what is drawn rather than on the crank.
+fn enclosing(parts: &[Instance]) -> (Vec3, f32) {
+    let (lo, hi) = parts
+        .iter()
+        .flat_map(|i| {
+            [
+                i.model.transform_point3(Vec3::ZERO),
+                i.model.transform_point3(Vec3::Y),
+            ]
+        })
+        .fold(
+            (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)),
+            |(lo, hi), p| (lo.min(p), hi.max(p)),
+        );
+    if lo.x > hi.x {
+        return (Vec3::ZERO, 1.0);
+    }
+    (0.5 * (lo + hi), 0.5 * (hi - lo).length().max(1e-3))
 }
 
 /// The moving parts for the cylinders' current state, written into `out` (cleared first; it
@@ -619,6 +651,36 @@ mod tests {
             moving(&d, &views(&d, |_| deg), &mut out);
             assert!(!out.is_empty());
             assert_eq!((out.capacity(), out.as_ptr()), (1000, ptr));
+        }
+    }
+
+    #[test]
+    fn the_camera_starts_on_the_engine_and_its_intake() {
+        // centred on what is drawn above and below the crank, not on the crank, and holding it
+        for d in [
+            EngineDef::inline4(),
+            EngineDef::lfa_v10(),
+            EngineDef::mazda_renesis(),
+        ] {
+            let s = build(&d);
+            let (c, r) = s.focus;
+            assert!(
+                c.y > 0.0,
+                "{}: the intake rises over the crank: {c}",
+                d.name
+            );
+            let plenum_or_trumpets = s
+                .static_parts
+                .iter()
+                .filter(|i| matches!(i.part, Part::Plenum | Part::Trumpet | Part::Runner));
+            for i in plenum_or_trumpets {
+                let p = i.model.transform_point3(Vec3::ZERO);
+                assert!(
+                    (p - c).length() <= r + 1e-5,
+                    "{}: {p} out of {c} r {r}",
+                    d.name
+                );
+            }
         }
     }
 }
