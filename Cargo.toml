@@ -27,6 +27,8 @@ hound = "3"
 proptest = "1"
 approx = "0.5"
 rfd = "0.17"
+glam = { version = "0.34", features = ["bytemuck"] }
+bytemuck = { version = "1", features = ["derive"] }
 
 [profile.release]
 lto = "thin"

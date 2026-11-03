@@ -49,6 +49,8 @@ echo "PASS file round trip"
 if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && "$BIN" --help 2>/dev/null | grep -q -- --quit-after; then
   phase "gui launch"
   timeout 30 "$BIN" --quit-after 4 --preset single >"$OUT/gui.log" 2>&1 || { cat "$OUT/gui.log"; fail "gui exited with error or did not close within 30 s"; }
-  echo "PASS gui launch"
+  echo "PASS gui launch (3D view)"
+  timeout 30 "$BIN" --quit-after 4 --preset lfa-v10 --view 2d >"$OUT/gui2d.log" 2>&1 || { cat "$OUT/gui2d.log"; fail "2D gui exited with error or did not close within 30 s"; }
+  echo "PASS gui launch (2D view)"
 fi
 echo "ALL PASS"

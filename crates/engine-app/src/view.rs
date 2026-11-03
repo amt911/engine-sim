@@ -111,7 +111,7 @@ pub fn engine(ui: &mut egui::Ui, s: &Snapshot) {
 /// Point of a Wankel housing's epitrochoid at parameter `alpha` rad, for eccentricity `e` and
 /// generating radius `r`: (e·cos 3α + R·cos α, e·sin 3α + R·sin α) (Yamamoto, *Rotary Engine*,
 /// 1981, §2; Heywood 2nd ed., §1.8). Major axis along x, minor (R − e) along y.
-fn housing_point(alpha: f64, e: f64, r: f64) -> (f64, f64) {
+pub(crate) fn housing_point(alpha: f64, e: f64, r: f64) -> (f64, f64) {
     (
         e * (3.0 * alpha).cos() + r * alpha.cos(),
         e * (3.0 * alpha).sin() + r * alpha.sin(),
@@ -124,7 +124,7 @@ fn housing_point(alpha: f64, e: f64, r: f64) -> (f64, f64) {
 /// up against the housing's waist (the spark plugs), largest at ψ = 180°. Apex k sits at
 /// rotor angle θ + 120°·k with θ = 30° + ψ/2, the centre on the eccentric at 3θ, so every apex
 /// rides on the housing: housing_point(θ + 120°·k).
-fn rotor_pose(psi_deg: f64, e: f64, r: f64) -> ((f64, f64), [(f64, f64); 3]) {
+pub(crate) fn rotor_pose(psi_deg: f64, e: f64, r: f64) -> ((f64, f64), [(f64, f64); 3]) {
     let theta = (30.0 + 0.5 * psi_deg).to_radians();
     let c = (e * (3.0 * theta).cos(), e * (3.0 * theta).sin());
     let apex = |k: f64| {

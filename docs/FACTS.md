@@ -335,3 +335,12 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
 - **Real LFA shift, per band (5 ms peak at the cut-in re the steady full-band level, four dyno
   upshifts):** 10–60 Hz −11…−24, 60–200 Hz −14…−17, 200–800 Hz −7…0 dB. Committed render +8…+12 /
   −4…−9 / −7…0; blank-out torque cut −3…+5 / +1…+3 / +2…+13; 70 L shell +10…+13 / −5…−18 / −5…+1.
+- **3D view frame cost (2026-11-03, `bench_3d_frame`, LFA V10, 1920×1080, RTX 3080 Ti):** CPU
+  (instances + prepare) 0.010–0.012 ms mean, 0.02 ms p99 at every detail; GPU submit-to-done
+  0.10–0.11 ms mean, 0.33–0.50 ms p99. No integrated GPU, lavapipe or headless GL on this machine:
+  the 5850U target is unmeasured (a ~20× slower GPU would still be ~2 ms mean); the detail
+  governor steps down after 30 frames over 18 ms.
+- **egui-wgpu 0.37 / wgpu 30:** pipeline layouts take `&[Option<&BindGroupLayout>]`, vertex
+  buffers `&[Option<VertexBufferLayout>]`, depth `Option<bool>`/`Option<CompareFunction>`;
+  glam 0.34 has no `Mat4::perspective_rh` — use `glam::camera::rh::proj::directx::perspective`
+  (z 0..1, y up, what wgpu wants) and `camera::rh::view::look_at_mat4`.
