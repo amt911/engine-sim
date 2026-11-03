@@ -59,7 +59,7 @@ impl View3dState {
         if self.drawn.as_ref() != Some(def) {
             self.def_version += 1;
             let s = scene::build(def);
-            self.camera = Some(OrbitCamera::framing(s.bounds.0, s.bounds.1));
+            self.camera = Some(OrbitCamera::framing(s.bounds.0, s.bounds.1, start_yaw(def)));
             self.scene = Some(s);
             self.drawn = Some(def.clone());
         }
@@ -77,6 +77,16 @@ impl View3dState {
                 sh.view_proj = c.view_proj(aspect);
             }
         }
+    }
+}
+
+/// Where the camera starts: a V or flat engine from its front three-quarter, so the banks and
+/// the crank between them show; an inline engine or a rotary from its side.
+fn start_yaw(def: &EngineDef) -> f32 {
+    if def.geometry.rotor.is_none() && def.layout.bank_angle_deg > 0.0 {
+        1.15
+    } else {
+        0.6
     }
 }
 
@@ -132,7 +142,11 @@ pub fn show(ui: &mut egui::Ui, st: &mut View3dState, snap: &Snapshot) {
     if resp.double_clicked()
         && let Some(s) = &st.scene
     {
-        st.camera = Some(OrbitCamera::framing(s.bounds.0, s.bounds.1));
+        st.camera = Some(OrbitCamera::framing(
+            s.bounds.0,
+            s.bounds.1,
+            st.drawn.as_ref().map_or(0.6, start_yaw),
+        ));
     }
     st.governor.observe(1000.0 * ui.input(|i| i.unstable_dt));
     let aspect = rect.width() / rect.height().max(1.0);
