@@ -42,15 +42,22 @@ pub enum Part {
     Plenum,
     Throttle,
     Airbox,
+    Turbine,
+    Compressor,
+    Intercooler,
 }
 
 impl Part {
     /// Which unit mesh draws it.
     pub fn mesh(self) -> MeshKind {
         match self {
-            Part::Block | Part::Head | Part::Rod | Part::ApexSeal | Part::Plenum | Part::Airbox => {
-                MeshKind::Cuboid
-            }
+            Part::Block
+            | Part::Head
+            | Part::Rod
+            | Part::ApexSeal
+            | Part::Plenum
+            | Part::Airbox
+            | Part::Intercooler => MeshKind::Cuboid,
             Part::Liner => MeshKind::Liner,
             Part::Web => MeshKind::Web,
             Part::Housing => MeshKind::HousingRing,
@@ -219,9 +226,9 @@ pub fn build(def: &EngineDef) -> Scene {
         });
         let centre = Vec3::new(0.5 * len, 0.0, 0.0);
         let radius = (0.5 * len + w).hypot(1.6 * r) * 1.05;
-        super::ducts::intake(def, &mut out);
+        let charge_to = super::ducts::intake(def, &mut out);
         let focus = enclosing(&out);
-        super::ducts::exhaust(def, &mut out);
+        super::ducts::exhaust(def, charge_to, &mut out);
         return Scene {
             bounds: (centre, holding(&out, centre, radius)),
             focus,
@@ -281,9 +288,9 @@ pub fn build(def: &EngineDef) -> Scene {
     let reach = deck + 0.35 * b;
     let radius = (0.5 * span + 0.7 * b).hypot(reach.max(1.2 * r + 0.5 * b)) * 1.05;
     let centre = Vec3::new(0.5 * span, 0.0, 0.0);
-    super::ducts::intake(def, &mut out);
+    let charge_to = super::ducts::intake(def, &mut out);
     let focus = enclosing(&out);
-    super::ducts::exhaust(def, &mut out);
+    super::ducts::exhaust(def, charge_to, &mut out);
     Scene {
         bounds: (centre, holding(&out, centre, radius)),
         focus,
@@ -680,6 +687,29 @@ mod tests {
                     "{}: {p} out of {c} r {r}",
                     d.name
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn bounds_cover_the_pipes() {
+        for d in [
+            EngineDef::single(),
+            EngineDef::inline4(),
+            EngineDef::honda_k20c1(),
+            EngineDef::subaru_ej25(),
+            EngineDef::lfa_v10(),
+            EngineDef::crossplane_v8(),
+            EngineDef::mazda_renesis(),
+        ] {
+            let s = build(&d);
+            for i in &s.static_parts {
+                for p in [
+                    i.model.transform_point3(Vec3::ZERO),
+                    i.model.transform_point3(Vec3::Y),
+                ] {
+                    assert!((p - s.bounds.0).length() <= s.bounds.1, "{}: {p}", d.name);
+                }
             }
         }
     }

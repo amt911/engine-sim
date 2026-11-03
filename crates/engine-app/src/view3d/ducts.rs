@@ -119,7 +119,9 @@ fn chain(segments: &[Segment], start: Vec3, out: &mut Vec<Instance>) -> (Vec3, f
 }
 
 /// The exhaust's instances, appended to `out`; returns the tail ends (for the scene's bounds).
-pub fn exhaust(def: &EngineDef, out: &mut Vec<Instance>) -> Vec<Vec3> {
+/// With a turbo, its turbine takes the collectors and its compressor feeds `charge_to` (the
+/// throttle's inlet, from [`intake`]).
+pub fn exhaust(def: &EngineDef, charge_to: Option<Vec3>, out: &mut Vec<Instance>) -> Vec<Vec3> {
     let g = def.geometry;
     let ex = &def.exhaust;
     let n = def.cylinders;
@@ -186,6 +188,11 @@ pub fn exhaust(def: &EngineDef, out: &mut Vec<Instance>) -> Vec<Vec3> {
         tube(&runs, 0.5 * dc, Part::Pipe, PIPE, out);
         branch_ends.push(end);
     }
+    // a turbo's turbine takes every collector: the chain starts from its outlet
+    if let (Some(t), false) = (&def.turbo, branch_ends.is_empty()) {
+        let at = branch_ends.iter().sum::<Vec3>() / branch_ends.len() as f32;
+        branch_ends = vec![turbo(t, at, charge_to, out)];
+    }
     // the chain behind the collectors: per branch, then the merge's own, then the tails
     let mut tails_from = Vec::new();
     for &end in &branch_ends {
@@ -234,7 +241,9 @@ fn boxed(c: Vec3, size: Vec3) -> Mat4 {
 /// from the exhaust, so into a V's valley), rising to a plenum box of the defined volume that
 /// spans the engine, its throttle body at one end, and the air box with its inlet ducts; with
 /// individual throttles, no plenum: a trumpet on each runner.
-pub fn intake(def: &EngineDef, out: &mut Vec<Instance>) {
+/// Returns the throttle body's inlet (none with individual throttles), where a turbo's charge
+/// pipe arrives.
+pub fn intake(def: &EngineDef, out: &mut Vec<Instance>) -> Option<Vec3> {
     let g = def.geometry;
     let it = &def.intake;
     let n = def.cylinders;
@@ -295,7 +304,7 @@ pub fn intake(def: &EngineDef, out: &mut Vec<Instance>) {
         ends.push(end);
     }
     if it.individual_throttles || ends.is_empty() {
-        return;
+        return None;
     }
     // the plenum: as long as the runners' spread along the crank (at least a bore), its other
     // two sides equal, holding the defined volume, just above the runners' ends
@@ -319,6 +328,7 @@ pub fn intake(def: &EngineDef, out: &mut Vec<Instance>) {
         model: rod_between(tb, tb - Vec3::new(1.5 * dt, 0.0, 0.0), 0.5 * dt + 0.006),
         color: THROTTLE,
     });
+    let inlet = tb - Vec3::new(1.5 * dt, 0.0, 0.0);
     // the air box ahead of the throttle, holding its volume (a cube), with its inlet ducts
     if let Some(ab) = &it.airbox {
         let a = (ab.volume_m3.max(1e-6) as f32).cbrt();
@@ -345,6 +355,77 @@ pub fn intake(def: &EngineDef, out: &mut Vec<Instance>) {
             tube(&runs, 0.5 * dd, Part::Runner, AIRBOX, out);
         }
     }
+    Some(inlet)
+}
+
+const TURBINE: [f32; 4] = [0.45, 0.30, 0.25, 1.0];
+const COMPRESSOR: [f32; 4] = [0.80, 0.81, 0.84, 1.0];
+
+/// A turbo at the collectors' end `at`: the turbine's scroll there, the compressor's on the same
+/// shaft (along x, ahead of it), the inducer facing the air, and the charge pipe (through an
+/// intercooler when it has one) to `charge_to`. Scrolls drawn 2.5 wheel diameters across
+/// (ESTIMATE: the file gives the compressor wheel only; the turbine wheel taken 1.1 of it).
+/// Returns the turbine's outlet, where the exhaust goes on.
+fn turbo(
+    t: &engine_core::turbo::TurboDef,
+    at: Vec3,
+    charge_to: Option<Vec3>,
+    out: &mut Vec<Instance>,
+) -> Vec3 {
+    let tip = t.compressor_tip_diameter_m as f32;
+    let (rt, rc) = (1.25 * 1.1 * tip, 1.25 * tip);
+    let turbine = at + Vec3::new(0.0, -rt, 0.0);
+    let compressor = turbine - Vec3::new(1.8 * tip + 0.8 * tip, 0.0, 0.0);
+    let half = Vec3::new(0.4 * tip, 0.0, 0.0);
+    out.push(Instance {
+        part: Part::Turbine,
+        model: rod_between(turbine - half, turbine + half, rt),
+        color: TURBINE,
+    });
+    out.push(Instance {
+        part: Part::Compressor,
+        model: rod_between(compressor - half, compressor + half, rc),
+        color: COMPRESSOR,
+    });
+    // the shaft's bearing housing between them, and the compressor's inducer facing ahead
+    out.push(Instance {
+        part: Part::Compressor,
+        model: rod_between(compressor + half, turbine - half, 0.35 * tip),
+        color: COMPRESSOR,
+    });
+    let d_in = t.inducer_diameter_m as f32;
+    out.push(Instance {
+        part: Part::Compressor,
+        model: rod_between(
+            compressor - half,
+            compressor - half - Vec3::new(tip, 0.0, 0.0),
+            0.5 * d_in + 0.004,
+        ),
+        color: COMPRESSOR,
+    });
+    if let Some(to) = charge_to {
+        // up from the compressor's outlet, along to the throttle's inlet height, then in
+        let d = 0.9 * tip;
+        let a = compressor + Vec3::new(0.0, rc, 0.0);
+        let b = Vec3::new(a.x, to.y, a.z);
+        let c = Vec3::new(to.x, to.y, a.z);
+        let mut runs = Vec::new();
+        for (p, q) in [(a, b), (b, c), (c, to)] {
+            if (q - p).length() > 1e-6 {
+                runs.push(Run { from: p, to: q });
+            }
+        }
+        tube(&runs, 0.5 * d, Part::Runner, COMPRESSOR, out);
+        if t.intercooler_effectiveness > 0.0 {
+            // a front-mount core in the rise (ESTIMATE: 0.6 × 0.3 × 0.06 m, a hatchback's)
+            out.push(Instance {
+                part: Part::Intercooler,
+                model: boxed(0.5 * (a + b), Vec3::new(0.06, 0.3, 0.6)),
+                color: AIRBOX,
+            });
+        }
+    }
+    turbine + Vec3::new(0.0, -rt, 0.0)
 }
 
 #[cfg(test)]
@@ -397,7 +478,7 @@ mod tests {
         d.exhaust.merge = None;
         d.exhaust.tail_length_m = 0.0;
         let mut out = Vec::new();
-        exhaust(&d, &mut out);
+        exhaust(&d, None, &mut out);
         let pipes = tubes(&out, Part::Pipe);
         let want: f32 = (0..4).map(|i| d.exhaust.primary_length(i) as f32).sum();
         assert!(
@@ -417,7 +498,7 @@ mod tests {
         d.exhaust.after_collector.clear();
         d.exhaust.tail_length_m = 0.0;
         let mut out = Vec::new();
-        exhaust(&d, &mut out);
+        exhaust(&d, None, &mut out);
         let pipes = tubes(&out, Part::Pipe);
         let ends = primary_ends(&d, &pipes);
         assert_eq!(ends.len(), 4);
@@ -446,7 +527,7 @@ mod tests {
         ];
         d.exhaust.merge = None;
         let mut out = Vec::new();
-        exhaust(&d, &mut out);
+        exhaust(&d, None, &mut out);
         let cans: Vec<_> = out.iter().filter(|i| i.part == Part::Silencer).collect();
         assert_eq!(cans.len(), 1, "one straight can");
         let (s, _, _) = cans[0].model.to_scale_rotation_translation();
@@ -463,7 +544,7 @@ mod tests {
         d.exhaust.tail_spacing_m = 0.1;
         d.exhaust.merge = None;
         let mut out = Vec::new();
-        let ends = exhaust(&d, &mut out);
+        let ends = exhaust(&d, None, &mut out);
         assert_eq!(ends.len(), 2);
         assert!(
             ((ends[1] - ends[0]).length() - 0.1).abs() < 1e-6,
@@ -478,7 +559,7 @@ mod tests {
         let mut d = EngineDef::inline4();
         d.exhaust.collectors = vec![vec![1, 2], vec![3]];
         let mut out = Vec::new();
-        exhaust(&d, &mut out);
+        exhaust(&d, None, &mut out);
         let pipes = tubes(&out, Part::Pipe);
         let ends = primary_ends(&d, &pipes);
         assert_eq!(ends.len(), 4, "cylinder 4's primary is drawn");
@@ -495,7 +576,7 @@ mod tests {
         let rotor = d.geometry.rotor.unwrap();
         let reach = (rotor.generating_radius_m + rotor.eccentricity_m) as f32;
         let mut out = Vec::new();
-        exhaust(&d, &mut out);
+        exhaust(&d, None, &mut out);
         let first = tubes(&out, Part::Pipe)[0].0;
         assert!(first.y.hypot(first.z) <= 1.1 * reach, "{first}");
     }
@@ -507,7 +588,7 @@ mod tests {
         d.exhaust.merge = None;
         d.exhaust.tail_length_m = 0.4;
         let mut out = Vec::new();
-        let ends = exhaust(&d, &mut out);
+        let ends = exhaust(&d, None, &mut out);
         assert_eq!(ends.len(), 1);
         assert!(out.iter().any(|i| i.part == Part::Pipe));
     }
@@ -523,7 +604,7 @@ mod tests {
             EngineDef::mazda_renesis(),
         ] {
             let mut out = Vec::new();
-            let ends = exhaust(&d, &mut out);
+            let ends = exhaust(&d, None, &mut out);
             assert!(!ends.is_empty(), "{}", d.name);
             assert!(out.iter().all(|i| i.model.is_finite()), "{}", d.name);
         }
@@ -586,5 +667,48 @@ mod tests {
         let runners = length(&tubes(&out, Part::Runner));
         let want = 4.0 * d.intake.runner_length_m as f32 + 2.0 * 0.3;
         assert!((runners - want).abs() < 1e-4, "{runners} vs {want}");
+    }
+
+    #[test]
+    fn a_turbo_takes_the_collector_and_feeds_the_throttle() {
+        let d = EngineDef::honda_k20c1();
+        let t = d.turbo.clone().unwrap();
+        let mut out = Vec::new();
+        let inlet = intake(&d, &mut out).unwrap();
+        exhaust(&d, Some(inlet), &mut out);
+        let at = |p: Part| {
+            out.iter()
+                .find(|i| i.part == p)
+                .map(|i| i.model.transform_point3(Vec3::new(0.0, 0.5, 0.0)))
+                .unwrap()
+        };
+        let (turbine, compressor) = (at(Part::Turbine), at(Part::Compressor));
+        // on one shaft along x: same height and depth, the compressor 2.6 wheels ahead
+        let tip = t.compressor_tip_diameter_m as f32;
+        assert!((turbine.y - compressor.y).abs() < 1e-6 && (turbine.z - compressor.z).abs() < 1e-6);
+        assert!((turbine.x - compressor.x - 2.6 * tip).abs() < 1e-5);
+        // the charge pipe ends at the throttle's inlet
+        assert!(
+            tubes(&out, Part::Runner)
+                .iter()
+                .any(|(_, b)| (*b - inlet).length() < 1e-5)
+        );
+        assert_eq!(
+            out.iter().filter(|i| i.part == Part::Intercooler).count(),
+            usize::from(t.intercooler_effectiveness > 0.0)
+        );
+    }
+
+    #[test]
+    fn no_intercooler_without_effectiveness() {
+        let mut d = EngineDef::honda_k20c1();
+        if let Some(t) = &mut d.turbo {
+            t.intercooler_effectiveness = 0.0;
+        }
+        let mut out = Vec::new();
+        let inlet = intake(&d, &mut out);
+        exhaust(&d, inlet, &mut out);
+        assert!(!out.iter().any(|i| i.part == Part::Intercooler));
+        assert!(out.iter().any(|i| i.part == Part::Turbine));
     }
 }
