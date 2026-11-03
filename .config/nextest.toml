@@ -3,3 +3,9 @@
 # nextest, but the looping test binaries were seen to outlive it (2026-10-28, 40 min).
 [profile.default]
 slow-timeout = { period = "60s", terminate-after = 5 }
+
+# The rotaries' reference-quality idle runs ~145 s alone; on a box another session loads it took
+# over 300 s and was killed as a hang (2026-11-03, twice). Its own limit: 15 minutes.
+[[profile.default.overrides]]
+filter = "test(=sim::tests::the_rotaries_idle_on_their_own_at_reference_quality)"
+slow-timeout = { period = "60s", terminate-after = 15 }
