@@ -1971,6 +1971,61 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_block_reads_each_steps_means_where_the_engine_packed_them() {
+        // Three steps, the first and the last carrying means (cylinders, branches, rpm, the
+        // turbine's inlet pressure and slope packed one after another): the block must give the
+        // same as handing them over step by step, bit for bit
+        let def = ExhaustDef::default();
+        let dt = 1.0 / 48_000.0;
+        let mut direct = ExhaustNet::new(&def, 4, dt);
+        let mut blocked = direct.clone();
+        let (n, m) = (direct.primaries.len(), direct.tails.len());
+        let means = [
+            (vec![0.010; n], vec![0.040; m], 900.0, 1.2e5, 0.0),
+            (vec![0.030; n], vec![0.120; m], 3000.0, 1.8e5, 800.0),
+        ];
+        let mut input = BlockIn {
+            steps: 3,
+            ..BlockIn::default()
+        };
+        for s in 0..3 {
+            input
+                .flows
+                .extend((0..n).map(|i| 0.02 * (s * n + i + 1) as f64));
+            input.mach.extend(std::iter::repeat_n(0.01, m));
+            let carry = s != 1;
+            input.has_mean.push(carry);
+            if carry {
+                let (c, b, rpm, up, dp) = &means[s / 2];
+                input.mean.extend_from_slice(c);
+                input.mean.extend_from_slice(b);
+                input.mean.extend_from_slice(&[*rpm, *up, *dp]);
+            }
+        }
+        let mut out = BlockOut::default();
+        blocked.run_block(&input, &mut out);
+        let mut tails = Vec::new();
+        for s in 0..3 {
+            let mean = (s != 1).then(|| {
+                let (c, b, rpm, up, dp) = &means[s / 2];
+                NetMeans {
+                    cylinders: c,
+                    branches: b,
+                    rpm: *rpm,
+                    upstream_pa: *up,
+                    turbine_dp_dm: *dp,
+                }
+            });
+            direct.prepare(&input.mach[s * m..(s + 1) * m], mean);
+            direct.step(&input.flows[s * n..(s + 1) * n]);
+            tails.extend_from_slice(&direct.tails);
+        }
+        assert_eq!(out.tails, tails);
+        // the last step's means took hold: its turbine joined the collectors
+        assert!(blocked.branches.iter().all(|b| b.turbine.is_some()));
+    }
+
+    #[test]
     fn a_turbines_inlet_pressure_reaches_the_primaries_collectors_and_probe() {
         let mut net = ExhaustNet::new(&ExhaustDef::default(), 4, 1.0 / 48_000.0);
         let mut probe = ArrivalProbe::new(&net);
