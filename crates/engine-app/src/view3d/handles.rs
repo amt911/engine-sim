@@ -15,6 +15,17 @@ pub enum Field {
     RunnerLength,
     PrimaryLength,
     PlenumVolume,
+    RunnerDiameter,
+    PrimaryDiameter,
+    IntakeValveDiameter,
+    ExhaustValveDiameter,
+    IntakeLift,
+    ExhaustLift,
+    IntakeDuration,
+    ExhaustDuration,
+    IntakeOpens,
+    ExhaustOpens,
+    CompressionRatio,
 }
 
 /// A handle: where it stands, the direction it moves along, what it edits and how much the
@@ -36,11 +47,20 @@ impl Field {
             Field::RunnerLength => "Runner length",
             Field::PrimaryLength => "Primary length",
             Field::PlenumVolume => "Plenum volume",
+            Field::RunnerDiameter => "Runner bore",
+            Field::PrimaryDiameter => "Primary bore",
+            Field::IntakeValveDiameter | Field::ExhaustValveDiameter => "Head diameter",
+            Field::IntakeLift | Field::ExhaustLift => "Lift",
+            Field::IntakeDuration | Field::ExhaustDuration => "Duration",
+            Field::IntakeOpens | Field::ExhaustOpens => "Opens",
+            Field::CompressionRatio => "Compression ratio",
         }
     }
 
     /// The editor's range for it, SI (`editor_panel`: bore 40–140 mm, stroke 30–140, rod
-    /// 60–260, runners 50–1000, primaries 100–2000 mm, plenum 0.3–15 L).
+    /// 60–260, runners 50–1000 mm long and 20–80 across, primaries 100–2000 mm long and 20–90
+    /// across, plenum 0.3–15 L, valves 15–70 mm across with 3–18 mm of lift, open at 0–719° of
+    /// the cycle for 120–360°, compression 6–16:1).
     pub fn range(self) -> (f64, f64) {
         match self {
             Field::Bore => (0.040, 0.140),
@@ -49,6 +69,13 @@ impl Field {
             Field::RunnerLength => (0.050, 1.0),
             Field::PrimaryLength => (0.100, 2.0),
             Field::PlenumVolume => (0.3e-3, 15e-3),
+            Field::RunnerDiameter => (0.020, 0.080),
+            Field::PrimaryDiameter => (0.020, 0.090),
+            Field::IntakeValveDiameter | Field::ExhaustValveDiameter => (0.015, 0.070),
+            Field::IntakeLift | Field::ExhaustLift => (0.003, 0.018),
+            Field::IntakeDuration | Field::ExhaustDuration => (120.0, 360.0),
+            Field::IntakeOpens | Field::ExhaustOpens => (0.0, 719.0),
+            Field::CompressionRatio => (6.0, 16.0),
         }
     }
 
@@ -60,6 +87,17 @@ impl Field {
             Field::RunnerLength => d.intake.runner_length_m,
             Field::PrimaryLength => d.exhaust.primary_length_m,
             Field::PlenumVolume => d.plenum_volume_m3,
+            Field::RunnerDiameter => d.intake.runner_diameter_m,
+            Field::PrimaryDiameter => d.exhaust.primary_diameter_m,
+            Field::IntakeValveDiameter => d.intake_valve.diameter_m,
+            Field::ExhaustValveDiameter => d.exhaust_valve.diameter_m,
+            Field::IntakeLift => d.intake_valve.max_lift_m,
+            Field::ExhaustLift => d.exhaust_valve.max_lift_m,
+            Field::IntakeDuration => d.intake_valve.duration_deg,
+            Field::ExhaustDuration => d.exhaust_valve.duration_deg,
+            Field::IntakeOpens => d.intake_valve.open_deg,
+            Field::ExhaustOpens => d.exhaust_valve.open_deg,
+            Field::CompressionRatio => d.geometry.compression_ratio,
         }
     }
 
@@ -78,15 +116,37 @@ impl Field {
             Field::RunnerLength => d.intake.runner_length_m = v,
             Field::PrimaryLength => d.exhaust.primary_length_m = v,
             Field::PlenumVolume => d.plenum_volume_m3 = v,
+            Field::RunnerDiameter => d.intake.runner_diameter_m = v,
+            Field::PrimaryDiameter => d.exhaust.primary_diameter_m = v,
+            Field::IntakeValveDiameter => d.intake_valve.diameter_m = v,
+            Field::ExhaustValveDiameter => d.exhaust_valve.diameter_m = v,
+            Field::IntakeLift => d.intake_valve.max_lift_m = v,
+            Field::ExhaustLift => d.exhaust_valve.max_lift_m = v,
+            Field::IntakeDuration => d.intake_valve.duration_deg = v,
+            Field::ExhaustDuration => d.exhaust_valve.duration_deg = v,
+            Field::IntakeOpens => d.intake_valve.open_deg = v,
+            Field::ExhaustOpens => d.exhaust_valve.open_deg = v,
+            Field::CompressionRatio => d.geometry.compression_ratio = v,
+        }
+    }
+
+    /// How it is shown and typed: (editor units per SI unit, unit text, decimals).
+    pub fn units(self) -> (f64, &'static str, usize) {
+        match self {
+            Field::PlenumVolume => (1000.0, " L", 2),
+            Field::IntakeDuration
+            | Field::ExhaustDuration
+            | Field::IntakeOpens
+            | Field::ExhaustOpens => (1.0, "°", 0),
+            Field::CompressionRatio => (1.0, ":1", 1),
+            _ => (1000.0, " mm", 1),
         }
     }
 
     /// The value for display, in the editor's units.
     pub fn show(self, v: f64) -> String {
-        match self {
-            Field::PlenumVolume => format!("{:.2} L", 1000.0 * v),
-            _ => format!("{:.1} mm", 1000.0 * v),
-        }
+        let (k, unit, dp) = self.units();
+        format!("{:.*}{unit}", dp, k * v)
     }
 }
 
@@ -132,7 +192,7 @@ pub fn handles(def: &EngineDef, scene: &Scene, parts: &[Instance], selected: usi
                 // the crown at the top of its stroke moves by the stroke's change
                 Handle {
                     at: crown + 0.25 * b * up,
-                    axis: up,
+                    axis: -up,
                     field: Field::Stroke,
                     per_metre: 1.0,
                 },
@@ -155,12 +215,47 @@ pub fn handles(def: &EngineDef, scene: &Scene, parts: &[Instance], selected: usi
         }
         Part::Runner => {
             let axis = p.model.transform_vector3(Vec3::Y).normalize_or_zero();
-            vec![Handle {
-                at: at(Vec3::Y),
-                axis,
-                field: Field::RunnerLength,
-                per_metre: 1.0,
-            }]
+            vec![
+                Handle {
+                    at: at(Vec3::Y),
+                    axis,
+                    field: Field::RunnerLength,
+                    per_metre: 1.0,
+                },
+                // the wall at mid-length moves by half the bore's change
+                Handle {
+                    at: at(Vec3::new(1.0, 0.5, 0.0)),
+                    axis: p.model.transform_vector3(Vec3::X).normalize_or_zero(),
+                    field: Field::RunnerDiameter,
+                    per_metre: 2.0,
+                },
+            ]
+        }
+        Part::IntakeValve | Part::ExhaustValve => {
+            // head and stem both stand on the valve face: its edge grows by half the diameter's
+            // change, and the face goes down as the lift grows
+            let (dia, lift) = if p.part == Part::IntakeValve {
+                (Field::IntakeValveDiameter, Field::IntakeLift)
+            } else {
+                (Field::ExhaustValveDiameter, Field::ExhaustLift)
+            };
+            let face = at(Vec3::ZERO);
+            let across = p.model.transform_vector3(Vec3::X).normalize_or_zero();
+            let up = p.model.transform_vector3(Vec3::Y).normalize_or_zero();
+            vec![
+                Handle {
+                    at: face + 0.2 * b * across,
+                    axis: across,
+                    field: dia,
+                    per_metre: 2.0,
+                },
+                Handle {
+                    at: face - 0.12 * b * up,
+                    axis: -up,
+                    field: lift,
+                    per_metre: 1.0,
+                },
+            ]
         }
         Part::Plenum => {
             // the top face: lifting it by h adds its area × h
@@ -178,15 +273,64 @@ pub fn handles(def: &EngineDef, scene: &Scene, parts: &[Instance], selected: usi
             .find(|q| q.instances.contains(&selected) && q.pipe < def.cylinders)
             .and_then(|q| q.runs.last())
             .map(|r| {
-                vec![Handle {
-                    at: r.to,
-                    axis: (r.to - r.from).normalize_or_zero(),
-                    field: Field::PrimaryLength,
-                    per_metre: 1.0,
-                }]
+                let along = (r.to - r.from).normalize_or_zero();
+                // any direction square to the run: the wall at its middle
+                let side = along.any_orthonormal_vector();
+                let radius = 0.5 * def.exhaust.primary_diameter_m as f32;
+                vec![
+                    Handle {
+                        at: r.to,
+                        axis: along,
+                        field: Field::PrimaryLength,
+                        per_metre: 1.0,
+                    },
+                    Handle {
+                        at: 0.5 * (r.from + r.to) + radius * side,
+                        axis: side,
+                        field: Field::PrimaryDiameter,
+                        per_metre: 2.0,
+                    },
+                ]
             })
             .unwrap_or_default(),
         _ => Vec::new(),
+    }
+}
+
+/// Give the engine `value` (SI) for `field` if the result is a valid engine and differs from
+/// it; true when it took it (the engine is then rebuilt, the editor follows).
+pub fn apply(edit: &mut EngineDef, field: Field, value: f64) -> bool {
+    let mut next = edit.clone();
+    field.set(&mut next, value);
+    let take = engine_core::config::validate(&next).is_ok() && next != *edit;
+    if take {
+        *edit = next;
+    }
+    take
+}
+
+/// The numbers the card of a `part` lets you type, in the order it lists them.
+pub fn editable(part: Part) -> &'static [Field] {
+    match part {
+        Part::Piston | Part::PistonRing | Part::Charge | Part::Liner => {
+            &[Field::Bore, Field::Stroke, Field::CompressionRatio]
+        }
+        Part::Rod | Part::RodEye | Part::WristPin => &[Field::Rod],
+        Part::IntakeValve => &[
+            Field::IntakeValveDiameter,
+            Field::IntakeLift,
+            Field::IntakeDuration,
+            Field::IntakeOpens,
+        ],
+        Part::ExhaustValve => &[
+            Field::ExhaustValveDiameter,
+            Field::ExhaustLift,
+            Field::ExhaustDuration,
+            Field::ExhaustOpens,
+        ],
+        Part::Runner | Part::Trumpet => &[Field::RunnerLength, Field::RunnerDiameter],
+        Part::Plenum => &[Field::PlenumVolume],
+        _ => &[],
     }
 }
 
@@ -274,7 +418,7 @@ mod tests {
         let (s, parts) = frame(&d);
         let p = &s.pipes[1];
         let h = handles(&d, &s, &parts, p.instances.start);
-        assert_eq!(h.len(), 1);
+        assert_eq!(h.len(), 2, "its length and its bore");
         assert_eq!(h[0].at, p.runs.last().unwrap().to);
         assert_eq!(h[0].field, Field::PrimaryLength);
         let head = parts.iter().position(|i| i.part == Part::Head).unwrap();
@@ -311,5 +455,93 @@ mod tests {
             let h = handles(&d, &s, &parts, k);
             assert!((h[0].at.x - pitch).abs() < 1e-5, "{k}: {}", h[0].at);
         }
+    }
+
+    #[test]
+    fn a_valve_has_a_diameter_and_a_lift_handle_at_its_face() {
+        // inline-4, cylinder 1 at x = 0, both valves shut: the intake head's face at the deck,
+        // 0.25 bore to the intake side; its diameter grows across (two edges), its lift down
+        let d = EngineDef::inline4();
+        let (s, parts) = frame(&d);
+        let k = parts
+            .iter()
+            .position(|i| i.part == Part::IntakeValve)
+            .unwrap();
+        let h = handles(&d, &s, &parts, k);
+        let face = parts[k].model.transform_point3(Vec3::ZERO);
+        assert_eq!(h.len(), 2);
+        assert_eq!(
+            (h[0].field, h[0].per_metre),
+            (Field::IntakeValveDiameter, 2.0)
+        );
+        assert!((h[0].at - face).length() > 0.0 && (h[0].at - face).y.abs() < 1e-6);
+        assert_eq!((h[1].field, h[1].per_metre), (Field::IntakeLift, 1.0));
+        assert!((h[1].axis - Vec3::NEG_Y).length() < 1e-6, "{}", h[1].axis);
+        let k = parts
+            .iter()
+            .position(|i| i.part == Part::ExhaustValve)
+            .unwrap();
+        let fields: Vec<_> = handles(&d, &s, &parts, k).iter().map(|h| h.field).collect();
+        assert_eq!(fields, [Field::ExhaustValveDiameter, Field::ExhaustLift]);
+    }
+
+    #[test]
+    fn a_primary_and_a_runner_also_take_their_bore() {
+        let d = EngineDef::inline4();
+        let (s, parts) = frame(&d);
+        let p = &s.pipes[0];
+        let fields: Vec<_> = handles(&d, &s, &parts, p.instances.start)
+            .iter()
+            .map(|h| (h.field, h.per_metre))
+            .collect();
+        assert_eq!(
+            fields,
+            [(Field::PrimaryLength, 1.0), (Field::PrimaryDiameter, 2.0)]
+        );
+        if let Some(k) = parts.iter().position(|i| i.part == Part::Runner) {
+            let fields: Vec<_> = handles(&d, &s, &parts, k).iter().map(|h| h.field).collect();
+            assert_eq!(fields, [Field::RunnerLength, Field::RunnerDiameter]);
+        }
+    }
+
+    #[test]
+    fn the_card_edits_what_the_part_is_made_of() {
+        assert_eq!(
+            editable(Part::ExhaustValve),
+            [
+                Field::ExhaustValveDiameter,
+                Field::ExhaustLift,
+                Field::ExhaustDuration,
+                Field::ExhaustOpens
+            ]
+        );
+        assert_eq!(
+            editable(Part::Piston),
+            [Field::Bore, Field::Stroke, Field::CompressionRatio]
+        );
+        assert!(editable(Part::Block).is_empty());
+    }
+
+    #[test]
+    fn timing_and_compression_show_in_their_own_units() {
+        let mut d = EngineDef::inline4();
+        Field::IntakeOpens.set(&mut d, 800.0);
+        assert_eq!(d.intake_valve.open_deg, 719.0);
+        assert_eq!(Field::ExhaustDuration.show(248.4), "248°");
+        assert_eq!(Field::CompressionRatio.show(11.04), "11.0:1");
+        assert_eq!(Field::IntakeLift.show(0.0105), "10.5 mm");
+    }
+
+    #[test]
+    fn an_edit_is_taken_only_when_it_changes_a_valid_engine() {
+        let mut d = EngineDef::inline4();
+        assert!(apply(&mut d, Field::ExhaustDuration, 250.0));
+        assert_eq!(d.exhaust_valve.duration_deg, 250.0);
+        assert!(!apply(&mut d, Field::ExhaustDuration, 250.0), "no change");
+        // a 60 mm rod on a 140 mm stroke is shorter than the throw (70 mm): refused
+        d.geometry.stroke_m = 0.140;
+        let before = d.clone();
+        assert!(!apply(&mut d, Field::Rod, 0.060));
+        assert_eq!(d, before);
     }
 }

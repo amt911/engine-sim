@@ -394,12 +394,7 @@ pub fn show(
         d.value = super::handles::dragged(&d.handle, d.start, d.along_px, d.px_per_m);
         if resp.drag_stopped() {
             // the engine takes it now, once: a valid engine is rebuilt, the editor follows
-            let mut next = edit.clone();
-            d.handle.field.set(&mut next, d.value);
-            if engine_core::config::validate(&next).is_ok() && next != *edit {
-                *edit = next;
-                *dirty = true;
-            }
+            *dirty |= super::handles::apply(edit, d.handle.field, d.value);
             st.drag = None;
             st.selected = None;
         }
@@ -456,12 +451,11 @@ pub fn show(
         st.selected = None;
     }
     if let (Some((k, pos)), Some(scene)) = (st.selected, &st.scene) {
-        let card = st
-            .shared
-            .lock()
-            .ok()
-            .and_then(|sh| super::card::card(&snap.def, scene, &sh.instances, k));
-        if let Some(c) = card {
+        let card = st.shared.lock().ok().and_then(|sh| {
+            let c = super::card::card(&snap.def, scene, &sh.instances, k)?;
+            Some((c, super::handles::editable(sh.instances[k].part)))
+        });
+        if let Some((c, fields)) = card {
             egui::Area::new(egui::Id::unique("part_card"))
                 .fixed_pos(pos + egui::vec2(14.0, 8.0))
                 .show(ui.ctx(), |ui| {
@@ -474,6 +468,30 @@ pub fn show(
                                 ui.end_row();
                             }
                         });
+                        // what the part is made of, typed or dragged here
+                        if !fields.is_empty() {
+                            ui.separator();
+                            egui::Grid::new("part_card_edits").show(ui, |ui| {
+                                for &f in fields {
+                                    let (k, unit, dp) = f.units();
+                                    let (lo, hi) = f.range();
+                                    let mut shown = k * f.get(edit);
+                                    let name = ui.label(f.label());
+                                    let r = ui
+                                        .add(
+                                            egui::DragValue::new(&mut shown)
+                                                .range(k * lo..=k * hi)
+                                                .max_decimals(dp)
+                                                .suffix(unit),
+                                        )
+                                        .labelled_by(name.id);
+                                    if r.changed() {
+                                        *dirty |= super::handles::apply(edit, f, shown / k);
+                                    }
+                                    ui.end_row();
+                                }
+                            });
+                        }
                     });
                 });
         }

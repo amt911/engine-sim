@@ -612,4 +612,74 @@ mod tests {
         assert!(h.state().engine_dirty, "the engine is rebuilt with it");
         assert!(h.state().def.geometry.bore_m <= 0.140);
     }
+
+    #[test]
+    #[ignore = "needs a GPU adapter (run with --ignored)"]
+    fn typing_on_a_valves_card_edits_its_timing() {
+        use egui_kittest::kittest::Queryable;
+        use egui_kittest::wgpu as kw;
+        let preset = Preset::Inline4;
+        let snap = Simulation::with_quality(
+            preset.def(),
+            preset.vehicle(),
+            48_000.0,
+            1,
+            crate::quality::Quality::Low,
+        )
+        .snapshot();
+        let mut state = UiState::with_engine(preset.def());
+        state.view3d.available = true;
+        let duration = state.def.exhaust_valve.duration_deg;
+        let rs = kw::create_render_state(
+            kw::default_wgpu_setup(),
+            eframe::egui_wgpu::RendererOptions::PREDICTABLE,
+        );
+        crate::view3d::render::install(&rs);
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1400.0, 860.0))
+            .renderer(kw::WgpuTestRenderer::from_render_state(rs))
+            .build_ui_state(
+                |ui, state: &mut UiState| {
+                    layout(ui, state, &snap, &Ok(48_000), false);
+                },
+                state,
+            );
+        h.run();
+        let valve = h
+            .state()
+            .view3d
+            .first(crate::view3d::scene::Part::ExhaustValve)
+            .unwrap();
+        h.state_mut().view3d.selected = Some((valve, egui::pos2(700.0, 300.0)));
+        h.run();
+        // drag the card's duration 30 px to the right: a DragValue counts up as it is pulled
+        let at = h
+            .get_by_role_and_label(egui::accesskit::Role::SpinButton, "Duration")
+            .rect()
+            .center();
+        h.hover_at(at);
+        h.run();
+        h.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run();
+        for k in 1..=6 {
+            h.hover_at(at + egui::vec2(5.0 * k as f32, 0.0));
+            h.run();
+        }
+        h.event(egui::Event::PointerButton {
+            pos: at + egui::vec2(30.0, 0.0),
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run();
+        let now = h.state().def.exhaust_valve.duration_deg;
+        assert!(now > duration, "{now} vs {duration}");
+        assert!(h.state().engine_dirty);
+        assert!(h.state().view3d.selected.is_some(), "the card stays open");
+    }
 }
