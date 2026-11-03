@@ -111,6 +111,8 @@ pub struct Scene {
     pub bounds: (Vec3, f32),
     /// The same for the engine itself (block, head, crank train): what the camera starts on.
     pub focus: (Vec3, f32),
+    /// The exhaust pipes the simulation reports gas for, in its order.
+    pub pipes: Vec<super::ducts::PipePath>,
 }
 
 /// Cylinder pitch along the crank, bores (a drawing choice: the file has no bore spacing).
@@ -231,10 +233,12 @@ pub fn build(def: &EngineDef) -> Scene {
         let radius = (0.5 * len + w).hypot(1.6 * r) * 1.05;
         let charge_to = super::ducts::intake(def, &mut out);
         let focus = enclosing(&out);
-        super::ducts::exhaust(def, charge_to, &mut out);
+        let mut pipes = Vec::new();
+        super::ducts::exhaust(def, charge_to, &mut out, &mut pipes);
         return Scene {
             bounds: (centre, holding(&out, centre, radius)),
             focus,
+            pipes,
             static_parts: out,
         };
     }
@@ -293,10 +297,12 @@ pub fn build(def: &EngineDef) -> Scene {
     let centre = Vec3::new(0.5 * span, 0.0, 0.0);
     let charge_to = super::ducts::intake(def, &mut out);
     let focus = enclosing(&out);
-    super::ducts::exhaust(def, charge_to, &mut out);
+    let mut pipes = Vec::new();
+    super::ducts::exhaust(def, charge_to, &mut out, &mut pipes);
     Scene {
         bounds: (centre, holding(&out, centre, radius)),
         focus,
+        pipes,
         static_parts: out,
     }
 }

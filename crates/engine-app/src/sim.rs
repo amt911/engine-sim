@@ -20,6 +20,8 @@ pub struct Snapshot {
     pub plenum_pa: f64,
     pub crank_deg: f64,
     pub cylinders: Vec<CylinderView>,
+    /// The exhaust pipes' gas (empty: no data, e.g. a finite-volume exhaust), for the 3D view.
+    pub pipes: Vec<engine_core::exhaust::PipeState>,
     /// Cylinder 1 pressure (Pa) for each degree of the 720° cycle, last value seen.
     pub pressure_trace: Vec<f32>,
     /// Last `SCOPE_LEN` output samples, oldest first.
@@ -307,6 +309,11 @@ impl Simulation {
             plenum_pa: e.plenum_pressure_pa(),
             crank_deg: e.crank_deg(),
             cylinders: (0..e.def().cylinders).map(|i| e.cylinder(i)).collect(),
+            pipes: {
+                let mut p = Vec::new();
+                e.probe_exhaust(&mut p);
+                p
+            },
             pressure_trace: self.trace.clone(),
             scope,
             speed_m_s: self.vehicle.speed_m_s(),

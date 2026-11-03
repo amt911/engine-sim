@@ -11,7 +11,6 @@ pub struct Run {
     pub to: Vec3,
 }
 
-#[cfg(test)]
 impl Run {
     pub fn length(&self) -> f32 {
         (self.to - self.from).length()
@@ -58,6 +57,24 @@ pub fn route(
         sense = -sense;
     }
     at
+}
+
+/// The point `fraction` (0..1, wrapped) of the way along a laid pipe; `None` for no runs.
+pub fn point_along(runs: &[Run], fraction: f32) -> Option<Vec3> {
+    let total: f32 = runs.iter().map(Run::length).sum();
+    let first = runs.first()?;
+    if total <= 0.0 {
+        return Some(first.from);
+    }
+    let mut left = fraction.rem_euclid(1.0) * total;
+    for r in runs {
+        let l = r.length();
+        if left <= l {
+            return Some(r.from + (r.to - r.from) * (left / l.max(1e-12)));
+        }
+        left -= l;
+    }
+    runs.last().map(|r| r.to)
 }
 
 #[cfg(test)]
@@ -125,5 +142,21 @@ mod tests {
             assert!(runs.is_empty());
             assert_eq!(end, Vec3::ZERO);
         }
+    }
+
+    #[test]
+    fn a_point_along_walks_the_runs() {
+        // runs of 0.3 m: 0.3 down, 0.06 across, 0.3 back up; halfway (0.33 of 0.66 m) is 0.03
+        // into the leg across
+        let mut runs = Vec::new();
+        route(Vec3::ZERO, Vec3::NEG_Y, Vec3::X, 0.06, 0.66, 0.3, &mut runs);
+        let lay_out = |f: f32| point_along(&runs, f).unwrap();
+        assert!((lay_out(0.0) - Vec3::ZERO).length() < 1e-6);
+        let mid = lay_out(0.5);
+        assert!((mid - Vec3::new(0.03, -0.3, 0.0)).length() < 1e-5, "{mid}");
+        // wrapped: 1.25 is 0.25
+        assert!((lay_out(1.25) - lay_out(0.25)).length() < 1e-6);
+        assert!((lay_out(-0.75) - lay_out(0.25)).length() < 1e-6);
+        assert_eq!(point_along(&[], 0.3), None);
     }
 }
