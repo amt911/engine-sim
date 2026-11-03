@@ -111,7 +111,7 @@ pub fn engine(ui: &mut egui::Ui, s: &Snapshot) {
 /// Point of a Wankel housing's epitrochoid at parameter `alpha` rad, for eccentricity `e` and
 /// generating radius `r`: (e·cos 3α + R·cos α, e·sin 3α + R·sin α) (Yamamoto, *Rotary Engine*,
 /// 1981, §2; Heywood 2nd ed., §1.8). Major axis along x, minor (R − e) along y.
-fn housing_point(alpha: f64, e: f64, r: f64) -> (f64, f64) {
+pub(crate) fn housing_point(alpha: f64, e: f64, r: f64) -> (f64, f64) {
     (
         e * (3.0 * alpha).cos() + r * alpha.cos(),
         e * (3.0 * alpha).sin() + r * alpha.sin(),
