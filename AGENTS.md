@@ -200,7 +200,7 @@ cargo test --workspace                                  # all tests
 cargo clippy --workspace --all-targets -- -D warnings   # lint (gate)
 cargo fmt --all --check                                 # format (gate)
 scripts/coverage.sh                                     # coverage gate (80% lines)
-scripts/mutants-periodic.sh run                         # periodic mutation run since the last one (due check: … due)
+scripts/mutants-mode.sh off                             # no mutation runs for PRs (on: back on)
 scripts/mutants.sh                                      # full run (hours; floor 90%, ratchet)
 scripts/smoke.sh                                        # real-environment smoke
 ```
@@ -219,15 +219,14 @@ Stack and conventions: [docs/agents/testing.md](docs/agents/testing.md).
 - **Mutation gate: 60% minimum** over `engine-core`; current floor **90%** (`scripts/mutants.sh`,
   measured 92.4% on 2026-10-21) — a ratchet, raised with the score, never lowered. See
   [Mutation gate — the 60% floor](docs/agents/quality-beyond-coverage.md#mutation-gate--the-60-floor-and-it-only-goes-up).
-  **Cadence (user, 2026-11-03): it does not block PRs.** A PR merges on the fast gates (fmt,
-  clippy, tests, coverage, smoke) and its verify-pr verdict; the mutation run goes over
-  everything merged since the last one, weekly or when the machine is free, and its misses are
-  pinned in a follow-up PR. A PR touching delicate physics may add a sample of its diff
-  (`scripts/mutants.sh --in-diff … --shard 0/8`, minutes). **Knowing it is due:** the last run is
-  recorded per machine (`scripts/mutants-periodic.sh`, outside the repo) and a SessionStart hook
-  (`.claude/settings.json`) prints `MUTATION RUN DUE` at the start of a session when 7 days have
-  passed with engine-core changed, or 30 engine-core commits — however long the computer was off.
-  When it shows, start `scripts/mutants-periodic.sh run` in the background once the CPU is free.
+  **When (user, 2026-11-03): per PR, on what it touched, in the background, never blocking.**
+  A PR that changes `engine-core` gets `scripts/mutants.sh --in-diff <(git diff main...HEAD --
+  crates/engine-core)` started in the background (a plain background job, not a subagent: it
+  waits hours and a subagent would spend tokens doing it) when the PR opens; the PR merges on the
+  fast gates (fmt, clippy, tests, coverage, smoke) and its verify-pr verdict without waiting;
+  the run's result goes to the PR as a comment and its misses are pinned in a follow-up PR.
+  **The user decides:** `scripts/mutants-mode.sh off|on` (per machine, on by default; a
+  SessionStart hook in `.claude/settings.json` says so when it is off), or by saying so.
 - **The "E2E" of this project is the real binary**: headless render (WAV non-silent, finite, at the
   right firing frequency) + GUI launch smoke in `scripts/smoke.sh`, and `egui_kittest` tests that
   drive the editor widgets (click, drag sliders, read the state they changed).

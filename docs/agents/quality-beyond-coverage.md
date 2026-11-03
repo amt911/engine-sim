@@ -110,7 +110,8 @@ pass 2 runs what it left missed or timed out against the whole suite with a long
 mutant still counts as missed only when the whole suite misses it, so the score is unchanged; a
 stale list costs speed, never a verdict. Each mutant's nextest runs 2 threads (3 mutants × 2 on
 the 6 cores `heavy.sh` grants: 6 threads each oversubscribed them 3× into timeouts), and more than
-5 % timeouts fails the run instead of scoring it.
+5 % timeouts fails the run instead of scoring it. It runs per PR in the background and does not
+block the merge (AGENTS.md, *Tests*); `scripts/mutants-mode.sh off` stops it.
 
 **A mutation run is a heavy job** — it forks one JVM/worker per core and sizes nothing for you. Run it
 inside the memory cgroup and cap the worker count: see
