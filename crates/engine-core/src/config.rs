@@ -656,7 +656,8 @@ mod shipped_presets {
     #[test]
     fn the_built_ins_are_what_the_preset_files_say() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../presets");
-        let built_ins: [(&str, fn() -> EngineDef); 11] = [
+        type BuiltIn = (&'static str, fn() -> EngineDef);
+        let built_ins: [BuiltIn; 11] = [
             ("single", EngineDef::single),
             ("inline4", EngineDef::inline4),
             ("honda-k20a", EngineDef::honda_k20a),
