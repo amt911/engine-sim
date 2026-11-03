@@ -11,6 +11,7 @@ pub struct Run {
     pub to: Vec3,
 }
 
+#[cfg(test)]
 impl Run {
     pub fn length(&self) -> f32 {
         (self.to - self.from).length()
