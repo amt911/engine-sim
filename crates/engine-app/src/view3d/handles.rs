@@ -1,9 +1,11 @@
 //! Handles on the clicked part: drag one along its axis and the number it stands for changes
-//! (bore, stroke, rod, a runner's or a primary's length, the plenum's volume), within the
-//! editor's ranges. The engine takes the new value once, on release (one rebuild, as a slider).
+//! (bore, stroke, rod, valves, a runner's or a primary's length and bore, the plenum, a
+//! silencer), within the editor's ranges. The engine takes the new value once, on release (one
+//! rebuild, as a slider).
 
 use super::scene::{Instance, Part, Scene};
 use engine_core::engine::EngineDef;
+use engine_core::exhaust::Segment;
 use glam::Vec3;
 
 /// What a handle edits.
@@ -26,6 +28,33 @@ pub enum Field {
     IntakeOpens,
     ExhaustOpens,
     CompressionRatio,
+    /// The silencer at this index of the exhaust's after-collector chain: its length…
+    SilencerLength(u8),
+    /// …and its shell's diameter.
+    SilencerDiameter(u8),
+}
+
+/// The silencer at `i` of the after-collector chain: (length, shell diameter), if it is one.
+fn can(d: &EngineDef, i: u8) -> Option<(f64, f64)> {
+    match d.exhaust.after_collector.get(i as usize) {
+        Some(&Segment::Muffler {
+            length_m,
+            diameter_m,
+            ..
+        }) => Some((length_m, diameter_m)),
+        _ => None,
+    }
+}
+
+fn can_mut(d: &mut EngineDef, i: u8) -> Option<(&mut f64, &mut f64)> {
+    match d.exhaust.after_collector.get_mut(i as usize) {
+        Some(Segment::Muffler {
+            length_m,
+            diameter_m,
+            ..
+        }) => Some((length_m, diameter_m)),
+        _ => None,
+    }
 }
 
 /// A handle: where it stands, the direction it moves along, what it edits and how much the
@@ -54,13 +83,16 @@ impl Field {
             Field::IntakeDuration | Field::ExhaustDuration => "Duration",
             Field::IntakeOpens | Field::ExhaustOpens => "Opens",
             Field::CompressionRatio => "Compression ratio",
+            Field::SilencerLength(_) => "Silencer length",
+            Field::SilencerDiameter(_) => "Shell diameter",
         }
     }
 
     /// The editor's range for it, SI (`editor_panel`: bore 40–140 mm, stroke 30–140, rod
     /// 60–260, runners 50–1000 mm long and 20–80 across, primaries 100–2000 mm long and 20–90
     /// across, plenum 0.3–15 L, valves 15–70 mm across with 3–18 mm of lift, open at 0–719° of
-    /// the cycle for 120–360°, compression 6–16:1).
+    /// the cycle for 120–360°, compression 6–16:1, silencers 50–1200 mm long in a 40–400 mm
+    /// shell).
     pub fn range(self) -> (f64, f64) {
         match self {
             Field::Bore => (0.040, 0.140),
@@ -76,6 +108,8 @@ impl Field {
             Field::IntakeDuration | Field::ExhaustDuration => (120.0, 360.0),
             Field::IntakeOpens | Field::ExhaustOpens => (0.0, 719.0),
             Field::CompressionRatio => (6.0, 16.0),
+            Field::SilencerLength(_) => (0.050, 1.2),
+            Field::SilencerDiameter(_) => (0.040, 0.400),
         }
     }
 
@@ -98,6 +132,9 @@ impl Field {
             Field::IntakeOpens => d.intake_valve.open_deg,
             Field::ExhaustOpens => d.exhaust_valve.open_deg,
             Field::CompressionRatio => d.geometry.compression_ratio,
+            // not a silencer (the chain was edited under it): nothing to show
+            Field::SilencerLength(i) => can(d, i).map_or(f64::NAN, |c| c.0),
+            Field::SilencerDiameter(i) => can(d, i).map_or(f64::NAN, |c| c.1),
         }
     }
 
@@ -127,6 +164,16 @@ impl Field {
             Field::IntakeOpens => d.intake_valve.open_deg = v,
             Field::ExhaustOpens => d.exhaust_valve.open_deg = v,
             Field::CompressionRatio => d.geometry.compression_ratio = v,
+            Field::SilencerLength(i) => {
+                if let Some(c) = can_mut(d, i) {
+                    *c.0 = v;
+                }
+            }
+            Field::SilencerDiameter(i) => {
+                if let Some(c) = can_mut(d, i) {
+                    *c.1 = v;
+                }
+            }
         }
     }
 
@@ -267,6 +314,23 @@ pub fn handles(def: &EngineDef, scene: &Scene, parts: &[Instance], selected: usi
                 per_metre: (s.x * s.z) as f64,
             }]
         }
+        Part::Silencer => silencer_at(def, parts, selected).map_or(Vec::new(), |i| {
+            // a straight can like a runner: its far end along it, its shell at mid-length
+            vec![
+                Handle {
+                    at: at(Vec3::Y),
+                    axis: p.model.transform_vector3(Vec3::Y).normalize_or_zero(),
+                    field: Field::SilencerLength(i),
+                    per_metre: 1.0,
+                },
+                Handle {
+                    at: at(Vec3::new(1.0, 0.5, 0.0)),
+                    axis: p.model.transform_vector3(Vec3::X).normalize_or_zero(),
+                    field: Field::SilencerDiameter(i),
+                    per_metre: 2.0,
+                },
+            ]
+        }),
         Part::Pipe | Part::Joint => scene
             .pipes
             .iter()
@@ -307,6 +371,45 @@ pub fn apply(edit: &mut EngineDef, field: Field, value: f64) -> bool {
         *edit = next;
     }
     take
+}
+
+/// Which silencer of the after-collector chain `parts[k]` draws. Each branch lays that chain
+/// out in order, one can per silencer (`ducts::chain`), then the merge lays its own: the
+/// `j`-th can drawn is the chain's `j mod n`-th silencer, and the merge's cans (the last ones)
+/// are not in it.
+fn silencer_at(def: &EngineDef, parts: &[Instance], k: usize) -> Option<u8> {
+    if parts.get(k)?.part != Part::Silencer {
+        return None;
+    }
+    let is_can = |s: &Segment| matches!(s, Segment::Muffler { .. });
+    let chain: Vec<usize> = (def.exhaust.after_collector.iter().enumerate())
+        .filter(|(_, s)| is_can(s))
+        .map(|(i, _)| i)
+        .collect();
+    let merged = def
+        .exhaust
+        .merge
+        .as_ref()
+        .map_or(0, |m| m.segments.iter().filter(|s| is_can(s)).count());
+    let drawn = parts.iter().filter(|i| i.part == Part::Silencer).count();
+    let j = parts[..k]
+        .iter()
+        .filter(|i| i.part == Part::Silencer)
+        .count();
+    if chain.is_empty() || j >= drawn.saturating_sub(merged) {
+        return None;
+    }
+    u8::try_from(chain[j % chain.len()]).ok()
+}
+
+/// The numbers the card of `parts[k]` lets you type: its part's, and a silencer's own.
+pub fn card_fields(def: &EngineDef, parts: &[Instance], k: usize) -> Vec<Field> {
+    match silencer_at(def, parts, k) {
+        Some(i) => vec![Field::SilencerLength(i), Field::SilencerDiameter(i)],
+        None => parts
+            .get(k)
+            .map_or(Vec::new(), |p| editable(p.part).to_vec()),
+    }
 }
 
 /// The numbers the card of a `part` lets you type, in the order it lists them.
@@ -520,6 +623,110 @@ mod tests {
             [Field::Bore, Field::Stroke, Field::CompressionRatio]
         );
         assert!(editable(Part::Block).is_empty());
+    }
+
+    /// Pipe, can, pipe, can behind the collectors, no merge: the cans are segments 1 and 3.
+    fn two_cans() -> EngineDef {
+        use engine_core::exhaust::Segment;
+        let can = |length_m, diameter_m| Segment::Muffler {
+            length_m,
+            diameter_m,
+            tube_diameter_m: 0.05,
+            packing_resistivity: 16_000.0,
+            packing_porosity: 0.95,
+        };
+        let pipe = Segment::Pipe {
+            length_m: 0.3,
+            diameter_m: 0.05,
+        };
+        let mut d = EngineDef::inline4();
+        d.exhaust.after_collector = vec![pipe.clone(), can(0.35, 0.12), pipe, can(0.5, 0.2)];
+        d.exhaust.merge = None;
+        d
+    }
+
+    #[test]
+    fn a_silencer_takes_its_length_and_its_shell() {
+        let d = two_cans();
+        let (s, parts) = frame(&d);
+        let cans: Vec<_> = (0..parts.len())
+            .filter(|&k| parts[k].part == Part::Silencer)
+            .collect();
+        // every branch draws both cans, in the chain's order
+        assert!(!cans.is_empty() && cans.len() % 2 == 0, "{}", cans.len());
+        for (j, &k) in cans.iter().enumerate() {
+            let seg = if j % 2 == 0 { 1 } else { 3 };
+            let fields: Vec<_> = handles(&d, &s, &parts, k)
+                .iter()
+                .map(|h| (h.field, h.per_metre))
+                .collect();
+            assert_eq!(
+                fields,
+                [
+                    (Field::SilencerLength(seg), 1.0),
+                    (Field::SilencerDiameter(seg), 2.0)
+                ]
+            );
+            assert_eq!(
+                card_fields(&d, &parts, k),
+                [Field::SilencerLength(seg), Field::SilencerDiameter(seg)]
+            );
+        }
+        // the second can's end stands 0.5 m along it from where it starts
+        let h = handles(&d, &s, &parts, cans[1]);
+        let start = parts[cans[1]].model.transform_point3(Vec3::ZERO);
+        assert!((h[0].at.distance(start) - 0.5).abs() < 1e-5, "{}", h[0].at);
+        // a piston's card is the part's list
+        let piston = parts.iter().position(|i| i.part == Part::Piston).unwrap();
+        assert_eq!(card_fields(&d, &parts, piston), editable(Part::Piston));
+    }
+
+    #[test]
+    fn the_merges_own_can_is_not_one_of_the_chains() {
+        let mut d = two_cans();
+        let chain_can = d.exhaust.after_collector[1].clone();
+        d.exhaust.merge = Some(engine_core::exhaust::Merge {
+            segments: vec![chain_can],
+            outlet_diameter_m: 0.06,
+            bypass: None,
+        });
+        let (s, parts) = frame(&d);
+        let cans: Vec<_> = (0..parts.len())
+            .filter(|&k| parts[k].part == Part::Silencer)
+            .collect();
+        let (&last, branch) = cans.split_last().unwrap();
+        assert!(handles(&d, &s, &parts, last).is_empty());
+        assert!(card_fields(&d, &parts, last).is_empty());
+        // the branches' cans still map to the chain
+        assert_eq!(
+            card_fields(&d, &parts, branch[branch.len() - 1]),
+            [Field::SilencerLength(3), Field::SilencerDiameter(3)]
+        );
+    }
+
+    #[test]
+    fn a_silencer_field_edits_its_own_segment_only() {
+        use engine_core::exhaust::Segment;
+        let mut d = two_cans();
+        // the editor's silencer: 50–1200 mm long, a 40–400 mm shell
+        Field::SilencerLength(3).set(&mut d, 2.0);
+        Field::SilencerDiameter(1).set(&mut d, 0.01);
+        assert_eq!(Field::SilencerLength(3).get(&d), 1.2);
+        assert_eq!(Field::SilencerDiameter(1).get(&d), 0.04);
+        assert_eq!(Field::SilencerLength(1).get(&d), 0.35, "the other can kept");
+        assert_eq!(Field::SilencerLength(3).show(1.2), "1200.0 mm");
+        // a field pointing at a plain pipe or past the chain changes nothing
+        let before = d.clone();
+        Field::SilencerLength(0).set(&mut d, 0.9);
+        Field::SilencerDiameter(9).set(&mut d, 0.1);
+        assert_eq!(d, before);
+        assert!(!apply(&mut d, Field::SilencerLength(0), 0.9));
+        assert!(matches!(
+            d.exhaust.after_collector[0],
+            Segment::Pipe { length_m: 0.3, .. }
+        ));
+        assert!(apply(&mut d, Field::SilencerLength(1), 0.6));
+        assert_eq!(Field::SilencerLength(1).get(&d), 0.6);
     }
 
     #[test]
