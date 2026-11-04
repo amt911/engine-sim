@@ -225,6 +225,17 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
     `jitter/jitter.py`): σ 80 µs → −21.2/−15.0/−3.8/0.0; 160 µs → −15.7/−9.3/−1.2/0.1. The real
     shape is less random at 63–250 Hz and more at 250 Hz–1 kHz than any jitter: some additive
     broadband too.
+  - **`held:` pins the crank and hides part of the randomness.** Each cycle's IMEP spread moves a
+    free crank's speed; that random walk is real and `held` removes it. K20A free-running
+    (`--headless --throttle 0.1`, 3377 rpm): −17.4/−10.2/−7.3/−0.8 against held 3200 at 5 %:
+    −24.5/−20.1/−10.6/−1.2. Compare free revving with free revving (Audi A4 standing:
+    −7.0/−0.8/−0.5/0.0): the gap left is ~9 dB at 250 Hz–1 kHz and ~7 dB at 1–4 kHz.
+  - Literature search (2026-11-04): no paper splits tail-pipe noise into periodic and random with
+    values. Candidates by evidence: speed wander (above), pulse-amplitude spread (real 63–250 Hz
+    implies 10–30 %, ours 4–6 %), the tail jet's pulsed vortex rings (Sakurai et al. 2005, Honda
+    R&D Tech. Rev. 17(2): measured broadband above the 1D tones over 4 kHz; Powell 1953: a pulse
+    jet's broadband 25–30 dB over a steady jet's), the jet's hydrodynamic pressure on a close mic
+    (Arndt, Long & Glauser 1997, JFM 340), muffler flow noise at high flow (Davies & Holland 1999).
 - **Real LFA at load, clean reference (2026-10-29)**: chassis-dyno clip `dyno-gears.wav` 7.0–9.4 s
   (6060→7300 rpm, `scratchpad/opus-overrun/mosq/real/`, local only; `agent2/py/ang.py FILE 7.0 9.4 6600`):
   bands re total 63/125/250/500/1k/2k/4k/8k = −26.3/−22.7/−17.5/−4.7/−8.5/−5.1/−7.9/−16.9 dB, periodic share
