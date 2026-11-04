@@ -2,6 +2,7 @@
 //!
 //! SI units everywhere (m, kg, s, Pa, K, rad); conversions live in [`units`].
 
+pub mod catalogue;
 pub mod combustion;
 pub mod config;
 pub mod drivetrain;
