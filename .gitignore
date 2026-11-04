@@ -7,3 +7,8 @@ graphify-out/cache/
 **/tests/snapshots/*.new.png
 mutants.out*
 .claude/worktrees/
+
+# 3D parts: previews are build output (scripts/run.sh --render); reference photos stay local
+assets/3d-parts/renders/
+assets/3d-parts/refs/
+__pycache__/

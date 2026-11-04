@@ -20,6 +20,12 @@ exported/imported as JSON or YAML. For anyone who likes engines; it must run on 
   (2026-10-21). Function first; the `impeccable` flow (`$impeccable teach` → `PRODUCT.md` /
   `DESIGN.md`, never hand-authored) starts when the UI is polished, not before. Until then: legible,
   consistent, no dead controls.
+- **3D parts live in [`assets/3d-parts/`](assets/3d-parts/README.md)** (user, 2026-11-04): every
+  realistic part of the 3D view (piston, rod, crank, valve train, Wankel) is a parametric Blender
+  script there; the `.glb` are its build output. Work on a part there: change the script, rebuild
+  (`scripts/run.sh <part> --render`, Blender headless in its cgroup), `python3 scripts/verify.py`,
+  and show the user the render before building on it. Frames and stretch rules: its README.
+  `renders/` and `refs/` are local only.
 - **Read `docs/FINDINGS.md` before debugging or touching the build** — non-obvious gotchas. When you
   discover something non-obvious that cost time and isn't deducible from the code, add an entry.
 - **`docs/FACTS.md` is the working-memory file, not a second FINDINGS** — verified facts every fresh
@@ -179,6 +185,7 @@ Planned (add when the phase needs them, then update this table): `fft-convolver`
 │   │                  #   behind an `AudioSink` boundary.
 │   └── engine-app/    # binary `engine-sim`: eframe UI, sim thread, CLI, headless renderer,
 │                      #   3D view (view3d/: camera, meshes, scene from the definition, wgpu).
+├── assets/3d-parts/   # the 3D view's realistic parts: Blender scripts (the source) → out/*.glb
 ├── presets/           # built-in engines as YAML (`--save`); a test keeps them equal to the code
 ├── scripts/           # smoke.sh, heavy.sh, verify-pr.sh
 └── docs/              # specs, research, agents/, FINDINGS, FACTS
