@@ -74,6 +74,10 @@ pub struct VehicleDef {
     /// the head radiates into it ([`crate::engine_bay`]). Like every field, files without it take
     /// the default car's (a road car's bay).
     pub engine_bay: Option<crate::engine_bay::EngineBay>,
+    /// The gearbox's gear pairs and housing, for its whine and rattle
+    /// ([`crate::gear_noise`]); a default road-car box when the file has none.
+    #[serde(skip_serializing_if = "crate::gear_noise::GearboxDef::is_default")]
+    pub gearbox: crate::gear_noise::GearboxDef,
 }
 
 impl Default for VehicleDef {
@@ -103,6 +107,7 @@ impl VehicleDef {
             // the engine sits ahead of a rear-side silencer's tip (ESTIMATE)
             engine_ahead_m: 0.9,
             engine_bay: None,
+            gearbox: crate::gear_noise::GearboxDef::default(),
         }
     }
 
@@ -126,6 +131,7 @@ impl VehicleDef {
             // front engine over the front axle: 2.6 m wheelbase + 0.8 m rear overhang (ESTIMATE)
             engine_ahead_m: 3.4,
             engine_bay: Some(crate::engine_bay::EngineBay::default()),
+            gearbox: crate::gear_noise::GearboxDef::default(),
         }
     }
 
@@ -151,6 +157,7 @@ impl VehicleDef {
             // front engine over the front axle: 2.7 m wheelbase + 0.9 m rear overhang (ESTIMATE)
             engine_ahead_m: 3.6,
             engine_bay: Some(crate::engine_bay::EngineBay::default()),
+            gearbox: crate::gear_noise::GearboxDef::default(),
         }
     }
 
@@ -178,6 +185,7 @@ impl VehicleDef {
             // front-mid engine ~0.35 m behind the front axle: 0.96 m rear overhang + 2.605 m wheelbase − 0.35 m (Lexus GB, 2009-10-21; the 0.35 m an ESTIMATE)
             engine_ahead_m: 3.2,
             engine_bay: Some(crate::engine_bay::EngineBay::default()),
+            gearbox: crate::gear_noise::GearboxDef::default(),
         }
     }
 
@@ -202,6 +210,7 @@ impl VehicleDef {
             // mid engine, its centre ~0.7 m ahead of the rear axle, ~1.0 m rear overhang (ESTIMATE)
             engine_ahead_m: 1.7,
             engine_bay: Some(crate::engine_bay::EngineBay::default()),
+            gearbox: crate::gear_noise::GearboxDef::default(),
         }
     }
 
@@ -226,6 +235,7 @@ impl VehicleDef {
             // front-mid engine just behind the front axle: ~2.69 m wheelbase + ~1.0 m rear overhang − 0.2 m (ESTIMATE)
             engine_ahead_m: 3.5,
             engine_bay: Some(crate::engine_bay::EngineBay::default()),
+            gearbox: crate::gear_noise::GearboxDef::default(),
         }
     }
 
@@ -432,6 +442,7 @@ mod tests {
             shift_time_s: 0.0,
             engine_ahead_m: 0.0,
             engine_bay: None,
+            gearbox: crate::gear_noise::GearboxDef::default(),
         }
     }
 

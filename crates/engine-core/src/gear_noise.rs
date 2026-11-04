@@ -8,6 +8,9 @@
 //! Velex, "An analytical expression for the time-varying contact length in perfect cylindrical
 //! gears", *Mech. Mach. Theory* 31(5), 1996: the lines are parallel across the plane of action.
 
+use crate::drivetrain::VehicleDef;
+use serde::{Deserialize, Serialize};
+
 /// Pressure angle of the standard full-depth tooth (ISO 53), rad.
 const PRESSURE_ANGLE: f64 = 20.0 * std::f64::consts::PI / 180.0;
 
@@ -165,6 +168,11 @@ impl MeshDynamics {
         }
     }
 
+    /// Forget the state (the next step starts from rest on the mean stiffness).
+    pub fn reset(&mut self) {
+        self.fresh = true;
+    }
+
     /// Advance by `dt` with the driver at `omega1` rad/s transmitting `load_n` along the line of
     /// action; returns the fluctuating mesh force (the load taken off), N.
     ///
@@ -239,6 +247,13 @@ impl LooseGear {
         }
     }
 
+    /// Forget the state (the next step puts the gear on the drive flank).
+    pub fn reset(&mut self) {
+        self.fresh = true;
+        self.in_contact = true;
+        self.impacting = false;
+    }
+
     /// Advance by `dt` with the driver at `input_omega`; returns the impact force on the teeth, N
     /// (the largest of the sub-steps; 0 between impacts and while the driver just carries the
     /// gear).
@@ -288,6 +303,193 @@ impl LooseGear {
             self.x += h * (self.omega - input_omega) * rb;
         }
         peak
+    }
+}
+
+/// A gearbox's description (data): the gear pairs' geometry, which sets the whine's orders and
+/// strength, and the loose gears' backlash and drag, which set the rattle. Every field has a
+/// default (a common road-car manual box), so files without it load.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GearboxDef {
+    /// Helix angle of the gear teeth, degrees (0 = straight-cut spur gears, the sequential / dog
+    /// box and reverse gear's loud whine).
+    ///
+    /// ESTIMATE: road-car helical gears run 20-35 deg (Niemann & Winter II, ch. 21); 25 deg.
+    pub helix_deg: f64,
+    /// Teeth of a pair together (driver + driven).
+    ///
+    /// ESTIMATE: 60; every pair of a box spans one centre distance, so with a constant module
+    /// they keep the same sum, and a 2.5 mm module at 60 teeth gives the ~80 mm centre distance
+    /// of a compact car's box.
+    pub teeth_sum: u32,
+    /// Normal module, m. ESTIMATE: 2.5 mm (2-3 mm is typical of a passenger-car box).
+    pub module_m: f64,
+    /// Face width, m. ESTIMATE: 18 mm (15-25 mm in a passenger-car box).
+    pub face_m: f64,
+    /// Teeth of the final-drive pinion. ESTIMATE: 17 (a pinion under 17 teeth is undercut at 20 deg
+    /// pressure angle without profile shift; the driven ring has `round(pinion x final drive)`).
+    pub final_pinion_teeth: u32,
+    /// Thickness of the housing wall, m. ESTIMATE: 6 mm die-cast aluminium case (4-8 mm).
+    pub housing_wall_m: f64,
+    /// Circumferential backlash of a gear pair, m. ESTIMATE: 0.1 mm (0.05-0.15 mm in a box).
+    pub backlash_m: f64,
+    /// Oil drag on a loose gear, N·m. ESTIMATE: 0.05 N·m (churning and bearing drag of one
+    /// loose gear in warm gear oil is a few hundredths of a N·m).
+    pub drag_nm: f64,
+}
+
+impl Default for GearboxDef {
+    fn default() -> Self {
+        Self {
+            helix_deg: 25.0,
+            teeth_sum: 60,
+            module_m: 2.5e-3,
+            face_m: 0.018,
+            final_pinion_teeth: 17,
+            housing_wall_m: 0.006,
+            backlash_m: 1e-4,
+            drag_nm: 0.05,
+        }
+    }
+}
+
+impl GearboxDef {
+    /// The pair of a gear ratio: tooth counts from [`teeth_for`].
+    pub fn mesh_for(&self, ratio: f64) -> Mesh {
+        let (z1, z2) = teeth_for(ratio, self.teeth_sum);
+        Mesh {
+            z1,
+            z2,
+            module_m: self.module_m,
+            helix_rad: self.helix_deg.to_radians(),
+            face_m: self.face_m,
+        }
+    }
+
+    /// The final drive's pair: the pinion and the ring `round(pinion x final drive)`.
+    ///
+    /// ESTIMATE: same module, helix and face as the box's pairs (a heavier final drive would
+    /// be louder per unit of load, not different in order).
+    pub fn final_mesh(&self, final_drive: f64) -> Mesh {
+        Mesh {
+            z1: self.final_pinion_teeth,
+            z2: (f64::from(self.final_pinion_teeth) * final_drive)
+                .round()
+                .max(1.0) as u32,
+            module_m: self.module_m,
+            helix_rad: self.helix_deg.to_radians(),
+            face_m: self.face_m,
+        }
+    }
+
+    pub(crate) fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// What the vehicle hands the engine each step so the gearbox can be heard.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DriveState {
+    /// Engaged gear, 1-based (0 = neutral).
+    pub gear: usize,
+    /// Instantaneous speed of the input shaft (the crank, through a locked clutch), rad/s.
+    pub input_omega: f64,
+    /// Torque the input shaft transmits, N·m.
+    pub input_torque_nm: f64,
+    /// The clutch is locked: the input shaft follows the crank.
+    pub clutch_locked: bool,
+}
+
+/// The sound of a whole gearbox: the engaged pair's and the final drive's whine, the loose
+/// gears' rattle, all through the housing.
+#[derive(Debug, Clone)]
+pub struct GearboxNoise {
+    ratios: Vec<f64>,
+    final_drive: f64,
+    def: GearboxDef,
+    meshes: Vec<Mesh>,
+    mesh_dyn: Vec<MeshDynamics>,
+    final_mesh: Mesh,
+    final_dyn: MeshDynamics,
+    loose: Vec<LooseGear>,
+    last_gear: usize,
+}
+
+impl GearboxNoise {
+    pub fn new(v: &VehicleDef) -> Self {
+        let meshes: Vec<Mesh> = v
+            .gear_ratios
+            .iter()
+            .map(|&r| v.gearbox.mesh_for(r))
+            .collect();
+        let final_mesh = v.gearbox.final_mesh(v.final_drive);
+        Self {
+            ratios: v.gear_ratios.clone(),
+            final_drive: v.final_drive,
+            def: v.gearbox.clone(),
+            mesh_dyn: meshes.iter().map(MeshDynamics::new).collect(),
+            final_dyn: MeshDynamics::new(&final_mesh),
+            loose: meshes
+                .iter()
+                .map(|m| LooseGear::new(disc_inertia_kgm2(m, m.z2), m.base_radius_m(1)))
+                .collect(),
+            meshes,
+            final_mesh,
+            last_gear: 0,
+        }
+    }
+
+    /// Advance by `dt`; returns the sound pressure at 1 m, Pa. A gear-0 or released-clutch box
+    /// is silent: nothing carries torque, and the input shaft is not tied to the crank.
+    pub fn step(&mut self, v: &VehicleDef, s: &DriveState, dt: f64) -> f64 {
+        if v.gear_ratios != self.ratios
+            || v.final_drive != self.final_drive
+            || v.gearbox != self.def
+        {
+            *self = Self::new(v);
+        }
+        if !s.clutch_locked {
+            self.silence();
+            return 0.0;
+        }
+        if s.gear != self.last_gear {
+            self.silence();
+            self.last_gear = s.gear;
+        }
+        let wall = self.def.housing_wall_m;
+        let mut force = 0.0;
+        let engaged = s.gear.checked_sub(1).filter(|&i| i < self.ratios.len());
+        if let Some(i) = engaged {
+            let (mesh, ratio) = (&self.meshes[i], self.ratios[i]);
+            let load = s.input_torque_nm.abs() / mesh.base_radius_m(0);
+            force += self.mesh_dyn[i].step(mesh, s.input_omega, load, dt).abs();
+            // the final pinion sits on the output shaft: slower by the ratio, torque higher
+            let fm = &self.final_mesh;
+            let load = s.input_torque_nm.abs() * ratio / fm.base_radius_m(0);
+            force += self
+                .final_dyn
+                .step(fm, s.input_omega / ratio, load, dt)
+                .abs();
+        }
+        // the loose gears of the other pairs, driven through the constant mesh at z1/z2
+        if s.input_omega.abs() > 1.0 {
+            for (i, g) in self.loose.iter_mut().enumerate() {
+                if engaged == Some(i) {
+                    continue;
+                }
+                let m = &self.meshes[i];
+                let speed = s.input_omega * f64::from(m.z1) / f64::from(m.z2);
+                force += g.step(speed, dt, self.def.backlash_m, self.def.drag_nm);
+            }
+        }
+        housing_pressure_pa(force, wall, 1.0)
+    }
+
+    fn silence(&mut self) {
+        self.mesh_dyn.iter_mut().for_each(MeshDynamics::reset);
+        self.final_dyn.reset();
+        self.loose.iter_mut().for_each(LooseGear::reset);
     }
 }
 
@@ -511,6 +713,147 @@ mod tests {
         let above = impacts_per_s(&rattle_run(3.0 * 250.0, 50.0, 1.2));
         assert_eq!(below, 0.0, "{below}");
         assert!(above >= 50.0, "{above}");
+    }
+
+    fn box_vehicle() -> crate::drivetrain::VehicleDef {
+        crate::drivetrain::VehicleDef {
+            gear_ratios: vec![3.6, 2.1, 1.3, 1.0, 0.8],
+            final_drive: 4.1,
+            ..crate::drivetrain::VehicleDef::inline4()
+        }
+    }
+
+    #[test]
+    fn a_vehicle_file_without_a_gearbox_loads_the_default() {
+        let v: crate::drivetrain::VehicleDef =
+            serde_yaml_ng::from_str("name: x\nmass_kg: 1000\n").unwrap();
+        assert_eq!(v.gearbox, GearboxDef::default());
+        // and a default box is not written back, so preset files stay as they are
+        let yaml = serde_yaml_ng::to_string(&v).unwrap();
+        assert!(!yaml.contains("gearbox"), "{yaml}");
+    }
+
+    #[test]
+    fn the_gearbox_round_trips_json_and_yaml() {
+        let g = GearboxDef {
+            helix_deg: 0.0,
+            teeth_sum: 54,
+            module_m: 3e-3,
+            face_m: 0.022,
+            final_pinion_teeth: 15,
+            housing_wall_m: 0.005,
+            backlash_m: 1.2e-4,
+            drag_nm: 0.08,
+        };
+        let v = crate::drivetrain::VehicleDef {
+            gearbox: g.clone(),
+            ..box_vehicle()
+        };
+        let json = serde_json::to_string(&v).unwrap();
+        let yaml = serde_yaml_ng::to_string(&v).unwrap();
+        let from_json: crate::drivetrain::VehicleDef = serde_json::from_str(&json).unwrap();
+        let from_yaml: crate::drivetrain::VehicleDef = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert_eq!(from_json.gearbox, g);
+        assert_eq!(from_yaml.gearbox, g);
+        assert!(serde_yaml_ng::from_str::<GearboxDef>("bogus: 1").is_err());
+    }
+
+    #[test]
+    fn third_gear_whines_at_its_and_the_final_drives_orders() {
+        // 3rd = ratio 1.3: teeth_for(1.3, 60) = 26/34 -> 26 · 50 rev/s = 1300 Hz at the input;
+        // the output turns at 50 / 1.3 = 38.46 rev/s and the 17-tooth final pinion sits on it:
+        // 17 · 38.46 = 653.8 Hz
+        let v = box_vehicle();
+        let mut g = GearboxNoise::new(&v);
+        let s = DriveState {
+            gear: 3,
+            input_omega: 2.0 * std::f64::consts::PI * 50.0,
+            input_torque_nm: 150.0,
+            clutch_locked: true,
+        };
+        let dt = 1.0 / 96_000.0;
+        let out: Vec<f64> = (0..48_000).map(|_| g.step(&v, &s, dt)).collect();
+        let p = |hz| goertzel(&out, hz, 96_000.0);
+        for (hz, label) in [(1300.0, "mesh"), (50.0 * 17.0 / 1.3, "final drive")] {
+            for off in [-100.0, 100.0] {
+                let margin = db(p(hz), p(hz + off));
+                assert!(margin >= 20.0, "{label} vs {off}: {margin} dB");
+            }
+        }
+    }
+
+    #[test]
+    fn neutral_with_the_clutch_up_rattles_and_with_it_down_stays_quiet() {
+        // 85 rad/s idle, the 4-cylinder's 2 x crank frequency (27.06 Hz) and a 5 % speed ripple
+        // (ESTIMATE: idle irregularity of a 4-cylinder without dual-mass flywheel is 2-6 %):
+        // A = 4.25 · 2π · 27.06 = 722 rad/s². The driven gears' thresholds T_d/J are 19..120.
+        let v = box_vehicle();
+        let w = 2.0 * std::f64::consts::PI * 27.06;
+        let dt = 1.0 / 96_000.0;
+        let run = |locked: bool| {
+            let mut g = GearboxNoise::new(&v);
+            (0..96_000)
+                .map(|i| {
+                    let s = DriveState {
+                        gear: 0,
+                        input_omega: 85.0 + 4.25 * (w * i as f64 * dt).sin(),
+                        input_torque_nm: 0.0,
+                        clutch_locked: locked,
+                    };
+                    g.step(&v, &s, dt)
+                })
+                .collect::<Vec<f64>>()
+        };
+        let up = run(true);
+        let edges = up[19_200..]
+            .windows(2)
+            .filter(|w| w[0].abs() <= 1e-12 && w[1].abs() > 1e-12)
+            .count();
+        assert!(edges >= 20, "{edges}");
+        assert!(run(false).iter().all(|&p| p == 0.0));
+    }
+
+    #[test]
+    fn overdrive_ratios_make_valid_pairs() {
+        let d = GearboxDef::default();
+        for ratio in [0.5, 0.8, 1.0, 1.05, 3.6] {
+            let m = d.mesh_for(ratio);
+            assert!(m.z1 >= 12 && m.z2 >= 12, "{ratio}: {} {}", m.z1, m.z2);
+            assert!(m.eps_alpha() > 1.0, "{ratio}: {}", m.eps_alpha());
+        }
+    }
+
+    #[test]
+    fn a_slipping_clutch_or_gear_0_does_not_whine() {
+        let v = box_vehicle();
+        let mut g = GearboxNoise::new(&v);
+        let dt = 1.0 / 96_000.0;
+        for gear in [0, 3] {
+            for locked in [false, true] {
+                // a smooth input: no ripple to rattle on, so any output would be whine
+                let s = DriveState {
+                    gear,
+                    input_omega: 300.0,
+                    input_torque_nm: if locked { 0.0 } else { 150.0 },
+                    clutch_locked: locked,
+                };
+                for _ in 0..4800 {
+                    let p = g.step(&v, &s, dt);
+                    assert!(
+                        p.is_finite() && p == 0.0,
+                        "gear {gear} locked {locked}: {p}"
+                    );
+                }
+            }
+        }
+        // and with torque on a locked clutch in gear 0 there is nothing to mesh under load
+        let s = DriveState {
+            gear: 0,
+            input_omega: 300.0,
+            input_torque_nm: 150.0,
+            clutch_locked: true,
+        };
+        assert!((0..4800).all(|_| g.step(&v, &s, dt) == 0.0));
     }
 
     proptest! {
