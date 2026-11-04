@@ -4086,6 +4086,25 @@ impl Engine {
         }
     }
 
+    /// Take over `old`'s exhaust (its built network and the gas in it) when this engine's exhaust
+    /// is the same: same exhaust definition, cylinder count and fidelity. Building a network
+    /// designs its silencers' and catalysts' filters, which takes up to a second on a big
+    /// exhaust; an edit elsewhere (a bore, a cam) should not pay it. True when it took it.
+    pub fn adopt_exhaust_from(&mut self, old: &mut Engine) -> bool {
+        let same = old.def.exhaust == self.def.exhaust
+            && old.cyl.len() == self.cyl.len()
+            && old.fidelity == self.fidelity
+            && old.remote.0.is_none();
+        if !same || (old.net.is_none() && old.fv.is_none()) {
+            return false;
+        }
+        self.net = old.net.take();
+        self.fv = old.fv.take();
+        self.jet_net = old.jet_net.take();
+        self.jet_flows = std::mem::take(&mut old.jet_flows);
+        true
+    }
+
     /// Run the net here again.
     pub fn attach_exhaust(&mut self, net: ExhaustNet) {
         self.remote = RemoteSlot(None);
@@ -4189,6 +4208,44 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_edit_that_leaves_the_exhaust_keeps_its_network() {
+        let def = EngineDef::inline4();
+        let mut old = Engine::new(def.clone(), 1500.0, 1);
+        for _ in 0..50 {
+            old.step(1.0 / 48_000.0, &Controls::default());
+        }
+        let model = old.exhaust_model();
+        assert!(model.is_some());
+        // a bigger bore: the same exhaust, taken over before the first step
+        let mut bored = def.clone();
+        bored.geometry.bore_m *= 1.05;
+        let mut next = Engine::new(bored, 1500.0, 2);
+        assert_eq!(next.exhaust_model(), None, "not built yet");
+        assert!(next.adopt_exhaust_from(&mut old));
+        assert_eq!(next.exhaust_model(), model);
+        assert_eq!(old.exhaust_model(), None, "moved, not copied");
+        // a longer primary is another exhaust: built anew
+        let mut old = Engine::new(def.clone(), 1500.0, 1);
+        old.step(1.0 / 48_000.0, &Controls::default());
+        let mut piped = def.clone();
+        piped.exhaust.primary_length_m *= 1.2;
+        let mut next = Engine::new(piped, 1500.0, 2);
+        assert!(!next.adopt_exhaust_from(&mut old));
+        assert_eq!(next.exhaust_model(), None);
+        // another cylinder count or fidelity: anew too
+        let mut old = Engine::new(def.clone(), 1500.0, 1);
+        old.step(1.0 / 48_000.0, &Controls::default());
+        let mut fewer = def.clone();
+        fewer.cylinders = 3;
+        assert!(!Engine::new(fewer, 1500.0, 2).adopt_exhaust_from(&mut old));
+        let cheap = Fidelity {
+            lining_segment_m: 2.0 * Fidelity::default().lining_segment_m.max(0.01),
+            ..Fidelity::default()
+        };
+        assert!(!Engine::with_fidelity(def, 1500.0, 2, cheap).adopt_exhaust_from(&mut old));
+    }
     use crate::combustion::charge_energy;
     use approx::assert_relative_eq;
 
