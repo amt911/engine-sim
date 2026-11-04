@@ -18,6 +18,8 @@ pub enum Part {
     Head,
     Liner,
     Crank,
+    /// One throw's crankpin (its webs are [`Part::Web`]); the realistic throw draws all three.
+    Throw,
     Web,
     Rod,
     RodEye,
@@ -26,6 +28,9 @@ pub enum Part {
     WristPin,
     IntakeValve,
     ExhaustValve,
+    /// A valve's stem (its head is the valve itself; the realistic valve draws both).
+    IntakeStem,
+    ExhaustStem,
     Housing,
     SidePlate,
     Rotor,
@@ -49,22 +54,36 @@ pub enum Part {
 }
 
 impl Part {
+    /// The valve a stem belongs to (any other part: itself), for its card and handles.
+    pub fn as_valve(self) -> Part {
+        match self {
+            Part::IntakeStem => Part::IntakeValve,
+            Part::ExhaustStem => Part::ExhaustValve,
+            p => p,
+        }
+    }
+
     /// Which unit mesh draws it.
     pub fn mesh(self) -> MeshKind {
         match self {
-            Part::Block
-            | Part::Head
-            | Part::Rod
-            | Part::ApexSeal
-            | Part::Plenum
-            | Part::Airbox
-            | Part::Intercooler => MeshKind::Cuboid,
+            Part::Block | Part::Head | Part::Plenum | Part::Airbox | Part::Intercooler => {
+                MeshKind::Cuboid
+            }
             Part::Liner => MeshKind::Liner,
             Part::Web => MeshKind::Web,
             Part::Housing => MeshKind::HousingRing,
             Part::SidePlate => MeshKind::Housing,
             Part::Rotor => MeshKind::Rotor,
             Part::Joint => MeshKind::Sphere,
+            Part::Piston => MeshKind::Piston,
+            Part::PistonRing => MeshKind::PistonRing,
+            Part::WristPin => MeshKind::WristPin,
+            Part::Rod => MeshKind::Rod,
+            Part::Throw => MeshKind::Throw,
+            Part::ApexSeal => MeshKind::ApexSeal,
+            Part::IntakeValve | Part::ExhaustValve => MeshKind::Valve,
+            Part::IntakeStem | Part::ExhaustStem => MeshKind::ValveStem,
+            Part::RodEye => MeshKind::RodEye,
             _ => MeshKind::Cylinder,
         }
     }
@@ -80,10 +99,19 @@ pub enum MeshKind {
     Liner,
     Web,
     Sphere,
+    Piston,
+    PistonRing,
+    WristPin,
+    Rod,
+    RodEye,
+    Throw,
+    Valve,
+    ValveStem,
+    ApexSeal,
 }
 
 impl MeshKind {
-    pub const ALL: [MeshKind; 8] = [
+    pub const ALL: [MeshKind; 17] = [
         MeshKind::Cylinder,
         MeshKind::Cuboid,
         MeshKind::Housing,
@@ -92,6 +120,15 @@ impl MeshKind {
         MeshKind::Liner,
         MeshKind::Web,
         MeshKind::Sphere,
+        MeshKind::Piston,
+        MeshKind::PistonRing,
+        MeshKind::WristPin,
+        MeshKind::Rod,
+        MeshKind::RodEye,
+        MeshKind::Throw,
+        MeshKind::Valve,
+        MeshKind::ValveStem,
+        MeshKind::ApexSeal,
     ];
 }
 
@@ -470,9 +507,23 @@ pub fn moving(def: &EngineDef, cylinders: &[CylinderView], out: &mut Vec<Instanc
         put(Part::Rod, bar_between(pin, wrist, 0.14 * b, 0.2 * b), ROD);
         put(Part::RodEye, along_x(pin, 0.27 * b, 0.22 * b), ROD);
         put(Part::RodEye, along_x(wrist, 0.17 * b, 0.2 * b), ROD);
-        // the throw: its pin and a web each side, counterweight opposite the pin
-        put(Part::Crank, along_x(pin, 0.13 * b, 0.26 * b), BRASS);
+        // the throw: its pin and a web each side, counterweight opposite the pin; the pin's frame
+        // turns with the throw (a cylinder looks the same), so the realistic throw can take it
         let web_frame = Mat3::from_cols(Vec3::new(0.0, -s, co), Vec3::X, Vec3::new(0.0, co, s));
+        // one throw per crank position: the first bank's (a V's banks share its pin; a flat
+        // engine's opposed cylinders stand at one position here, so the other bank's pin is a
+        // plain pin, not a second throw through the first)
+        if bank == 0 {
+            put(
+                Part::Throw,
+                Mat4::from_translation(pin - Vec3::new(0.13 * b, 0.0, 0.0))
+                    * Mat4::from_mat3(web_frame)
+                    * Mat4::from_scale(Vec3::new(0.13 * b, 0.26 * b, 0.13 * b)),
+                CRANK,
+            );
+        } else {
+            put(Part::Crank, along_x(pin, 0.13 * b, 0.26 * b), BRASS);
+        }
         for x0 in [x - 0.13 * b - 0.12 * b, x + 0.13 * b] {
             put(
                 Part::Web,
@@ -483,9 +534,21 @@ pub fn moving(def: &EngineDef, cylinders: &[CylinderView], out: &mut Vec<Instanc
             );
         }
         let side = exhaust_side(def, bank);
-        for (dz, lift, part, color) in [
-            (-0.25 * side, c.intake_lift_m, Part::IntakeValve, INTAKE),
-            (0.25 * side, c.exhaust_lift_m, Part::ExhaustValve, EXHAUST),
+        for (dz, lift, part, stem, color) in [
+            (
+                -0.25 * side,
+                c.intake_lift_m,
+                Part::IntakeValve,
+                Part::IntakeStem,
+                INTAKE,
+            ),
+            (
+                0.25 * side,
+                c.exhaust_lift_m,
+                Part::ExhaustValve,
+                Part::ExhaustStem,
+                EXHAUST,
+            ),
         ] {
             let face = deck - lift as f32;
             let z = dz * b;
@@ -497,7 +560,7 @@ pub fn moving(def: &EngineDef, cylinders: &[CylinderView], out: &mut Vec<Instanc
                 color,
             );
             put(
-                part,
+                stem,
                 Mat4::from_translation(Vec3::new(x, face, z))
                     * Mat4::from_scale(Vec3::new(0.03 * b, 0.5 * b, 0.03 * b)),
                 color,

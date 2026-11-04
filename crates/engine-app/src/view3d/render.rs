@@ -33,6 +33,12 @@ pub struct MeshKey {
     pub def_version: u64,
     pub segments: u32,
     pub e_over_r: f32,
+    /// The realistic parts of `assets/3d-parts` (Medium and High) instead of the primitives.
+    pub realistic: bool,
+    /// The rod's length over the bore (the realistic rod is stretched to it).
+    pub rod_over_bore: f32,
+    /// Half the stroke over the bore (the realistic throw is stretched to it).
+    pub throw_over_bore: f32,
 }
 
 /// The frame's scene, written by the UI thread and read by `prepare`.
@@ -395,10 +401,53 @@ pub fn unit_mesh(kind: MeshKind, key: MeshKey) -> Mesh {
         MeshKind::Cuboid => mesh::cuboid(),
         MeshKind::Housing => mesh::housing(key.e_over_r, 4 * s),
         MeshKind::HousingRing => mesh::housing_ring(key.e_over_r, 4 * s),
-        MeshKind::Rotor => mesh::rotor(s.div_ceil(2)),
+        MeshKind::Rotor => match super::parts::rotor(key.e_over_r) {
+            Some(m) if key.realistic => m,
+            _ => mesh::rotor(s.div_ceil(2)),
+        },
+        // the realistic rotor carries its seals
+        MeshKind::ApexSeal => match super::parts::rotor(key.e_over_r) {
+            Some(_) if key.realistic => Mesh::nothing(),
+            _ => mesh::cuboid(),
+        },
         MeshKind::Liner => mesh::half_liner(s),
-        MeshKind::Web => mesh::crank_web(s.div_ceil(2)),
+        // the realistic throw carries its webs
+        MeshKind::Web => match super::parts::throw_asset() {
+            Some(_) if key.realistic => Mesh::nothing(),
+            _ => mesh::crank_web(s.div_ceil(2)),
+        },
         MeshKind::Sphere => mesh::sphere(s.div_ceil(2)),
+        MeshKind::Piston => match super::parts::piston() {
+            Some(m) if key.realistic => m.clone(),
+            _ => mesh::cylinder(s),
+        },
+        // the realistic piston carries its rings and pin: theirs draw nothing then
+        MeshKind::PistonRing | MeshKind::WristPin => match super::parts::piston() {
+            Some(_) if key.realistic => Mesh::nothing(),
+            _ => mesh::cylinder(s),
+        },
+        MeshKind::Rod => match super::parts::rod(key.rod_over_bore) {
+            Some(m) if key.realistic => m,
+            _ => mesh::cuboid(),
+        },
+        MeshKind::Throw => match super::parts::throw(key.throw_over_bore, key.rod_over_bore) {
+            Some(m) if key.realistic => m,
+            _ => mesh::cylinder(s),
+        },
+        MeshKind::Valve => match super::parts::valve() {
+            Some(m) if key.realistic => m,
+            _ => mesh::cylinder(s),
+        },
+        // the realistic valve carries its stem
+        MeshKind::ValveStem => match super::parts::valve_asset() {
+            Some(_) if key.realistic => Mesh::nothing(),
+            _ => mesh::cylinder(s),
+        },
+        // the realistic rod carries its eyes
+        MeshKind::RodEye => match super::parts::rod_asset() {
+            Some(_) if key.realistic => Mesh::nothing(),
+            _ => mesh::cylinder(s),
+        },
     }
 }
 
@@ -496,11 +545,70 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_realistic_piston_comes_with_the_detail() {
+        let key = |realistic| MeshKey {
+            def_version: 1,
+            segments: 12,
+            e_over_r: 0.0,
+            realistic,
+            rod_over_bore: 143.0 / 86.0,
+            throw_over_bore: 0.5,
+        };
+        let cylinder = mesh::cylinder(12).vertices.len();
+        // Low: the primitives; Medium and High: the realistic piston, which carries its own
+        // rings and pin, so theirs draw nothing (one degenerate triangle)
+        assert_eq!(
+            unit_mesh(MeshKind::Piston, key(false)).vertices.len(),
+            cylinder
+        );
+        assert_eq!(
+            unit_mesh(MeshKind::PistonRing, key(false)).vertices.len(),
+            cylinder
+        );
+        assert!(unit_mesh(MeshKind::Piston, key(true)).vertices.len() > 10 * cylinder);
+        assert_eq!(unit_mesh(MeshKind::Rod, key(false)), mesh::cuboid());
+        assert!(unit_mesh(MeshKind::Rod, key(true)).vertices.len() > 10 * cylinder);
+        assert_eq!(
+            unit_mesh(MeshKind::Throw, key(false)).vertices.len(),
+            cylinder
+        );
+        assert!(unit_mesh(MeshKind::Throw, key(true)).vertices.len() > 10 * cylinder);
+        assert!(unit_mesh(MeshKind::Valve, key(true)).vertices.len() > 10 * cylinder);
+        // a rotary of the asset's e/R (15/105, the RENESIS) takes the realistic rotor and its seals
+        let rotary = |realistic| MeshKey {
+            e_over_r: 15.0 / 105.0,
+            ..key(realistic)
+        };
+        let primitive = unit_mesh(MeshKind::Rotor, rotary(false)).vertices.len();
+        assert!(unit_mesh(MeshKind::Rotor, rotary(true)).vertices.len() > 10 * primitive);
+        assert_eq!(unit_mesh(MeshKind::ApexSeal, rotary(true)).indices.len(), 3);
+        assert_eq!(
+            unit_mesh(MeshKind::ApexSeal, key(true)),
+            mesh::cuboid(),
+            "not a rotary"
+        );
+        for kind in [
+            MeshKind::PistonRing,
+            MeshKind::WristPin,
+            MeshKind::RodEye,
+            MeshKind::Web,
+            MeshKind::ValveStem,
+        ] {
+            let m = unit_mesh(kind, key(true));
+            assert_eq!(m.indices.len(), 3);
+            assert!(m.vertices.iter().all(|v| v.pos == m.vertices[0].pos));
+        }
+    }
+
+    #[test]
     fn every_kind_has_a_mesh() {
         let key = MeshKey {
             def_version: 1,
             segments: 12,
             e_over_r: 0.15,
+            realistic: true,
+            rod_over_bore: 1.6,
+            throw_over_bore: 0.5,
         };
         for kind in MeshKind::ALL {
             let m = unit_mesh(kind, key);

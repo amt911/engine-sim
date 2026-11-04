@@ -216,7 +216,7 @@ pub fn handles(def: &EngineDef, scene: &Scene, parts: &[Instance], selected: usi
     };
     let at = |v: Vec3| p.model.transform_point3(v);
     let b = def.geometry.bore_m as f32;
-    match p.part {
+    match p.part.as_valve() {
         Part::Piston | Part::PistonRing | Part::Charge => {
             // the piston's mesh: y up its bore from its base, x and z across: the crown's centre
             // and the bore's edge across it
@@ -281,7 +281,7 @@ pub fn handles(def: &EngineDef, scene: &Scene, parts: &[Instance], selected: usi
         Part::IntakeValve | Part::ExhaustValve => {
             // head and stem both stand on the valve face: its edge grows by half the diameter's
             // change, and the face goes down as the lift grows
-            let (dia, lift) = if p.part == Part::IntakeValve {
+            let (dia, lift) = if p.part.as_valve() == Part::IntakeValve {
                 (Field::IntakeValveDiameter, Field::IntakeLift)
             } else {
                 (Field::ExhaustValveDiameter, Field::ExhaustLift)
@@ -414,7 +414,7 @@ pub fn card_fields(def: &EngineDef, parts: &[Instance], k: usize) -> Vec<Field> 
 
 /// The numbers the card of a `part` lets you type, in the order it lists them.
 pub fn editable(part: Part) -> &'static [Field] {
-    match part {
+    match part.as_valve() {
         Part::Piston | Part::PistonRing | Part::Charge | Part::Liner => {
             &[Field::Bore, Field::Stroke, Field::CompressionRatio]
         }

@@ -17,6 +17,18 @@ pub struct Mesh {
 }
 
 impl Mesh {
+    /// A mesh that draws nothing: one triangle of no area (a GPU buffer is never empty).
+    pub fn nothing() -> Self {
+        let v = Vertex {
+            pos: [0.0; 3],
+            normal: [0.0, 1.0, 0.0],
+        };
+        Self {
+            vertices: vec![v; 3],
+            indices: vec![0, 1, 2],
+        }
+    }
+
     fn push(&mut self, pos: [f32; 3], normal: [f32; 3]) -> u32 {
         self.vertices.push(Vertex { pos, normal });
         (self.vertices.len() - 1) as u32

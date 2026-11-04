@@ -29,6 +29,7 @@ approx = "0.5"
 rfd = "0.17"
 glam = { version = "0.34", features = ["bytemuck"] }
 bytemuck = { version = "1", features = ["derive"] }
+gltf = { version = "1.4.1", default-features = false, features = ["utils", "extras", "names"] }
 
 [profile.release]
 lto = "thin"
