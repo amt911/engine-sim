@@ -4216,7 +4216,11 @@ mod tests {
         // 720/2 = 360° between the banks is no V; a V-twin keeps its V8's angle
         let mut d = EngineDef::crossplane_v8();
         d.set_cylinders(2);
-        assert!(crate::config::validate(&d).is_ok(), "{:?}", crate::config::validate(&d));
+        assert!(
+            crate::config::validate(&d).is_ok(),
+            "{:?}",
+            crate::config::validate(&d)
+        );
         assert!(d.layout.bank_angle_deg <= 180.0);
     }
 

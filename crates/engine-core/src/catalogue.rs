@@ -43,6 +43,10 @@ pub struct Survey {
     /// Mean gas speed in a primary at the torque peak, m/s (median).
     pub v_primary: f64,
     pub v_primary_spread: (f64, f64),
+    /// Mean gas speed in a collector, its bank's cylinders, m/s (median): faster than a primary's
+    /// (the pulses take turns in it).
+    pub v_collector: f64,
+    pub v_collector_spread: (f64, f64),
     /// Mean gas speed in the tail, all cylinders, m/s (median).
     pub v_tail: f64,
     pub v_tail_spread: (f64, f64),
@@ -69,12 +73,15 @@ pub fn surveyed() -> Vec<(EngineDef, bool)> {
 
 /// Read the two numbers off the surveyed engines.
 pub fn survey() -> Survey {
-    let (mut primary, mut tail, mut tuning) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut primary, mut collector, mut tail, mut tuning) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for (d, tuned) in surveyed() {
         let n = tuned_rpm(d.redline_rpm, false);
         let swept = d.geometry.displacement();
         let x = &d.exhaust;
         primary.push(mean_speed(1, swept, n, area(x.primary_diameter_m)));
+        let per = d.cylinders / x.groups(d.cylinders).len().max(1);
+        collector.push(mean_speed(per, swept, n, area(x.collector_diameter_m)));
         // the tails: one per branch unless the branches merge, each with its outlets
         let branches = if x.merge.is_some() {
             1
@@ -94,10 +101,13 @@ pub fn survey() -> Survey {
     }
     let (v_primary, v_primary_spread) = median_spread(&mut primary);
     let (v_tail, v_tail_spread) = median_spread(&mut tail);
+    let (v_collector, v_collector_spread) = median_spread(&mut collector);
     let (tuning_k, tuning_k_spread) = median_spread(&mut tuning);
     Survey {
         v_primary,
         v_primary_spread,
+        v_collector,
+        v_collector_spread,
         v_tail,
         v_tail_spread,
         tuning_k,
@@ -266,7 +276,13 @@ pub fn size_exhaust(def: &EngineDef, h: Headers, s: System, sv: &Survey) -> Exha
         _ => (Vec::new(), def.cylinders.max(1)),
     };
     x.collectors = groups;
-    x.collector_diameter_m = bore_for(def, per_collector, n_t, sv.v_primary, COLLECTOR_DIAMETER_M);
+    x.collector_diameter_m = bore_for(
+        def,
+        per_collector,
+        n_t,
+        sv.v_collector,
+        COLLECTOR_DIAMETER_M,
+    );
     x.collector_length_m = match h {
         // ESTIMATE: a merge's own length; the primaries carry the tuning
         Headers::Single | Headers::FourOne => 0.15,
@@ -375,6 +391,14 @@ mod tests {
         assert!(s.v_primary > 55.0 && s.v_primary < 66.0, "{}", s.v_primary);
         assert!(s.v_primary_spread.0 <= s.v_primary && s.v_primary <= s.v_primary_spread.1);
         assert!(s.v_tail > 0.0 && s.v_tail_spread.0 <= s.v_tail && s.v_tail <= s.v_tail_spread.1);
+        // collectors, by hand: the K20A's 4 into 55 mm at 6300 rpm, 4·62.6·(40/55)² = 132 m/s;
+        // the real ones run about twice a primary's speed
+        assert!(
+            s.v_collector > 1.5 * s.v_primary,
+            "{} {}",
+            s.v_collector,
+            s.v_primary
+        );
     }
 
     fn sized(d: &EngineDef, h: Headers, s: System) -> ExhaustDef {
