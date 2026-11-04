@@ -1,6 +1,7 @@
 //! Handles on the clicked part: drag one along its axis and the number it stands for changes
-//! (bore, stroke, rod, valves, a runner's or a primary's length and bore, the plenum, a silencer), within the
-//! editor's ranges. The engine takes the new value once, on release (one rebuild, as a slider).
+//! (bore, stroke, rod, valves, a runner's or a primary's length and bore, the plenum, a
+//! silencer), within the editor's ranges. The engine takes the new value once, on release (one
+//! rebuild, as a slider).
 
 use super::scene::{Instance, Part, Scene};
 use engine_core::engine::EngineDef;
