@@ -553,9 +553,10 @@ mod tests {
         assert!(h.state().view3d.selected.is_none());
     }
 
-    /// outwards widens the bore, the engine following while it is held. Needs a GPU (or lavapipe):
-    /// outwards widens the bore, applied once on release. Needs a GPU (or lavapipe):
-    /// `cargo test -p engine-app dragging_a_handle -- --ignored`.
+    /// A handle dragged in the 3D view edits the engine: the clicked piston's bore arrow pulled
+    /// outwards widens the bore, the engine following while it is held. A click on an arrow keeps
+    /// the part selected, and a quick flick still takes the arrow pressed. Needs a GPU (or
+    /// lavapipe): `cargo test -p engine-app dragging_a_handle -- --ignored`.
     #[test]
     #[ignore]
     fn dragging_a_handle_edits_the_engine() {
@@ -601,6 +602,57 @@ mod tests {
             .iter()
             .find(|(f, _)| *f == crate::view3d::handles::Field::Bore)
             .expect("a bore handle on screen");
+        // a click on the arrow (no move) keeps the piston selected, its arrows shown
+        h.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run();
+        h.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run();
+        assert_eq!(
+            h.state().view3d.selected.map(|s| s.0),
+            Some(piston),
+            "a click on an arrow is not a click on the scene"
+        );
+        // a quick flick: pressed on the arrow, the pointer already 25 px off its line when the
+        // drag registers; the arrow pressed is still the one taken (not a turn of the camera)
+        let yaw = h.state().view3d.camera.map(|c| c.yaw);
+        h.hover_at(at);
+        h.run();
+        h.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run();
+        h.hover_at(at + egui::vec2(25.0, 25.0));
+        h.run();
+        let flicked = h.state().view3d.drag.is_some();
+        h.event(egui::Event::PointerButton {
+            pos: at + egui::vec2(25.0, 25.0),
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run();
+        assert!(flicked, "the flick took the arrow");
+        assert_eq!(
+            h.state().view3d.camera.map(|c| c.yaw),
+            yaw,
+            "the camera did not turn"
+        );
+        h.state_mut().def.geometry.bore_m = bore;
+        h.state_mut().view3d.selected = Some((piston, egui::pos2(700.0, 300.0)));
+        h.run();
         // press on the handle, pull it 40 px along whichever way its axis points on screen
         // (both ways tried: one of them widens), release
         let press = |h: &mut egui_kittest::Harness<'_, UiState>, at: egui::Pos2, pressed| {

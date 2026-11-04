@@ -146,12 +146,18 @@ impl View3dState {
         if self.drawn.as_ref() != Some(def) {
             self.def_version += 1;
             let s = scene::build(def);
-            // an edit keeps the user's view; another engine (layout, cylinders) is framed afresh
-            let same_engine = self.drawn.as_ref().is_some_and(|d| {
-                d.cylinders == def.cylinders
-                    && d.layout == def.layout
-                    && d.geometry.rotor.is_some() == def.geometry.rotor.is_some()
+            // an edit keeps the user's view; another engine (layout, cylinders, or a size a
+            // quarter off) is framed afresh
+            let same_size = self.scene.as_ref().is_some_and(|old| {
+                let k = s.focus.1 / old.focus.1.max(1e-6);
+                (0.8..=1.25).contains(&k)
             });
+            let same_engine = same_size
+                && self.drawn.as_ref().is_some_and(|d| {
+                    d.cylinders == def.cylinders
+                        && d.layout == def.layout
+                        && d.geometry.rotor.is_some() == def.geometry.rotor.is_some()
+                });
             if !same_engine || self.camera.is_none() {
                 self.camera = Some(OrbitCamera::framing(s.focus.0, s.focus.1, start_yaw(def)));
             }
@@ -400,8 +406,10 @@ pub fn show(
             .copied()
     };
     let hovered = resp.hover_pos().and_then(grab).map(|(h, ..)| h.field);
+    // where the press was, not where the pointer is once the move counts as a drag
+    let pressed_at = ui.input(|i| i.pointer.press_origin());
     if resp.drag_started()
-        && let Some((h, _, dir, px_per_m)) = resp.interact_pointer_pos().and_then(grab)
+        && let Some((h, _, dir, px_per_m)) = pressed_at.and_then(grab)
     {
         let start = h.field.get(&snap.def);
         st.drag = Some(Drag {
@@ -465,8 +473,10 @@ pub fn show(
     ui.painter()
         .add(egui_wgpu::Callback::new_paint_callback(rect, frame));
     // a click picks the part under the pointer (another click on nothing, or Escape, lets go)
+    // a click on an arrow is not a click on the scene: the part stays selected
     if resp.clicked()
         && let Some(pos) = resp.interact_pointer_pos()
+        && grab(pos).is_none()
     {
         let ndc = (
             2.0 * (pos.x - rect.left()) / rect.width().max(1.0) - 1.0,
@@ -490,7 +500,11 @@ pub fn show(
             // scene, so an arrow under it could not be grabbed
             let right = handles
                 .iter()
-                .map(|(_, at, dir, _)| at.x + dir.x.abs() * super::arrows::HALF_PX + 150.0)
+                .map(|(h, at, dir, _)| {
+                    // the label's width at the lit size (14 px: about 8 px a character)
+                    let label = h.field.label().len() + h.field.show(h.field.get(&snap.def)).len();
+                    at.x + dir.x.abs() * super::arrows::HALF_PX + 24.0 + 8.0 * label as f32
+                })
                 .fold(pos.x, f32::max);
             egui::Area::new(egui::Id::unique("part_card"))
                 .fixed_pos(egui::pos2(right + 14.0, pos.y + 8.0))
@@ -626,6 +640,22 @@ mod tests {
         // another layout (a V8): framed afresh
         st.sync(&EngineDef::crossplane_v8());
         assert_ne!(st.camera.map(|c| c.distance), Some(0.123), "reframed");
+        // another engine of the same layout but another size (a much bigger inline four): framed
+        // afresh too
+        let mut d = EngineDef::inline4();
+        st.sync(&d);
+        if let Some(c) = st.camera.as_mut() {
+            c.distance = 0.123;
+        }
+        d.geometry.bore_m *= 1.6;
+        d.geometry.stroke_m *= 1.6;
+        d.geometry.rod_m *= 1.6;
+        st.sync(&d);
+        assert_ne!(
+            st.camera.map(|c| c.distance),
+            Some(0.123),
+            "a bigger engine reframed"
+        );
     }
 
     #[test]
