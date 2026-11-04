@@ -1,56 +1,93 @@
 # Roadmap
 
-The user's priority order (2026-10-27). Everything is physics, with every constant cited; nothing
-is set by ear. Updated as work lands. Details live in the specs (`docs/superpowers/specs/`) and
-`docs/FACTS.md`.
+The user's priority order, kept current: **every session reads it when it starts and updates it
+when a milestone lands** (with the CHANGELOG row and the tag). Everything is physics, with every
+constant cited; nothing is set by ear. Each item has its design in `docs/superpowers/specs/` and,
+once planned, its plan in `docs/superpowers/plans/`; verified facts live in `docs/FACTS.md`.
+Last updated: 2026-11-04.
 
-## 1. Performance: the LFA V10 at High on a Ryzen 7 PRO 5850U laptop
+## Done (details in `CHANGELOG.md`)
 
-- ✅ v0.26.1, v0.26.3: −19 % CPU at Low, byte-identical sound (closed-form tail exit, angle wrap).
-- ✅ v0.26.5: valve chatter at 96 kHz. At Low and Medium the valves' explicit exchange went on/off from step
-  to step at idle (+45 dB of 5–10 kHz hiss that Ultra lacks). Fix: backward-Euler valve flow,
-  stable at any step.
-- Next, measured with callgrind on the LFA at High:
-  - the ITB intake runners (41 % of the cost): four runners per SIMD lane, bit-identical;
-  - the catalyst and silencer networks (19 %);
-  - ✅ v0.26.6: the exhaust net on its own thread, a block at a time (−15–18 %);
-- Then rebuild the quality levels from what each feature measurably changes against Ultra:
-  measured (FACTS 2026-10-28) the step count is what matters, and idle is where all levels
-  below Ultra are far off.
-- Measured dead ends: SIMD of the ITB runners (−1.7 %), CFL-sized intake steps (bias the valve
-  coupling; FACTS).
+- Engine, exhaust (waveguide and finite volume), intake, drivetrain, quality levels, presets
+  (single, inline-4, K20A, K20C1, LFA V10, V8s, EJ25 boxer, TDI/SDI diesels, Renesis/13B rotaries)
+  — up to v0.41.
+- Turbo (v0.39.0), diesel (#88).
+- **3D view** (spec `2026-11-03-3d-view-design.md`), all five phases:
+  - scene and camera (v0.40.0);
+  - pipes (v0.42.0);
+  - layers: temperature, flow, combustion, cut-away (v0.43.0);
+  - click a part for its card, drag handles or type on the card (v0.44.0);
+  - silencer handles (v0.45.0).
+  - The editor has no undo, so the 3D view has none either.
 
-## 2. Realism ("still synthetic")
+## Now: editing that is fluid, and engines that sound right when edited (user, 2026-11-04)
 
-Measured against real LFA recordings: a missing stationary broadband floor at 2.5–10 kHz
-(12–15 dB), and cycles that repeat too exactly (FACTS, 2026-10-27).
+1. **Bug: a parameter changed in the 3D view lags the app for ~20 s.** This breaks the 3D
+   view's one anti-goal (bad performance). Find the cause by measuring, then fix it with a
+   regression test.
+2. **The realistic 3D parts** (user, 2026-11-04) from `assets/3d-parts/` in the 3D view:
+   - piston, rod, crank, valve train and Wankel, read from their `.glb`;
+   - stretched by bore, stroke and rod per the README's rules;
+   - they replace the procedural meshes.
+3. **Editing fluid and visible:**
+   - the dots are confusing; edits should feel continuous and be easy to see;
+   - the engine should answer while dragging, not only on release, if the rebuild allows it.
+4. **Typical parts and typical sizes:** a catalogue of real components with their real
+   dimensions, so an engine built from them sounds good. Examples:
+   - road and race exhaust manifolds;
+   - silencers;
+   - intake runners and plenums;
+   - cams.
 
-- Duct flow noise (Nelson–Morfey, Oldham–Ukpoho): done for the collectors (branch
-  `feat/duct-flow-noise`). Measured ~30 dB short, so it is not the missing source by itself.
-- Stronger sources:
-  - jet and valve quadrupole noise above Mach 0.3 (Gordon, U⁸);
-  - flow-excited chamber and tailpipe resonance (Davies & Holland 2001).
-- Gear-change "bubbling" on the throttle cut (`--render gears`, v0.26.4).
-- Ange's list:
-  - #1 FV exhaust at idle;
-  - #2 heat transfer along the exhaust pipes (branch `feat/pipe-heat`);
-  - #4 gas species, partial burns and misfire at idle.
-- Breathing at high rpm: real cam lift and duration, the K20A's exhaust VTEC lobe.
-- References: real recordings (local only), GT7 clips and moving-car clips from the user (Doppler).
+   The editor should also say when a combination is out of what real engines use. Today, "if
+   you start touching parameters, they sound awful". Find out whether that is the simulator
+   or the physics: measure edited engines against real ones of the same sizes. If the model
+   is wrong, fix it; if the engine really is badly sized, the editor says so and the catalogue
+   offers the real parts.
 
-## 3. Low and Medium sound like Ultra
+## Next: transmissions and hybrid
 
-Measured as a third-octave distance to Ultra on held renders (idle, part load, full load), level by
-level. The idle chatter above is the first gap.
+Spec `2026-11-04-transmissions-hybrid-design.md`, approved 2026-11-04 with **transmission noise**
+added by the user. One PR each, in this order:
 
-## 4. Later
+1. **Gear noise** on the existing manual box (plan `2026-11-04-gear-noise.md`):
+   - whine at the mesh orders (spur vs helical);
+   - rattle of the unloaded gears.
+2. **Sequential** (dog box, flat shift, straight-cut whine, the dogs' engagement impacts).
+3. **DSG** (dual clutch).
+4. **Torque-converter automatic.**
+5. **CVT** (belt pitch whine).
+6. **eCVT** (power split).
+7. **Hybrid**, P2 parallel first:
+   - permanent-magnet motor whine (electrical orders, PWM side bands);
+   - a battery with its gauge;
+   - the energy manager.
 
-- **Potato mode**: our own `--render loops` grid (rpm × load, rendered once at Reference quality)
-  played back crossfaded by rpm and load, as markeasting/engine-audio does with recordings. Near-zero
-  CPU, for very slow machines; transients become blends, not physics.
-- F1 presets: V12 3.5 L, V10 3.0 L, V8 2.4 L; turbocharger plus MGU-H, and the V6 1.6 L hybrid.
-- Transmission noise: gear whine, straight-cut race gears vs helical road gears (once the engine
-  sound is right).
-- Diesel (compression ignition), rotary, turbo.
-- Lamborghini-style tuned Helmholtz silencers (Onorati 2006); afterfire and backfire pops.
-- 2D schematic of the intake and exhaust in the UI; 3D view last.
+## Parked at the end (user, 2026-11-03): petrol idle realism
+
+Petrol idles still sound "diesel/tractor". The user rejected these by ear, so none come back:
+
+- piston slap;
+- timing chain;
+- a fitted noise floor;
+- Gaussian main-bearing noise;
+- road silencers on the petrol presets.
+
+Measured leads are in the memory and FACTS notes of 2026-11-03.
+
+## Standing processes
+
+- **Mutation testing**, per PR, on the `engine-core` diff:
+  - runs in the background and never blocks a merge;
+  - the result goes to the PR as a comment, misses to a follow-up PR;
+  - the user turns it off or on with `scripts/mutants-mode.sh off|on`.
+- **Sound changes go to the user's ear** before anything is built on them. Send before/after
+  clips, loudness-matched.
+
+## Later (not scheduled)
+
+- **Potato mode:** our own `--render loops` grid (rpm × load, rendered once at Reference quality),
+  played back crossfaded by rpm and load. Near-zero CPU, for very slow machines.
+- **F1 presets:** V12 3.5 L, V10 3.0 L, V8 2.4 L; the V6 1.6 L turbo hybrid with MGU-H.
+- **Lamborghini-style tuned Helmholtz silencers** (Onorati 2006); afterfire and backfire pops.
+- **Low and Medium quality closer to Ultra**, measured as a third-octave distance on held renders.

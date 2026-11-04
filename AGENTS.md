@@ -20,6 +20,8 @@ exported/imported as JSON or YAML. For anyone who likes engines; it must run on 
   (2026-10-21). Function first; the `impeccable` flow (`$impeccable teach` → `PRODUCT.md` /
   `DESIGN.md`, never hand-authored) starts when the UI is polished, not before. Until then: legible,
   consistent, no dead controls.
+- **Read [`docs/ROADMAP.md`](docs/ROADMAP.md) first** — what is done, what is next and in what order,
+  what is parked. Update it when a milestone lands (with the CHANGELOG row and the tag).
 - **3D parts live in [`assets/3d-parts/`](assets/3d-parts/README.md)** (user, 2026-11-04): every
   realistic part of the 3D view (piston, rod, crank, valve train, Wankel) is a parametric Blender
   script there; the `.glb` are its build output. Work on a part there: change the script, rebuild
