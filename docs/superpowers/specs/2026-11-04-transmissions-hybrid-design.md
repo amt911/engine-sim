@@ -52,7 +52,7 @@ radiation path as the block (`structure`):
   angle in the file; the engaged pair and the final drive whine, at their own orders.
 - **Gear rattle:** the unloaded gears on a manual's or a dog box's shafts hammer across their
   backlash, driven by the crank's speed fluctuation: impacts at idle and low load (Singh, Xie &
-  Comparin, JSV 130, 1989; Fujimoto & Kizuka, SAE 2003-01-1407). A dual-mass flywheel lowers it.
+  Comparin, JSV 131(2), 1989). A dual-mass flywheel lowers it.
 - **Shift noise:** a dog box's dogs crash in (an impact, no synchro); a synchro's cone grinds only
   when the driver forces it; a DSG's clutches hand over silently but its mechatronic pump hums.
 - **CVT:** the push belt's or chain's elements entering the pulleys at their pitch frequency (the
