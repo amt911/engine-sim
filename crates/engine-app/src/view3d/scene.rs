@@ -28,6 +28,9 @@ pub enum Part {
     WristPin,
     IntakeValve,
     ExhaustValve,
+    /// A valve's stem (its head is the valve itself; the realistic valve draws both).
+    IntakeStem,
+    ExhaustStem,
     Housing,
     SidePlate,
     Rotor,
@@ -51,6 +54,15 @@ pub enum Part {
 }
 
 impl Part {
+    /// The valve a stem belongs to (any other part: itself), for its card and handles.
+    pub fn as_valve(self) -> Part {
+        match self {
+            Part::IntakeStem => Part::IntakeValve,
+            Part::ExhaustStem => Part::ExhaustValve,
+            p => p,
+        }
+    }
+
     /// Which unit mesh draws it.
     pub fn mesh(self) -> MeshKind {
         match self {
@@ -71,6 +83,8 @@ impl Part {
             Part::WristPin => MeshKind::WristPin,
             Part::Rod => MeshKind::Rod,
             Part::Throw => MeshKind::Throw,
+            Part::IntakeValve | Part::ExhaustValve => MeshKind::Valve,
+            Part::IntakeStem | Part::ExhaustStem => MeshKind::ValveStem,
             Part::RodEye => MeshKind::RodEye,
             _ => MeshKind::Cylinder,
         }
@@ -93,10 +107,12 @@ pub enum MeshKind {
     Rod,
     RodEye,
     Throw,
+    Valve,
+    ValveStem,
 }
 
 impl MeshKind {
-    pub const ALL: [MeshKind; 14] = [
+    pub const ALL: [MeshKind; 16] = [
         MeshKind::Cylinder,
         MeshKind::Cuboid,
         MeshKind::Housing,
@@ -111,6 +127,8 @@ impl MeshKind {
         MeshKind::Rod,
         MeshKind::RodEye,
         MeshKind::Throw,
+        MeshKind::Valve,
+        MeshKind::ValveStem,
     ];
 }
 
@@ -516,9 +534,21 @@ pub fn moving(def: &EngineDef, cylinders: &[CylinderView], out: &mut Vec<Instanc
             );
         }
         let side = exhaust_side(def, bank);
-        for (dz, lift, part, color) in [
-            (-0.25 * side, c.intake_lift_m, Part::IntakeValve, INTAKE),
-            (0.25 * side, c.exhaust_lift_m, Part::ExhaustValve, EXHAUST),
+        for (dz, lift, part, stem, color) in [
+            (
+                -0.25 * side,
+                c.intake_lift_m,
+                Part::IntakeValve,
+                Part::IntakeStem,
+                INTAKE,
+            ),
+            (
+                0.25 * side,
+                c.exhaust_lift_m,
+                Part::ExhaustValve,
+                Part::ExhaustStem,
+                EXHAUST,
+            ),
         ] {
             let face = deck - lift as f32;
             let z = dz * b;
@@ -530,7 +560,7 @@ pub fn moving(def: &EngineDef, cylinders: &[CylinderView], out: &mut Vec<Instanc
                 color,
             );
             put(
-                part,
+                stem,
                 Mat4::from_translation(Vec3::new(x, face, z))
                     * Mat4::from_scale(Vec3::new(0.03 * b, 0.5 * b, 0.03 * b)),
                 color,

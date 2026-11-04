@@ -32,7 +32,7 @@ pub fn card(def: &EngineDef, scene: &Scene, parts: &[Instance], index: usize) ->
             ("Length of this run".into(), mm(s.y as f64)),
         ]
     };
-    let (title, rows): (&str, Vec<(String, String)>) = match part.part {
+    let (title, rows): (&str, Vec<(String, String)>) = match part.part.as_valve() {
         Part::Piston | Part::PistonRing | Part::Charge | Part::Liner => (
             "Cylinder",
             vec![
@@ -65,8 +65,8 @@ pub fn card(def: &EngineDef, scene: &Scene, parts: &[Instance], index: usize) ->
                 ("Cylinders".into(), def.cylinders.to_string()),
             ],
         ),
-        Part::IntakeValve | Part::ExhaustValve => {
-            let (name, v) = if part.part == Part::IntakeValve {
+        Part::IntakeValve | Part::ExhaustValve | Part::IntakeStem | Part::ExhaustStem => {
+            let (name, v) = if part.part.as_valve() == Part::IntakeValve {
                 ("Intake valve", &def.intake_valve)
             } else {
                 ("Exhaust valve", &def.exhaust_valve)

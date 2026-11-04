@@ -426,6 +426,15 @@ pub fn unit_mesh(kind: MeshKind, key: MeshKey) -> Mesh {
             Some(m) if key.realistic => m,
             _ => mesh::cylinder(s),
         },
+        MeshKind::Valve => match super::parts::valve() {
+            Some(m) if key.realistic => m,
+            _ => mesh::cylinder(s),
+        },
+        // the realistic valve carries its stem
+        MeshKind::ValveStem => match super::parts::valve_asset() {
+            Some(_) if key.realistic => Mesh::nothing(),
+            _ => mesh::cylinder(s),
+        },
         // the realistic rod carries its eyes
         MeshKind::RodEye => match super::parts::rod_asset() {
             Some(_) if key.realistic => Mesh::nothing(),
@@ -556,11 +565,13 @@ mod tests {
             cylinder
         );
         assert!(unit_mesh(MeshKind::Throw, key(true)).vertices.len() > 10 * cylinder);
+        assert!(unit_mesh(MeshKind::Valve, key(true)).vertices.len() > 10 * cylinder);
         for kind in [
             MeshKind::PistonRing,
             MeshKind::WristPin,
             MeshKind::RodEye,
             MeshKind::Web,
+            MeshKind::ValveStem,
         ] {
             let m = unit_mesh(kind, key(true));
             assert_eq!(m.indices.len(), 3);

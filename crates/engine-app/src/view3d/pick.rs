@@ -14,13 +14,17 @@ pub fn local_bounds(kind: MeshKind) -> (Vec3, Vec3) {
         | MeshKind::Liner
         | MeshKind::PistonRing
         | MeshKind::WristPin
-        | MeshKind::RodEye => (Vec3::new(-1.0, 0.0, -1.0), Vec3::new(1.0, 1.0, 1.0)),
+        | MeshKind::RodEye
+        | MeshKind::ValveStem => (Vec3::new(-1.0, 0.0, -1.0), Vec3::new(1.0, 1.0, 1.0)),
         MeshKind::Cuboid => (Vec3::splat(-0.5), Vec3::splat(0.5)),
         // the realistic rod's big end reaches past the primitive bar: about 0.4 bore round the
         // crankpin, which is 2 depths (0.2 bore) and 0.25 rod lengths of the shortest rods
         // the realistic throw in its pin's frame: the module 0.6 bore either side along the crank
         // (y), the counterweight 0.74 bore past the axis, below the pin (−z), across (±x)
         MeshKind::Throw => (Vec3::new(-5.8, -1.9, -10.5), Vec3::new(5.8, 2.9, 2.5)),
+        // the realistic valve on its head's frame (0.17 × 0.04 × 0.17 bore): the head on the
+        // face, the stem 0.5 bore up, past 12 units
+        MeshKind::Valve => (Vec3::new(-1.05, -0.1, -1.05), Vec3::new(1.05, 13.5, 1.05)),
         MeshKind::Rod => (Vec3::new(-1.0, -0.8, -2.2), Vec3::new(1.0, 0.65, 2.2)),
         MeshKind::Sphere => (Vec3::splat(-1.0), Vec3::splat(1.0)),
         // the housing's outer wall reaches 1 + e + 0.22 < 1.6 of its generating radius

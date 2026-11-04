@@ -22,6 +22,12 @@ const CRANK_GLB: &[u8] = include_bytes!("../../../../assets/3d-parts/out/crank_t
 /// The reference throw (half the 86 mm stroke) and counterweight radius, in bores.
 const REF_THROW_B: f32 = 0.5;
 const COUNTERWEIGHT_B: f32 = 0.74;
+/// A valve with its keepers and retainer (origin: the face's centre, closed, stem +Y; `stretch`
+/// weights 0 on the head, 1 on the tip, keepers and retainer).
+const VALVE_GLB: &[u8] = include_bytes!("../../../../assets/3d-parts/out/valve.glb");
+/// The reference stem, face to tip, m (README) and the scene's, in bores (the head's box).
+const REF_STEM: f32 = 0.0989;
+const SCENE_STEM_B: f32 = 0.5;
 /// The reference engine's bore, m (README: bore 86, stroke 86, rod 143 mm).
 const REF_BORE: f32 = 0.086;
 
@@ -265,6 +271,32 @@ pub fn throw(throw_b: f32, rod_b: f32) -> Option<Mesh> {
     ))
 }
 
+/// The valve asset, read once (none if unreadable: the primitives stay).
+pub fn valve_asset() -> Option<&'static GlbPart> {
+    static VALVE: std::sync::OnceLock<Option<GlbPart>> = std::sync::OnceLock::new();
+    VALVE
+        .get_or_init(|| {
+            load(VALVE_GLB)
+                .inspect_err(|e| {
+                    eprintln!("3D view: valve.glb unreadable ({e}), drawing the primitive")
+                })
+                .ok()
+        })
+        .as_ref()
+}
+
+/// The realistic valve in the procedural valve head's unit frame: that disc stands on the face,
+/// 0.17 bore in radius (the asset's head too, README) and 0.04 bore thick. Its stem is brought to
+/// the scene's 0.5 bore by the README's rule (`p' = s·p + w·(stem − s·0.0989)·Ŷ`).
+pub fn valve() -> Option<Mesh> {
+    let mut part = valve_asset()?.clone();
+    let extra = SCENE_STEM_B - REF_STEM / REF_BORE;
+    for (p, &w) in part.positions.iter_mut().zip(&part.stretch_w) {
+        *p = *p / REF_BORE + w * extra * Vec3::Y;
+    }
+    Some(to_unit(&part, 1.0, Vec3::ZERO, Vec3::new(0.17, 0.04, 0.17)))
+}
+
 /// Into a unit frame: `p ↦ (p·k + offset) / scale`, normals `n ↦ n·scale` (normalised).
 fn to_unit(part: &GlbPart, k: f32, offset: Vec3, scale: Vec3) -> Mesh {
     Mesh {
@@ -432,6 +464,37 @@ mod tests {
             .map(|(p, _)| p.y)
             .fold(f32::MAX, f32::min);
         assert!(short >= -0.5 - 1e-3, "{short}");
+    }
+
+    #[test]
+    fn the_valve_stands_on_the_scenes_disc() {
+        let m = valve().expect("the realistic valve");
+        let w = &valve_asset().expect("valve.glb").stretch_w;
+        let unit = Vec3::new(0.17, 0.04, 0.17);
+        let bores: Vec<(Vec3, f32)> = m
+            .vertices
+            .iter()
+            .zip(w)
+            .map(|(v, &w)| (Vec3::from(v.pos) * unit, w))
+            .collect();
+        // the head (weight 0): 0.17 bore in radius, as the scene's disc, on the face (y ≥ 0)
+        let head = bores.iter().filter(|(_, w)| *w < 1e-3);
+        let (r, low) = head.fold((0.0f32, f32::MAX), |(r, l), (p, _)| {
+            (r.max(p.x.hypot(p.z)), l.min(p.y))
+        });
+        assert!((r - 0.17).abs() < 0.005, "{r}");
+        assert!(low > -0.005, "{low}");
+        // the tip end (weight 1) moved down by 0.0989/0.086 − 0.5 = 0.65 bore: its top at the
+        // asset's top less that
+        let asset = valve_asset().unwrap();
+        let top_ref = asset
+            .positions
+            .iter()
+            .map(|p| p.y / REF_BORE)
+            .fold(f32::MIN, f32::max);
+        let top = bores.iter().map(|(p, _)| p.y).fold(f32::MIN, f32::max);
+        let drop = REF_STEM / REF_BORE - SCENE_STEM_B;
+        assert!((top - (top_ref - drop)).abs() < 1e-3, "{top} {top_ref}");
     }
 
     #[test]
