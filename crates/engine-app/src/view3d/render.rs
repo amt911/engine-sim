@@ -40,6 +40,8 @@ pub struct MeshKey {
 pub struct Shared {
     pub view_proj: Mat4,
     pub instances: Vec<Instance>,
+    /// The cut-away plane (normal, offset), when the layer is on.
+    pub clip: Option<(Vec3, f32)>,
 }
 
 /// One frame's paint callback.
@@ -75,6 +77,8 @@ struct GpuInstance {
 struct Globals {
     view_proj: [[f32; 4]; 4],
     light: [f32; 4],
+    /// The cut-away plane: fragments where n·p > d are discarded (n = 0: no cut).
+    clip: [f32; 4],
 }
 
 struct GpuMesh {
@@ -275,7 +279,6 @@ impl Resources {
     }
 
     fn upload_meshes(&mut self, device: &wgpu::Device, key: MeshKey) {
-        let s = key.segments;
         let build = |m: Mesh| GpuMesh {
             vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("3d mesh"),
@@ -290,21 +293,9 @@ impl Resources {
             count: m.indices.len() as u32,
         };
         self.meshes.clear();
-        self.meshes
-            .insert(MeshKind::Cylinder, build(mesh::cylinder(s)));
-        self.meshes.insert(MeshKind::Cuboid, build(mesh::cuboid()));
-        self.meshes
-            .insert(MeshKind::Housing, build(mesh::housing(key.e_over_r, 4 * s)));
-        self.meshes
-            .insert(MeshKind::Rotor, build(mesh::rotor(s.div_ceil(2))));
-        self.meshes.insert(
-            MeshKind::HousingRing,
-            build(mesh::housing_ring(key.e_over_r, 4 * s)),
-        );
-        self.meshes
-            .insert(MeshKind::Liner, build(mesh::half_liner(s)));
-        self.meshes
-            .insert(MeshKind::Web, build(mesh::crank_web(s.div_ceil(2))));
+        for kind in MeshKind::ALL {
+            self.meshes.insert(kind, build(unit_mesh(kind, key)));
+        }
         self.key = Some(key);
     }
 
@@ -395,6 +386,22 @@ impl Resources {
     }
 }
 
+/// The unit mesh of each kind at the key's detail (an exhaustive match: a new kind cannot be
+/// left without its mesh, as the pipes' ball joints once were).
+pub fn unit_mesh(kind: MeshKind, key: MeshKey) -> Mesh {
+    let s = key.segments;
+    match kind {
+        MeshKind::Cylinder => mesh::cylinder(s),
+        MeshKind::Cuboid => mesh::cuboid(),
+        MeshKind::Housing => mesh::housing(key.e_over_r, 4 * s),
+        MeshKind::HousingRing => mesh::housing_ring(key.e_over_r, 4 * s),
+        MeshKind::Rotor => mesh::rotor(s.div_ceil(2)),
+        MeshKind::Liner => mesh::half_liner(s),
+        MeshKind::Web => mesh::crank_web(s.div_ceil(2)),
+        MeshKind::Sphere => mesh::sphere(s.div_ceil(2)),
+    }
+}
+
 impl egui_wgpu::CallbackTrait for Frame3d {
     fn prepare(
         &self,
@@ -416,8 +423,10 @@ impl egui_wgpu::CallbackTrait for Frame3d {
                 return Vec::new();
             };
             res.stage(&shared.instances);
-            shared.view_proj
+            (shared.view_proj, shared.clip)
         };
+        let (view_proj, clip) = view_proj;
+        let clip = clip.map_or([0.0; 4], |(n, d)| [n.x, n.y, n.z, d]);
         res.upload_instances(device, queue);
         let light = Vec3::new(0.4, 0.8, 0.45).normalize();
         queue.write_buffer(
@@ -426,6 +435,7 @@ impl egui_wgpu::CallbackTrait for Frame3d {
             bytemuck::bytes_of(&Globals {
                 view_proj: view_proj.to_cols_array_2d(),
                 light: [light.x, light.y, light.z, 0.25],
+                clip,
             }),
         );
         let (Some(target), Some((instances, _))) = (&res.target, &res.instances) else {
@@ -484,6 +494,19 @@ impl egui_wgpu::CallbackTrait for Frame3d {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_kind_has_a_mesh() {
+        let key = MeshKey {
+            def_version: 1,
+            segments: 12,
+            e_over_r: 0.15,
+        };
+        for kind in MeshKind::ALL {
+            let m = unit_mesh(kind, key);
+            assert!(!m.indices.is_empty(), "{kind:?}");
+        }
+    }
 
     #[test]
     fn target_size_is_never_zero() {

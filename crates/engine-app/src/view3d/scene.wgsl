@@ -5,6 +5,8 @@ struct Globals {
     view_proj: mat4x4<f32>,
     // direction towards the light (xyz), ambient share (w)
     light: vec4<f32>,
+    // the cut-away: discard where dot(n, p) > d (n = 0: off)
+    clip: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> g: Globals;
 
@@ -22,6 +24,7 @@ struct VOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) n: vec3<f32>,
     @location(1) color: vec4<f32>,
+    @location(2) world: vec3<f32>,
 };
 
 @vertex
@@ -32,16 +35,24 @@ fn vs_scene(v: VIn) -> VOut {
     let s2 = vec3<f32>(dot(v.m0.xyz, v.m0.xyz), dot(v.m1.xyz, v.m1.xyz), dot(v.m2.xyz, v.m2.xyz));
     var o: VOut;
     o.n = m3 * (v.normal / max(s2, vec3<f32>(1e-20)));
-    o.clip = g.view_proj * m * vec4<f32>(v.pos, 1.0);
+    let w = m * vec4<f32>(v.pos, 1.0);
+    o.world = w.xyz;
+    o.clip = g.view_proj * w;
     o.color = v.color;
     return o;
 }
 
 @fragment
 fn fs_scene(i: VOut) -> @location(0) vec4<f32> {
+    if dot(g.clip.xyz, g.clip.xyz) > 0.0 && dot(g.clip.xyz, i.world) > g.clip.w {
+        discard;
+    }
     let n = normalize(i.n);
     let lambert = max(dot(n, g.light.xyz), 0.0);
     let shade = g.light.w + (1.0 - g.light.w) * lambert;
-    // colours are display (sRGB-like) values and the target is not sRGB: shade in linear light
-    return vec4<f32>(i.color.rgb * pow(shade, 1.0 / 2.2), 1.0);
+    // colours are display (sRGB-like) values and the target is not sRGB: shade in linear light;
+    // a part's own light (1 − alpha) shows its colour whatever the lighting
+    let own = 1.0 - i.color.a;
+    let lit = mix(pow(shade, 1.0 / 2.2), 1.0, own);
+    return vec4<f32>(i.color.rgb * lit, 1.0);
 }

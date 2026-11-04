@@ -17,8 +17,79 @@ pub enum ViewMode {
     ThreeD,
 }
 
+/// The layers drawn over the engine (the user's toggles).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Layers {
+    /// The exhaust pipes coloured by their temperature (wall, else gas), with a legend.
+    pub temperature: bool,
+    /// Marks running along the exhaust pipes at their gas's speed (×[`FLOW_SCALE`]).
+    pub flow: bool,
+    /// Each chamber's charge, coloured by its temperature, glowing while it burns.
+    pub combustion: bool,
+    /// The engine opened along (inline) or across (V, rotary) its cylinders.
+    pub cutaway: bool,
+}
+
+impl Default for Layers {
+    fn default() -> Self {
+        Self {
+            temperature: true,
+            flow: true,
+            combustion: true,
+            cutaway: false,
+        }
+    }
+}
+
+/// A handle in the hand: its value as it moves, from its value when it was taken.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Drag {
+    pub handle: super::handles::Handle,
+    pub start: f64,
+    pub value: f64,
+    /// Pixels the pointer has moved along the handle's on-screen axis.
+    pub along_px: f32,
+    /// The handle's axis on screen (unit) and how many pixels a metre along it covers.
+    pub dir: egui::Vec2,
+    pub px_per_m: f32,
+}
+
+/// Where world point `p` shows in `rect` for `view_proj` (None behind the camera).
+fn to_screen(view_proj: glam::Mat4, rect: egui::Rect, p: glam::Vec3) -> Option<egui::Pos2> {
+    let c = view_proj * p.extend(1.0);
+    if c.w <= 1e-6 {
+        return None;
+    }
+    let (x, y) = (c.x / c.w, c.y / c.w);
+    Some(egui::pos2(
+        rect.left() + 0.5 * (x + 1.0) * rect.width(),
+        rect.top() + 0.5 * (1.0 - y) * rect.height(),
+    ))
+}
+
+/// The flow marks run at this share of the gas's speed, so they can be followed by eye.
+pub const FLOW_SCALE: f32 = 0.05;
+
+/// Flow marks per pipe at each detail.
+fn marks(d: Detail) -> usize {
+    match d {
+        Detail::Low => 0,
+        Detail::Medium => 4,
+        Detail::High => 8,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct View3dState {
+    /// Where the clicked part's handles stood on screen last frame (what each edits).
+    pub handle_spots: Vec<(super::handles::Field, egui::Pos2)>,
+    /// A handle being dragged.
+    pub drag: Option<Drag>,
+    /// The clicked part (its index among the frame's instances) and where its card stands.
+    pub selected: Option<(usize, egui::Pos2)>,
+    /// How far round its pipe each pipe's flow marks have run (0..1).
+    phases: Vec<f32>,
+    pub layers: Layers,
     pub mode: ViewMode,
     /// Whether the renderer is installed (a wgpu device exists); without it the view is 2D.
     pub available: bool,
@@ -35,6 +106,11 @@ pub struct View3dState {
 impl Default for View3dState {
     fn default() -> Self {
         Self {
+            handle_spots: Vec::new(),
+            drag: None,
+            selected: None,
+            phases: Vec::new(),
+            layers: Layers::default(),
             mode: ViewMode::ThreeD,
             available: false,
             camera: None,
@@ -49,6 +125,17 @@ impl Default for View3dState {
 }
 
 impl View3dState {
+    /// The index of the first drawn `part` in the frame (tests pick parts by kind).
+    #[cfg(test)]
+    pub fn first(&self, part: scene::Part) -> Option<usize> {
+        self.shared
+            .lock()
+            .ok()?
+            .instances
+            .iter()
+            .position(|i| i.part == part)
+    }
+
     /// The view to draw: 3D only when asked for and a renderer exists.
     pub fn shows_3d(&self) -> bool {
         self.available && self.mode == ViewMode::ThreeD
@@ -59,20 +146,84 @@ impl View3dState {
         if self.drawn.as_ref() != Some(def) {
             self.def_version += 1;
             let s = scene::build(def);
-            self.camera = Some(OrbitCamera::framing(s.bounds.0, s.bounds.1, start_yaw(def)));
+            self.camera = Some(OrbitCamera::framing(s.focus.0, s.focus.1, start_yaw(def)));
             self.scene = Some(s);
             self.drawn = Some(def.clone());
         }
     }
 
     /// Fill the shared frame (still parts then moving ones) for the cylinders of `snap`.
-    fn fill(&mut self, snap: &Snapshot, aspect: f32) {
+    fn fill(&mut self, snap: &Snapshot, aspect: f32, dt: f32) {
         let Some(s) = &self.scene else { return };
         scene::moving(&snap.def, &snap.cylinders, &mut self.moving);
+        self.phases.resize(s.pipes.len(), 0.0);
+        let n_marks = if self.layers.flow && !snap.pipes.is_empty() {
+            marks(self.governor.detail)
+        } else {
+            0
+        };
         if let Ok(mut sh) = self.shared.lock() {
             sh.instances.clear();
             sh.instances.extend_from_slice(&s.static_parts);
-            sh.instances.extend_from_slice(&self.moving);
+            // the pipes in their temperature (the wall's when it is modelled, else the gas's)
+            if self.layers.temperature {
+                for p in &s.pipes {
+                    if let Some(g) = snap.pipes.get(p.pipe) {
+                        let c = super::colormap::temperature(g.wall_k.unwrap_or(g.temperature_k));
+                        for i in &mut sh.instances[p.instances.clone()] {
+                            i.color = c;
+                        }
+                    }
+                }
+            }
+            let combustion = self.layers.combustion;
+            sh.instances.extend(
+                self.moving
+                    .iter()
+                    .filter(|i| combustion || i.part != scene::Part::Charge),
+            );
+            // the flow marks: each pipe's run on at its gas's speed, coloured by the gas
+            for (p, phase) in s.pipes.iter().zip(&mut self.phases) {
+                let Some(g) = snap.pipes.get(p.pipe) else {
+                    continue;
+                };
+                let len: f32 = p.runs.iter().map(super::routing::Run::length).sum();
+                if len > 0.0 {
+                    *phase =
+                        (*phase + g.velocity_m_s as f32 * FLOW_SCALE * dt / len).rem_euclid(1.0);
+                }
+                let r = p.runs.first().map_or(0.0, |_| {
+                    s.static_parts[p.instances.start]
+                        .model
+                        .x_axis
+                        .truncate()
+                        .length()
+                });
+                let mut c = super::colormap::temperature(g.temperature_k);
+                c[3] = 0.3;
+                for k in 0..n_marks {
+                    if let Some(at) =
+                        super::routing::point_along(&p.runs, *phase + k as f32 / n_marks as f32)
+                    {
+                        sh.instances.push(scene::Instance {
+                            part: scene::Part::Joint,
+                            model: glam::Mat4::from_scale_rotation_translation(
+                                glam::Vec3::splat(1.15 * r),
+                                glam::Quat::IDENTITY,
+                                at,
+                            ),
+                            color: c,
+                        });
+                    }
+                }
+            }
+            // the clicked part a little brighter
+            if let Some(i) = self.selected.and_then(|(k, _)| sh.instances.get_mut(k)) {
+                for c in &mut i.color[..3] {
+                    *c = (*c * 1.35 + 0.08).min(1.0);
+                }
+            }
+            sh.clip = self.layers.cutaway.then(|| scene::cut_plane(&snap.def));
             if let Some(c) = &self.camera {
                 sh.view_proj = c.view_proj(aspect);
             }
@@ -88,6 +239,61 @@ fn start_yaw(def: &EngineDef) -> f32 {
     } else {
         0.6
     }
+}
+
+/// The temperature layer's legend in the view's lower left corner: the colour map from 300 to
+/// 1300 K, or a note when the exhaust has no gas data.
+fn legend(ui: &egui::Ui, rect: egui::Rect, no_data: bool) {
+    use super::colormap::{COLD_K, HOT_K, temperature};
+    let p = ui.painter_at(rect);
+    let origin = rect.left_bottom() + egui::vec2(12.0, -28.0);
+    let font = egui::FontId::proportional(11.0);
+    let text = egui::Color32::from_gray(200);
+    if no_data {
+        p.text(
+            origin,
+            egui::Align2::LEFT_CENTER,
+            "Temperature: no exhaust gas data",
+            font,
+            text,
+        );
+        return;
+    }
+    let (w, h, steps) = (160.0, 10.0, 32);
+    for k in 0..steps {
+        let t = COLD_K + (HOT_K - COLD_K) * (k as f64 + 0.5) / steps as f64;
+        let [r, g, b, _] = temperature(t).map(|c| (c * 255.0) as u8);
+        let x0 = origin.x + w * k as f32 / steps as f32;
+        p.rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(x0, origin.y - h / 2.0),
+                egui::pos2(x0 + w / steps as f32 + 0.5, origin.y + h / 2.0),
+            ),
+            0.0,
+            egui::Color32::from_rgb(r, g, b),
+        );
+    }
+    p.text(
+        origin + egui::vec2(0.0, 12.0),
+        egui::Align2::LEFT_TOP,
+        "300 K",
+        font.clone(),
+        text,
+    );
+    p.text(
+        origin + egui::vec2(w, 12.0),
+        egui::Align2::RIGHT_TOP,
+        "1300 K",
+        font.clone(),
+        text,
+    );
+    p.text(
+        origin + egui::vec2(w + 8.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        format!("gas flow marks at ×{FLOW_SCALE} speed"),
+        font,
+        text,
+    );
 }
 
 /// The bar over the engine view: 2D / 3D and the detail.
@@ -123,16 +329,76 @@ pub fn bar(ui: &mut egui::Ui, st: &mut View3dState) {
             if choice != st.governor.manual() {
                 st.governor.set_manual(choice);
             }
+            ui.menu_button("Layers", |ui| {
+                ui.checkbox(&mut st.layers.temperature, "Temperature");
+                ui.checkbox(&mut st.layers.flow, "Gas flow");
+                ui.checkbox(&mut st.layers.combustion, "Combustion");
+                ui.checkbox(&mut st.layers.cutaway, "Cut-away");
+            });
             ui.small("drag: turn · wheel: zoom · double-click: reframe");
         }
     });
 }
 
 /// The 3D engine in the rest of the panel.
-pub fn show(ui: &mut egui::Ui, st: &mut View3dState, snap: &Snapshot) {
+pub fn show(
+    ui: &mut egui::Ui,
+    st: &mut View3dState,
+    snap: &Snapshot,
+    edit: &mut EngineDef,
+    dirty: &mut bool,
+) {
     st.sync(&snap.def);
     let (rect, resp) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
-    if let Some(c) = st.camera.as_mut() {
+    // the handles of the clicked part, on screen
+    let handles: Vec<(super::handles::Handle, egui::Pos2)> = match (st.selected, &st.scene) {
+        (Some((k, _)), Some(scene)) => st
+            .shared
+            .lock()
+            .ok()
+            .map(|sh| {
+                super::handles::handles(&snap.def, scene, &sh.instances, k)
+                    .into_iter()
+                    .filter_map(|h| to_screen(sh.view_proj, rect, h.at).map(|p| (h, p)))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    st.handle_spots.clear();
+    st.handle_spots
+        .extend(handles.iter().map(|(h, p)| (h.field, *p)));
+    if resp.drag_started()
+        && let Some(pos) = resp.interact_pointer_pos()
+        && let Some((h, at)) = handles
+            .iter()
+            .find(|(_, p)| p.distance(pos) < 12.0)
+            .copied()
+    {
+        let vp = st.shared.lock().map(|sh| sh.view_proj).unwrap_or_default();
+        if let Some(tip) = to_screen(vp, rect, h.at + 0.01 * h.axis) {
+            let v = (tip - at) / 0.01;
+            let start = h.field.get(&snap.def);
+            st.drag = Some(Drag {
+                handle: h,
+                start,
+                value: start,
+                along_px: 0.0,
+                dir: v.normalized(),
+                px_per_m: v.length(),
+            });
+        }
+    }
+    if let Some(d) = st.drag.as_mut() {
+        d.along_px += resp.drag_delta().dot(d.dir);
+        d.value = super::handles::dragged(&d.handle, d.start, d.along_px, d.px_per_m);
+        if resp.drag_stopped() {
+            // the engine takes it now, once: a valid engine is rebuilt, the editor follows
+            *dirty |= super::handles::apply(edit, d.handle.field, d.value);
+            st.drag = None;
+            st.selected = None;
+        }
+    } else if let Some(c) = st.camera.as_mut() {
         let d = resp.drag_delta();
         c.drag(-d.x, d.y);
         if resp.hovered() {
@@ -143,14 +409,15 @@ pub fn show(ui: &mut egui::Ui, st: &mut View3dState, snap: &Snapshot) {
         && let Some(s) = &st.scene
     {
         st.camera = Some(OrbitCamera::framing(
-            s.bounds.0,
-            s.bounds.1,
+            s.focus.0,
+            s.focus.1,
             st.drawn.as_ref().map_or(0.6, start_yaw),
         ));
     }
     st.governor.observe(1000.0 * ui.input(|i| i.unstable_dt));
     let aspect = rect.width() / rect.height().max(1.0);
-    st.fill(snap, aspect);
+    let dt = ui.input(|i| i.unstable_dt).min(0.1);
+    st.fill(snap, aspect, dt);
     let e_over_r = snap
         .def
         .geometry
@@ -167,6 +434,107 @@ pub fn show(ui: &mut egui::Ui, st: &mut View3dState, snap: &Snapshot) {
     };
     ui.painter()
         .add(egui_wgpu::Callback::new_paint_callback(rect, frame));
+    // a click picks the part under the pointer (another click on nothing, or Escape, lets go)
+    if resp.clicked()
+        && let Some(pos) = resp.interact_pointer_pos()
+    {
+        let ndc = (
+            2.0 * (pos.x - rect.left()) / rect.width().max(1.0) - 1.0,
+            1.0 - 2.0 * (pos.y - rect.top()) / rect.height().max(1.0),
+        );
+        st.selected = st.shared.lock().ok().and_then(|sh| {
+            let (o, d) = super::pick::ray(sh.view_proj, ndc)?;
+            super::pick::pick(&sh.instances, o, d).map(|(k, _)| (k, pos))
+        });
+    }
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        st.selected = None;
+    }
+    if let (Some((k, pos)), Some(scene)) = (st.selected, &st.scene) {
+        let card = st.shared.lock().ok().and_then(|sh| {
+            let c = super::card::card(&snap.def, scene, &sh.instances, k)?;
+            Some((c, super::handles::editable(sh.instances[k].part)))
+        });
+        if let Some((c, fields)) = card {
+            // right of the pointer and of every handle: the card sits above the scene, so a
+            // handle under it could not be grabbed
+            let right = handles.iter().map(|(_, p)| p.x).fold(pos.x, f32::max);
+            egui::Area::new(egui::Id::unique("part_card"))
+                .fixed_pos(egui::pos2(right + 14.0, pos.y + 8.0))
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.strong(&c.title);
+                        egui::Grid::new("part_card_rows").show(ui, |ui| {
+                            for (label, value) in &c.rows {
+                                ui.label(label);
+                                ui.label(value);
+                                ui.end_row();
+                            }
+                        });
+                        // what the part is made of, typed or dragged here
+                        if !fields.is_empty() {
+                            ui.separator();
+                            egui::Grid::new("part_card_edits").show(ui, |ui| {
+                                for &f in fields {
+                                    let (k, unit, dp) = f.units();
+                                    let (lo, hi) = f.range();
+                                    let mut shown = k * f.get(edit);
+                                    let name = ui.label(f.label());
+                                    let r = ui
+                                        .add(
+                                            egui::DragValue::new(&mut shown)
+                                                .range(k * lo..=k * hi)
+                                                .max_decimals(dp)
+                                                .suffix(unit),
+                                        )
+                                        .labelled_by(name.id);
+                                    if r.changed() {
+                                        *dirty |= super::handles::apply(edit, f, shown / k);
+                                    }
+                                    ui.end_row();
+                                }
+                            });
+                        }
+                    });
+                });
+        }
+    }
+    // the handles over the scene, and the value in the hand
+    {
+        let p = ui.painter_at(rect);
+        for (h, at) in &handles {
+            p.circle(
+                *at,
+                7.0,
+                egui::Color32::from_rgb(255, 214, 64),
+                egui::Stroke::new(1.5, egui::Color32::BLACK),
+            );
+            p.text(
+                *at + egui::vec2(10.0, -10.0),
+                egui::Align2::LEFT_BOTTOM,
+                h.field.label(),
+                egui::FontId::proportional(11.0),
+                egui::Color32::from_rgb(255, 214, 64),
+            );
+        }
+        if let Some(d) = st.drag {
+            p.text(
+                rect.left_top() + egui::vec2(12.0, 12.0),
+                egui::Align2::LEFT_TOP,
+                format!(
+                    "{}: {} (release to apply)",
+                    d.handle.field.label(),
+                    d.handle.field.show(d.value)
+                ),
+                egui::FontId::proportional(14.0),
+                egui::Color32::from_rgb(255, 214, 64),
+            );
+        }
+    }
+    // over the scene: painted after its callback
+    if st.layers.temperature {
+        legend(ui, rect, snap.pipes.is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -278,7 +646,7 @@ mod tests {
                     c.piston_m = def.geometry.piston_position(c.cycle_deg.to_radians());
                 }
                 let t0 = Instant::now();
-                st.fill(&snap, 1920.0 / 1080.0);
+                st.fill(&snap, 1920.0 / 1080.0, 1.0 / 60.0);
                 let frame = render::Frame3d {
                     shared: st.shared.clone(),
                     size_px: [1920, 1080],
@@ -321,5 +689,104 @@ mod tests {
                 c.0, c.1, g.0, g.1
             );
         }
+    }
+
+    #[test]
+    fn the_layers_menu_toggles_combustion_and_the_cut() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let st = View3dState {
+            available: true,
+            ..View3dState::default()
+        };
+        let mut h = Harness::new_ui_state(|ui, s: &mut View3dState| bar(ui, s), st);
+        h.get_by_label("Layers").click();
+        h.run();
+        h.get_by_label("Cut-away").click();
+        h.run();
+        assert!(h.state().layers.cutaway);
+        if h.query_by_label("Combustion").is_none() {
+            h.get_by_label("Layers").click();
+            h.run();
+        }
+        h.get_by_label("Combustion").click();
+        h.run();
+        assert!(!h.state().layers.combustion);
+    }
+
+    #[test]
+    fn layers_shape_the_frame() {
+        let def = EngineDef::inline4();
+        let mut st = View3dState::default();
+        st.sync(&def);
+        let snap = crate::sim::Simulation::new(def, 48_000.0, 1).snapshot();
+        st.fill(&snap, 1.5, 0.0);
+        let count = |st: &View3dState| {
+            let sh = st.shared.lock().unwrap();
+            (
+                sh.instances
+                    .iter()
+                    .filter(|i| i.part == scene::Part::Charge)
+                    .count(),
+                sh.clip,
+            )
+        };
+        assert_eq!(count(&st), (4, None));
+        st.layers = Layers {
+            combustion: false,
+            cutaway: true,
+            ..Layers::default()
+        };
+        st.fill(&snap, 1.5, 0.0);
+        assert_eq!(count(&st), (0, Some((glam::Vec3::Z, 0.0))));
+    }
+
+    #[test]
+    fn the_pipes_take_their_temperature_and_the_marks_run_with_the_gas() {
+        use engine_core::exhaust::PipeState;
+        let def = EngineDef::inline4();
+        let mut st = View3dState::default();
+        st.governor.set_manual(Some(Detail::Medium));
+        st.sync(&def);
+        let mut snap = crate::sim::Simulation::new(def, 48_000.0, 1).snapshot();
+        let n = st.scene.as_ref().unwrap().pipes.len();
+        snap.pipes = (0..n)
+            .map(|_| PipeState {
+                temperature_k: 900.0,
+                velocity_m_s: 20.0,
+                wall_k: None,
+            })
+            .collect();
+        st.fill(&snap, 1.5, 0.0);
+        let path = st.scene.as_ref().unwrap().pipes[0].clone();
+        let len: f32 = path
+            .runs
+            .iter()
+            .map(super::super::routing::Run::length)
+            .sum();
+        {
+            let sh = st.shared.lock().unwrap();
+            let hot = super::super::colormap::temperature(900.0);
+            assert!(
+                sh.instances[path.instances.clone()]
+                    .iter()
+                    .all(|i| i.color == hot)
+            );
+            // 4 marks per pipe at Medium
+            let glowing = sh.instances.iter().filter(|i| i.color[3] == 0.3).count();
+            assert_eq!(glowing, 4 * n);
+        }
+        // after 0.1 s the marks have run 20 · 0.05 · 0.1 = 0.1 m along their pipe
+        st.fill(&snap, 1.5, 0.1);
+        assert!(
+            (st.phases[0] - 0.1 / len).abs() < 1e-5,
+            "{} vs {}",
+            st.phases[0],
+            0.1 / len
+        );
+        // no gas data: no marks, the pipes keep their colour
+        snap.pipes.clear();
+        st.fill(&snap, 1.5, 0.1);
+        let sh = st.shared.lock().unwrap();
+        assert!(!sh.instances.iter().any(|i| i.color[3] == 0.3));
     }
 }

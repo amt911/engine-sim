@@ -344,3 +344,6 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   buffers `&[Option<VertexBufferLayout>]`, depth `Option<bool>`/`Option<CompareFunction>`;
   glam 0.34 has no `Mat4::perspective_rh` — use `glam::camera::rh::proj::directx::perspective`
   (z 0..1, y up, what wgpu wants) and `camera::rh::view::look_at_mat4`.
+- **3D view with intake, exhaust and turbo (2026-11-03, `bench_3d_frame`, LFA V10, RTX 3080 Ti):**
+  CPU 0.014 ms mean / 0.02 ms p99; GPU 0.10 ms mean, p99 0.1–0.2 ms (one 1.9 ms p99 at Low under
+  another session's load). Pipes are still parts (built once per definition).

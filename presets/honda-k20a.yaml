@@ -94,6 +94,7 @@ engine:
     - 0.042
     tail_length_m: 1.84
     tail_diameter_m: 0.05
+    tail_outlets: 1
     muffler_transmission: 1.0
     model: waveguide
     muffler_volume_m3: 0.006
@@ -142,7 +143,10 @@ engine:
     block: 1.0
     mechanical: 1.0
     combustion_jitter: 1.0
+    chamber_ring: 1.0
+    block_modes: 0.0
     blow_off: 1.0
+    compressor_whine: 1.0
     reverb: 0.0
     leveling: 0.0
     listener_distance_m: 3.0

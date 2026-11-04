@@ -44,8 +44,13 @@ pub struct TurboDef {
     pub eta_c: f64,
     pub eta_t: f64,
     pub eta_m: f64,
-    /// Turbine's effective nozzle area, m².
+    /// Turbine's effective nozzle area, m²: with variable vanes, theirs closed.
     pub turbine_area_m2: f64,
+    /// Variable-geometry turbine: the nozzle's area with its vanes fully open, m² (0: fixed
+    /// geometry). The vanes close for a small nozzle at low flow, and open over the same boost
+    /// band the wastegate acts on, holding the boost by passing all the flow through the turbine
+    /// (Watson & Janota, *Turbocharging the IC Engine*, ch. 9).
+    pub vnt_open_area_m2: f64,
     /// Rotor's moment of inertia (both wheels and the shaft), kg·m².
     pub inertia_kgm2: f64,
     /// Wastegate: the boost (gauge) it opens at, Pa, and its area fully open, m².
@@ -80,6 +85,7 @@ impl Default for TurboDef {
             eta_t: 0.70,
             eta_m: 0.95,
             turbine_area_m2: 6e-4,
+            vnt_open_area_m2: 0.0,
             inertia_kgm2: 2e-5,
             wastegate_pa: 100_000.0,
             wastegate_area_m2: 5e-4,
@@ -367,11 +373,15 @@ impl Turbo {
         let p02 = self.boost_pa + d.intercooler_drop_k * m_c * m_c;
         let gate = ((p02 - ATM_PA - d.wastegate_pa) / WASTEGATE_SPAN_PA).clamp(0.0, 1.0);
         let gate_area = gate * d.wastegate_area_m2;
+        let turbine_area = if d.vnt_open_area_m2 > 0.0 {
+            d.turbine_area_m2 + gate * (d.vnt_open_area_m2 - d.turbine_area_m2)
+        } else {
+            d.turbine_area_m2
+        };
         // the turbine inlet's pressure that passes the exhaust through the turbine and the gate
         let p4 = ATM_PA;
         let pass = |p: f64| {
-            turbine_flow(d.turbine_area_m2, p, t03, p4)
-                + nozzle_flow(gate_area, p, t03, p4, GAMMA_EXH)
+            turbine_flow(turbine_area, p, t03, p4) + nozzle_flow(gate_area, p, t03, p4, GAMMA_EXH)
         };
         let p03 = if exhaust_m_dot > 0.0 && t03 > 0.0 {
             let (mut lo, mut hi) = (p4, 50.0 * p4);
@@ -394,7 +404,7 @@ impl Turbo {
         } else {
             0.0
         };
-        let m_t = turbine_flow(d.turbine_area_m2, p03, t03, p4);
+        let m_t = turbine_flow(turbine_area, p03, t03, p4);
         let p_t = turbine_power(m_t, t03, p03, p4, d.eta_t);
         let p_c = compressor_power(m_c, T_AMB_K, ratio, d.eta_c);
         self.energy_j = (self.energy_j + (d.eta_m * p_t - p_c) * dt).max(0.0);
@@ -489,6 +499,42 @@ mod tests {
         (0..(secs / dt) as usize)
             .map(|_| turbo.step(ex, t03, air, lift, dt))
             .collect()
+    }
+
+    #[test]
+    fn variable_vanes_boost_at_low_flow_and_hold_the_boost_at_high_flow() {
+        let vnt = TurboDef {
+            turbine_area_m2: 2e-4,
+            vnt_open_area_m2: 8e-4,
+            wastegate_area_m2: 0.0,
+            ..TurboDef::default()
+        };
+        let closed = TurboDef {
+            vnt_open_area_m2: 0.0,
+            ..vnt.clone()
+        };
+        let open = TurboDef {
+            turbine_area_m2: 8e-4,
+            vnt_open_area_m2: 0.0,
+            ..vnt.clone()
+        };
+        let boost = |d: &TurboDef, m: f64| {
+            let mut t = Turbo::new(d);
+            run(&mut t, 5.0, m, 900.0, m, false)
+                .last()
+                .unwrap()
+                .boost_pa
+                - ATM_PA
+        };
+        // low flow: the vanes shut are the small nozzle, far more boost than the open one
+        let low = 0.03;
+        assert!(boost(&vnt, low) > 2.0 * boost(&open, low).max(1.0));
+        // high flow: the small nozzle fixed overboosts, the vanes open to the set band
+        let high = 0.11;
+        let held = boost(&vnt, high);
+        assert!(boost(&closed, high) > vnt.wastegate_pa + WASTEGATE_SPAN_PA);
+        assert!(held < vnt.wastegate_pa + WASTEGATE_SPAN_PA, "{held}");
+        assert!(held > 0.5 * vnt.wastegate_pa, "{held}");
     }
 
     #[test]

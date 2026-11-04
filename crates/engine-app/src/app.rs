@@ -225,7 +225,13 @@ pub fn layout(
     egui::CentralPanel::default().show(ui, |ui| {
         crate::view3d::ui::bar(ui, &mut state.view3d);
         if state.view3d.shows_3d() {
-            crate::view3d::ui::show(ui, &mut state.view3d, snap);
+            crate::view3d::ui::show(
+                ui,
+                &mut state.view3d,
+                snap,
+                &mut state.def,
+                &mut state.engine_dirty,
+            );
         } else {
             view::engine(ui, snap);
         }
@@ -376,6 +382,8 @@ mod tests {
             Preset::CrossplaneV8,
             Preset::LfaV10,
             Preset::MazdaRenesis,
+            Preset::HondaK20c1,
+            Preset::SubaruEj25,
         ] {
             let mut sim = Simulation::with_quality(
                 preset.def(),
@@ -423,6 +431,255 @@ mod tests {
                 "{}: {drawn} of {all} pixels drawn",
                 preset.slug()
             );
+            // and opened by the cut-away layer
+            drop(h);
+            state.view3d.layers.cutaway = true;
+            let rs = kw::create_render_state(
+                kw::default_wgpu_setup(),
+                eframe::egui_wgpu::RendererOptions::PREDICTABLE,
+            );
+            crate::view3d::render::install(&rs);
+            let mut h = egui_kittest::Harness::builder()
+                .with_size(egui::vec2(1400.0, 860.0))
+                .renderer(kw::WgpuTestRenderer::from_render_state(rs))
+                .build_ui(|ui| {
+                    layout(ui, &mut state, &snap, &Ok(48_000), false);
+                });
+            h.run();
+            let img = h.render().expect("render");
+            img.save(out.join(format!("engine-3d-{}-cut.png", preset.slug())))
+                .unwrap();
         }
+    }
+
+    /// Clicking the 3D engine picks the part under the pointer and opens its card; Escape closes
+    /// it. Needs a GPU (or lavapipe): `cargo test -p engine-app clicking_the_engine -- --ignored`.
+    #[test]
+    #[ignore]
+    fn clicking_the_engine_opens_a_card() {
+        use egui_kittest::kittest::Queryable;
+        use egui_kittest::wgpu as kw;
+        let preset = Preset::Inline4;
+        let sim = Simulation::with_quality(
+            preset.def(),
+            preset.vehicle(),
+            48_000.0,
+            1,
+            crate::quality::Quality::Low,
+        );
+        let snap = sim.snapshot();
+        let mut state = UiState::with_engine(preset.def());
+        state.view3d.available = true;
+        let rs = kw::create_render_state(
+            kw::default_wgpu_setup(),
+            eframe::egui_wgpu::RendererOptions::PREDICTABLE,
+        );
+        crate::view3d::render::install(&rs);
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1400.0, 860.0))
+            .renderer(kw::WgpuTestRenderer::from_render_state(rs))
+            .build_ui_state(
+                |ui, state: &mut UiState| {
+                    layout(ui, state, &snap, &Ok(48_000), false);
+                },
+                state,
+            );
+        h.run();
+        // the middle of the view, where the camera looks: the engine
+        let centre = egui::pos2(0.5 * (420.0 + 1180.0), 0.5 * (40.0 + 700.0));
+        h.hover_at(centre);
+        h.run();
+        h.event(egui::Event::PointerButton {
+            pos: centre,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.event(egui::Event::PointerButton {
+            pos: centre,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run();
+        assert!(
+            h.state().view3d.selected.is_some(),
+            "nothing picked at the view's centre"
+        );
+        let titles = [
+            "Cylinder",
+            "Connecting rod",
+            "Crankshaft",
+            "Plenum",
+            "Intake runner",
+            "Cylinder head",
+            "Block",
+        ];
+        assert!(
+            titles.iter().any(|t| h.query_by_label(t).is_some()),
+            "no card"
+        );
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert!(h.state().view3d.selected.is_none());
+    }
+
+    /// A handle dragged in the 3D view edits the engine: the clicked piston's bore handle pulled
+    /// outwards widens the bore, applied once on release. Needs a GPU (or lavapipe):
+    /// `cargo test -p engine-app dragging_a_handle -- --ignored`.
+    #[test]
+    #[ignore]
+    fn dragging_a_handle_edits_the_engine() {
+        use egui_kittest::wgpu as kw;
+        let preset = Preset::Inline4;
+        let snap = Simulation::with_quality(
+            preset.def(),
+            preset.vehicle(),
+            48_000.0,
+            1,
+            crate::quality::Quality::Low,
+        )
+        .snapshot();
+        let mut state = UiState::with_engine(preset.def());
+        state.view3d.available = true;
+        let bore = state.def.geometry.bore_m;
+        let rs = kw::create_render_state(
+            kw::default_wgpu_setup(),
+            eframe::egui_wgpu::RendererOptions::PREDICTABLE,
+        );
+        crate::view3d::render::install(&rs);
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1400.0, 860.0))
+            .renderer(kw::WgpuTestRenderer::from_render_state(rs))
+            .build_ui_state(
+                |ui, state: &mut UiState| {
+                    layout(ui, state, &snap, &Ok(48_000), false);
+                },
+                state,
+            );
+        h.run();
+        let piston = h
+            .state()
+            .view3d
+            .first(crate::view3d::scene::Part::Piston)
+            .unwrap();
+        h.state_mut().view3d.selected = Some((piston, egui::pos2(700.0, 300.0)));
+        h.run();
+        let (_, at) = *h
+            .state()
+            .view3d
+            .handle_spots
+            .iter()
+            .find(|(f, _)| *f == crate::view3d::handles::Field::Bore)
+            .expect("a bore handle on screen");
+        // press on the handle, pull it 40 px along whichever way its axis points on screen
+        // (both ways tried: one of them widens), release
+        let press = |h: &mut egui_kittest::Harness<'_, UiState>, at: egui::Pos2, pressed| {
+            h.event(egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        };
+        for dir in [
+            egui::vec2(40.0, 0.0),
+            egui::vec2(-40.0, 0.0),
+            egui::vec2(0.0, 40.0),
+            egui::vec2(0.0, -40.0),
+        ] {
+            h.hover_at(at);
+            h.run();
+            press(&mut h, at, true);
+            h.run();
+            for k in 1..=8 {
+                h.hover_at(at + dir * (k as f32 / 8.0));
+                h.run();
+            }
+            press(&mut h, at + dir, false);
+            h.run();
+            if h.state().def.geometry.bore_m > bore {
+                break;
+            }
+            h.state_mut().view3d.selected = Some((piston, egui::pos2(700.0, 300.0)));
+            h.run();
+        }
+        assert!(
+            h.state().def.geometry.bore_m > bore,
+            "{} vs {bore}",
+            h.state().def.geometry.bore_m
+        );
+        assert!(h.state().engine_dirty, "the engine is rebuilt with it");
+        assert!(h.state().def.geometry.bore_m <= 0.140);
+    }
+
+    #[test]
+    #[ignore = "needs a GPU adapter (run with --ignored)"]
+    fn typing_on_a_valves_card_edits_its_timing() {
+        use egui_kittest::kittest::Queryable;
+        use egui_kittest::wgpu as kw;
+        let preset = Preset::Inline4;
+        let snap = Simulation::with_quality(
+            preset.def(),
+            preset.vehicle(),
+            48_000.0,
+            1,
+            crate::quality::Quality::Low,
+        )
+        .snapshot();
+        let mut state = UiState::with_engine(preset.def());
+        state.view3d.available = true;
+        let duration = state.def.exhaust_valve.duration_deg;
+        let rs = kw::create_render_state(
+            kw::default_wgpu_setup(),
+            eframe::egui_wgpu::RendererOptions::PREDICTABLE,
+        );
+        crate::view3d::render::install(&rs);
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1400.0, 860.0))
+            .renderer(kw::WgpuTestRenderer::from_render_state(rs))
+            .build_ui_state(
+                |ui, state: &mut UiState| {
+                    layout(ui, state, &snap, &Ok(48_000), false);
+                },
+                state,
+            );
+        h.run();
+        let valve = h
+            .state()
+            .view3d
+            .first(crate::view3d::scene::Part::ExhaustValve)
+            .unwrap();
+        h.state_mut().view3d.selected = Some((valve, egui::pos2(700.0, 300.0)));
+        h.run();
+        // drag the card's duration 30 px to the right: a DragValue counts up as it is pulled
+        let at = h
+            .get_by_role_and_label(egui::accesskit::Role::SpinButton, "Duration")
+            .rect()
+            .center();
+        h.hover_at(at);
+        h.run();
+        h.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run();
+        for k in 1..=6 {
+            h.hover_at(at + egui::vec2(5.0 * k as f32, 0.0));
+            h.run();
+        }
+        h.event(egui::Event::PointerButton {
+            pos: at + egui::vec2(30.0, 0.0),
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run();
+        let now = h.state().def.exhaust_valve.duration_deg;
+        assert!(now > duration, "{now} vs {duration}");
+        assert!(h.state().engine_dirty);
+        assert!(h.state().view3d.selected.is_some(), "the card stays open");
     }
 }
