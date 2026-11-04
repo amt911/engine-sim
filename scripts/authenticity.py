@@ -10,8 +10,9 @@ of the engine orders. Blocks are short (8 cycles) so that real rpm wander stays 
 not counted as noise.
 
 Usage:
-  scripts/authenticity.py FILE.wav[@T0[:DUR]][~RPM] ...   T0 start (s), DUR length (default 2 s),
-                                                           RPM a hint (else found from the signal)
+  scripts/authenticity.py FILE.wav[@T0[:DUR]][~RPM[!]] ... T0 start (s), DUR length (default 2 s),
+                                                           RPM a hint to ±3 % (RPM! exact: a render;
+                                                           neither: from the f0_<N>Hz in the name)
   scripts/authenticity.py --self-test
 Reads 16/24-bit PCM and 32-bit float WAV (stereo is averaged to mono).
 """
@@ -76,14 +77,14 @@ def lowpass(x, fs, fc):
     return np.fft.irfft(X, len(x))
 
 
-def track(x, fs, hz, limit=None, chirp_span=0.0):
+def track(x, fs, hz, limit=None, chirp_span=0.0, width=0.02):
     """Frequency and ramp of the cycles in `x`, coarse to fine: the residual's basin around the
     right frequency is ~1/(f_max·duration) wide (sharp pulses misaligned by more than their
     width all look alike), so the search runs first on a 200 Hz low-pass, then 1.5 kHz, then the
     full band, each narrowing the span."""
     a = 0.0
-    for fc, span, cs in ((200, 0.02, chirp_span), (1500, 0.003, chirp_span / 5),
-                         (None, 0.0005, chirp_span / 25)):
+    for fc, span, cs in ((200, min(0.02, width), chirp_span), (1500, min(0.003, width), chirp_span / 5),
+                         (None, min(0.0005, width), chirp_span / 25)):
         y = x if fc is None else lowpass(x, fs, fc)
         mid0 = hz + a * (limit or len(x) / fs * hz) / hz / 2
         f0, a = refine(y, fs, mid0, span, limit=limit, chirp_span=cs, a0=a)
@@ -91,10 +92,10 @@ def track(x, fs, hz, limit=None, chirp_span=0.0):
     return hz, a
 
 
-def find_cycle_hz(x, fs, hint=None):
+def find_cycle_hz(x, fs, hint=None, width=0.15):
     """Coarse engine-cycle frequency (rpm/120): the lag whose normalised autocorrelation is
     highest, near the hint or over 4–75 Hz."""
-    lo, hi = (hint / 120 * 0.85, hint / 120 * 1.15) if hint else (4.0, 75.0)
+    lo, hi = (hint / 120 * (1 - width), hint / 120 * (1 + width)) if hint else (4.0, 75.0)
     best, best_r = None, -2.0
     for hz in np.linspace(lo, hi, 400):
         n = int(round(fs / hz))
@@ -161,9 +162,10 @@ def refine(x, fs, hz, span, steps=21, limit=None, chirp_span=0.0, a0=0.0):
     return mid(fm, a), a
 
 
-def measure(x, fs, rpm_hint=None):
-    hz0 = find_cycle_hz(x[::4], fs / 4, rpm_hint)  # coarse, on a decimated copy
-    hz0, _ = refine(lowpass(x, fs, 200), fs, hz0, span=0.02)
+def measure(x, fs, rpm_hint=None, width=0.15):
+    """`width`: how far (fraction) the true rpm may be from `rpm_hint`."""
+    hz0 = find_cycle_hz(x[::4], fs / 4, rpm_hint, width)  # coarse, on a decimated copy
+    hz0, _ = refine(lowpass(x, fs, 200), fs, hz0, span=min(0.02, width / 2))
     blk = int(BLOCK * fs / hz0)
     spare = int(1.5 * fs / hz0)
     xu, fsu = upsample(x), fs * UP
@@ -173,8 +175,8 @@ def measure(x, fs, rpm_hint=None):
         seg = xu[s0 * UP:(s0 + blk + spare) * UP]
         # follow the rpm block to block: a coarse look near the last block's, then frequency
         # and ramp together (two passes: each settles better once the other is close)
-        hz = find_cycle_hz(x[s0:s0 + blk + spare][::4], fs / 4, hz0 * 120)
-        hz, a = track(seg, fsu, hz, limit=BLOCK, chirp_span=0.05)
+        hz = find_cycle_hz(x[s0:s0 + blk + spare][::4], fs / 4, hz0 * 120, min(0.15, width))
+        hz, a = track(seg, fsu, hz, limit=BLOCK, chirp_span=min(0.05, width), width=width / 2)
         hz0 = hz + a * BLOCK / hz / 2  # the block's mid frequency, next block's start guess
         hzs.append(hz0)
         c, fs_c = cycles(seg, fsu, hz, BLOCK, a)
@@ -202,23 +204,30 @@ def measure(x, fs, rpm_hint=None):
                 corr=float(np.mean(corrs)), hnr=float(10 * np.log10(harm / (rest_lines + 1e-30))))
 
 
-def total_share(m):
-    return 10 * np.log10(sum(10 ** (v / 10) for v in m["shares"][:2]) / 2)
-
-
 def measure_guess(x, fs, f0):
     """For a recording labelled only with a pitch f0 whose relation to the cycle is unknown
-    (a tracker may lock on the crank or the cycle rate): try f0/2, f0 and 2·f0 as the cycle and
-    keep the fastest whose residual below 1 kHz is within 1 dB of the best. The true cycle
-    always repeats; twice it repeats as well but adds nothing."""
+    (a tracker may lock on the crank, the firing or the cycle rate): measure with f0/2, f0 and
+    2·f0 as the cycle. Above 250 Hz a real recording barely repeats under any of them, so the
+    choice rests on the 63–250 Hz band: the lowest residual there, and of those within 1 dB the
+    fastest (twice the true cycle repeats as well but adds nothing). Returns (chosen, all)."""
     tries = []
     for k in (2.0, 1.0, 0.5):
         cyc = f0 / k
         if not 3 <= cyc <= 80 or len(x) < 3 * BLOCK * fs / cyc:
             continue
         tries.append(measure(x, fs, cyc * 120))
-    best = min(total_share(m) for m in tries)
-    return max((m for m in tries if total_share(m) <= best + 1.0), key=lambda m: m["rpm"])
+    best = min(m["shares"][0] for m in tries)
+    pick = max((m for m in tries if m["shares"][0] <= best + 1.0), key=lambda m: m["rpm"])
+    return pick, tries
+
+
+def to_48k(x, fs):
+    """Band-limited to 48 kHz when recorded faster (the bands stop at 12 kHz)."""
+    if fs <= 48000:
+        return x, fs
+    n = int(len(x) * 48000 / fs)
+    X = np.fft.rfft(x)[: n // 2 + 1]
+    return np.fft.irfft(X, n) * n / len(x), 48000
 
 
 def self_test():
@@ -265,21 +274,29 @@ def main(args):
     print(f"{'file':52s} {'rpm':>10s} cyc  stochastic dB [{hdr}]   corr    HNR")
     for a in args:
         rpm = None
+        width = 0.03  # a given rpm is known to ±3 %; "~RPM!" pins it (a render) to ±0.1 %
         if "~" in a:
             a, r = a.rsplit("~", 1)
+            if r.endswith("!"):
+                r, width = r[:-1], 0.001
             rpm = float(r)
         path, t0, dur = a, 0.0, 2.0
         if "@" in a:
             path, spec = a.rsplit("@", 1)
             t0, dur = map(float, spec.split(":")) if ":" in spec else (float(spec), dur)
         fs, x = load(path)
-        seg = x[int(t0 * fs): int((t0 + dur) * fs)]
+        x, fs = to_48k(x[int(t0 * fs): int((t0 + dur) * fs)], fs)
         f0 = re.search(r"f0_(\d+)Hz", path)
-        m = measure(seg, fs, rpm) if rpm or not f0 else measure_guess(seg, fs, float(f0.group(1)))
+        if rpm or not f0:
+            ms = [(measure(x, fs, rpm, width), True)]
+        else:
+            pick, tries = measure_guess(x, fs, float(f0.group(1)))
+            ms = [(m, m is pick) for m in tries]
         name = path.split("/")[-1][-52:]
-        sh = " ".join(f"{v:6.1f}" for v in m["shares"])
-        print(f"{name:52s} {m['rpm']:6.0f}±{m['rpm_sd']:<3.0f} {m['cycles']:3d}  {sh}   "
-              f"{m['corr']:.3f} {m['hnr']:6.1f}")
+        for m, chosen in ms:
+            sh = " ".join(f"{v:6.1f}" for v in m["shares"])
+            print(f"{name:52s}{'*' if chosen else ' '}{m['rpm']:6.0f}±{m['rpm_sd']:<3.0f} "
+                  f"{m['cycles']:3d}  {sh}   {m['corr']:.3f} {m['hnr']:6.1f}", flush=True)
 
 
 if __name__ == "__main__":
