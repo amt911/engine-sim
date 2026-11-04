@@ -146,7 +146,21 @@ impl View3dState {
         if self.drawn.as_ref() != Some(def) {
             self.def_version += 1;
             let s = scene::build(def);
-            self.camera = Some(OrbitCamera::framing(s.focus.0, s.focus.1, start_yaw(def)));
+            // an edit keeps the user's view; another engine (layout, cylinders, or a size a
+            // quarter off) is framed afresh
+            let same_size = self.scene.as_ref().is_some_and(|old| {
+                let k = s.focus.1 / old.focus.1.max(1e-6);
+                (0.8..=1.25).contains(&k)
+            });
+            let same_engine = same_size
+                && self.drawn.as_ref().is_some_and(|d| {
+                    d.cylinders == def.cylinders
+                        && d.layout == def.layout
+                        && d.geometry.rotor.is_some() == def.geometry.rotor.is_some()
+                });
+            if !same_engine || self.camera.is_none() {
+                self.camera = Some(OrbitCamera::framing(s.focus.0, s.focus.1, start_yaw(def)));
+            }
             self.scene = Some(s);
             self.drawn = Some(def.clone());
         }
@@ -350,53 +364,74 @@ pub fn show(
 ) {
     st.sync(&snap.def);
     let (rect, resp) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
-    // the handles of the clicked part, on screen
-    let handles: Vec<(super::handles::Handle, egui::Pos2)> = match (st.selected, &st.scene) {
-        (Some((k, _)), Some(scene)) => st
-            .shared
-            .lock()
-            .ok()
-            .map(|sh| {
-                super::handles::handles(&snap.def, scene, &sh.instances, k)
-                    .into_iter()
-                    .filter_map(|h| to_screen(sh.view_proj, rect, h.at).map(|p| (h, p)))
-                    .collect()
-            })
-            .unwrap_or_default(),
-        _ => Vec::new(),
-    };
+    // the handles of the clicked part, on screen: where each stands, the screen direction its
+    // value grows along and how many pixels a metre of it takes there
+    let handles: Vec<(super::handles::Handle, egui::Pos2, egui::Vec2, f32)> =
+        match (st.selected, &st.scene) {
+            (Some((k, _)), Some(scene)) => st
+                .shared
+                .lock()
+                .ok()
+                .map(|sh| {
+                    super::handles::handles(&snap.def, scene, &sh.instances, k)
+                        .into_iter()
+                        .filter_map(|h| {
+                            let at = to_screen(sh.view_proj, rect, h.at)?;
+                            let tip = to_screen(sh.view_proj, rect, h.at + 0.01 * h.axis)?;
+                            let v = (tip - at) / 0.01;
+                            (v.length() > 1e-3).then(|| (h, at, v.normalized(), v.length()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
     st.handle_spots.clear();
     st.handle_spots
-        .extend(handles.iter().map(|(h, p)| (h.field, *p)));
-    if resp.drag_started()
-        && let Some(pos) = resp.interact_pointer_pos()
-        && let Some((h, at)) = handles
+        .extend(handles.iter().map(|(h, p, _, _)| (h.field, *p)));
+    // the arrow under the pointer (the nearest, if they cross)
+    let grab = |pos: egui::Pos2| {
+        handles
             .iter()
-            .find(|(_, p)| p.distance(pos) < 12.0)
+            .filter(|(_, at, dir, _)| {
+                super::arrows::hit(
+                    pos,
+                    *at,
+                    *dir,
+                    super::arrows::HALF_PX,
+                    super::arrows::GRAB_PX,
+                )
+            })
+            .min_by(|a, b| a.1.distance(pos).total_cmp(&b.1.distance(pos)))
             .copied()
+    };
+    let hovered = resp.hover_pos().and_then(grab).map(|(h, ..)| h.field);
+    // where the press was, not where the pointer is once the move counts as a drag
+    let pressed_at = ui.input(|i| i.pointer.press_origin());
+    if resp.drag_started()
+        && let Some((h, _, dir, px_per_m)) = pressed_at.and_then(grab)
     {
-        let vp = st.shared.lock().map(|sh| sh.view_proj).unwrap_or_default();
-        if let Some(tip) = to_screen(vp, rect, h.at + 0.01 * h.axis) {
-            let v = (tip - at) / 0.01;
-            let start = h.field.get(&snap.def);
-            st.drag = Some(Drag {
-                handle: h,
-                start,
-                value: start,
-                along_px: 0.0,
-                dir: v.normalized(),
-                px_per_m: v.length(),
-            });
-        }
+        let start = h.field.get(&snap.def);
+        st.drag = Some(Drag {
+            handle: h,
+            start,
+            value: start,
+            along_px: 0.0,
+            dir,
+            px_per_m,
+        });
     }
     if let Some(d) = st.drag.as_mut() {
         d.along_px += resp.drag_delta().dot(d.dir);
-        d.value = super::handles::dragged(&d.handle, d.start, d.along_px, d.px_per_m);
-        if resp.drag_stopped() {
-            // the engine takes it now, once: a valid engine is rebuilt, the editor follows
+        let value = super::handles::dragged(&d.handle, d.start, d.along_px, d.px_per_m);
+        // the engine follows as the arrow moves (the sim paces the rebuilds); the part stays
+        // selected, its card showing the new numbers
+        if value != d.value || resp.drag_stopped() {
+            d.value = value;
             *dirty |= super::handles::apply(edit, d.handle.field, d.value);
+        }
+        if resp.drag_stopped() {
             st.drag = None;
-            st.selected = None;
         }
     } else if let Some(c) = st.camera.as_mut() {
         let d = resp.drag_delta();
@@ -438,8 +473,10 @@ pub fn show(
     ui.painter()
         .add(egui_wgpu::Callback::new_paint_callback(rect, frame));
     // a click picks the part under the pointer (another click on nothing, or Escape, lets go)
+    // a click on an arrow is not a click on the scene: the part stays selected
     if resp.clicked()
         && let Some(pos) = resp.interact_pointer_pos()
+        && grab(pos).is_none()
     {
         let ndc = (
             2.0 * (pos.x - rect.left()) / rect.width().max(1.0) - 1.0,
@@ -459,9 +496,16 @@ pub fn show(
             Some((c, super::handles::card_fields(&snap.def, &sh.instances, k)))
         });
         if let Some((c, fields)) = card {
-            // right of the pointer and of every handle: the card sits above the scene, so a
-            // handle under it could not be grabbed
-            let right = handles.iter().map(|(_, p)| p.x).fold(pos.x, f32::max);
+            // right of the pointer and of every arrow with its label: the card sits above the
+            // scene, so an arrow under it could not be grabbed
+            let right = handles
+                .iter()
+                .map(|(h, at, dir, _)| {
+                    // the label's width at the lit size (14 px: about 8 px a character)
+                    let label = h.field.label().len() + h.field.show(h.field.get(&snap.def)).len();
+                    at.x + dir.x.abs() * super::arrows::HALF_PX + 24.0 + 8.0 * label as f32
+                })
+                .fold(pos.x, f32::max);
             egui::Area::new(egui::Id::unique("part_card"))
                 .fixed_pos(egui::pos2(right + 14.0, pos.y + 8.0))
                 .show(ui.ctx(), |ui| {
@@ -502,22 +546,23 @@ pub fn show(
                 });
         }
     }
-    // the handles over the scene, and the value in the hand
+    // the handles over the scene as arrows, named with their values; the one under the pointer
+    // or in the hand lit
     {
         let p = ui.painter_at(rect);
-        for (h, at) in &handles {
-            p.circle(
+        let held = st.drag.map(|d| d.handle.field);
+        for (h, at, dir, _) in &handles {
+            let lit = held == Some(h.field) || (held.is_none() && hovered == Some(h.field));
+            let value = match st.drag {
+                Some(d) if d.handle.field == h.field => d.value,
+                _ => h.field.get(&snap.def),
+            };
+            super::arrows::paint(
+                &p,
                 *at,
-                7.0,
-                egui::Color32::from_rgb(255, 214, 64),
-                egui::Stroke::new(1.5, egui::Color32::BLACK),
-            );
-            p.text(
-                *at + egui::vec2(10.0, -10.0),
-                egui::Align2::LEFT_BOTTOM,
-                h.field.label(),
-                egui::FontId::proportional(11.0),
-                egui::Color32::from_rgb(255, 214, 64),
+                *dir,
+                lit,
+                &format!("{} {}", h.field.label(), h.field.show(value)),
             );
         }
         if let Some(d) = st.drag {
@@ -525,7 +570,7 @@ pub fn show(
                 rect.left_top() + egui::vec2(12.0, 12.0),
                 egui::Align2::LEFT_TOP,
                 format!(
-                    "{}: {} (release to apply)",
+                    "{}: {}",
                     d.handle.field.label(),
                     d.handle.field.show(d.value)
                 ),
@@ -577,6 +622,40 @@ mod tests {
         d.cylinders = 6;
         st.sync(&d);
         assert_eq!(st.def_version, 2);
+    }
+
+    #[test]
+    fn an_edit_keeps_the_camera_and_another_engine_reframes_it() {
+        let mut st = View3dState::default();
+        let mut d = EngineDef::inline4();
+        st.sync(&d);
+        if let Some(c) = st.camera.as_mut() {
+            c.distance = 0.123;
+        }
+        // a bigger bore: the same engine, edited, seen from where the user put the camera
+        d.geometry.bore_m *= 1.05;
+        st.sync(&d);
+        assert_eq!(st.def_version, 2, "rebuilt");
+        assert_eq!(st.camera.map(|c| c.distance), Some(0.123), "camera kept");
+        // another layout (a V8): framed afresh
+        st.sync(&EngineDef::crossplane_v8());
+        assert_ne!(st.camera.map(|c| c.distance), Some(0.123), "reframed");
+        // another engine of the same layout but another size (a much bigger inline four): framed
+        // afresh too
+        let mut d = EngineDef::inline4();
+        st.sync(&d);
+        if let Some(c) = st.camera.as_mut() {
+            c.distance = 0.123;
+        }
+        d.geometry.bore_m *= 1.6;
+        d.geometry.stroke_m *= 1.6;
+        d.geometry.rod_m *= 1.6;
+        st.sync(&d);
+        assert_ne!(
+            st.camera.map(|c| c.distance),
+            Some(0.123),
+            "a bigger engine reframed"
+        );
     }
 
     #[test]
