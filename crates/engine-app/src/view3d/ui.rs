@@ -456,8 +456,11 @@ pub fn show(
             Some((c, super::handles::editable(sh.instances[k].part)))
         });
         if let Some((c, fields)) = card {
+            // right of the pointer and of every handle: the card sits above the scene, so a
+            // handle under it could not be grabbed
+            let right = handles.iter().map(|(_, p)| p.x).fold(pos.x, f32::max);
             egui::Area::new(egui::Id::unique("part_card"))
-                .fixed_pos(pos + egui::vec2(14.0, 8.0))
+                .fixed_pos(egui::pos2(right + 14.0, pos.y + 8.0))
                 .show(ui.ctx(), |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
                         ui.strong(&c.title);
