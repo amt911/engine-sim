@@ -2293,6 +2293,9 @@ pub struct Engine {
     bov_jet: JetNoise,
     compressor_tone: crate::turbo::CompressorTone,
     gearbox_noise: crate::gear_noise::GearboxNoise,
+    /// The car the simulation drives, whose gearbox the noise follows; the engine's own car
+    /// (`def.vehicle`) keeps placing the engine for the listener.
+    driven_vehicle: crate::drivetrain::VehicleDef,
     drive_seen: Option<crate::gear_noise::DriveState>,
     /// The exhaust's mean-flow losses after the collector (from its segments).
     exit_losses: Option<crate::exhaust::ExitLosses>,
@@ -2478,6 +2481,7 @@ impl Engine {
             })
             .collect();
         let gearbox_noise = crate::gear_noise::GearboxNoise::new(&def.vehicle);
+        let driven_vehicle = def.vehicle.clone();
         let mut e = Self {
             plenum: GasVolume::at(ATM_PA, AMBIENT_K, def.plenum_volume_m3),
             def,
@@ -2551,6 +2555,7 @@ impl Engine {
             bov_jet: JetNoise::new(seed.wrapping_add(0xB0F)),
             compressor_tone: crate::turbo::CompressorTone::default(),
             gearbox_noise,
+            driven_vehicle,
             drive_seen: None,
             exit_losses: None,
             tail_mach: Vec::new(),
@@ -3854,7 +3859,7 @@ impl Engine {
                 // the gearbox's whine and rattle through its housing, heard from the block
                 let gears = match &c.drive {
                     Some(d) if snd.gear_noise > 0.0 => {
-                        let p = self.gearbox_noise.step(&self.def.vehicle, d, dt);
+                        let p = self.gearbox_noise.step(&self.driven_vehicle, d, dt);
                         snd.gear_noise * l.spread_from_1m_at(n_banks, p)
                     }
                     _ => 0.0,
@@ -4159,8 +4164,8 @@ impl Engine {
         self.drive_seen
     }
     /// Swap the vehicle whose gearbox this engine's noise follows.
-    pub fn set_vehicle(&mut self, v: crate::drivetrain::VehicleDef) {
-        self.def.vehicle = v;
+    pub fn set_driven_vehicle(&mut self, v: crate::drivetrain::VehicleDef) {
+        self.driven_vehicle = v;
     }
     /// Crank angle in degrees within the 720° cycle.
     pub fn crank_deg(&self) -> f64 {
@@ -5249,6 +5254,20 @@ mod tests {
         let (on, off) = (sound(1.0), sound(0.0));
         let diff = on.iter().zip(&off).map(|(a, b)| a - b).collect();
         (diff, off)
+    }
+
+    #[test]
+    fn the_driven_cars_gearbox_leaves_the_engines_own_car_alone() {
+        // the engine's own car places it for the listener (engine_ahead_m, engine bay): the
+        // gearbox the simulation drives must not move it. A default car (0.9 m, no bay) handed
+        // to the LFA once changed its sound by 0.2 dB (the orders ratchet in engine-app).
+        let def = EngineDef::lfa_v10();
+        let own = def.vehicle.clone();
+        let mut e = Engine::new(def, 3000.0, 1);
+        let driven = crate::drivetrain::VehicleDef::default();
+        assert_ne!(driven, own, "the fixture needs a different car");
+        e.set_driven_vehicle(driven);
+        assert_eq!(e.def().vehicle, own);
     }
 
     #[test]

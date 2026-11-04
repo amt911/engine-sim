@@ -114,7 +114,7 @@ impl Simulation {
             seed,
             quality.fidelity(),
         );
-        engine.set_vehicle(vehicle.clone());
+        engine.set_driven_vehicle(vehicle.clone());
         Self {
             vehicle: Vehicle::new(vehicle),
             drive: DriveInput::default(),
@@ -152,7 +152,7 @@ impl Simulation {
     }
     /// Swap the car (it stops, in neutral, so the new gearing cannot jump).
     pub fn replace_vehicle(&mut self, def: VehicleDef) {
-        self.engine.set_vehicle(def.clone());
+        self.engine.set_driven_vehicle(def.clone());
         self.vehicle = Vehicle::new(def);
     }
     pub fn engine(&self) -> &Engine {
