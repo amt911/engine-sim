@@ -347,3 +347,7 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
 - **3D view with intake, exhaust and turbo (2026-11-03, `bench_3d_frame`, LFA V10, RTX 3080 Ti):**
   CPU 0.014 ms mean / 0.02 ms p99; GPU 0.10 ms mean, p99 0.1–0.2 ms (one 1.9 ms p99 at Low under
   another session's load). Pipes are still parts (built once per definition).
+- **3D view with the realistic parts (2026-11-04, `bench_3d_frame`, LFA V10, RTX 3080 Ti):** CPU
+  0.017 ms mean / 0.03 ms p99 at every level; GPU mean Low 0.11 ms (primitives), Medium 0.16 ms,
+  High 0.19 ms (the realistic piston, rod, throw, valves: about twice the primitives' 0.10 ms).
+  The 5850U iGPU is still unmeasured; Low keeps the primitives for it.
