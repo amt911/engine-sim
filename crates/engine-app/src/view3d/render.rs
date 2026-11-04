@@ -582,7 +582,11 @@ mod tests {
         let primitive = unit_mesh(MeshKind::Rotor, rotary(false)).vertices.len();
         assert!(unit_mesh(MeshKind::Rotor, rotary(true)).vertices.len() > 10 * primitive);
         assert_eq!(unit_mesh(MeshKind::ApexSeal, rotary(true)).indices.len(), 3);
-        assert_eq!(unit_mesh(MeshKind::ApexSeal, key(true)), mesh::cuboid(), "not a rotary");
+        assert_eq!(
+            unit_mesh(MeshKind::ApexSeal, key(true)),
+            mesh::cuboid(),
+            "not a rotary"
+        );
         for kind in [
             MeshKind::PistonRing,
             MeshKind::WristPin,
