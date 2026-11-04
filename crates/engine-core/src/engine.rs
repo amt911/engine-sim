@@ -2235,6 +2235,8 @@ pub struct Engine {
     jet_flows: Vec<f64>,
     /// Non-linear finite-volume exhaust, when `exhaust.model` is `fv`.
     fv: Option<ExhaustFv>,
+    /// The silencers' designed equalizers, kept across rebuilds ([`Engine::adopt_exhaust_from`]).
+    eq_memo: crate::silencer2d::EqMemo,
     /// 1D intake runners, when `intake.model` is `fv`.
     intake_net: Option<IntakeFv>,
     /// Tail pipes (one per collector group): each is its own jet for the flow noise.
@@ -2519,6 +2521,7 @@ impl Engine {
             jet_net: None,
             jet_flows: Vec::new(),
             fv: None,
+            eq_memo: crate::silencer2d::EqMemo::default(),
             intake_net: None,
             tail_pipes,
             listener: None,
@@ -2855,11 +2858,12 @@ impl Engine {
             ExhaustModel::Waveguide => {
                 self.fv = None;
                 if self.remote.0.is_none() && self.net.as_ref().is_none_or(|n| n.dt != dt) {
-                    self.net = Some(ExhaustNet::with_lining(
+                    self.net = Some(ExhaustNet::with_memo(
                         &self.def.exhaust,
                         self.cyl.len(),
                         dt,
                         self.fidelity.lining_segment_m,
+                        &mut self.eq_memo,
                     ));
                 }
             }
@@ -2867,18 +2871,24 @@ impl Engine {
                 self.net = None;
                 if self.fv.as_ref().is_none_or(|n| n.dt != dt) {
                     self.fv = Some(
-                        ExhaustFv::new(&self.def.exhaust, self.cyl.len(), dt)
-                            .with_scheme(self.fidelity.pipe_scheme),
+                        ExhaustFv::with_memo(
+                            &self.def.exhaust,
+                            self.cyl.len(),
+                            dt,
+                            &mut self.eq_memo,
+                        )
+                        .with_scheme(self.fidelity.pipe_scheme),
                     );
                 }
                 if self.def.sound.valve_jet <= 0.0 {
                     self.jet_net = None;
                 } else if self.jet_net.as_ref().is_none_or(|n| n.dt != dt) {
-                    self.jet_net = Some(ExhaustNet::with_lining(
+                    self.jet_net = Some(ExhaustNet::with_memo(
                         &self.def.exhaust,
                         self.cyl.len(),
                         dt,
                         self.fidelity.lining_segment_m,
+                        &mut self.eq_memo,
                     ));
                     self.jet_flows = vec![0.0; self.cyl.len()];
                 }
@@ -4109,6 +4119,8 @@ impl Engine {
     /// designs its silencers' and catalysts' filters, which takes up to a second on a big
     /// exhaust; an edit elsewhere (a bore, a cam) should not pay it. True when it took it.
     pub fn adopt_exhaust_from(&mut self, old: &mut Engine) -> bool {
+        // the silencers' designs come along whatever changed: the ones left alone are reused
+        self.eq_memo = std::mem::take(&mut old.eq_memo);
         let same = old.def.exhaust == self.def.exhaust
             && old.cyl.len() == self.cyl.len()
             && old.fidelity == self.fidelity
@@ -4234,6 +4246,31 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_edit_to_the_exhaust_designs_only_the_silencers_it_changed() {
+        use crate::exhaust::Segment;
+        let mut def = EngineDef::inline4();
+        def.exhaust.after_collector = vec![Segment::Muffler {
+            length_m: 0.3,
+            diameter_m: 0.15,
+            tube_diameter_m: 0.05,
+            packing_resistivity: 16_000.0,
+            packing_porosity: 0.95,
+        }];
+        def.exhaust.merge = None;
+        let mut old = Engine::new(def.clone(), 1500.0, 1);
+        old.step(1.0 / 48_000.0, &Controls::default());
+        assert_eq!(old.eq_memo.len(), 1, "its silencer designed once");
+        // a longer primary: another exhaust, built anew, but its silencer is the same one
+        let mut piped = def.clone();
+        piped.exhaust.primary_length_m *= 1.2;
+        let mut next = Engine::new(piped, 1500.0, 2);
+        assert!(!next.adopt_exhaust_from(&mut old));
+        assert_eq!(next.eq_memo.len(), 1, "the designs come along");
+        next.step(1.0 / 48_000.0, &Controls::default());
+        assert_eq!(next.eq_memo.len(), 1, "and are used, not designed again");
+    }
 
     #[test]
     fn an_edit_that_leaves_the_exhaust_keeps_its_network() {

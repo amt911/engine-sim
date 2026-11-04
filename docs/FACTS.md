@@ -353,3 +353,8 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   0.017 ms mean / 0.03 ms p99 at every level; GPU mean Low 0.11 ms (primitives), Medium 0.16 ms,
   High 0.19 ms (the realistic piston, rod, throw, valves: about twice the primitives' 0.10 ms).
   The 5850U iGPU is still unmeasured; Low keeps the primitives for it.
+- 2026-11-04: an `ExhaustNet`'s cost was its pipes' wall filters (fitted once per stage: a 1.84 m
+  pipe 70 ms) and the 2D silencer's equalizer (the LFA's packed silencer 0.7 s). Wall filters are
+  now fitted once per pipe; silencer equalizers are memoized (`silencer2d::EqMemo`, carried across
+  rebuilds). First block after an exhaust edit, release, loaded machine: K20A 178 → 26 ms,
+  LFA ~1100 → 100 ms; whole K20A net 194 → 23 ms.
