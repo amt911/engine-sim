@@ -34,7 +34,8 @@ Last updated: 2026-11-04.
 3. **Editing fluid and visible:**
    - the dots are confusing; edits should feel continuous and be easy to see;
    - the engine should answer while dragging, not only on release, if the rebuild allows it.
-4. **Typical parts and typical sizes:** a catalogue of real components with their real
+4. **Typical parts and typical sizes** (spec `2026-11-04-parts-catalogue-design.md`; the single raised
+   to 4 cylinders sounded "like farts" because it kept its open race exhaust, measured): a catalogue of real components with their real
    dimensions, so an engine built from them sounds good. Examples:
    - road and race exhaust manifolds;
    - silencers;
