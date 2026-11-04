@@ -509,14 +509,15 @@ impl Pipe {
         let rho_c = gamma * crate::units::ATM_PA / pipe.sound_speed;
         let k = (gamma + 1.0) / (2.0 * rho_c * pipe.sound_speed);
         let seg = delay / n as f64;
-        let wall = || {
-            WallLoss::new(
-                pipe.length_m / n as f64,
-                pipe.diameter_m,
-                pipe.sound_speed,
-                pipe.dt,
-            )
-        };
+        // every stage's wall is the same filter: fitted once (a fit per stage made a long pipe
+        // take tens of milliseconds to build), each stage starting from rest with its own copy
+        let fitted = WallLoss::new(
+            pipe.length_m / n as f64,
+            pipe.diameter_m,
+            pipe.sound_speed,
+            pipe.dt,
+        );
+        let wall = || fitted.clone();
         let stages = || -> Vec<Stage> {
             (1..n)
                 .map(|_| Stage {
@@ -536,7 +537,8 @@ impl Pipe {
     /// [`WALL_REF_HZ`], where the flat loss stands for it ([`kirchhoff_alpha`]). It rounds a
     /// steepening pulse off as the walls round real ones (Msallam et al. 2000, §2.3.3).
     pub fn viscothermal(mut self) -> Self {
-        let make = || WallLoss::new(self.length_m, self.diameter_m, self.sound_speed, self.dt);
+        let fitted = WallLoss::new(self.length_m, self.diameter_m, self.sound_speed, self.dt);
+        let make = || fitted.clone();
         self.walls = make().zip(make()).map(|(a, b)| Box::new([a, b]));
         self
     }

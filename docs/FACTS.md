@@ -349,3 +349,8 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   another session's load). Pipes are still parts (built once per definition).
 
 - 2026-11-04: building an `ExhaustNet` designs every silencer's and catalyst's filter: 1.3 s on the LFA, 0.2 s on the K20A (release, loaded machine); the FV net 0.08–0.15 s. An engine edit used to rebuild it on the first step, stalling the sound; `Engine::adopt_exhaust_from` now keeps it when the exhaust is unchanged (LFA first block after a bore edit 1137 → 6 ms). Slider drags sent one rebuild plus one quality-benchmark thread per frame; `runner::EditGate` paces them (≤ 1 rebuild / 250 ms, benchmark after 1 s still).
+- 2026-11-04: an `ExhaustNet`'s cost was its pipes' wall filters (fitted once per stage: a 1.84 m
+  pipe 70 ms) and the 2D silencer's equalizer (the LFA's packed silencer 0.7 s). Wall filters are
+  now fitted once per pipe; silencer equalizers are memoized (`silencer2d::EqMemo`, carried across
+  rebuilds). First block after an exhaust edit, release, loaded machine: K20A 178 → 26 ms,
+  LFA ~1100 → 100 ms; whole K20A net 194 → 23 ms.

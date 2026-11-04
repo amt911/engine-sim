@@ -298,6 +298,21 @@ impl ExhaustFv {
     }
 
     pub fn new(def: &ExhaustDef, cylinders: usize, dt: f64) -> Self {
+        Self::with_memo(
+            def,
+            cylinders,
+            dt,
+            &mut crate::silencer2d::EqMemo::default(),
+        )
+    }
+
+    /// [`ExhaustFv::new`], its silencers' equalizers taken from `memo` when designed before.
+    pub fn with_memo(
+        def: &ExhaustDef,
+        cylinders: usize,
+        dt: f64,
+        memo: &mut crate::silencer2d::EqMemo,
+    ) -> Self {
         let init = Prim {
             rho: ATM_PA / (R_AIR * INIT_T_K),
             u: 0.0,
@@ -324,6 +339,7 @@ impl ExhaustFv {
                         def,
                         dt,
                         crate::exhaust::LINING_SEGMENT_M,
+                        memo,
                     ),
                     end: OpenEnd::new(def.outlet_diameter(), dt),
                     sent: [0.0; 2],
@@ -933,7 +949,12 @@ mod tests {
             p: ATM_PA,
         };
         let mut pipe = super::pipe(d.primary_length_m + d.collector_length_m, 0.05, init);
-        let mut duct = crate::exhaust::after_collector(&d, DT, crate::exhaust::LINING_SEGMENT_M);
+        let mut duct = crate::exhaust::after_collector(
+            &d,
+            DT,
+            crate::exhaust::LINING_SEGMENT_M,
+            &mut crate::silencer2d::EqMemo::default(),
+        );
         let mut end = OpenEnd::new(d.outlet_diameter(), DT);
         let gas = (
             crate::gas::GAMMA * ATM_PA / C_TAIL,
