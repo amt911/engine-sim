@@ -399,8 +399,23 @@ pub fn unit_mesh(kind: MeshKind, key: MeshKey) -> Mesh {
     match kind {
         MeshKind::Cylinder => mesh::cylinder(s),
         MeshKind::Cuboid => mesh::cuboid(),
-        MeshKind::Housing => mesh::housing(key.e_over_r, 4 * s),
-        MeshKind::HousingRing => mesh::housing_ring(key.e_over_r, 4 * s),
+        // the side plate and the rotor housing (with its plugs), when realistic
+        MeshKind::Housing => match super::parts::side_plate(key.e_over_r) {
+            Some(m) if key.realistic => m,
+            _ => mesh::housing(key.e_over_r, 4 * s),
+        },
+        MeshKind::HousingRing => match super::parts::housing(key.e_over_r) {
+            Some(m) if key.realistic => m,
+            _ => mesh::housing_ring(key.e_over_r, 4 * s),
+        },
+        MeshKind::Plug => match super::parts::housing(key.e_over_r) {
+            Some(_) if key.realistic => Mesh::nothing(),
+            _ => mesh::cylinder(s),
+        },
+        MeshKind::Eccentric => match super::parts::eccentric(key.e_over_r) {
+            Some(m) if key.realistic => m,
+            _ => mesh::cylinder(s),
+        },
         MeshKind::Rotor => match super::parts::rotor(key.e_over_r) {
             Some(m) if key.realistic => m,
             _ => mesh::rotor(s.div_ceil(2)),
@@ -582,6 +597,23 @@ mod tests {
         let primitive = unit_mesh(MeshKind::Rotor, rotary(false)).vertices.len();
         assert!(unit_mesh(MeshKind::Rotor, rotary(true)).vertices.len() > 10 * primitive);
         assert_eq!(unit_mesh(MeshKind::ApexSeal, rotary(true)).indices.len(), 3);
+        assert_eq!(unit_mesh(MeshKind::Plug, rotary(true)).indices.len(), 3);
+        for kind in [
+            MeshKind::Housing,
+            MeshKind::HousingRing,
+            MeshKind::Eccentric,
+        ] {
+            let primitive = unit_mesh(kind, rotary(false)).vertices.len();
+            assert!(
+                unit_mesh(kind, rotary(true)).vertices.len() > 5 * primitive,
+                "{kind:?}"
+            );
+        }
+        assert_eq!(
+            unit_mesh(MeshKind::Plug, key(true)),
+            mesh::cylinder(12),
+            "not a rotary"
+        );
         assert_eq!(
             unit_mesh(MeshKind::ApexSeal, key(true)),
             mesh::cuboid(),

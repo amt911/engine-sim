@@ -34,6 +34,14 @@ const ROTOR_GLB: &[u8] = include_bytes!("../../../../assets/3d-parts/out/wankel_
 const REF_E: f32 = 0.015;
 const REF_R: f32 = 0.105;
 const REF_W: f32 = 0.080;
+/// The rotor housing with its chromed trochoid and its two plugs, the side plate with the
+/// stationary gear, and the eccentric shaft with its lobe: the same assembly frame as the rotor
+/// (the side plate on −y, the lobe's centre at +x = e).
+const HOUSING_GLB: &[u8] = include_bytes!("../../../../assets/3d-parts/out/wankel_housing.glb");
+const SIDE_PLATE_GLB: &[u8] =
+    include_bytes!("../../../../assets/3d-parts/out/wankel_side_plate.glb");
+const ECCENTRIC_GLB: &[u8] =
+    include_bytes!("../../../../assets/3d-parts/out/wankel_eccentric_shaft.glb");
 /// The reference engine's bore, m (README: bore 86, stroke 86, rod 143 mm).
 const REF_BORE: f32 = 0.086;
 
@@ -330,6 +338,83 @@ pub fn rotor(e_over_r: f32) -> Option<Mesh> {
         .clone()
 }
 
+/// The asset's e/R, which a rotary's other parts must share (another one is another trochoid).
+fn rotary_matches(e_over_r: f32) -> bool {
+    let reference = REF_E / REF_R;
+    (e_over_r - reference).abs() <= 0.01 * reference
+}
+
+/// The realistic rotor housing (and its plugs) in the procedural housing ring's unit frame: the
+/// generating radius across, the rotor's width deep from its front face (`scene::build`).
+pub fn housing(e_over_r: f32) -> Option<Mesh> {
+    static MESH: std::sync::OnceLock<Option<Mesh>> = std::sync::OnceLock::new();
+    rotary_part(&MESH, e_over_r, "wankel_housing.glb", HOUSING_GLB, || {
+        (
+            Vec3::new(0.0, 0.5 * REF_W, 0.0),
+            Vec3::new(REF_R, REF_W, REF_R),
+        )
+    })
+}
+
+/// A rotary part read once into its unit frame (offset and scale, metres, from `frame`); none
+/// for another e/R or an unreadable asset.
+fn rotary_part(
+    cell: &'static std::sync::OnceLock<Option<Mesh>>,
+    e_over_r: f32,
+    name: &str,
+    bytes: &[u8],
+    frame: impl FnOnce() -> (Vec3, Vec3),
+) -> Option<Mesh> {
+    if !rotary_matches(e_over_r) {
+        return None;
+    }
+    cell.get_or_init(|| {
+        let part = load(bytes)
+            .inspect_err(|e| eprintln!("3D view: {name} unreadable ({e}), drawing the primitive"))
+            .ok()?;
+        let (offset, scale) = frame();
+        Some(to_unit(&part, 1.0, offset, scale))
+    })
+    .clone()
+}
+
+/// The realistic side plate (and stationary gear) in the procedural side plate's unit frame:
+/// 0.12 width deep, from 0.62 width behind the rotor's centre plane.
+pub fn side_plate(e_over_r: f32) -> Option<Mesh> {
+    static MESH: std::sync::OnceLock<Option<Mesh>> = std::sync::OnceLock::new();
+    rotary_part(
+        &MESH,
+        e_over_r,
+        "wankel_side_plate.glb",
+        SIDE_PLATE_GLB,
+        || {
+            (
+                Vec3::new(0.0, 0.62 * REF_W, 0.0),
+                Vec3::new(REF_R, 0.12 * REF_W, REF_R),
+            )
+        },
+    )
+}
+
+/// The realistic eccentric shaft in the procedural eccentric's unit frame, turned with the lobe:
+/// that cylinder stands on the lobe's centre, e from the shaft, 0.35 R in radius and 1.05 width
+/// long from 0.525 width behind the rotor's centre plane.
+pub fn eccentric(e_over_r: f32) -> Option<Mesh> {
+    static MESH: std::sync::OnceLock<Option<Mesh>> = std::sync::OnceLock::new();
+    rotary_part(
+        &MESH,
+        e_over_r,
+        "wankel_eccentric_shaft.glb",
+        ECCENTRIC_GLB,
+        || {
+            (
+                Vec3::new(-REF_E, 0.525 * REF_W, 0.0),
+                Vec3::new(0.35 * REF_R, 1.05 * REF_W, 0.35 * REF_R),
+            )
+        },
+    )
+}
+
 /// Into a unit frame: `p ↦ (p·k + offset) / scale`, normals `n ↦ n·scale` (normalised).
 fn to_unit(part: &GlbPart, k: f32, offset: Vec3, scale: Vec3) -> Mesh {
     Mesh {
@@ -557,6 +642,48 @@ mod tests {
         assert!(lo > -0.1 && hi < 1.1, "{lo} {hi}");
         // another e/R: none (the primitive stays)
         assert!(rotor(0.16).is_none());
+    }
+
+    fn span(m: &Mesh, axis: usize) -> (f32, f32) {
+        m.vertices.iter().fold((f32::MAX, f32::MIN), |(l, h), v| {
+            (l.min(v.pos[axis]), h.max(v.pos[axis]))
+        })
+    }
+
+    #[test]
+    fn the_wankel_housing_side_plate_and_shaft_sit_in_their_frames() {
+        let eor = REF_E / REF_R;
+        // housing: ±151.5 mm across over R = 105; its 80 mm depth (centred) fills 0..1
+        let h = housing(eor).expect("the realistic housing");
+        let (lo, hi) = span(&h, 0);
+        assert!((hi - 151.5 / 105.0).abs() < 0.01 && (lo + 151.5 / 105.0).abs() < 0.01);
+        let (lo, hi) = span(&h, 1);
+        assert!(lo.abs() < 0.01 && (hi - 1.0).abs() < 0.01, "{lo} {hi}");
+        // side plate: −52…−26.5 mm deep in the assembly; its frame starts 0.62 width behind the
+        // centre plane, 0.12 width deep: (−52/80 + 0.62)/0.12 = −0.25, (−26.5/80 + 0.62)/0.12 = 2.406
+        let p = side_plate(eor).expect("the realistic side plate");
+        let (lo, hi) = span(&p, 1);
+        assert!(
+            (lo + 0.25).abs() < 0.01 && (hi - 2.406).abs() < 0.01,
+            "{lo} {hi}"
+        );
+        // eccentric: the lobe's centre (x = e = 15 mm) at the frame's origin; across in 0.35 R:
+        // −21.7…51.8 mm → (−21.7 − 15)/36.75 = −0.999, (51.8 − 15)/36.75 = 1.001
+        let e = eccentric(eor).expect("the realistic eccentric shaft");
+        let (lo, hi) = span(&e, 0);
+        assert!(
+            (lo + 0.999).abs() < 0.01 && (hi - 1.001).abs() < 0.01,
+            "{lo} {hi}"
+        );
+        // its length: −60…48 mm deep, from 0.525·80 = 42 mm behind the centre plane, over
+        // 1.05·80 = 84 mm: (−60 + 42)/84 = −0.214, (48 + 42)/84 = 1.071
+        let (lo, hi) = span(&e, 1);
+        assert!(
+            (lo + 0.214).abs() < 0.01 && (hi - 1.071).abs() < 0.01,
+            "{lo} {hi}"
+        );
+        // another e/R: none of them
+        assert!(housing(0.16).is_none() && side_plate(0.16).is_none() && eccentric(0.16).is_none());
     }
 
     #[test]

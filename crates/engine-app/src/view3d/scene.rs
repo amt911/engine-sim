@@ -81,6 +81,8 @@ impl Part {
             Part::Rod => MeshKind::Rod,
             Part::Throw => MeshKind::Throw,
             Part::ApexSeal => MeshKind::ApexSeal,
+            Part::Eccentric => MeshKind::Eccentric,
+            Part::Plug => MeshKind::Plug,
             Part::IntakeValve | Part::ExhaustValve => MeshKind::Valve,
             Part::IntakeStem | Part::ExhaustStem => MeshKind::ValveStem,
             Part::RodEye => MeshKind::RodEye,
@@ -108,10 +110,12 @@ pub enum MeshKind {
     Valve,
     ValveStem,
     ApexSeal,
+    Eccentric,
+    Plug,
 }
 
 impl MeshKind {
-    pub const ALL: [MeshKind; 17] = [
+    pub const ALL: [MeshKind; 19] = [
         MeshKind::Cylinder,
         MeshKind::Cuboid,
         MeshKind::Housing,
@@ -129,6 +133,8 @@ impl MeshKind {
         MeshKind::Valve,
         MeshKind::ValveStem,
         MeshKind::ApexSeal,
+        MeshKind::Eccentric,
+        MeshKind::Plug,
     ];
 }
 
@@ -434,10 +440,17 @@ pub fn moving(def: &EngineDef, cylinders: &[CylinderView], out: &mut Vec<Instanc
                     * Mat4::from_scale(Vec3::new(0.97 * r, 0.9 * w, 0.97 * r)),
                 color: PISTON,
             });
-            // the eccentric the rotor turns on, and a seal at each apex
+            // the eccentric the rotor turns on (its frame turned with the lobe, which leads the
+            // rotor's centre: the realistic shaft takes it; a cylinder looks the same), and a
+            // seal at each apex
+            let lobe = c.1.atan2(c.0) as f32;
             out.push(Instance {
                 part: Part::Eccentric,
-                model: along_x(centre, 0.35 * r, 1.05 * w),
+                model: Mat4::from_translation(Vec3::new(x - 0.525 * w, 0.0, 0.0))
+                    * Mat4::from_mat3(rotary_frame())
+                    * Mat4::from_rotation_y(-lobe)
+                    * Mat4::from_translation(Vec3::new(e as f32, 0.0, 0.0))
+                    * Mat4::from_scale(Vec3::new(0.35 * r, 1.05 * w, 0.35 * r)),
                 color: CRANK,
             });
             for a in apex {
