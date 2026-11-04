@@ -142,16 +142,15 @@ fn run(
     let mut last_snap = Instant::now();
     let mut governor = Governor::new();
     let mut bench = (choice == QualityChoice::Auto).then(|| benchmark(sim.def().clone(), rate));
+    // edits are paced (a dragged slider sends one per frame); a benchmark begun before the last
+    // edit measured another engine: its answer is dropped
+    let mut edits = EditGate::new();
+    let mut bench_stale = false;
     loop {
         for cmd in rx.try_iter() {
             match cmd {
                 Command::Controls(c) => sim.controls = c,
-                Command::Engine(d) => {
-                    sim.replace_engine(*d);
-                    if choice == QualityChoice::Auto {
-                        bench = Some(benchmark(sim.def().clone(), rate));
-                    }
-                }
+                Command::Engine(d) => edits.offer(*d),
                 Command::Drive(d) => sim.drive = d,
                 Command::Vehicle(v) => sim.replace_vehicle(*v),
                 Command::Quality(q) => {
@@ -162,16 +161,29 @@ fn run(
                             bench = None;
                             sim.set_quality(level);
                         }
-                        QualityChoice::Auto => bench = Some(benchmark(sim.def().clone(), rate)),
+                        QualityChoice::Auto if bench.is_none() => {
+                            bench = Some(benchmark(sim.def().clone(), rate));
+                        }
+                        QualityChoice::Auto => {}
                     }
                 }
                 Command::Quit => return,
             }
         }
+        let now = Instant::now();
+        if let Some(d) = edits.take(now) {
+            sim.replace_engine(d);
+            bench_stale = bench.is_some();
+        }
+        if choice == QualityChoice::Auto && edits.bench_due(now, bench.is_some()) {
+            bench = Some(benchmark(sim.def().clone(), rate));
+        }
         if let Some(level) = bench.as_ref().and_then(|b| b.try_recv().ok()) {
             bench = None;
-            governor = Governor::new();
-            sim.set_quality(level);
+            if !std::mem::take(&mut bench_stale) {
+                governor = Governor::new();
+                sim.set_quality(level);
+            }
         }
         // what the audio buffer holds, in samples (none without a device)
         let filled = producer.as_ref().map(|p| p.buffer().capacity() - p.slots());
@@ -214,5 +226,105 @@ fn run(
                 ctx.request_repaint();
             }
         }
+    }
+}
+
+/// Least time between two rebuilds while edits keep coming (a slider dragged sends one per frame).
+const EDIT_EVERY: Duration = Duration::from_millis(250);
+/// How long the engine must stay unedited before the quality benchmark runs on it.
+const BENCH_AFTER: Duration = Duration::from_secs(1);
+
+/// Paces the engine edits that reach the sim: a rebuild at most every [`EDIT_EVERY`], always ending
+/// on the latest definition, and the quality benchmark only once the edits stop.
+struct EditGate<T> {
+    pending: Option<T>,
+    last_applied: Option<Instant>,
+    bench_wanted: bool,
+}
+
+impl<T> EditGate<T> {
+    fn new() -> Self {
+        Self {
+            pending: None,
+            last_applied: None,
+            bench_wanted: false,
+        }
+    }
+
+    /// A new definition: it replaces any not yet applied.
+    fn offer(&mut self, def: T) {
+        self.pending = Some(def);
+    }
+
+    /// The definition to rebuild with now, if one is waiting and the last rebuild is old enough.
+    fn take(&mut self, now: Instant) -> Option<T> {
+        if self
+            .last_applied
+            .is_some_and(|t| now.saturating_duration_since(t) < EDIT_EVERY)
+        {
+            return None;
+        }
+        let def = self.pending.take()?;
+        self.last_applied = Some(now);
+        self.bench_wanted = true;
+        Some(def)
+    }
+
+    /// Whether to start the benchmark now: wanted after an edit, none running, nothing waiting,
+    /// and the engine still for [`BENCH_AFTER`].
+    fn bench_due(&mut self, now: Instant, benching: bool) -> bool {
+        let still = self
+            .last_applied
+            .is_some_and(|t| now.saturating_duration_since(t) >= BENCH_AFTER);
+        let due = self.bench_wanted && self.pending.is_none() && !benching && still;
+        if due {
+            self.bench_wanted = false;
+        }
+        due
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ms(t0: Instant, n: u64) -> Instant {
+        t0 + Duration::from_millis(n)
+    }
+
+    #[test]
+    fn a_drag_rebuilds_at_most_every_250_ms_and_ends_on_the_last_value() {
+        let t0 = Instant::now();
+        let mut g = EditGate::new();
+        let mut applied = Vec::new();
+        // a slider dragged for a second: a new value every 16 ms frame
+        for i in 0..63u64 {
+            g.offer(i);
+            applied.extend(g.take(ms(t0, 16 * i)));
+        }
+        applied.extend(g.take(ms(t0, 1300)));
+        assert!(applied.len() <= 6, "{applied:?}");
+        assert_eq!(applied.first(), Some(&0), "the first edit is heard at once");
+        assert_eq!(applied.last(), Some(&62), "it ends on the last value");
+        assert_eq!(g.take(ms(t0, 2000)), None, "nothing left");
+    }
+
+    #[test]
+    fn the_benchmark_waits_until_the_engine_is_still() {
+        let t0 = Instant::now();
+        let mut g = EditGate::new();
+        assert!(!g.bench_due(t0, false), "no edit, no benchmark");
+        g.offer(1);
+        assert_eq!(g.take(t0), Some(1));
+        g.offer(2);
+        assert!(
+            !g.bench_due(ms(t0, 1500), false),
+            "an edit waits: not still"
+        );
+        assert_eq!(g.take(ms(t0, 1500)), Some(2));
+        assert!(!g.bench_due(ms(t0, 2499), false));
+        assert!(!g.bench_due(ms(t0, 2500), true), "one benchmark at a time");
+        assert!(g.bench_due(ms(t0, 2500), false));
+        assert!(!g.bench_due(ms(t0, 4000), false), "once");
     }
 }
