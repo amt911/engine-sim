@@ -28,7 +28,7 @@ Last updated: 2026-11-04.
 2. **The realistic 3D parts** (user, 2026-11-04) from `assets/3d-parts/` in the 3D view:
    - piston, rod, crank, valve train and Wankel, read from their `.glb`;
    - stretched by bore, stroke and rod per the README's rules;
-   - they replace the procedural meshes.
+   - they replace the procedural meshes (plan `2026-11-04-3d-parts-integration.md`).
 3. **Editing fluid and visible:**
    - the dots are confusing; edits should feel continuous and be easy to see;
    - the engine should answer while dragging, not only on release, if the rebuild allows it.
