@@ -20,6 +20,8 @@ exported/imported as JSON or YAML. For anyone who likes engines; it must run on 
   (2026-10-21). Function first; the `impeccable` flow (`$impeccable teach` → `PRODUCT.md` /
   `DESIGN.md`, never hand-authored) starts when the UI is polished, not before. Until then: legible,
   consistent, no dead controls.
+- **Read [`docs/ROADMAP.md`](docs/ROADMAP.md) first** — what is done, what is next and in what order,
+  what is parked. Update it when a milestone lands (with the CHANGELOG row and the tag).
 - **Read `docs/FINDINGS.md` before debugging or touching the build** — non-obvious gotchas. When you
   discover something non-obvious that cost time and isn't deducible from the code, add an entry.
 - **`docs/FACTS.md` is the working-memory file, not a second FINDINGS** — verified facts every fresh
