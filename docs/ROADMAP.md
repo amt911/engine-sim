@@ -22,9 +22,9 @@ Last updated: 2026-11-04.
 
 ## Now: editing that is fluid, and engines that sound right when edited (user, 2026-11-04)
 
-1. **Bug: a parameter changed in the 3D view lags the app for ~20 s.** This breaks the 3D
-   view's one anti-goal (bad performance). Find the cause by measuring, then fix it with a
-   regression test.
+1. ✅ v0.46.0: the ~20 s lag after an edit. Edits are paced; the benchmark waits for the edits
+   to stop; the exhaust network is kept when the exhaust is unchanged. An edit *to* the exhaust
+   still rebuilds it (about 1 s on the LFA); caching its designed filters is part of item 3.
 2. **Editing fluid and visible:**
    - the dots are confusing; edits should feel continuous and be easy to see;
    - the engine should answer while dragging, not only on release, if the rebuild allows it.
