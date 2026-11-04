@@ -214,6 +214,17 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
     repeats (K20A −53/−42/−23/−6, HNR 47). Turning off flow_noise, valve_jet, intake, block or
     mechanical changes no band by more than 0.7 dB. Every source of randomness we have is far
     under the orders; the real engines' broadband sits ~8 dB under them (HNR), ours 18–25.
+  - Clean references (2026-11-04): Skoda Octavia 1.6 standing, mic at the catalyst, 1300 /
+    1550 rpm: −10.2/−3.4/−1.1/−0.3 and −13.5/−4.0/−2.7/−0.1 (inline-4 held there, 3 % load:
+    −13.6/−7.5/−3.1/−1.8: at no load we are within 2–4 dB). Porsche 911 SC cruising at constant
+    rpm, mic at the tails (`…constant_rpms_exhausts__0123.9…@7:9~2560`, `__0178.2…@4:13~3600`):
+    −21.8/−5.1/−1.3/0.0, −19.1/−7.1/−0.5/0.0, −20.0/−5.9/−1.7/−0.3, corr 0.98–0.99, HNR 17–20 —
+    under load the gap is 250 Hz–4 kHz only (ours −20…−27 / −6…−14). Viper V10 slow pass-by
+    ~2410: −6.7/−3.9/+0.7/+1.3.
+  - A random per-firing arrival-time jitter on the K20A render (diagnostic, scratchpad
+    `jitter/jitter.py`): σ 80 µs → −21.2/−15.0/−3.8/0.0; 160 µs → −15.7/−9.3/−1.2/0.1. The real
+    shape is less random at 63–250 Hz and more at 250 Hz–1 kHz than any jitter: some additive
+    broadband too.
 - **Real LFA at load, clean reference (2026-10-29)**: chassis-dyno clip `dyno-gears.wav` 7.0–9.4 s
   (6060→7300 rpm, `scratchpad/opus-overrun/mosq/real/`, local only; `agent2/py/ang.py FILE 7.0 9.4 6600`):
   bands re total 63/125/250/500/1k/2k/4k/8k = −26.3/−22.7/−17.5/−4.7/−8.5/−5.1/−7.9/−16.9 dB, periodic share
