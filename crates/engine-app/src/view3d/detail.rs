@@ -10,6 +10,12 @@ pub enum Detail {
 
 impl Detail {
     /// Segments round a cylinder mesh.
+    /// Whether this level draws the realistic parts (Medium and High; Low keeps the primitives,
+    /// the cheapest).
+    pub fn realistic(self) -> bool {
+        self != Detail::Low
+    }
+
     pub fn segments(self) -> u32 {
         match self {
             Detail::Low => 12,

@@ -19,6 +19,7 @@ rtrb.workspace = true
 rfd.workspace = true
 glam.workspace = true
 bytemuck.workspace = true
+gltf.workspace = true
 
 [dev-dependencies]
 approx.workspace = true
