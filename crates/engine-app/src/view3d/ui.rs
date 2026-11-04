@@ -41,6 +41,32 @@ impl Default for Layers {
     }
 }
 
+/// A handle in the hand: its value as it moves, from its value when it was taken.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Drag {
+    pub handle: super::handles::Handle,
+    pub start: f64,
+    pub value: f64,
+    /// Pixels the pointer has moved along the handle's on-screen axis.
+    pub along_px: f32,
+    /// The handle's axis on screen (unit) and how many pixels a metre along it covers.
+    pub dir: egui::Vec2,
+    pub px_per_m: f32,
+}
+
+/// Where world point `p` shows in `rect` for `view_proj` (None behind the camera).
+fn to_screen(view_proj: glam::Mat4, rect: egui::Rect, p: glam::Vec3) -> Option<egui::Pos2> {
+    let c = view_proj * p.extend(1.0);
+    if c.w <= 1e-6 {
+        return None;
+    }
+    let (x, y) = (c.x / c.w, c.y / c.w);
+    Some(egui::pos2(
+        rect.left() + 0.5 * (x + 1.0) * rect.width(),
+        rect.top() + 0.5 * (1.0 - y) * rect.height(),
+    ))
+}
+
 /// The flow marks run at this share of the gas's speed, so they can be followed by eye.
 pub const FLOW_SCALE: f32 = 0.05;
 
@@ -55,6 +81,12 @@ fn marks(d: Detail) -> usize {
 
 #[derive(Debug, Clone)]
 pub struct View3dState {
+    /// Where the clicked part's handles stood on screen last frame (what each edits).
+    pub handle_spots: Vec<(super::handles::Field, egui::Pos2)>,
+    /// A handle being dragged.
+    pub drag: Option<Drag>,
+    /// The clicked part (its index among the frame's instances) and where its card stands.
+    pub selected: Option<(usize, egui::Pos2)>,
     /// How far round its pipe each pipe's flow marks have run (0..1).
     phases: Vec<f32>,
     pub layers: Layers,
@@ -74,6 +106,9 @@ pub struct View3dState {
 impl Default for View3dState {
     fn default() -> Self {
         Self {
+            handle_spots: Vec::new(),
+            drag: None,
+            selected: None,
             phases: Vec::new(),
             layers: Layers::default(),
             mode: ViewMode::ThreeD,
@@ -90,6 +125,17 @@ impl Default for View3dState {
 }
 
 impl View3dState {
+    /// The index of the first drawn `part` in the frame (tests pick parts by kind).
+    #[cfg(test)]
+    pub fn first(&self, part: scene::Part) -> Option<usize> {
+        self.shared
+            .lock()
+            .ok()?
+            .instances
+            .iter()
+            .position(|i| i.part == part)
+    }
+
     /// The view to draw: 3D only when asked for and a renderer exists.
     pub fn shows_3d(&self) -> bool {
         self.available && self.mode == ViewMode::ThreeD
@@ -169,6 +215,12 @@ impl View3dState {
                             color: c,
                         });
                     }
+                }
+            }
+            // the clicked part a little brighter
+            if let Some(i) = self.selected.and_then(|(k, _)| sh.instances.get_mut(k)) {
+                for c in &mut i.color[..3] {
+                    *c = (*c * 1.35 + 0.08).min(1.0);
                 }
             }
             sh.clip = self.layers.cutaway.then(|| scene::cut_plane(&snap.def));
@@ -289,10 +341,64 @@ pub fn bar(ui: &mut egui::Ui, st: &mut View3dState) {
 }
 
 /// The 3D engine in the rest of the panel.
-pub fn show(ui: &mut egui::Ui, st: &mut View3dState, snap: &Snapshot) {
+pub fn show(
+    ui: &mut egui::Ui,
+    st: &mut View3dState,
+    snap: &Snapshot,
+    edit: &mut EngineDef,
+    dirty: &mut bool,
+) {
     st.sync(&snap.def);
     let (rect, resp) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
-    if let Some(c) = st.camera.as_mut() {
+    // the handles of the clicked part, on screen
+    let handles: Vec<(super::handles::Handle, egui::Pos2)> = match (st.selected, &st.scene) {
+        (Some((k, _)), Some(scene)) => st
+            .shared
+            .lock()
+            .ok()
+            .map(|sh| {
+                super::handles::handles(&snap.def, scene, &sh.instances, k)
+                    .into_iter()
+                    .filter_map(|h| to_screen(sh.view_proj, rect, h.at).map(|p| (h, p)))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    st.handle_spots.clear();
+    st.handle_spots
+        .extend(handles.iter().map(|(h, p)| (h.field, *p)));
+    if resp.drag_started()
+        && let Some(pos) = resp.interact_pointer_pos()
+        && let Some((h, at)) = handles
+            .iter()
+            .find(|(_, p)| p.distance(pos) < 12.0)
+            .copied()
+    {
+        let vp = st.shared.lock().map(|sh| sh.view_proj).unwrap_or_default();
+        if let Some(tip) = to_screen(vp, rect, h.at + 0.01 * h.axis) {
+            let v = (tip - at) / 0.01;
+            let start = h.field.get(&snap.def);
+            st.drag = Some(Drag {
+                handle: h,
+                start,
+                value: start,
+                along_px: 0.0,
+                dir: v.normalized(),
+                px_per_m: v.length(),
+            });
+        }
+    }
+    if let Some(d) = st.drag.as_mut() {
+        d.along_px += resp.drag_delta().dot(d.dir);
+        d.value = super::handles::dragged(&d.handle, d.start, d.along_px, d.px_per_m);
+        if resp.drag_stopped() {
+            // the engine takes it now, once: a valid engine is rebuilt, the editor follows
+            *dirty |= super::handles::apply(edit, d.handle.field, d.value);
+            st.drag = None;
+            st.selected = None;
+        }
+    } else if let Some(c) = st.camera.as_mut() {
         let d = resp.drag_delta();
         c.drag(-d.x, d.y);
         if resp.hovered() {
@@ -328,6 +434,103 @@ pub fn show(ui: &mut egui::Ui, st: &mut View3dState, snap: &Snapshot) {
     };
     ui.painter()
         .add(egui_wgpu::Callback::new_paint_callback(rect, frame));
+    // a click picks the part under the pointer (another click on nothing, or Escape, lets go)
+    if resp.clicked()
+        && let Some(pos) = resp.interact_pointer_pos()
+    {
+        let ndc = (
+            2.0 * (pos.x - rect.left()) / rect.width().max(1.0) - 1.0,
+            1.0 - 2.0 * (pos.y - rect.top()) / rect.height().max(1.0),
+        );
+        st.selected = st.shared.lock().ok().and_then(|sh| {
+            let (o, d) = super::pick::ray(sh.view_proj, ndc)?;
+            super::pick::pick(&sh.instances, o, d).map(|(k, _)| (k, pos))
+        });
+    }
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        st.selected = None;
+    }
+    if let (Some((k, pos)), Some(scene)) = (st.selected, &st.scene) {
+        let card = st.shared.lock().ok().and_then(|sh| {
+            let c = super::card::card(&snap.def, scene, &sh.instances, k)?;
+            Some((c, super::handles::editable(sh.instances[k].part)))
+        });
+        if let Some((c, fields)) = card {
+            // right of the pointer and of every handle: the card sits above the scene, so a
+            // handle under it could not be grabbed
+            let right = handles.iter().map(|(_, p)| p.x).fold(pos.x, f32::max);
+            egui::Area::new(egui::Id::unique("part_card"))
+                .fixed_pos(egui::pos2(right + 14.0, pos.y + 8.0))
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.strong(&c.title);
+                        egui::Grid::new("part_card_rows").show(ui, |ui| {
+                            for (label, value) in &c.rows {
+                                ui.label(label);
+                                ui.label(value);
+                                ui.end_row();
+                            }
+                        });
+                        // what the part is made of, typed or dragged here
+                        if !fields.is_empty() {
+                            ui.separator();
+                            egui::Grid::new("part_card_edits").show(ui, |ui| {
+                                for &f in fields {
+                                    let (k, unit, dp) = f.units();
+                                    let (lo, hi) = f.range();
+                                    let mut shown = k * f.get(edit);
+                                    let name = ui.label(f.label());
+                                    let r = ui
+                                        .add(
+                                            egui::DragValue::new(&mut shown)
+                                                .range(k * lo..=k * hi)
+                                                .max_decimals(dp)
+                                                .suffix(unit),
+                                        )
+                                        .labelled_by(name.id);
+                                    if r.changed() {
+                                        *dirty |= super::handles::apply(edit, f, shown / k);
+                                    }
+                                    ui.end_row();
+                                }
+                            });
+                        }
+                    });
+                });
+        }
+    }
+    // the handles over the scene, and the value in the hand
+    {
+        let p = ui.painter_at(rect);
+        for (h, at) in &handles {
+            p.circle(
+                *at,
+                7.0,
+                egui::Color32::from_rgb(255, 214, 64),
+                egui::Stroke::new(1.5, egui::Color32::BLACK),
+            );
+            p.text(
+                *at + egui::vec2(10.0, -10.0),
+                egui::Align2::LEFT_BOTTOM,
+                h.field.label(),
+                egui::FontId::proportional(11.0),
+                egui::Color32::from_rgb(255, 214, 64),
+            );
+        }
+        if let Some(d) = st.drag {
+            p.text(
+                rect.left_top() + egui::vec2(12.0, 12.0),
+                egui::Align2::LEFT_TOP,
+                format!(
+                    "{}: {} (release to apply)",
+                    d.handle.field.label(),
+                    d.handle.field.show(d.value)
+                ),
+                egui::FontId::proportional(14.0),
+                egui::Color32::from_rgb(255, 214, 64),
+            );
+        }
+    }
     // over the scene: painted after its callback
     if st.layers.temperature {
         legend(ui, rect, snap.pipes.is_empty());
