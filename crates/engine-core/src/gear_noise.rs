@@ -194,6 +194,103 @@ impl MeshDynamics {
     }
 }
 
+/// Face width assumed for the contact of a loose gear in its backlash, m.
+///
+/// ESTIMATE: the same 18 mm as the default gearbox face ([`GearboxDef`]); it only sets the
+/// contact stiffness `c′·b` of the impact.
+const LOOSE_FACE_M: f64 = 0.018;
+
+/// Closing speed below which a touch of the flanks is a resting contact, not an impact, m/s.
+///
+/// ESTIMATE: 1 mm/s is a hundredth of the 0.1 m/s a flank crosses a 0.1 mm backlash at in a
+/// rattling gear; slower touches radiate nothing audible.
+const IMPACT_MIN_SPEED: f64 = 1e-3;
+
+/// A loose gear free in its backlash, driven by its driver's speed.
+///
+/// Singh, Xie & Comparin, "Analysis of automotive neutral gear rattle", *J. Sound Vib.* 131(2),
+/// 1989: an unloaded gear rides between the flanks of its driver. Oil drag (`T_d`) slows it
+/// while the driver pushes it on the drive flank; when the driver decelerates faster than the
+/// gear's own drag deceleration (`J·A > T_d`) the gear leaves the flank, crosses the backlash
+/// and hits the other one.
+#[derive(Debug, Clone)]
+pub struct LooseGear {
+    inertia: f64,
+    base_radius: f64,
+    /// Position relative to the driver along the base circle, m (drive flank at `-backlash/2`).
+    x: f64,
+    /// The gear's own angular speed, rad/s.
+    omega: f64,
+    fresh: bool,
+    in_contact: bool,
+    impacting: bool,
+}
+
+impl LooseGear {
+    pub fn new(inertia_kgm2: f64, base_radius_m: f64) -> Self {
+        Self {
+            inertia: inertia_kgm2,
+            base_radius: base_radius_m,
+            x: 0.0,
+            omega: 0.0,
+            fresh: true,
+            in_contact: true,
+            impacting: false,
+        }
+    }
+
+    /// Advance by `dt` with the driver at `input_omega`; returns the impact force on the teeth, N
+    /// (the largest of the sub-steps; 0 between impacts and while the driver just carries the
+    /// gear).
+    pub fn step(&mut self, input_omega: f64, dt: f64, backlash_m: f64, drag_nm: f64) -> f64 {
+        let rb = self.base_radius;
+        let k = SINGLE_PAIR_STIFFNESS * LOOSE_FACE_M;
+        let m_eff = self.inertia / (rb * rb);
+        let c = 2.0 * MESH_DAMPING * (k * m_eff).sqrt();
+        let half = 0.5 * backlash_m;
+        // resting penetration of the drive flank while it carries the drag
+        let carry = drag_nm / (rb * k);
+        if self.fresh {
+            self.x = -half - carry;
+            self.omega = input_omega;
+            self.fresh = false;
+        }
+        // keep the contact oscillation (ω_n = √(k/m)) under 0.5 rad per sub-step
+        let n = ((k / m_eff).sqrt() * dt / 0.5).ceil().max(1.0);
+        let h = dt / n;
+        let mut peak: f64 = 0.0;
+        for _ in 0..n as u32 {
+            let v_rel = (self.omega - input_omega) * rb;
+            let (force, depth, drive) = if self.x < -half {
+                let d = -half - self.x;
+                ((k * d - c * v_rel).max(0.0), d, true)
+            } else if self.x > half {
+                let d = self.x - half;
+                (-(k * d + c * v_rel).max(0.0), d, false)
+            } else {
+                (0.0, 0.0, true)
+            };
+            let touching = force != 0.0;
+            if !touching {
+                self.impacting = false;
+            } else if !self.in_contact && v_rel.abs() > IMPACT_MIN_SPEED {
+                self.impacting = true;
+            } else if drive && v_rel.abs() < IMPACT_MIN_SPEED && depth <= 1.5 * carry {
+                // settled back into carrying the drag
+                self.impacting = false;
+            }
+            self.in_contact = touching;
+            if self.impacting {
+                peak = peak.max(force.abs());
+            }
+            let drag = drag_nm * (self.omega / 0.5).clamp(-1.0, 1.0);
+            self.omega += h * (rb * force - drag) / self.inertia;
+            self.x += h * (self.omega - input_omega) * rb;
+        }
+        peak
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -368,6 +465,52 @@ mod tests {
             let f = d.step(&m, 2.0 * std::f64::consts::PI * 400.0, 3000.0, dt);
             assert_eq!(f, 0.0);
         }
+    }
+
+    const DT96: f64 = 1.0 / 96_000.0;
+
+    /// Impact force per sample of a loose gear (J = 2e-4 kg·m², r_b = 40 mm, 0.1 mm backlash,
+    /// 0.05 N·m drag) whose driver turns at `100 + A/(2πf)·sin(2πft)` rad/s, `secs` long.
+    fn rattle_run(accel: f64, f_hz: f64, secs: f64) -> Vec<f64> {
+        let w = 2.0 * std::f64::consts::PI * f_hz;
+        let mut g = LooseGear::new(2e-4, 0.04);
+        (0..(secs / DT96) as usize)
+            .map(|i| {
+                let omega = 100.0 + accel / w * (w * i as f64 * DT96).sin();
+                g.step(omega, DT96, 1e-4, 0.05)
+            })
+            .collect()
+    }
+
+    /// Impacts per second after the first 0.2 s: rising edges of the force.
+    fn impacts_per_s(f: &[f64]) -> f64 {
+        let from = (0.2 / DT96) as usize;
+        let n = f[from..]
+            .windows(2)
+            .filter(|w| w[0] <= 0.0 && w[1] > 0.0)
+            .count();
+        n as f64 / (f.len() - from) as f64 / DT96
+    }
+
+    #[test]
+    fn a_steady_input_does_not_rattle() {
+        let f = rattle_run(0.0, 50.0, 1.0);
+        assert_eq!(
+            f[(0.2 / DT96) as usize..]
+                .iter()
+                .filter(|&&v| v > 0.0)
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn rattle_starts_at_the_singh_threshold() {
+        // Singh: the gear leaves its flank when J·A > T_d, A* = 0.05 / 2e-4 = 250 rad/s²
+        let below = impacts_per_s(&rattle_run(0.5 * 250.0, 50.0, 1.2));
+        let above = impacts_per_s(&rattle_run(3.0 * 250.0, 50.0, 1.2));
+        assert_eq!(below, 0.0, "{below}");
+        assert!(above >= 50.0, "{above}");
     }
 
     proptest! {
