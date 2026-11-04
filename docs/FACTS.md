@@ -202,6 +202,18 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   - Cycle-to-cycle combustion already matches Soltau's WOT data (COV p_max 7–10 %, IMEP
     1.5–1.9 %).
   - Non-linear FV exhaust is not less periodic (7740 WOT, 1 kHz 0.76 vs waveguide 0.67).
+- **`scripts/authenticity.py`, a repeatable measure of it (2026-11-04)**: share of each band's
+  energy that does not repeat cycle to cycle (blocks of 8 cycles, rpm and ramp tracked), dB.
+  `FILE@T0:DUR~RPM!` for a render, `~RPM` for a recording with a known rpm (±3 %).
+  - Real, standing: Audi A4 2.0 TFSI revving ~3230: 63–250/250–1k/1–4k/4–12k = −7.0/−0.8/−0.5/0.0,
+    corr 0.83, HNR 7 dB; Unimog steady 2400 at the exhaust: −13.9/−4.3/−4.0/−1.4, corr 0.88,
+    HNR 9 dB. Onboard and pass-by clips carry wind and road too: not references.
+  - Render held 3200 at 5 % load: K20A −24.5/−20.1/−10.6/−1.2 (corr 0.997, HNR 25), inline-4
+    −19.8/−6.4/−3.1/−0.3 (HNR 18), LFA −10.9/−12.8/−7.9/−2.9; TDI 2400 −30.5/−16.7/−5.1/−1.0.
+  - **Ablation (K20A and inline-4 at 3200, 5 %)**: with `combustion_jitter` 0 everything
+    repeats (K20A −53/−42/−23/−6, HNR 47). Turning off flow_noise, valve_jet, intake, block or
+    mechanical changes no band by more than 0.7 dB. Every source of randomness we have is far
+    under the orders; the real engines' broadband sits ~8 dB under them (HNR), ours 18–25.
 - **Real LFA at load, clean reference (2026-10-29)**: chassis-dyno clip `dyno-gears.wav` 7.0–9.4 s
   (6060→7300 rpm, `scratchpad/opus-overrun/mosq/real/`, local only; `agent2/py/ang.py FILE 7.0 9.4 6600`):
   bands re total 63/125/250/500/1k/2k/4k/8k = −26.3/−22.7/−17.5/−4.7/−8.5/−5.1/−7.9/−16.9 dB, periodic share
