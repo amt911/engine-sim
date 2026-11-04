@@ -100,7 +100,7 @@ pub struct View3dState {
     drawn: Option<EngineDef>,
     scene: Option<Scene>,
     moving: Vec<Instance>,
-    shared: Arc<Mutex<Shared>>,
+    pub(crate) shared: Arc<Mutex<Shared>>,
 }
 
 impl Default for View3dState {
@@ -430,6 +430,9 @@ pub fn show(
             def_version: st.def_version,
             segments: st.governor.detail.segments(),
             e_over_r,
+            realistic: st.governor.detail.realistic(),
+            rod_over_bore: rod_over_bore(&snap.def),
+            throw_over_bore: throw_over_bore(&snap.def),
         },
     };
     ui.painter()
@@ -535,6 +538,16 @@ pub fn show(
     if st.layers.temperature {
         legend(ui, rect, snap.pipes.is_empty());
     }
+}
+
+/// Half the stroke over the bore: what the realistic throw's mesh depends on.
+fn throw_over_bore(def: &EngineDef) -> f32 {
+    (0.5 * def.geometry.stroke_m / def.geometry.bore_m.max(1e-6)) as f32
+}
+
+/// The rod's length over the bore: what the realistic rod's mesh depends on.
+fn rod_over_bore(def: &EngineDef) -> f32 {
+    (def.geometry.rod_m / def.geometry.bore_m.max(1e-6)) as f32
 }
 
 #[cfg(test)]
@@ -654,6 +667,9 @@ mod tests {
                         def_version: st.def_version,
                         segments: detail.segments(),
                         e_over_r: 0.0,
+                        realistic: detail.realistic(),
+                        rod_over_bore: rod_over_bore(&def),
+                        throw_over_bore: throw_over_bore(&def),
                     },
                 };
                 let mut enc = rs.device.create_command_encoder(&Default::default());

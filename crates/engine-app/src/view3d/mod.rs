@@ -8,6 +8,7 @@ pub mod detail;
 pub mod ducts;
 pub mod handles;
 pub mod mesh;
+pub mod parts;
 pub mod pick;
 pub mod render;
 pub mod routing;

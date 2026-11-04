@@ -26,10 +26,12 @@ Last updated: 2026-11-04.
    to stop; the exhaust network is kept when the exhaust is unchanged. An edit *to* the exhaust
    rebuilds it in 0.1 s on the LFA (wall filters fitted once per pipe, silencer designs
    memoized across rebuilds).
-2. **The realistic 3D parts** (user, 2026-11-04) from `assets/3d-parts/` in the 3D view:
-   - piston, rod, crank, valve train and Wankel, read from their `.glb`;
-   - stretched by bore, stroke and rod per the README's rules;
-   - they replace the procedural meshes (plan `2026-11-04-3d-parts-integration.md`).
+2. **The realistic 3D parts** (user, 2026-11-04) from `assets/3d-parts/` in the 3D view (plan
+   `2026-11-04-3d-parts-integration.md`):
+   - ✅ v0.47.0: piston, rod, crank throws, valves and the Wankel rotor, stretched by bore,
+     stroke and rod;
+   - next: the valve springs, the cam lobes and camshaft, the Wankel housing, side plate and
+     eccentric shaft.
 3. **Editing fluid and visible:**
    - the dots are confusing; edits should feel continuous and be easy to see;
    - the engine should answer while dragging, not only on release, if the rebuild allows it.
