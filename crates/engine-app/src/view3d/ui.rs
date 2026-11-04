@@ -453,7 +453,7 @@ pub fn show(
     if let (Some((k, pos)), Some(scene)) = (st.selected, &st.scene) {
         let card = st.shared.lock().ok().and_then(|sh| {
             let c = super::card::card(&snap.def, scene, &sh.instances, k)?;
-            Some((c, super::handles::editable(sh.instances[k].part)))
+            Some((c, super::handles::card_fields(&snap.def, &sh.instances, k)))
         });
         if let Some((c, fields)) = card {
             // right of the pointer and of every handle: the card sits above the scene, so a
@@ -475,7 +475,7 @@ pub fn show(
                         if !fields.is_empty() {
                             ui.separator();
                             egui::Grid::new("part_card_edits").show(ui, |ui| {
-                                for &f in fields {
+                                for &f in &fields {
                                     let (k, unit, dp) = f.units();
                                     let (lo, hi) = f.range();
                                     let mut shown = k * f.get(edit);
