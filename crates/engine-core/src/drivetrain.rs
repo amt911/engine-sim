@@ -373,7 +373,9 @@ impl Vehicle {
             } else {
                 load.torque_nm
             },
-            clutch_locked: self.locked,
+            // in neutral nothing is "locked" for the car, but a released clutch still ties the
+            // input shaft (and the box's loose gears) to the crank
+            clutch_locked: self.locked || (self.gear == 0 && self.clutch >= 0.99),
         }
     }
 
@@ -478,6 +480,25 @@ mod tests {
         // neutral: gear 0
         let n = Vehicle::new(fixture());
         assert_eq!(n.drive_state(100.0, &Load::default()).gear, 0);
+    }
+
+    #[test]
+    fn in_neutral_the_input_shaft_turns_with_the_crank_when_the_clutch_is_up() {
+        // the loose gears of a box in neutral rattle on the input shaft only while the clutch
+        // ties it to the crank; with the pedal down it is free (Singh et al. 1989)
+        let mut v = Vehicle::new(fixture());
+        v.set_clutch_engage_s(0.0);
+        v.set_clutch(1.0);
+        let load = v.step(1e-3, 85.0, 0.0);
+        let up = v.drive_state(85.0, &load);
+        assert_eq!(up.gear, 0);
+        assert!(up.clutch_locked, "pedal up in neutral");
+        v.set_clutch(0.0);
+        let mut load = Load::default();
+        for _ in 0..300 {
+            load = v.step(1e-2, 85.0, 0.0);
+        }
+        assert!(!v.drive_state(85.0, &load).clutch_locked, "pedal down");
     }
 
     fn in_first() -> Vehicle {
