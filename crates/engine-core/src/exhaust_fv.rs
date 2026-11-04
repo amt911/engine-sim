@@ -541,6 +541,31 @@ impl ExhaustFv {
     }
 
     /// Total gas mass in the network (pipes, junctions, chambers), kg.
+    /// The pipes' gas for the 3D view, as [`crate::exhaust::ExhaustNet::probe`]: the primaries,
+    /// then each collector. Here each pipe's cells are read directly: the temperature of its
+    /// gas as a whole, Σp/(R·Σρ), and the speed its mass moves at, Σρu/Σρ (this instant, not a
+    /// cycle's mean). No wall model runs on the FV pipes.
+    pub fn probe(&self, out: &mut Vec<crate::exhaust::PipeState>) {
+        out.clear();
+        let gas = |pipe: &Pipe1d| {
+            let (mut p, mut rho, mut mom) = (0.0, 0.0, 0.0);
+            for c in &pipe.cells {
+                let w = c.to_prim();
+                p += w.p;
+                rho += w.rho;
+                mom += w.rho * w.u;
+            }
+            let rho = rho.max(f64::MIN_POSITIVE);
+            crate::exhaust::PipeState {
+                temperature_k: p / (crate::gas::R_AIR * rho),
+                velocity_m_s: mom / rho,
+                wall_k: None,
+            }
+        };
+        out.extend(self.primaries.iter().map(gas));
+        out.extend(self.branches.iter().map(|b| gas(&b.out)));
+    }
+
     pub fn total_mass(&self) -> f64 {
         let pipe_mass = |p: &Pipe1d| {
             p.cells
@@ -1579,6 +1604,52 @@ mod tests {
             after.energy_j - before.energy_j,
             1e-6 * 1004.5 * 900.0,
             max_relative = 1e-9
+        );
+    }
+
+    #[test]
+    fn the_probe_reads_each_fv_pipes_gas_by_hand() {
+        // a fresh network rests at 600 K: two primaries and one collector, still
+        let d = def();
+        let mut x = ExhaustFv::new(&d, 2, DT);
+        let mut out = Vec::new();
+        x.probe(&mut out);
+        assert_eq!(out.len(), 3);
+        for p in &out {
+            assert!(
+                (p.temperature_k - 600.0).abs() < 1e-6,
+                "{}",
+                p.temperature_k
+            );
+            assert_eq!((p.velocity_m_s, p.wall_k), (0.0, None));
+        }
+        // primary 2 holds 0.5 kg/m³ at 1 bar moving out at 20 m/s in its first half and still
+        // gas in the rest: T = 1e5/(0.5·287) = 696.86 K, the mass moves at 10 m/s on average
+        let n = x.primaries[1].cells.len();
+        for (k, c) in x.primaries[1].cells.iter_mut().enumerate() {
+            let u = if 2 * k < n { 20.0 } else { 0.0 };
+            *c = Prim {
+                rho: 0.5,
+                u,
+                p: 1e5,
+            }
+            .to_cons();
+        }
+        x.probe(&mut out);
+        assert!(
+            (out[1].temperature_k - 696.864).abs() < 1e-3,
+            "{}",
+            out[1].temperature_k
+        );
+        let half = (n / 2 + n % 2) as f64 / n as f64;
+        assert!(
+            (out[1].velocity_m_s - 20.0 * half).abs() < 1e-9,
+            "{}",
+            out[1].velocity_m_s
+        );
+        assert!(
+            (out[0].temperature_k - 600.0).abs() < 1e-6,
+            "the others untouched"
         );
     }
 }

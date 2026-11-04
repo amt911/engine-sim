@@ -4067,15 +4067,19 @@ impl Engine {
         }
     }
 
-    /// The exhaust pipes' gas for the 3D view ([`ExhaustNet::probe`]): false (and `out` empty)
-    /// when the net runs elsewhere (its own thread) or the exhaust is finite-volume: no data.
+    /// The exhaust pipes' gas for the 3D view ([`ExhaustNet::probe`], [`ExhaustFv::probe`]):
+    /// false (and `out` empty) when the net runs elsewhere (its own thread): no data.
     pub fn probe_exhaust(&self, out: &mut Vec<crate::exhaust::PipeState>) -> bool {
-        match &self.net {
-            Some(net) => {
+        match (&self.fv, &self.net) {
+            (Some(fv), _) => {
+                fv.probe(out);
+                true
+            }
+            (None, Some(net)) => {
                 net.probe(out);
                 true
             }
-            None => {
+            (None, None) => {
                 out.clear();
                 false
             }
@@ -9690,19 +9694,21 @@ mod probe {
     }
 
     #[test]
-    fn a_finite_volume_exhaust_has_no_gas_for_the_view() {
+    fn a_finite_volume_exhaust_shows_its_gas_too() {
+        // the FV pipes (K20A, LFA… run them) report their gas as the waveguide's do
         let mut def = EngineDef::inline4();
         def.exhaust.model = crate::exhaust::ExhaustModel::Fv;
+        let groups = def.exhaust.groups(def.cylinders).len();
         let mut e = Engine::new(def, 2000.0, 1);
-        for _ in 0..480 {
+        for _ in 0..4800 {
             e.step(1.0 / 48_000.0, &Controls::default());
         }
-        let mut out = vec![crate::exhaust::PipeState {
-            temperature_k: 1.0,
-            velocity_m_s: 1.0,
-            wall_k: None,
-        }];
-        assert!(!e.probe_exhaust(&mut out));
-        assert!(out.is_empty(), "stale states cleared");
+        let mut out = Vec::new();
+        assert!(e.probe_exhaust(&mut out));
+        assert_eq!(out.len(), 4 + groups);
+        assert!(
+            out.iter()
+                .all(|p| p.temperature_k > 300.0 && p.velocity_m_s.is_finite())
+        );
     }
 }
