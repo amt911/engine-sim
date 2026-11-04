@@ -1,6 +1,6 @@
 # Catalogue of complete systems, sized to the engine — design
 
-Status: described with the user on 2026-11-04, playback approved ("me parece bien así"). Roadmap
+Status: **approved by the user, 2026-11-04** ("me parece bien, continúa"), after a playback ("me parece bien así") and a builder check whose questions are settled below. Roadmap
 item 4 of "Now" in `docs/ROADMAP.md`.
 
 ## Intent
