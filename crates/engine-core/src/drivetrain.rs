@@ -360,6 +360,23 @@ impl Vehicle {
         self.speed_m_s = (self.speed_m_s - f / self.effective_mass() * dt).max(0.0);
     }
 
+    /// What the gearbox sees now, for its noise ([`crate::gear_noise::GearboxNoise`]): the gear,
+    /// the instantaneous crank speed, and the torque through the clutch, which is, locked, the
+    /// torque the car asks (the filtered `required_nm` of the last [`Self::step`]) and, slipping,
+    /// the clutch's own (`load.torque_nm`).
+    pub fn drive_state(&self, engine_omega: f64, load: &Load) -> crate::gear_noise::DriveState {
+        crate::gear_noise::DriveState {
+            gear: self.gear,
+            input_omega: engine_omega,
+            input_torque_nm: if self.locked {
+                self.required_nm
+            } else {
+                load.torque_nm
+            },
+            clutch_locked: self.locked,
+        }
+    }
+
     /// Advance by `dt` given the engine speed (rad/s) and brake pedal (0..1). Returns the
     /// load on the crank for the engine's next step.
     pub fn step(&mut self, dt: f64, engine_omega: f64, brake: f64) -> Load {
@@ -444,6 +461,23 @@ mod tests {
             engine_bay: None,
             gearbox: crate::gear_noise::GearboxDef::default(),
         }
+    }
+
+    #[test]
+    fn the_drive_state_carries_the_gear_the_lock_and_the_torque() {
+        let mut v = in_first();
+        v.set_speed(5.0);
+        let omega = 5.0 / 0.3 * 12.0 + 1.0;
+        let load = v.step(1e-4, omega, 0.0);
+        let s = v.drive_state(omega, &load);
+        assert_eq!((s.gear, s.input_omega), (1, omega));
+        assert_eq!(s.clutch_locked, v.locked());
+        // slipping: the clutch torque is the load on the crank
+        assert!(!s.clutch_locked);
+        assert_eq!(s.input_torque_nm, load.torque_nm);
+        // neutral: gear 0
+        let n = Vehicle::new(fixture());
+        assert_eq!(n.drive_state(100.0, &Load::default()).gear, 0);
     }
 
     fn in_first() -> Vehicle {

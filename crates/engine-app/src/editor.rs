@@ -547,6 +547,16 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
                  structure response measured on engines. 1 = physical, 0 = off.",
             );
             ui.add(
+                slider(&mut snd.gear_noise, 0.0..=2.0)
+                    .step_by(0.05)
+                    .text("Gearbox"),
+            )
+            .on_hover_text(
+                "Whine of the engaged gears and the final drive at their mesh orders, and the \
+                     rattle of the loose gears, heard when a vehicle drives the engine. \
+                     1 = physical, 0 = off.",
+            );
+            ui.add(
                 slider(&mut snd.combustion_jitter, 0.0..=4.0)
                     .step_by(0.05)
                     .text("Combustion variability"),
@@ -1001,6 +1011,8 @@ mod tests {
         assert!(h.state().engine_dirty);
         nudge(&mut h, "Engine block");
         assert_eq!(h.state().def.sound.block, 1.05);
+        nudge(&mut h, "Gearbox");
+        assert_eq!(h.state().def.sound.gear_noise, 1.05);
     }
 
     #[test]
