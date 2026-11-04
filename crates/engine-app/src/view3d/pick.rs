@@ -16,7 +16,7 @@ pub fn local_bounds(kind: MeshKind) -> (Vec3, Vec3) {
         | MeshKind::WristPin
         | MeshKind::RodEye
         | MeshKind::ValveStem => (Vec3::new(-1.0, 0.0, -1.0), Vec3::new(1.0, 1.0, 1.0)),
-        MeshKind::Cuboid => (Vec3::splat(-0.5), Vec3::splat(0.5)),
+        MeshKind::Cuboid | MeshKind::ApexSeal => (Vec3::splat(-0.5), Vec3::splat(0.5)),
         // the realistic rod's big end reaches past the primitive bar: about 0.4 bore round the
         // crankpin, which is 2 depths (0.2 bore) and 0.25 rod lengths of the shortest rods
         // the realistic throw in its pin's frame: the module 0.6 bore either side along the crank
@@ -31,7 +31,8 @@ pub fn local_bounds(kind: MeshKind) -> (Vec3, Vec3) {
         MeshKind::Housing | MeshKind::HousingRing => {
             (Vec3::new(-1.6, 0.0, -1.6), Vec3::new(1.6, 1.0, 1.6))
         }
-        MeshKind::Rotor => (Vec3::new(-1.0, 0.0, -1.0), Vec3::new(1.0, 1.0, 1.0)),
+        // the realistic rotor's apexes reach R over the frame's 0.97 R, its gear past the face
+        MeshKind::Rotor => (Vec3::new(-1.04, -0.1, -1.04), Vec3::new(1.04, 1.1, 1.04)),
         // a web: the pin end to 1.45, the counterweight to −1.1
         MeshKind::Web => (Vec3::new(-1.1, 0.0, -1.1), Vec3::new(1.1, 1.0, 1.45)),
     }

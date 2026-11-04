@@ -66,12 +66,9 @@ impl Part {
     /// Which unit mesh draws it.
     pub fn mesh(self) -> MeshKind {
         match self {
-            Part::Block
-            | Part::Head
-            | Part::ApexSeal
-            | Part::Plenum
-            | Part::Airbox
-            | Part::Intercooler => MeshKind::Cuboid,
+            Part::Block | Part::Head | Part::Plenum | Part::Airbox | Part::Intercooler => {
+                MeshKind::Cuboid
+            }
             Part::Liner => MeshKind::Liner,
             Part::Web => MeshKind::Web,
             Part::Housing => MeshKind::HousingRing,
@@ -83,6 +80,7 @@ impl Part {
             Part::WristPin => MeshKind::WristPin,
             Part::Rod => MeshKind::Rod,
             Part::Throw => MeshKind::Throw,
+            Part::ApexSeal => MeshKind::ApexSeal,
             Part::IntakeValve | Part::ExhaustValve => MeshKind::Valve,
             Part::IntakeStem | Part::ExhaustStem => MeshKind::ValveStem,
             Part::RodEye => MeshKind::RodEye,
@@ -109,10 +107,11 @@ pub enum MeshKind {
     Throw,
     Valve,
     ValveStem,
+    ApexSeal,
 }
 
 impl MeshKind {
-    pub const ALL: [MeshKind; 16] = [
+    pub const ALL: [MeshKind; 17] = [
         MeshKind::Cylinder,
         MeshKind::Cuboid,
         MeshKind::Housing,
@@ -129,6 +128,7 @@ impl MeshKind {
         MeshKind::Throw,
         MeshKind::Valve,
         MeshKind::ValveStem,
+        MeshKind::ApexSeal,
     ];
 }
 

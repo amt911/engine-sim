@@ -28,6 +28,12 @@ const VALVE_GLB: &[u8] = include_bytes!("../../../../assets/3d-parts/out/valve.g
 /// The reference stem, face to tip, m (README) and the scene's, in bores (the head's box).
 const REF_STEM: f32 = 0.0989;
 const SCENE_STEM_B: f32 = 0.5;
+/// The Wankel rotor with its seals, gear and bearing (real size: e 15, R 105, width 80 mm, the
+/// RENESIS; its plane x–z, apex 0 on +x, centred in y: the frame of `mesh::rotor`).
+const ROTOR_GLB: &[u8] = include_bytes!("../../../../assets/3d-parts/out/wankel_rotor.glb");
+const REF_E: f32 = 0.015;
+const REF_R: f32 = 0.105;
+const REF_W: f32 = 0.080;
 /// The reference engine's bore, m (README: bore 86, stroke 86, rod 143 mm).
 const REF_BORE: f32 = 0.086;
 
@@ -297,6 +303,33 @@ pub fn valve() -> Option<Mesh> {
     Some(to_unit(&part, 1.0, Vec3::ZERO, Vec3::new(0.17, 0.04, 0.17)))
 }
 
+/// The realistic rotor in the procedural rotor's unit frame (0.97 R across, 0.9 width deep from
+/// its face; `scene::moving`), for a rotor of `e_over_r`: none unless that is the asset's
+/// (another e/R is another flank shape: the asset must be built again for it, README).
+pub fn rotor(e_over_r: f32) -> Option<Mesh> {
+    let reference = REF_E / REF_R;
+    if (e_over_r - reference).abs() > 0.01 * reference {
+        return None;
+    }
+    static ROTOR: std::sync::OnceLock<Option<Mesh>> = std::sync::OnceLock::new();
+    ROTOR
+        .get_or_init(|| {
+            let part = load(ROTOR_GLB)
+                .inspect_err(|e| {
+                    eprintln!("3D view: wankel_rotor.glb unreadable ({e}), drawing the primitive")
+                })
+                .ok()?;
+            // scaled with the engine's R and width, which cancel in this frame
+            Some(to_unit(
+                &part,
+                1.0,
+                Vec3::new(0.0, 0.45 * REF_W, 0.0),
+                Vec3::new(0.97 * REF_R, 0.9 * REF_W, 0.97 * REF_R),
+            ))
+        })
+        .clone()
+}
+
 /// Into a unit frame: `p ↦ (p·k + offset) / scale`, normals `n ↦ n·scale` (normalised).
 fn to_unit(part: &GlbPart, k: f32, offset: Vec3, scale: Vec3) -> Mesh {
     Mesh {
@@ -495,6 +528,35 @@ mod tests {
         let top = bores.iter().map(|(p, _)| p.y).fold(f32::MIN, f32::max);
         let drop = REF_STEM / REF_BORE - SCENE_STEM_B;
         assert!((top - (top_ref - drop)).abs() < 1e-3, "{top} {top_ref}");
+    }
+
+    #[test]
+    fn the_rotor_flank_waist_is_r_minus_2e() {
+        let m = rotor(REF_E / REF_R).expect("the realistic rotor");
+        // back to metres: x, z by 0.97 R; the flank's middle (60° from apex 0) stands R − 2e =
+        // 75 mm from the centre (README: the true inner envelope, mid-flank 75.00 mm)
+        let (mid, apex) = m.vertices.iter().fold((0.0f32, 0.0f32), |(mid, apex), v| {
+            let (x, z) = (v.pos[0] * 0.97 * REF_R, v.pos[2] * 0.97 * REF_R);
+            let (r, a) = (x.hypot(z), z.atan2(x).to_degrees());
+            (
+                if (a - 60.0).abs() < 0.5 {
+                    mid.max(r)
+                } else {
+                    mid
+                },
+                if a.abs() < 0.5 { apex.max(r) } else { apex },
+            )
+        });
+        assert!((mid - (REF_R - 2.0 * REF_E)).abs() < 0.5e-3, "{mid}");
+        // the apex stays within R: the rotor fits its housing
+        assert!(apex > 0.9 * REF_R && apex <= REF_R + 1e-4, "{apex}");
+        // and the width spans 0..1 of the frame's 0.9 w
+        let (lo, hi) = m.vertices.iter().fold((f32::MAX, f32::MIN), |(l, h), v| {
+            (l.min(v.pos[1]), h.max(v.pos[1]))
+        });
+        assert!(lo > -0.1 && hi < 1.1, "{lo} {hi}");
+        // another e/R: none (the primitive stays)
+        assert!(rotor(0.16).is_none());
     }
 
     #[test]

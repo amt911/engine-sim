@@ -401,7 +401,15 @@ pub fn unit_mesh(kind: MeshKind, key: MeshKey) -> Mesh {
         MeshKind::Cuboid => mesh::cuboid(),
         MeshKind::Housing => mesh::housing(key.e_over_r, 4 * s),
         MeshKind::HousingRing => mesh::housing_ring(key.e_over_r, 4 * s),
-        MeshKind::Rotor => mesh::rotor(s.div_ceil(2)),
+        MeshKind::Rotor => match super::parts::rotor(key.e_over_r) {
+            Some(m) if key.realistic => m,
+            _ => mesh::rotor(s.div_ceil(2)),
+        },
+        // the realistic rotor carries its seals
+        MeshKind::ApexSeal => match super::parts::rotor(key.e_over_r) {
+            Some(_) if key.realistic => Mesh::nothing(),
+            _ => mesh::cuboid(),
+        },
         MeshKind::Liner => mesh::half_liner(s),
         // the realistic throw carries its webs
         MeshKind::Web => match super::parts::throw_asset() {
@@ -566,6 +574,15 @@ mod tests {
         );
         assert!(unit_mesh(MeshKind::Throw, key(true)).vertices.len() > 10 * cylinder);
         assert!(unit_mesh(MeshKind::Valve, key(true)).vertices.len() > 10 * cylinder);
+        // a rotary of the asset's e/R (15/105, the RENESIS) takes the realistic rotor and its seals
+        let rotary = |realistic| MeshKey {
+            e_over_r: 15.0 / 105.0,
+            ..key(realistic)
+        };
+        let primitive = unit_mesh(MeshKind::Rotor, rotary(false)).vertices.len();
+        assert!(unit_mesh(MeshKind::Rotor, rotary(true)).vertices.len() > 10 * primitive);
+        assert_eq!(unit_mesh(MeshKind::ApexSeal, rotary(true)).indices.len(), 3);
+        assert_eq!(unit_mesh(MeshKind::ApexSeal, key(true)), mesh::cuboid(), "not a rotary");
         for kind in [
             MeshKind::PistonRing,
             MeshKind::WristPin,
