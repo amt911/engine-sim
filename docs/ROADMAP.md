@@ -25,10 +25,14 @@ Last updated: 2026-11-04.
 1. ✅ v0.46.0: the ~20 s lag after an edit. Edits are paced; the benchmark waits for the edits
    to stop; the exhaust network is kept when the exhaust is unchanged. An edit *to* the exhaust
    still rebuilds it (about 1 s on the LFA); caching its designed filters is part of item 3.
-2. **Editing fluid and visible:**
+2. **The realistic 3D parts** (user, 2026-11-04) from `assets/3d-parts/` in the 3D view:
+   - piston, rod, crank, valve train and Wankel, read from their `.glb`;
+   - stretched by bore, stroke and rod per the README's rules;
+   - they replace the procedural meshes (plan `2026-11-04-3d-parts-integration.md`).
+3. **Editing fluid and visible:**
    - the dots are confusing; edits should feel continuous and be easy to see;
    - the engine should answer while dragging, not only on release, if the rebuild allows it.
-3. **Typical parts and typical sizes:** a catalogue of real components with their real
+4. **Typical parts and typical sizes:** a catalogue of real components with their real
    dimensions, so an engine built from them sounds good. Examples:
    - road and race exhaust manifolds;
    - silencers;
