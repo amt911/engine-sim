@@ -156,16 +156,6 @@ pub fn piston_unit_mesh() -> Result<Mesh, PartError> {
     ))
 }
 
-/// The realistic rod for `rod_over_bore` (length between centres over the bore) in the
-/// procedural rod's unit frame: that box is centred between the crankpin and the wrist pin, the
-/// rod's length tall, 0.14 bore wide along the crank and 0.2 bore deep (`scene::bar_between`).
-/// Stretched by the README's rule `p' = s·p + w·(rod − s·0.143)·Ŷ`; in bores, the scale cancels.
-pub fn rod_unit_mesh(rod_over_bore: f32) -> Result<Mesh, PartError> {
-    let mut part = load(CONROD_GLB)?;
-    stretch_rod(&mut part, rod_over_bore);
-    Ok(rod_frame(&part, rod_over_bore))
-}
-
 /// The rod asset, read once (none if unreadable: the primitives stay).
 pub fn rod_asset() -> Option<&'static GlbPart> {
     static ROD: std::sync::OnceLock<Option<GlbPart>> = std::sync::OnceLock::new();
@@ -179,7 +169,10 @@ pub fn rod_asset() -> Option<&'static GlbPart> {
     .as_ref()
 }
 
-/// [`rod_unit_mesh`] from the asset read once.
+/// The realistic rod for `rod_over_bore` (length between centres over the bore) in the
+/// procedural rod's unit frame: that box is centred between the crankpin and the wrist pin, the
+/// rod's length tall, 0.14 bore wide along the crank and 0.2 bore deep (`scene::bar_between`).
+/// Stretched by the README's rule `p' = s·p + w·(rod − s·0.143)·Ŷ`; in bores, the scale cancels.
 pub fn rod(rod_over_bore: f32) -> Option<Mesh> {
     let mut part = rod_asset()?.clone();
     stretch_rod(&mut part, rod_over_bore);
@@ -284,12 +277,7 @@ mod tests {
 
     /// The rod's mesh back in metres for `rod` and `bore` (the instance's scale and centre).
     fn rod_world(rod: f32, bore: f32) -> Vec<Vec3> {
-        let m = rod_unit_mesh(rod / bore).expect("the realistic rod");
-        assert_eq!(
-            super::rod(rod / bore).as_ref(),
-            Some(&m),
-            "the cached asset, the same"
-        );
+        let m = super::rod(rod / bore).expect("the realistic rod");
         let (scale, centre) = (Vec3::new(0.14 * bore, rod, 0.2 * bore), Vec3::Y * 0.5 * rod);
         m.vertices
             .iter()
