@@ -6,7 +6,8 @@
 //! the torque peak, and the constant of the wave-tuning law.
 
 use crate::engine::EngineDef;
-use crate::exhaust::C_PRIMARY;
+use crate::exhaust::{C_PRIMARY, ExhaustDef};
+use serde::{Deserialize, Serialize};
 
 /// Volumetric efficiency at the torque peak. ESTIMATE: road engines fill 85–95 % of their swept
 /// volume there (Heywood, *Internal Combustion Engine Fundamentals*, ch. 7); the sizing only
@@ -124,6 +125,223 @@ fn median_spread(v: &mut [f64]) -> (f64, (f64, f64)) {
     (mid, (v[0], v[n - 1]))
 }
 
+/// The editor's slider range of each exhaust measure, m: every sized measure stays inside it.
+pub const PRIMARY_LENGTH_M: (f64, f64) = (0.1, 2.0);
+pub const PRIMARY_DIAMETER_M: (f64, f64) = (0.020, 0.090);
+pub const COLLECTOR_LENGTH_M: (f64, f64) = (0.01, 1.5);
+pub const COLLECTOR_DIAMETER_M: (f64, f64) = (0.020, 0.120);
+pub const TAIL_DIAMETER_M: (f64, f64) = (0.020, 0.120);
+/// A silencer's length and shell, m (the editor's 50–1200 mm and 40–400 mm).
+pub const SILENCER_LENGTH_M: (f64, f64) = (0.05, 1.2);
+pub const SILENCER_DIAMETER_M: (f64, f64) = (0.040, 0.400);
+
+/// Header types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Headers {
+    /// One cylinder: its own pipe.
+    Single,
+    /// Every cylinder of a bank into one collector.
+    FourOne,
+    /// Pairs 360° apart into secondaries, the secondaries into one (tri-Y).
+    FourTwoOne,
+    /// Short stubs into a log: a cheap cast manifold.
+    Log,
+}
+
+/// What follows the headers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum System {
+    /// Catalyst and two chamber silencers.
+    Road,
+    /// Catalyst and one straight-through packed silencer.
+    Sport,
+    /// An open pipe.
+    Race,
+}
+
+/// The headers this engine can take: a single only its own pipe; a tri-Y needs pairs 360° apart
+/// in each bank.
+pub fn headers_for(def: &EngineDef) -> Vec<Headers> {
+    if def.cylinders <= 1 {
+        return vec![Headers::Single];
+    }
+    let mut out = vec![Headers::FourOne];
+    if banks(def).iter().all(|b| pairs(def, b).is_some()) {
+        out.push(Headers::FourTwoOne);
+    }
+    out.push(Headers::Log);
+    out
+}
+
+/// Each bank's cylinders (1-based), from the layout.
+fn banks(def: &EngineDef) -> Vec<Vec<usize>> {
+    let mut out: Vec<Vec<usize>> = Vec::new();
+    for (i, (bank, _)) in def.layout.place(def.cylinders).into_iter().enumerate() {
+        if out.len() <= bank {
+            out.resize(bank + 1, Vec::new());
+        }
+        out[bank].push(i + 1);
+    }
+    out.retain(|b| !b.is_empty());
+    out
+}
+
+/// A bank's cylinders paired 360° apart in the firing order (a tri-Y's secondaries), if they pair.
+fn pairs(def: &EngineDef, bank: &[usize]) -> Option<Vec<Vec<usize>>> {
+    if bank.len() < 2 || bank.len() % 2 == 1 {
+        return None;
+    }
+    let off = def.phase_offsets_deg();
+    let mut left: Vec<usize> = bank.to_vec();
+    let mut out = Vec::new();
+    while let Some(a) = left.pop() {
+        let at = left
+            .iter()
+            .position(|&b| ((off[a - 1] - off[b - 1]).abs() - 360.0).abs() < 1e-6)?;
+        let b = left.remove(at);
+        out.push(vec![b.min(a), b.max(a)]);
+    }
+    out.sort();
+    Some(out)
+}
+
+/// A pipe's bore carrying `cylinders` cylinders' exhaust at `speed`, clamped to `range`.
+fn bore_for(def: &EngineDef, cylinders: usize, rpm: f64, speed: f64, range: (f64, f64)) -> f64 {
+    let a = mean_speed(cylinders, def.geometry.displacement(), rpm, 1.0) / speed.max(1e-9);
+    (4.0 * a / std::f64::consts::PI)
+        .sqrt()
+        .clamp(range.0, range.1)
+}
+
+/// Silencer attenuation at the firing frequency, dB. ESTIMATE: a road car meets its drive-by limit
+/// about 20 dB under an open pipe at the firing order; a sport silencer half that. To be confirmed
+/// by the user's ear (spec).
+pub fn silencer_target_db(system: System) -> f64 {
+    match system {
+        System::Road => 20.0,
+        System::Sport => 10.0,
+        System::Race => 0.0,
+    }
+}
+
+/// An expansion chamber's area ratio for `tl_db` at its peak: Munjal (*Acoustics of Ducts and
+/// Mufflers*, ch. 3) `TL = 10·log10(1 + ¼(m − 1/m)²·sin²kL)`, at `kL = π/2`, solved for m.
+pub fn chamber_ratio(tl_db: f64) -> f64 {
+    // ¼(m − 1/m)² = 10^(TL/10) − 1 → m − 1/m = x → m = (x + √(x² + 4))/2
+    let x = 2.0 * (10f64.powf(tl_db.max(0.0) / 10.0) - 1.0).sqrt();
+    0.5 * (x + (x * x + 4.0).sqrt())
+}
+
+/// The exhaust of `h` and `s` sized for `def` (its other fields kept).
+pub fn size_exhaust(def: &EngineDef, h: Headers, s: System, sv: &Survey) -> ExhaustDef {
+    use crate::exhaust::{Merge, Segment};
+    let n_t = tuned_rpm(def.redline_rpm, s == System::Race);
+    let mut x = def.exhaust.clone();
+    let tuned = |n: f64| {
+        (sv.tuning_k * C_PRIMARY * blowdown_deg(def) / (12.0 * n))
+            .clamp(PRIMARY_LENGTH_M.0, PRIMARY_LENGTH_M.1)
+    };
+    x.primary_diameter_m = bore_for(def, 1, n_t, sv.v_primary, PRIMARY_DIAMETER_M);
+    x.primary_length_m = tuned(n_t);
+    x.primary_length_deviation_m.clear();
+    x.collector_extra_length_m.clear();
+    x.merge = None;
+    let banks = banks(def);
+    // the collectors: a bank's cylinders together, or (tri-Y) its pairs, or one pipe (a single)
+    let (groups, per_collector) = match h {
+        Headers::FourTwoOne => {
+            let p: Vec<Vec<usize>> = banks
+                .iter()
+                .filter_map(|b| pairs(def, b))
+                .flatten()
+                .collect();
+            (p, 2)
+        }
+        _ if banks.len() > 1 => {
+            let n = banks.iter().map(Vec::len).max().unwrap_or(1);
+            (banks.clone(), n)
+        }
+        _ => (Vec::new(), def.cylinders.max(1)),
+    };
+    x.collectors = groups;
+    x.collector_diameter_m = bore_for(def, per_collector, n_t, sv.v_primary, COLLECTOR_DIAMETER_M);
+    x.collector_length_m = match h {
+        // ESTIMATE: a merge's own length; the primaries carry the tuning
+        Headers::Single | Headers::FourOne => 0.15,
+        // the secondaries tuned by the same law (the second pulse a pair's partner sends)
+        Headers::FourTwoOne => tuned(n_t),
+        // ESTIMATE: a cast log runs along the bank, about a third of a tuned primary
+        Headers::Log => 0.3 * x.primary_length_m,
+    }
+    .clamp(COLLECTOR_LENGTH_M.0, COLLECTOR_LENGTH_M.1);
+    if h == Headers::Log {
+        // a log's stubs: the shortest primaries the editor takes
+        x.primary_length_m = PRIMARY_LENGTH_M.0;
+    }
+    // the system: one per branch, or one after the merge (a tri-Y's)
+    let merged = h == Headers::FourTwoOne;
+    let branch_cyl = if merged { def.cylinders } else { per_collector };
+    let tail = bore_for(def, branch_cyl, n_t, sv.v_tail, TAIL_DIAMETER_M);
+    let firing_hz = branch_cyl as f64 * n_t / 120.0;
+    let can = |f: f64, tl: f64, tube: f64| Segment::Muffler {
+        // a quarter wave at f in the tail's gas: the chamber's first peak (kL = π/2)
+        length_m: (crate::exhaust::C_TAIL / (4.0 * f))
+            .clamp(SILENCER_LENGTH_M.0, SILENCER_LENGTH_M.1),
+        diameter_m: (tail * chamber_ratio(tl).sqrt())
+            .clamp(SILENCER_DIAMETER_M.0.max(tube * 1.2), SILENCER_DIAMETER_M.1),
+        tube_diameter_m: tube,
+        packing_resistivity: crate::exhaust::default_resistivity(),
+        packing_porosity: crate::exhaust::default_porosity(),
+    };
+    let pipe = |len: f64| Segment::Pipe {
+        length_m: len,
+        diameter_m: tail,
+    };
+    // ESTIMATE: a catalyst's brick has four times the pipe's area (the presets' 0.14 m on 0.05 m)
+    let cat = Segment::Catalyst {
+        length_m: 0.13,
+        diameter_m: 2.0 * tail,
+        cells_per_in2: 400.0,
+        wall_m: 0.000165,
+    };
+    let system = match s {
+        System::Road => vec![
+            cat,
+            pipe(0.4),
+            can(firing_hz, silencer_target_db(s), 0.0),
+            pipe(0.6),
+            can(2.0 * firing_hz, silencer_target_db(s), 0.0),
+            pipe(0.4),
+        ],
+        System::Sport => vec![
+            cat,
+            pipe(0.6),
+            can(firing_hz, silencer_target_db(s), tail),
+            pipe(0.5),
+        ],
+        System::Race => vec![pipe(1.0)],
+    };
+    x.tail_length_m = 1.0;
+    x.tail_diameter_m = tail;
+    x.muffler_transmission = 1.0;
+    if merged {
+        x.after_collector = vec![Segment::Pipe {
+            length_m: 0.05,
+            diameter_m: x.collector_diameter_m,
+        }];
+        x.merge = Some(Merge {
+            segments: system,
+            outlet_diameter_m: tail,
+            bypass: None,
+        });
+    } else {
+        x.after_collector = system;
+    }
+    x
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,5 +375,156 @@ mod tests {
         assert!(s.v_primary > 55.0 && s.v_primary < 66.0, "{}", s.v_primary);
         assert!(s.v_primary_spread.0 <= s.v_primary && s.v_primary <= s.v_primary_spread.1);
         assert!(s.v_tail > 0.0 && s.v_tail_spread.0 <= s.v_tail && s.v_tail <= s.v_tail_spread.1);
+    }
+
+    fn sized(d: &EngineDef, h: Headers, s: System) -> ExhaustDef {
+        size_exhaust(d, h, s, &survey())
+    }
+
+    #[test]
+    fn a_two_litre_four_gets_its_primary_by_continuity() {
+        // the inline-4 (86 × 86, redline 7000 → tuned 5250): a primary carrying one cylinder at
+        // the survey's speed v: A = 0.4996e-3·0.9·5250/120·3.333/v; at v = 60.57 m/s,
+        // A = 1.0826e-3 m², D = 37.1 mm
+        let mut d = EngineDef::inline4();
+        d.redline_rpm = 7000.0;
+        let x = sized(&d, Headers::FourOne, System::Road);
+        assert!(
+            (x.primary_diameter_m - 0.0371).abs() < 0.0006,
+            "{}",
+            x.primary_diameter_m
+        );
+        // its length: k·c·θ/(12·N) = 0.3235·600·θ/(12·5250), θ its blowdown span
+        let theta = blowdown_deg(&d);
+        let l = 0.3235 * 600.0 * theta / (12.0 * 5250.0);
+        assert!(
+            (x.primary_length_m - l).abs() < 0.01,
+            "{} {l}",
+            x.primary_length_m
+        );
+    }
+
+    #[test]
+    fn the_tuning_law_lengthens_primaries_for_a_slower_engine() {
+        let mut d = EngineDef::inline4();
+        d.redline_rpm = 8000.0;
+        let fast = sized(&d, Headers::FourOne, System::Road).primary_length_m;
+        d.redline_rpm = 4000.0;
+        let slow = sized(&d, Headers::FourOne, System::Road).primary_length_m;
+        assert!((slow / fast - 2.0).abs() < 1e-9, "{fast} {slow}");
+    }
+
+    #[test]
+    fn munjals_chamber_gives_its_target_loss() {
+        // m for 20 dB at kL = π/2: (m − 1/m) = 2·√(10² − 1) = 19.900, m = 19.950
+        assert!(
+            (chamber_ratio(20.0) - 19.950).abs() < 0.005,
+            "{}",
+            chamber_ratio(20.0)
+        );
+        assert!((chamber_ratio(0.0) - 1.0).abs() < 1e-12);
+        // the road silencer of a 2.0 L four tuned at 5250 rpm: firing 175 Hz, a quarter wave in
+        // the tail's 500 m/s gas: 0.714 m; its shell √m = 4.47 times the tail's bore
+        let mut d = EngineDef::inline4();
+        d.redline_rpm = 7000.0;
+        let x = sized(&d, Headers::FourOne, System::Road);
+        let cans: Vec<_> = x
+            .after_collector
+            .iter()
+            .filter_map(|s| match *s {
+                crate::exhaust::Segment::Muffler {
+                    length_m,
+                    diameter_m,
+                    ..
+                } => Some((length_m, diameter_m)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(cans.len(), 2, "two silencers");
+        assert!((cans[0].0 - 0.714).abs() < 0.005, "{:?}", cans);
+        let tail = x.outlet_diameter();
+        assert!(
+            (cans[0].1 / tail - 19.950f64.sqrt()).abs() < 0.02,
+            "{:?} {tail}",
+            cans
+        );
+        assert!(
+            x.after_collector
+                .iter()
+                .any(|s| matches!(s, crate::exhaust::Segment::Catalyst { .. }))
+        );
+        // race: no catalyst, no silencer
+        let race = sized(&d, Headers::FourOne, System::Race);
+        assert!(
+            race.after_collector
+                .iter()
+                .all(|s| matches!(s, crate::exhaust::Segment::Pipe { .. }))
+        );
+    }
+
+    #[test]
+    fn a_single_gets_single_headers_and_a_v8_headers_per_bank() {
+        assert_eq!(headers_for(&EngineDef::single()), vec![Headers::Single]);
+        let i4 = headers_for(&EngineDef::inline4());
+        assert!(
+            i4.contains(&Headers::FourOne)
+                && i4.contains(&Headers::FourTwoOne)
+                && i4.contains(&Headers::Log)
+        );
+        let v8 = EngineDef::crossplane_v8();
+        let x = sized(&v8, Headers::FourOne, System::Road);
+        assert_eq!(x.groups(8).len(), 2, "a collector per bank");
+        // a tri-Y pairs cylinders 360° apart
+        let tri = sized(&EngineDef::inline4(), Headers::FourTwoOne, System::Road);
+        let offsets = EngineDef::inline4().phase_offsets_deg();
+        for g in tri.groups(4) {
+            assert_eq!(g.len(), 2);
+            assert!(
+                ((offsets[g[0]] - offsets[g[1]]).abs() - 360.0).abs() < 1e-9,
+                "{g:?}"
+            );
+        }
+        assert!(tri.merge.is_some(), "the secondaries merge");
+    }
+
+    #[test]
+    fn a_turbo_engine_keeps_its_turbine() {
+        let d = EngineDef::honda_k20c1();
+        let mut e = d.clone();
+        e.exhaust = sized(&d, Headers::FourOne, System::Road);
+        assert!(e.turbo.is_some());
+        assert!(
+            crate::config::validate(&e).is_ok(),
+            "{:?}",
+            crate::config::validate(&e)
+        );
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn every_choice_is_a_valid_engine_in_range(
+            cyl in 1usize..=12, layout in 0usize..3, redline in 4000.0f64..9000.0, sys in 0usize..3,
+        ) {
+            let mut d = match layout {
+                0 => EngineDef::inline4(),
+                1 => EngineDef::crossplane_v8(),
+                _ => EngineDef::subaru_ej25(),
+            };
+            d.set_cylinders(if layout == 0 { cyl } else { (cyl.max(2) / 2) * 2 });
+            d.redline_rpm = redline;
+            let system = [System::Road, System::Sport, System::Race][sys];
+            for h in headers_for(&d) {
+                let mut e = d.clone();
+                e.exhaust = size_exhaust(&d, h, system, &survey());
+                proptest::prop_assert!(crate::config::validate(&e).is_ok(), "{:?} {:?}", h, crate::config::validate(&e));
+                let x = &e.exhaust;
+                let within = |v: f64, r: (f64, f64)| v >= r.0 - 1e-12 && v <= r.1 + 1e-12;
+                proptest::prop_assert!(within(x.primary_length_m, PRIMARY_LENGTH_M));
+                proptest::prop_assert!(within(x.primary_diameter_m, PRIMARY_DIAMETER_M));
+                proptest::prop_assert!(within(x.collector_length_m, COLLECTOR_LENGTH_M));
+                proptest::prop_assert!(within(x.collector_diameter_m, COLLECTOR_DIAMETER_M));
+                proptest::prop_assert!(within(x.outlet_diameter(), TAIL_DIAMETER_M));
+            }
+        }
     }
 }

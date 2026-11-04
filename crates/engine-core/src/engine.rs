@@ -1403,7 +1403,9 @@ impl EngineDef {
         if self.layout.banks.len() == 2 && n >= 2 {
             let half = n / 2;
             self.layout.banks = vec![(1..=half).collect(), (half + 1..=n).collect()];
-            if n.is_multiple_of(2) {
+            // even firing across the banks: 720/n between them (a V8's 90°); two cylinders keep
+            // the angle they had (720/2 = 360° is no V)
+            if n.is_multiple_of(2) && n >= 4 {
                 self.layout.bank_angle_deg = 720.0 / n as f64;
             }
             if self.exhaust.collectors.len() == 2 {
@@ -4208,6 +4210,15 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_v_engine_cut_to_two_cylinders_stays_valid() {
+        // 720/2 = 360° between the banks is no V; a V-twin keeps its V8's angle
+        let mut d = EngineDef::crossplane_v8();
+        d.set_cylinders(2);
+        assert!(crate::config::validate(&d).is_ok(), "{:?}", crate::config::validate(&d));
+        assert!(d.layout.bank_angle_deg <= 180.0);
+    }
 
     #[test]
     fn an_edit_that_leaves_the_exhaust_keeps_its_network() {

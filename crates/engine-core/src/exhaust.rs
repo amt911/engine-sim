@@ -603,10 +603,10 @@ pub(crate) fn catalyst_brick(
     Duct::with_nodes(pipes, nodes)
 }
 
-fn default_resistivity() -> f64 {
+pub(crate) fn default_resistivity() -> f64 {
     crate::lining::Packing::default().flow_resistivity
 }
-fn default_porosity() -> f64 {
+pub(crate) fn default_porosity() -> f64 {
     crate::lining::Packing::default().porosity
 }
 
