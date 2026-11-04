@@ -358,6 +358,161 @@ pub fn size_exhaust(def: &EngineDef, h: Headers, s: System, sv: &Survey) -> Exha
     x
 }
 
+/// The systems chosen for an engine, remembered so a change of the engine re-sizes them.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Systems {
+    pub exhaust: Option<ExhaustChoice>,
+}
+
+/// The exhaust chosen, and the measures the user set by hand since (kept on a re-size).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExhaustChoice {
+    pub headers: Headers,
+    pub system: System,
+    #[serde(default)]
+    pub kept: Vec<String>,
+}
+
+/// The exhaust measures a choice sizes, by their field names.
+pub const MEASURES: [&str; 6] = [
+    "primary_length_m",
+    "primary_diameter_m",
+    "collector_length_m",
+    "collector_diameter_m",
+    "tail_length_m",
+    "tail_diameter_m",
+];
+
+/// A measure outside what the surveyed real engines use for this engine.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Warning {
+    pub measure: &'static str,
+    pub value: f64,
+    pub range: (f64, f64),
+}
+
+/// Choose an exhaust: size it, remember it, forget earlier hand edits.
+pub fn choose_exhaust(def: &mut EngineDef, h: Headers, s: System) {
+    def.systems.get_or_insert_with(Systems::default).exhaust = Some(ExhaustChoice {
+        headers: h,
+        system: s,
+        kept: Vec::new(),
+    });
+    resize(def);
+}
+
+/// A measure of an exhaust by its name (the tail's through [`ExhaustDef::tail_mut`]).
+fn measure_mut<'a>(x: &'a mut ExhaustDef, name: &str) -> Option<&'a mut f64> {
+    match name {
+        "primary_length_m" => Some(&mut x.primary_length_m),
+        "primary_diameter_m" => Some(&mut x.primary_diameter_m),
+        "collector_length_m" => Some(&mut x.collector_length_m),
+        "collector_diameter_m" => Some(&mut x.collector_diameter_m),
+        "tail_length_m" => Some(x.tail_mut().0),
+        "tail_diameter_m" => Some(x.tail_mut().1),
+        _ => None,
+    }
+}
+
+/// The headers a choice takes on this engine: its own if the engine can take them, else a 4-1
+/// (a single's choice on an engine raised to four cylinders), or a single's pipe on one cylinder.
+fn fitting(def: &EngineDef, h: Headers) -> Headers {
+    let can = headers_for(def);
+    if can.contains(&h) {
+        h
+    } else if def.cylinders <= 1 {
+        Headers::Single
+    } else {
+        Headers::FourOne
+    }
+}
+
+/// Re-size the chosen systems for the engine as it is now, keeping the hand-set measures.
+pub fn resize(def: &mut EngineDef) {
+    let Some(choice) = def.systems.as_ref().and_then(|s| s.exhaust.clone()) else {
+        return;
+    };
+    let mut sized = size_exhaust(def, fitting(def, choice.headers), choice.system, &survey());
+    for name in &choice.kept {
+        if let (Some(v), Some(to)) = (
+            measure_mut(&mut def.exhaust, name).map(|v| *v),
+            measure_mut(&mut sized, name),
+        ) {
+            *to = v;
+        }
+    }
+    def.exhaust = sized;
+}
+
+/// Record as hand-set every exhaust measure that differs from what the choice sizes.
+pub fn note_hand_edits(def: &mut EngineDef) {
+    let Some(choice) = def.systems.as_ref().and_then(|s| s.exhaust.clone()) else {
+        return;
+    };
+    let mut sized = size_exhaust(def, fitting(def, choice.headers), choice.system, &survey());
+    let mut here = def.exhaust.clone();
+    let kept: Vec<String> = MEASURES
+        .iter()
+        .filter(|&&m| {
+            let (a, b) = (
+                measure_mut(&mut here, m).map(|v| *v),
+                measure_mut(&mut sized, m).map(|v| *v),
+            );
+            matches!((a, b), (Some(a), Some(b)) if (a - b).abs() > 1e-9)
+        })
+        .map(|m| (*m).to_string())
+        .collect();
+    if let Some(c) = def.systems.as_mut().and_then(|s| s.exhaust.as_mut()) {
+        c.kept = kept;
+    }
+}
+
+/// The exhaust measures outside the surveyed engines' range, scaled to this engine.
+pub fn out_of_range(def: &EngineDef) -> Vec<Warning> {
+    let sv = survey();
+    let n = tuned_rpm(def.redline_rpm, false);
+    let x = &def.exhaust;
+    let swept = def.geometry.displacement();
+    // a bore from a speed range: the faster engines' small end, the slower ones' large end
+    let bores = |cyl: usize, (lo, hi): (f64, f64)| {
+        let d = |v: f64| (4.0 * mean_speed(cyl, swept, n, 1.0) / (std::f64::consts::PI * v)).sqrt();
+        (d(hi), d(lo))
+    };
+    let groups = x.groups(def.cylinders).len().max(1);
+    let per = def.cylinders.div_ceil(groups);
+    let branch = if x.merge.is_some() {
+        def.cylinders
+    } else {
+        per
+    };
+    let theta = blowdown_deg(def);
+    let lengths = (
+        sv.tuning_k_spread.0 * C_PRIMARY * theta / (12.0 * n),
+        sv.tuning_k_spread.1 * C_PRIMARY * theta / (12.0 * n),
+    );
+    let mut here = x.clone();
+    let checks = [
+        ("primary_diameter_m", bores(1, sv.v_primary_spread)),
+        ("collector_diameter_m", bores(per, sv.v_collector_spread)),
+        ("tail_diameter_m", bores(branch, sv.v_tail_spread)),
+        ("primary_length_m", lengths),
+    ];
+    checks
+        .into_iter()
+        .filter_map(|(m, (lo, hi))| {
+            let v = *measure_mut(&mut here, m)?;
+            // 2 % of slack: the surveyed engines themselves sit on the edges
+            (v < 0.98 * lo || v > 1.02 * hi).then_some(Warning {
+                measure: m,
+                value: v,
+                range: (lo, hi),
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -550,5 +705,86 @@ mod tests {
                 proptest::prop_assert!(within(x.outlet_diameter(), TAIL_DIAMETER_M));
             }
         }
+    }
+
+    #[test]
+    fn a_chosen_exhaust_round_trips_and_presets_carry_none() {
+        let mut d = EngineDef::single();
+        d.set_cylinders(4);
+        choose_exhaust(&mut d, Headers::FourOne, System::Road);
+        assert!(d.systems.is_some());
+        let yaml = serde_yaml_ng::to_string(&d).unwrap();
+        let back: EngineDef = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert_eq!(back.exhaust, d.exhaust, "exhaust");
+        assert_eq!(back.systems, d.systems, "systems");
+        assert_eq!(back, d);
+        let json = serde_json::to_string(&d).unwrap();
+        assert_eq!(serde_json::from_str::<EngineDef>(&json).unwrap(), d);
+        // a preset writes no `systems`
+        assert!(
+            !serde_yaml_ng::to_string(&EngineDef::lfa_v10())
+                .unwrap()
+                .contains("systems")
+        );
+    }
+
+    #[test]
+    fn changing_cylinders_resizes_and_keeps_hand_edits() {
+        let mut d = EngineDef::single();
+        choose_exhaust(&mut d, Headers::Single, System::Road);
+        d.set_cylinders(4);
+        let sized = size_exhaust(&d, Headers::FourOne, System::Road, &survey());
+        // the single's choice becomes the four's 4-1 (a single's headers make no sense on four)
+        assert_eq!(d.exhaust.collector_diameter_m, sized.collector_diameter_m);
+        // a hand edit stays through a re-size
+        *d.exhaust.tail_mut().0 = 2.5;
+        note_hand_edits(&mut d);
+        d.set_cylinders(3);
+        assert_eq!(*d.exhaust.tail_mut().0, 2.5);
+        // 3 → 4 gives the four's sizing again (but the kept tail)
+        d.set_cylinders(4);
+        assert_eq!(d.exhaust.primary_length_m, sized.primary_length_m);
+        assert_eq!(d.exhaust.collector_diameter_m, sized.collector_diameter_m);
+    }
+
+    #[test]
+    fn the_forty_mm_collector_on_four_cylinders_is_flagged() {
+        // the user's case: the single raised to four keeps its 40 mm collector (no choice made)
+        let mut d = EngineDef::single();
+        d.set_cylinders(4);
+        let w = out_of_range(&d);
+        assert!(
+            w.iter().any(|w| w.measure == "collector_diameter_m"),
+            "{w:?}"
+        );
+        // the K20A, a surveyed real engine, has none out of range
+        assert!(
+            out_of_range(&EngineDef::honda_k20a()).is_empty(),
+            "{:?}",
+            out_of_range(&EngineDef::honda_k20a())
+        );
+        // a kept hand edit out of range is still flagged
+        let mut d = EngineDef::inline4();
+        choose_exhaust(&mut d, Headers::FourOne, System::Road);
+        d.exhaust.collector_diameter_m = 0.03;
+        note_hand_edits(&mut d);
+        resize(&mut d);
+        assert_eq!(d.exhaust.collector_diameter_m, 0.03);
+        assert!(
+            out_of_range(&d)
+                .iter()
+                .any(|w| w.measure == "collector_diameter_m")
+        );
+    }
+
+    #[test]
+    fn unknown_kept_names_are_ignored() {
+        let mut d = EngineDef::inline4();
+        choose_exhaust(&mut d, Headers::FourOne, System::Road);
+        if let Some(c) = d.systems.as_mut().and_then(|s| s.exhaust.as_mut()) {
+            c.kept.push("no_such_measure".into());
+        }
+        resize(&mut d);
+        assert!(crate::config::validate(&d).is_ok());
     }
 }

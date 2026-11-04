@@ -99,6 +99,10 @@ pub struct EngineDef {
     /// aspirated. Files without it have none.
     #[serde(default)]
     pub turbo: Option<crate::turbo::TurboDef>,
+    /// The catalogue's systems chosen for this engine ([`crate::catalogue`]), re-sized when the
+    /// engine changes. Files without it (every preset) have none, and keep their parts as built.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub systems: Option<crate::catalogue::Systems>,
 }
 
 fn default_idle_rpm() -> f64 {
@@ -241,6 +245,7 @@ impl EngineDef {
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::single(),
             turbo: None,
+            systems: None,
         }
     }
 
@@ -263,6 +268,7 @@ impl EngineDef {
             starter_torque_nm: 60.0,
             vehicle: crate::drivetrain::VehicleDef::inline4(),
             turbo: None,
+            systems: None,
             ..Self::single()
         }
         .with_tail_pipe()
@@ -465,6 +471,7 @@ impl EngineDef {
             starter_torque_nm: 60.0,
             vehicle: crate::drivetrain::VehicleDef::inline4(),
             turbo: None,
+            systems: None,
             ..Self::single()
         }
         .with_tail_pipe()
@@ -584,6 +591,7 @@ impl EngineDef {
             starter_torque_nm: 60.0,
             vehicle: crate::drivetrain::VehicleDef::inline4(),
             turbo: None,
+            systems: None,
             friction: crate::friction::FrictionDef {
                 valvetrain: crate::friction::Valvetrain::SohcRockerArm,
                 ..crate::friction::FrictionDef::default()
@@ -753,6 +761,7 @@ impl EngineDef {
             starter_torque_nm: 60.0,
             vehicle: crate::drivetrain::VehicleDef::inline4(),
             turbo: None,
+            systems: None,
             // engages at 6000 rpm (Integra Type R DC5; Wikipedia, Honda K engine); its
             // hysteresis and the pedal it waits for are estimates (no factory figure found)
             vtec: Some(crate::valve::Vtec {
@@ -1159,6 +1168,7 @@ impl EngineDef {
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::lfa_v10(),
             turbo: None,
+            systems: None,
         }
         // its own bank lines (above), the catalyst first
         .with_tail_pipe()
@@ -1248,6 +1258,7 @@ impl EngineDef {
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::flatplane_v8(),
             turbo: None,
+            systems: None,
         }
         .with_tail_pipe()
         .with_catalyst()
@@ -1341,6 +1352,7 @@ impl EngineDef {
             exhaust_reverse_cd_ratio: 0.75,
             vehicle: crate::drivetrain::VehicleDef::crossplane_v8(),
             turbo: None,
+            systems: None,
         }
         .with_tail_pipe()
         .with_catalyst()
@@ -1414,6 +1426,8 @@ impl EngineDef {
         } else {
             self.exhaust.collectors.clear();
         }
+        // a chosen system follows the engine (the measures set by hand stay)
+        crate::catalogue::resize(self);
     }
 
     pub fn displacement_m3(&self) -> f64 {
@@ -4763,6 +4777,7 @@ mod tests {
         let na = EngineDef::inline4();
         let turbo = EngineDef {
             turbo: Some(crate::turbo::TurboDef::default()),
+            systems: None,
             ..na.clone()
         };
         let c = Controls {
@@ -5131,6 +5146,7 @@ mod tests {
         let run = |whine: f64| {
             let mut d = EngineDef {
                 turbo: Some(crate::turbo::TurboDef::default()),
+                systems: None,
                 ..EngineDef::inline4()
             };
             d.sound.compressor_whine = whine;
@@ -5360,6 +5376,7 @@ mod tests {
         let run = |blow_off: f64| {
             let mut d = EngineDef {
                 turbo: Some(crate::turbo::TurboDef::default()),
+                systems: None,
                 ..EngineDef::inline4()
             };
             d.sound.blow_off = blow_off;
@@ -5392,6 +5409,7 @@ mod tests {
         assert_eq!(old.turbo, None);
         let d = EngineDef {
             turbo: Some(crate::turbo::TurboDef::default()),
+            systems: None,
             ..EngineDef::inline4()
         };
         let json: EngineDef = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
