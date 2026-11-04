@@ -454,12 +454,14 @@ mod tests {
             let piston = state.view3d.shared.lock().ok().and_then(|sh| {
                 sh.instances
                     .iter()
-                    .find(|i| i.part == crate::view3d::scene::Part::Piston)
-                    .map(|i| i.model.w_axis.truncate())
+                    .position(|i| i.part == crate::view3d::scene::Part::Piston)
+                    .map(|k| (k, sh.instances[k].model.w_axis.truncate()))
             });
-            if let (Some(c), Some(p)) = (state.view3d.camera.as_mut(), piston) {
+            if let (Some(c), Some((k, p))) = (state.view3d.camera.as_mut(), piston) {
                 c.target = p;
                 c.distance *= 0.3;
+                // the piston clicked: its card and its arrows
+                state.view3d.selected = Some((k, egui::pos2(760.0, 420.0)));
             }
             let rs = kw::create_render_state(
                 kw::default_wgpu_setup(),
@@ -551,7 +553,7 @@ mod tests {
         assert!(h.state().view3d.selected.is_none());
     }
 
-    /// A handle dragged in the 3D view edits the engine: the clicked piston's bore handle pulled
+    /// outwards widens the bore, the engine following while it is held. Needs a GPU (or lavapipe):
     /// outwards widens the bore, applied once on release. Needs a GPU (or lavapipe):
     /// `cargo test -p engine-app dragging_a_handle -- --ignored`.
     #[test]
@@ -623,9 +625,18 @@ mod tests {
                 h.hover_at(at + dir * (k as f32 / 8.0));
                 h.run();
             }
+            // the engine follows the arrow before it is let go
+            let held = h.state().def.geometry.bore_m;
+            let dirty_held = h.state().engine_dirty;
             press(&mut h, at + dir, false);
             h.run();
             if h.state().def.geometry.bore_m > bore {
+                assert!(held > bore, "changed while held: {held} vs {bore}");
+                assert!(dirty_held, "the engine rebuilt while held");
+                assert!(
+                    h.state().view3d.selected.is_some(),
+                    "the part stays selected after the drag"
+                );
                 break;
             }
             h.state_mut().view3d.selected = Some((piston, egui::pos2(700.0, 300.0)));
