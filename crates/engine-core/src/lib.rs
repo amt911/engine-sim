@@ -13,6 +13,7 @@ pub mod friction;
 pub mod fuel;
 pub mod fv;
 pub mod gas;
+pub mod gear_noise;
 pub mod geometry;
 pub mod intake_fv;
 pub mod jet_noise;
