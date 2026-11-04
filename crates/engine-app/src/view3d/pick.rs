@@ -7,7 +7,10 @@ use glam::{Mat4, Vec3};
 /// The bounds of each unit mesh in its own frame ([`super::mesh`]).
 pub fn local_bounds(kind: MeshKind) -> (Vec3, Vec3) {
     match kind {
-        MeshKind::Cylinder | MeshKind::Liner => {
+        // the realistic piston: its skirt 0.08 under the primitive's base, its dome 0.02 over the
+        // top, its rings 1.02 out (`parts::piston_unit_mesh`)
+        MeshKind::Piston => (Vec3::new(-1.03, -0.1, -1.03), Vec3::new(1.03, 1.03, 1.03)),
+        MeshKind::Cylinder | MeshKind::Liner | MeshKind::PistonRing | MeshKind::WristPin => {
             (Vec3::new(-1.0, 0.0, -1.0), Vec3::new(1.0, 1.0, 1.0))
         }
         MeshKind::Cuboid => (Vec3::splat(-0.5), Vec3::splat(0.5)),

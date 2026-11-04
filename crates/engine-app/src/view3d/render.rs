@@ -33,6 +33,8 @@ pub struct MeshKey {
     pub def_version: u64,
     pub segments: u32,
     pub e_over_r: f32,
+    /// The realistic parts of `assets/3d-parts` (Medium and High) instead of the primitives.
+    pub realistic: bool,
 }
 
 /// The frame's scene, written by the UI thread and read by `prepare`.
@@ -399,6 +401,15 @@ pub fn unit_mesh(kind: MeshKind, key: MeshKey) -> Mesh {
         MeshKind::Liner => mesh::half_liner(s),
         MeshKind::Web => mesh::crank_web(s.div_ceil(2)),
         MeshKind::Sphere => mesh::sphere(s.div_ceil(2)),
+        MeshKind::Piston => match super::parts::piston() {
+            Some(m) if key.realistic => m.clone(),
+            _ => mesh::cylinder(s),
+        },
+        // the realistic piston carries its rings and pin: theirs draw nothing then
+        MeshKind::PistonRing | MeshKind::WristPin => match super::parts::piston() {
+            Some(_) if key.realistic => Mesh::nothing(),
+            _ => mesh::cylinder(s),
+        },
     }
 }
 
@@ -496,11 +507,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_realistic_piston_comes_with_the_detail() {
+        let key = |realistic| MeshKey {
+            def_version: 1,
+            segments: 12,
+            e_over_r: 0.0,
+            realistic,
+        };
+        let cylinder = mesh::cylinder(12).vertices.len();
+        // Low: the primitives; Medium and High: the realistic piston, which carries its own
+        // rings and pin, so theirs draw nothing (one degenerate triangle)
+        assert_eq!(
+            unit_mesh(MeshKind::Piston, key(false)).vertices.len(),
+            cylinder
+        );
+        assert_eq!(
+            unit_mesh(MeshKind::PistonRing, key(false)).vertices.len(),
+            cylinder
+        );
+        assert!(unit_mesh(MeshKind::Piston, key(true)).vertices.len() > 10 * cylinder);
+        for kind in [MeshKind::PistonRing, MeshKind::WristPin] {
+            let m = unit_mesh(kind, key(true));
+            assert_eq!(m.indices.len(), 3);
+            assert!(m.vertices.iter().all(|v| v.pos == m.vertices[0].pos));
+        }
+    }
+
+    #[test]
     fn every_kind_has_a_mesh() {
         let key = MeshKey {
             def_version: 1,
             segments: 12,
             e_over_r: 0.15,
+            realistic: true,
         };
         for kind in MeshKind::ALL {
             let m = unit_mesh(kind, key);

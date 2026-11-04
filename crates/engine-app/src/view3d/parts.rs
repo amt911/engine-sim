@@ -32,6 +32,16 @@ pub enum PartError {
     Missing(&'static str),
 }
 
+impl std::fmt::Display for PartError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PartError::Gltf(e) => write!(f, "glTF: {e}"),
+            PartError::NoBinary => write!(f, "no binary chunk"),
+            PartError::Missing(what) => write!(f, "no {what}"),
+        }
+    }
+}
+
 /// Read a `.glb`: every mesh of its default scene merged.
 pub fn load(bytes: &[u8]) -> Result<GlbPart, PartError> {
     let file = gltf::Gltf::from_slice(bytes).map_err(PartError::Gltf)?;
@@ -101,8 +111,13 @@ pub fn load(bytes: &[u8]) -> Result<GlbPart, PartError> {
             }
             if !morph.is_empty() || !out.morph0.is_empty() {
                 out.morph0.resize(out.positions.len(), Vec3::ZERO);
-                out.morph0
-                    .extend(morph.iter().copied().chain(std::iter::repeat(Vec3::ZERO)).take(n));
+                out.morph0.extend(
+                    morph
+                        .iter()
+                        .copied()
+                        .chain(std::iter::repeat(Vec3::ZERO))
+                        .take(n),
+                );
             }
             let indices: Vec<u32> = match read.read_indices() {
                 Some(i) => i.into_u32().collect(),
@@ -126,14 +141,28 @@ pub fn load(bytes: &[u8]) -> Result<GlbPart, PartError> {
 /// The realistic piston (with its rings and pin) in the procedural piston's unit frame: that
 /// cylinder spans y 0..1 from 0.6 bore under the crown, 0.49 bore in radius; the asset's crown is
 /// 0.35 bore over its origin, the wrist pin. A uniform scale with the bore cancels in that frame.
-pub fn piston_unit_mesh() -> Option<Mesh> {
-    let part = load(PISTON_GLB).ok()?;
-    Some(to_unit(
+pub fn piston_unit_mesh() -> Result<Mesh, PartError> {
+    let part = load(PISTON_GLB)?;
+    Ok(to_unit(
         &part,
         1.0 / REF_BORE,
         Vec3::new(0.0, 0.25, 0.0),
         Vec3::new(0.49, 0.6, 0.49),
     ))
+}
+
+/// [`piston_unit_mesh`], built once (none if the asset cannot be read: the primitive stays).
+pub fn piston() -> Option<&'static Mesh> {
+    static PISTON: std::sync::OnceLock<Option<Mesh>> = std::sync::OnceLock::new();
+    PISTON
+        .get_or_init(|| {
+            piston_unit_mesh()
+                .inspect_err(|e| {
+                    eprintln!("3D view: piston.glb unreadable ({e}), drawing the primitive")
+                })
+                .ok()
+        })
+        .as_ref()
 }
 
 /// Into a unit frame: `p ↦ (p·k + offset) / scale`, normals `n ↦ n·scale` (normalised).
@@ -157,9 +186,10 @@ mod tests {
     use super::*;
 
     fn bounds(ps: impl Iterator<Item = Vec3>) -> (Vec3, Vec3) {
-        ps.fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(lo, hi), p| {
-            (lo.min(p), hi.max(p))
-        })
+        ps.fold(
+            (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)),
+            |(lo, hi), p| (lo.min(p), hi.max(p)),
+        )
     }
 
     #[test]
@@ -180,6 +210,7 @@ mod tests {
     #[test]
     fn the_piston_sits_in_the_procedural_pistons_frame() {
         let m = piston_unit_mesh().expect("the realistic piston");
+        assert_eq!(piston(), Some(&m), "built once, the same");
         let (lo, hi) = bounds(m.vertices.iter().map(|v| Vec3::from(v.pos)));
         // crown edge at y = 1 (0.35 b over the pin, the pin 0.25 b over the frame's base, 0.6 b
         // per unit), its dome 0.9 mm / (0.6·86 mm) = 0.0174 higher; radius 0.5 b over 0.49 b

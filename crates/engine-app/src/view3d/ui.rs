@@ -430,6 +430,7 @@ pub fn show(
             def_version: st.def_version,
             segments: st.governor.detail.segments(),
             e_over_r,
+            realistic: st.governor.detail.realistic(),
         },
     };
     ui.painter()
@@ -654,6 +655,7 @@ mod tests {
                         def_version: st.def_version,
                         segments: detail.segments(),
                         e_over_r: 0.0,
+                        realistic: detail.realistic(),
                     },
                 };
                 let mut enc = rs.device.create_command_encoder(&Default::default());

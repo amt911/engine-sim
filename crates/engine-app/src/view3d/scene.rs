@@ -65,6 +65,9 @@ impl Part {
             Part::SidePlate => MeshKind::Housing,
             Part::Rotor => MeshKind::Rotor,
             Part::Joint => MeshKind::Sphere,
+            Part::Piston => MeshKind::Piston,
+            Part::PistonRing => MeshKind::PistonRing,
+            Part::WristPin => MeshKind::WristPin,
             _ => MeshKind::Cylinder,
         }
     }
@@ -80,10 +83,13 @@ pub enum MeshKind {
     Liner,
     Web,
     Sphere,
+    Piston,
+    PistonRing,
+    WristPin,
 }
 
 impl MeshKind {
-    pub const ALL: [MeshKind; 8] = [
+    pub const ALL: [MeshKind; 11] = [
         MeshKind::Cylinder,
         MeshKind::Cuboid,
         MeshKind::Housing,
@@ -92,6 +98,9 @@ impl MeshKind {
         MeshKind::Liner,
         MeshKind::Web,
         MeshKind::Sphere,
+        MeshKind::Piston,
+        MeshKind::PistonRing,
+        MeshKind::WristPin,
     ];
 }
 
