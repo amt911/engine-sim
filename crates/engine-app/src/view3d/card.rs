@@ -58,7 +58,7 @@ pub fn card(def: &EngineDef, scene: &Scene, parts: &[Instance], index: usize) ->
                 ),
             ],
         ),
-        Part::Crank | Part::Web => (
+        Part::Crank | Part::Throw | Part::Web => (
             "Crankshaft",
             vec![
                 ("Throw (half the stroke)".into(), mm(g.crank_radius())),

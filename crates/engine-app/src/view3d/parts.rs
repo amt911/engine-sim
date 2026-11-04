@@ -15,6 +15,13 @@ const PISTON_GLB: &[u8] = include_bytes!("../../../../assets/3d-parts/out/piston
 const CONROD_GLB: &[u8] = include_bytes!("../../../../assets/3d-parts/out/conrod.glb");
 /// The reference rod's length, m.
 const REF_ROD: f32 = 0.143;
+/// One throw of the crankshaft: its pin, both webs with their counterweights and the main
+/// journals either side (origin: the crank axis at the cylinder's plane, the pin at +Y; `stretch`
+/// weights 1 on the pin, 0 on the mains and the counterweight).
+const CRANK_GLB: &[u8] = include_bytes!("../../../../assets/3d-parts/out/crank_throw.glb");
+/// The reference throw (half the 86 mm stroke) and counterweight radius, in bores.
+const REF_THROW_B: f32 = 0.5;
+const COUNTERWEIGHT_B: f32 = 0.74;
 /// The reference engine's bore, m (README: bore 86, stroke 86, rod 143 mm).
 const REF_BORE: f32 = 0.086;
 
@@ -211,6 +218,53 @@ pub fn piston() -> Option<&'static Mesh> {
         .as_ref()
 }
 
+/// The crankshaft throw asset, read once (none if unreadable: the primitives stay).
+pub fn throw_asset() -> Option<&'static GlbPart> {
+    static THROW: std::sync::OnceLock<Option<GlbPart>> = std::sync::OnceLock::new();
+    THROW
+        .get_or_init(|| {
+            load(CRANK_GLB)
+                .inspect_err(|e| {
+                    eprintln!("3D view: crank_throw.glb unreadable ({e}), drawing the primitive")
+                })
+                .ok()
+        })
+        .as_ref()
+}
+
+/// How far down the counterweight's squeeze starts, in bores: under the main journals.
+const SQUEEZE_FROM_B: f32 = 0.35;
+
+/// The realistic throw for `throw_b` (half the stroke) and `rod_b` (the rod), both in bores,
+/// in the procedural crankpin's unit frame: that cylinder runs along the crank from 0.13 bore
+/// before the pin to 0.13 after it, 0.13 bore in radius, its frame turned with the throw (unit
+/// x = the axis × the pin's direction, y = the crank axis, z = towards the pin; `scene::moving`).
+/// Stretched by the README's rule (the pin moves out by `throw − s·0.043`, the mains and the
+/// counterweight stay); the counterweight shrinks towards the axis when it would reach the
+/// skirt at the bottom of the stroke (README: it must stay under `rod − throw − 0.30·bore`).
+pub fn throw(throw_b: f32, rod_b: f32) -> Option<Mesh> {
+    let mut part = throw_asset()?.clone();
+    let room = (rod_b - throw_b - 0.30).max(SQUEEZE_FROM_B + 0.01);
+    let squeeze = ((room - SQUEEZE_FROM_B) / (COUNTERWEIGHT_B - SQUEEZE_FROM_B)).min(1.0);
+    for (p, &w) in part.positions.iter_mut().zip(&part.stretch_w) {
+        let mut q = *p / REF_BORE + w * (throw_b - REF_THROW_B) * Vec3::Y;
+        if q.y < -SQUEEZE_FROM_B {
+            q.y = -SQUEEZE_FROM_B + (q.y + SQUEEZE_FROM_B) * squeeze;
+        }
+        // into the crankpin's turned frame: (across, along the crank, towards the pin)
+        *p = Vec3::new(q.z, q.x, q.y);
+    }
+    for n in &mut part.normals {
+        *n = Vec3::new(n.z, n.x, n.y);
+    }
+    Some(to_unit(
+        &part,
+        1.0,
+        Vec3::new(0.0, 0.13, -throw_b),
+        Vec3::new(0.13, 0.26, 0.13),
+    ))
+}
+
 /// Into a unit frame: `p ↦ (p·k + offset) / scale`, normals `n ↦ n·scale` (normalised).
 fn to_unit(part: &GlbPart, k: f32, offset: Vec3, scale: Vec3) -> Mesh {
     Mesh {
@@ -320,6 +374,64 @@ mod tests {
         assert!(!big.is_empty() && !small.is_empty());
         assert!(big.iter().all(|&w| w < 0.05), "{big:?}");
         assert!(small.iter().all(|&w| w > 0.95), "{small:?}");
+    }
+
+    /// The throw back in bores, in the crank's own frame (x along the crank, y towards the pin).
+    fn throw_bores(throw_b: f32, rod_b: f32) -> Vec<(Vec3, f32)> {
+        let m = throw(throw_b, rod_b).expect("the realistic throw");
+        let w = &throw_asset().expect("crank_throw.glb").stretch_w;
+        m.vertices
+            .iter()
+            .zip(w)
+            .map(|(v, &w)| {
+                let u = Vec3::from(v.pos) * Vec3::new(0.13, 0.26, 0.13);
+                // unit (x, y, z) = (across, along the crank, towards the pin), from 0.13 before
+                // the pin's centre at `throw_b`
+                (Vec3::new(u.y - 0.13, u.z + throw_b, u.x), w)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_throw_reaches_the_stroke() {
+        // README: the pin (weight 1) moves out by the throw's change, the mains and the
+        // counterweight (weight 0) stay: 43 → 50 mm of throw on an 86 mm bore is 7/86 bore
+        let long = 50.0 / 86.0;
+        let (at_ref, longer) = (throw_bores(0.5, 2.0), throw_bores(long, 2.0));
+        let (mut pins, mut mains) = (0, 0);
+        for ((a, w), (b, _)) in at_ref.iter().zip(&longer) {
+            if *w > 0.999 {
+                pins += 1;
+                assert!(((b.y - a.y) - (long - 0.5)).abs() < 1e-4, "{a} {b}");
+                assert!((b.x - a.x).abs() < 1e-5 && (b.z - a.z).abs() < 1e-5);
+            } else if *w < 1e-3 {
+                mains += 1;
+                assert!((*b - *a).length() < 1e-5, "{a} {b}");
+            }
+        }
+        assert!(pins > 100 && mains > 100, "{pins} {mains}");
+    }
+
+    #[test]
+    fn the_counterweight_clears_a_short_rod() {
+        // the reference rod (143/86) clears it: the counterweight keeps its 0.74 bore
+        let low = |rod_b| {
+            throw_bores(0.5, rod_b)
+                .into_iter()
+                .map(|(p, _)| p.y)
+                .fold(f32::MAX, f32::min)
+        };
+        assert!(
+            (low(143.0 / 86.0) + COUNTERWEIGHT_B).abs() < 0.01,
+            "{}",
+            low(143.0 / 86.0)
+        );
+        // a 1.4-bore rod on a 0.6-bore throw leaves 1.4 − 0.6 − 0.30 = 0.5 bore under the axis
+        let short = throw_bores(0.6, 1.4)
+            .into_iter()
+            .map(|(p, _)| p.y)
+            .fold(f32::MAX, f32::min);
+        assert!(short >= -0.5 - 1e-3, "{short}");
     }
 
     #[test]

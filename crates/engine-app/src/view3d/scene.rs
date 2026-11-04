@@ -18,6 +18,8 @@ pub enum Part {
     Head,
     Liner,
     Crank,
+    /// One throw's crankpin (its webs are [`Part::Web`]); the realistic throw draws all three.
+    Throw,
     Web,
     Rod,
     RodEye,
@@ -68,6 +70,7 @@ impl Part {
             Part::PistonRing => MeshKind::PistonRing,
             Part::WristPin => MeshKind::WristPin,
             Part::Rod => MeshKind::Rod,
+            Part::Throw => MeshKind::Throw,
             Part::RodEye => MeshKind::RodEye,
             _ => MeshKind::Cylinder,
         }
@@ -89,10 +92,11 @@ pub enum MeshKind {
     WristPin,
     Rod,
     RodEye,
+    Throw,
 }
 
 impl MeshKind {
-    pub const ALL: [MeshKind; 13] = [
+    pub const ALL: [MeshKind; 14] = [
         MeshKind::Cylinder,
         MeshKind::Cuboid,
         MeshKind::Housing,
@@ -106,6 +110,7 @@ impl MeshKind {
         MeshKind::WristPin,
         MeshKind::Rod,
         MeshKind::RodEye,
+        MeshKind::Throw,
     ];
 }
 
@@ -484,9 +489,23 @@ pub fn moving(def: &EngineDef, cylinders: &[CylinderView], out: &mut Vec<Instanc
         put(Part::Rod, bar_between(pin, wrist, 0.14 * b, 0.2 * b), ROD);
         put(Part::RodEye, along_x(pin, 0.27 * b, 0.22 * b), ROD);
         put(Part::RodEye, along_x(wrist, 0.17 * b, 0.2 * b), ROD);
-        // the throw: its pin and a web each side, counterweight opposite the pin
-        put(Part::Crank, along_x(pin, 0.13 * b, 0.26 * b), BRASS);
+        // the throw: its pin and a web each side, counterweight opposite the pin; the pin's frame
+        // turns with the throw (a cylinder looks the same), so the realistic throw can take it
         let web_frame = Mat3::from_cols(Vec3::new(0.0, -s, co), Vec3::X, Vec3::new(0.0, co, s));
+        // one throw per crank position: the first bank's (a V's banks share its pin; a flat
+        // engine's opposed cylinders stand at one position here, so the other bank's pin is a
+        // plain pin, not a second throw through the first)
+        if bank == 0 {
+            put(
+                Part::Throw,
+                Mat4::from_translation(pin - Vec3::new(0.13 * b, 0.0, 0.0))
+                    * Mat4::from_mat3(web_frame)
+                    * Mat4::from_scale(Vec3::new(0.13 * b, 0.26 * b, 0.13 * b)),
+                CRANK,
+            );
+        } else {
+            put(Part::Crank, along_x(pin, 0.13 * b, 0.26 * b), BRASS);
+        }
         for x0 in [x - 0.13 * b - 0.12 * b, x + 0.13 * b] {
             put(
                 Part::Web,

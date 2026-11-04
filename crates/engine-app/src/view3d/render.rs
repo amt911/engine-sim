@@ -37,6 +37,8 @@ pub struct MeshKey {
     pub realistic: bool,
     /// The rod's length over the bore (the realistic rod is stretched to it).
     pub rod_over_bore: f32,
+    /// Half the stroke over the bore (the realistic throw is stretched to it).
+    pub throw_over_bore: f32,
 }
 
 /// The frame's scene, written by the UI thread and read by `prepare`.
@@ -401,7 +403,11 @@ pub fn unit_mesh(kind: MeshKind, key: MeshKey) -> Mesh {
         MeshKind::HousingRing => mesh::housing_ring(key.e_over_r, 4 * s),
         MeshKind::Rotor => mesh::rotor(s.div_ceil(2)),
         MeshKind::Liner => mesh::half_liner(s),
-        MeshKind::Web => mesh::crank_web(s.div_ceil(2)),
+        // the realistic throw carries its webs
+        MeshKind::Web => match super::parts::throw_asset() {
+            Some(_) if key.realistic => Mesh::nothing(),
+            _ => mesh::crank_web(s.div_ceil(2)),
+        },
         MeshKind::Sphere => mesh::sphere(s.div_ceil(2)),
         MeshKind::Piston => match super::parts::piston() {
             Some(m) if key.realistic => m.clone(),
@@ -415,6 +421,10 @@ pub fn unit_mesh(kind: MeshKind, key: MeshKey) -> Mesh {
         MeshKind::Rod => match super::parts::rod(key.rod_over_bore) {
             Some(m) if key.realistic => m,
             _ => mesh::cuboid(),
+        },
+        MeshKind::Throw => match super::parts::throw(key.throw_over_bore, key.rod_over_bore) {
+            Some(m) if key.realistic => m,
+            _ => mesh::cylinder(s),
         },
         // the realistic rod carries its eyes
         MeshKind::RodEye => match super::parts::rod_asset() {
@@ -525,6 +535,7 @@ mod tests {
             e_over_r: 0.0,
             realistic,
             rod_over_bore: 143.0 / 86.0,
+            throw_over_bore: 0.5,
         };
         let cylinder = mesh::cylinder(12).vertices.len();
         // Low: the primitives; Medium and High: the realistic piston, which carries its own
@@ -540,7 +551,17 @@ mod tests {
         assert!(unit_mesh(MeshKind::Piston, key(true)).vertices.len() > 10 * cylinder);
         assert_eq!(unit_mesh(MeshKind::Rod, key(false)), mesh::cuboid());
         assert!(unit_mesh(MeshKind::Rod, key(true)).vertices.len() > 10 * cylinder);
-        for kind in [MeshKind::PistonRing, MeshKind::WristPin, MeshKind::RodEye] {
+        assert_eq!(
+            unit_mesh(MeshKind::Throw, key(false)).vertices.len(),
+            cylinder
+        );
+        assert!(unit_mesh(MeshKind::Throw, key(true)).vertices.len() > 10 * cylinder);
+        for kind in [
+            MeshKind::PistonRing,
+            MeshKind::WristPin,
+            MeshKind::RodEye,
+            MeshKind::Web,
+        ] {
             let m = unit_mesh(kind, key(true));
             assert_eq!(m.indices.len(), 3);
             assert!(m.vertices.iter().all(|v| v.pos == m.vertices[0].pos));
@@ -555,6 +576,7 @@ mod tests {
             e_over_r: 0.15,
             realistic: true,
             rod_over_bore: 1.6,
+            throw_over_bore: 0.5,
         };
         for kind in MeshKind::ALL {
             let m = unit_mesh(kind, key);
