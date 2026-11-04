@@ -236,6 +236,9 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
     R&D Tech. Rev. 17(2): measured broadband above the 1D tones over 4 kHz; Powell 1953: a pulse
     jet's broadband 25–30 dB over a steady jet's), the jet's hydrodynamic pressure on a close mic
     (Arndt, Long & Glauser 1997, JFM 340), muffler flow noise at high flow (Davies & Holland 1999).
+  - Tail jets ×30 in amplitude (`sound.flow_noise: 30`, +29.5 dB, Powell's pulse-jet excess)
+    on the free-running K20A at 3377: no band moves more than 0.1 dB, rms equal to 4 digits. At
+    part load the U⁸ jet is far under the orders even boosted: not the missing randomness.
 - **Real LFA at load, clean reference (2026-10-29)**: chassis-dyno clip `dyno-gears.wav` 7.0–9.4 s
   (6060→7300 rpm, `scratchpad/opus-overrun/mosq/real/`, local only; `agent2/py/ang.py FILE 7.0 9.4 6600`):
   bands re total 63/125/250/500/1k/2k/4k/8k = −26.3/−22.7/−17.5/−4.7/−8.5/−5.1/−7.9/−16.9 dB, periodic share
