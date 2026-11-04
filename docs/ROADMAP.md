@@ -24,7 +24,8 @@ Last updated: 2026-11-04.
 
 1. ✅ v0.46.0: the ~20 s lag after an edit. Edits are paced; the benchmark waits for the edits
    to stop; the exhaust network is kept when the exhaust is unchanged. An edit *to* the exhaust
-   still rebuilds it (about 1 s on the LFA); caching its designed filters is part of item 3.
+   rebuilds it in 0.1 s on the LFA (wall filters fitted once per pipe, silencer designs
+   memoized across rebuilds).
 2. **The realistic 3D parts** (user, 2026-11-04) from `assets/3d-parts/` in the 3D view (plan
    `2026-11-04-3d-parts-integration.md`):
    - ✅ v0.47.0: piston, rod, crank throws, valves and the Wankel rotor, stretched by bore,
