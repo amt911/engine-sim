@@ -17,7 +17,7 @@ Last updated: 2026-11-04.
   - pipes (v0.42.0);
   - layers: temperature, flow, combustion, cut-away (v0.43.0);
   - click a part for its card, drag handles or type on the card (v0.44.0);
-  - silencer handles (#93).
+  - silencer handles (v0.45.0).
   - The editor has no undo, so the 3D view has none either.
 
 ## Now: transmissions and hybrid
