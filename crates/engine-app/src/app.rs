@@ -425,6 +425,24 @@ mod tests {
                 "{}: {drawn} of {all} pixels drawn",
                 preset.slug()
             );
+            // and opened by the cut-away layer
+            drop(h);
+            state.view3d.layers.cutaway = true;
+            let rs = kw::create_render_state(
+                kw::default_wgpu_setup(),
+                eframe::egui_wgpu::RendererOptions::PREDICTABLE,
+            );
+            crate::view3d::render::install(&rs);
+            let mut h = egui_kittest::Harness::builder()
+                .with_size(egui::vec2(1400.0, 860.0))
+                .renderer(kw::WgpuTestRenderer::from_render_state(rs))
+                .build_ui(|ui| {
+                    layout(ui, &mut state, &snap, &Ok(48_000), false);
+                });
+            h.run();
+            let img = h.render().expect("render");
+            img.save(out.join(format!("engine-3d-{}-cut.png", preset.slug())))
+                .unwrap();
         }
     }
 }

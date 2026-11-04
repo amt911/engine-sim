@@ -4067,6 +4067,25 @@ impl Engine {
         }
     }
 
+    /// The exhaust pipes' gas for the 3D view ([`ExhaustNet::probe`], [`ExhaustFv::probe`]):
+    /// false (and `out` empty) when the net runs elsewhere (its own thread): no data.
+    pub fn probe_exhaust(&self, out: &mut Vec<crate::exhaust::PipeState>) -> bool {
+        match (&self.fv, &self.net) {
+            (Some(fv), _) => {
+                fv.probe(out);
+                true
+            }
+            (None, Some(net)) => {
+                net.probe(out);
+                true
+            }
+            (None, None) => {
+                out.clear();
+                false
+            }
+        }
+    }
+
     /// Run the net here again.
     pub fn attach_exhaust(&mut self, net: ExhaustNet) {
         self.remote = RemoteSlot(None);
@@ -9649,5 +9668,47 @@ mod probe {
         let mut v = bare.clone();
         v.exhaust.steepening = false;
         report("bare, linear", v, 6700.0);
+    }
+
+    #[test]
+    fn the_engine_hands_its_exhaust_gas_to_the_view() {
+        // an inline-4 running: four primaries and its collectors, every gas warmer than the
+        // air and finite
+        let def = EngineDef::inline4();
+        let groups = def.exhaust.groups(def.cylinders).len();
+        let mut e = Engine::new(def, 2000.0, 1);
+        let c = Controls {
+            throttle: 0.5,
+            ..Controls::default()
+        };
+        for _ in 0..4800 {
+            e.step(1.0 / 48_000.0, &c);
+        }
+        let mut out = Vec::new();
+        assert!(e.probe_exhaust(&mut out));
+        assert_eq!(out.len(), 4 + groups);
+        assert!(
+            out.iter()
+                .all(|p| p.temperature_k > 300.0 && p.velocity_m_s.is_finite())
+        );
+    }
+
+    #[test]
+    fn a_finite_volume_exhaust_shows_its_gas_too() {
+        // the FV pipes (K20A, LFA… run them) report their gas as the waveguide's do
+        let mut def = EngineDef::inline4();
+        def.exhaust.model = crate::exhaust::ExhaustModel::Fv;
+        let groups = def.exhaust.groups(def.cylinders).len();
+        let mut e = Engine::new(def, 2000.0, 1);
+        for _ in 0..4800 {
+            e.step(1.0 / 48_000.0, &Controls::default());
+        }
+        let mut out = Vec::new();
+        assert!(e.probe_exhaust(&mut out));
+        assert_eq!(out.len(), 4 + groups);
+        assert!(
+            out.iter()
+                .all(|p| p.temperature_k > 300.0 && p.velocity_m_s.is_finite())
+        );
     }
 }

@@ -14,6 +14,16 @@ use engine_core::exhaust::Segment;
 use glam::{Mat4, Vec3};
 
 const PIPE: [f32; 4] = [0.62, 0.55, 0.50, 1.0];
+
+/// A drawn exhaust pipe that has gas data ([`engine_core::exhaust::PipeState`]): which state
+/// (`pipe`: primaries by cylinder, then each branch's collector), its path, and the instances
+/// that draw it (recoloured by the temperature layer).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PipePath {
+    pub pipe: usize,
+    pub runs: Vec<Run>,
+    pub instances: std::ops::Range<usize>,
+}
 const CATALYST: [f32; 4] = [0.36, 0.33, 0.31, 1.0];
 const SILENCER: [f32; 4] = [0.72, 0.72, 0.74, 1.0];
 
@@ -121,7 +131,12 @@ fn chain(segments: &[Segment], start: Vec3, out: &mut Vec<Instance>) -> (Vec3, f
 /// The exhaust's instances, appended to `out`; returns the tail ends (for the scene's bounds).
 /// With a turbo, its turbine takes the collectors and its compressor feeds `charge_to` (the
 /// throttle's inlet, from [`intake`]).
-pub fn exhaust(def: &EngineDef, charge_to: Option<Vec3>, out: &mut Vec<Instance>) -> Vec<Vec3> {
+pub fn exhaust(
+    def: &EngineDef,
+    charge_to: Option<Vec3>,
+    out: &mut Vec<Instance>,
+    paths: &mut Vec<PipePath>,
+) -> Vec<Vec3> {
     let g = def.geometry;
     let ex = &def.exhaust;
     let n = def.cylinders;
@@ -166,7 +181,13 @@ pub fn exhaust(def: &EngineDef, charge_to: Option<Vec3>, out: &mut Vec<Instance>
         let rest = (len - 0.6 * b).max(0.0);
         let drop = (deck + r + 0.8 * b).max(0.1);
         *end = route(stub, Vec3::NEG_Y, out_dir, lane(dp), rest, drop, &mut runs);
+        let first = out.len();
         tube(&runs, 0.5 * dp, Part::Pipe, PIPE, out);
+        paths.push(PipePath {
+            pipe: i,
+            runs: runs.clone(),
+            instances: first..out.len(),
+        });
     }
     // collectors: a group's members as the sim joins them; a cylinder no group lists still
     // draws its primary (above) and joins the last group here
@@ -185,7 +206,13 @@ pub fn exhaust(def: &EngineDef, charge_to: Option<Vec3>, out: &mut Vec<Instance>
         let start = members.iter().map(|&c| ends[c]).sum::<Vec3>() / members.len().max(1) as f32;
         let len = ex.collector_length(k) as f32;
         let end = route(start, Vec3::NEG_Y, Vec3::X, lane(dc), len, 0.4, &mut runs);
+        let first = out.len();
         tube(&runs, 0.5 * dc, Part::Pipe, PIPE, out);
+        paths.push(PipePath {
+            pipe: n + k,
+            runs: runs.clone(),
+            instances: first..out.len(),
+        });
         branch_ends.push(end);
     }
     // a turbo's turbine takes every collector: the chain starts from its outlet
@@ -478,7 +505,7 @@ mod tests {
         d.exhaust.merge = None;
         d.exhaust.tail_length_m = 0.0;
         let mut out = Vec::new();
-        exhaust(&d, None, &mut out);
+        exhaust(&d, None, &mut out, &mut Vec::new());
         let pipes = tubes(&out, Part::Pipe);
         let want: f32 = (0..4).map(|i| d.exhaust.primary_length(i) as f32).sum();
         assert!(
@@ -498,7 +525,7 @@ mod tests {
         d.exhaust.after_collector.clear();
         d.exhaust.tail_length_m = 0.0;
         let mut out = Vec::new();
-        exhaust(&d, None, &mut out);
+        exhaust(&d, None, &mut out, &mut Vec::new());
         let pipes = tubes(&out, Part::Pipe);
         let ends = primary_ends(&d, &pipes);
         assert_eq!(ends.len(), 4);
@@ -527,7 +554,7 @@ mod tests {
         ];
         d.exhaust.merge = None;
         let mut out = Vec::new();
-        exhaust(&d, None, &mut out);
+        exhaust(&d, None, &mut out, &mut Vec::new());
         let cans: Vec<_> = out.iter().filter(|i| i.part == Part::Silencer).collect();
         assert_eq!(cans.len(), 1, "one straight can");
         let (s, _, _) = cans[0].model.to_scale_rotation_translation();
@@ -544,7 +571,7 @@ mod tests {
         d.exhaust.tail_spacing_m = 0.1;
         d.exhaust.merge = None;
         let mut out = Vec::new();
-        let ends = exhaust(&d, None, &mut out);
+        let ends = exhaust(&d, None, &mut out, &mut Vec::new());
         assert_eq!(ends.len(), 2);
         assert!(
             ((ends[1] - ends[0]).length() - 0.1).abs() < 1e-6,
@@ -559,7 +586,7 @@ mod tests {
         let mut d = EngineDef::inline4();
         d.exhaust.collectors = vec![vec![1, 2], vec![3]];
         let mut out = Vec::new();
-        exhaust(&d, None, &mut out);
+        exhaust(&d, None, &mut out, &mut Vec::new());
         let pipes = tubes(&out, Part::Pipe);
         let ends = primary_ends(&d, &pipes);
         assert_eq!(ends.len(), 4, "cylinder 4's primary is drawn");
@@ -576,7 +603,7 @@ mod tests {
         let rotor = d.geometry.rotor.unwrap();
         let reach = (rotor.generating_radius_m + rotor.eccentricity_m) as f32;
         let mut out = Vec::new();
-        exhaust(&d, None, &mut out);
+        exhaust(&d, None, &mut out, &mut Vec::new());
         let first = tubes(&out, Part::Pipe)[0].0;
         assert!(first.y.hypot(first.z) <= 1.1 * reach, "{first}");
     }
@@ -588,7 +615,7 @@ mod tests {
         d.exhaust.merge = None;
         d.exhaust.tail_length_m = 0.4;
         let mut out = Vec::new();
-        let ends = exhaust(&d, None, &mut out);
+        let ends = exhaust(&d, None, &mut out, &mut Vec::new());
         assert_eq!(ends.len(), 1);
         assert!(out.iter().any(|i| i.part == Part::Pipe));
     }
@@ -604,7 +631,7 @@ mod tests {
             EngineDef::mazda_renesis(),
         ] {
             let mut out = Vec::new();
-            let ends = exhaust(&d, None, &mut out);
+            let ends = exhaust(&d, None, &mut out, &mut Vec::new());
             assert!(!ends.is_empty(), "{}", d.name);
             assert!(out.iter().all(|i| i.model.is_finite()), "{}", d.name);
         }
@@ -675,7 +702,7 @@ mod tests {
         let t = d.turbo.clone().unwrap();
         let mut out = Vec::new();
         let inlet = intake(&d, &mut out).unwrap();
-        exhaust(&d, Some(inlet), &mut out);
+        exhaust(&d, Some(inlet), &mut out, &mut Vec::new());
         let at = |p: Part| {
             out.iter()
                 .find(|i| i.part == p)
@@ -707,8 +734,36 @@ mod tests {
         }
         let mut out = Vec::new();
         let inlet = intake(&d, &mut out);
-        exhaust(&d, inlet, &mut out);
+        exhaust(&d, inlet, &mut out, &mut Vec::new());
         assert!(!out.iter().any(|i| i.part == Part::Intercooler));
         assert!(out.iter().any(|i| i.part == Part::Turbine));
+    }
+
+    #[test]
+    fn each_pipe_with_gas_data_knows_its_path_and_instances() {
+        // an inline-4 with two collectors: pipes 0–3 the primaries, 4–5 the collectors, each
+        // path as long as its pipe and its instances its runs (and bends)
+        let mut d = EngineDef::inline4();
+        d.exhaust.collectors = vec![vec![1, 4], vec![2, 3]];
+        let mut out = Vec::new();
+        let mut paths = Vec::new();
+        exhaust(&d, None, &mut out, &mut paths);
+        assert_eq!(
+            paths.iter().map(|p| p.pipe).collect::<Vec<_>>(),
+            [0, 1, 2, 3, 4, 5]
+        );
+        for p in &paths[..4] {
+            let len: f32 = p.runs.iter().map(Run::length).sum();
+            assert!((len - d.exhaust.primary_length(p.pipe) as f32).abs() < 1e-4);
+            assert!(
+                out[p.instances.clone()]
+                    .iter()
+                    .all(|i| matches!(i.part, Part::Pipe | Part::Joint))
+            );
+            // runs and the bends between them
+            assert_eq!(p.instances.len(), 2 * p.runs.len() - 1);
+        }
+        let len: f32 = paths[4].runs.iter().map(Run::length).sum();
+        assert!((len - d.exhaust.collector_length(0) as f32).abs() < 1e-4);
     }
 }

@@ -2,6 +2,7 @@
 //! (camera, meshes, the parts from the definition and the snapshot) and a thin wgpu renderer.
 
 pub mod camera;
+pub mod colormap;
 pub mod detail;
 pub mod ducts;
 pub mod mesh;

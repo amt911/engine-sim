@@ -17,8 +17,47 @@ pub enum ViewMode {
     ThreeD,
 }
 
+/// The layers drawn over the engine (the user's toggles).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Layers {
+    /// The exhaust pipes coloured by their temperature (wall, else gas), with a legend.
+    pub temperature: bool,
+    /// Marks running along the exhaust pipes at their gas's speed (×[`FLOW_SCALE`]).
+    pub flow: bool,
+    /// Each chamber's charge, coloured by its temperature, glowing while it burns.
+    pub combustion: bool,
+    /// The engine opened along (inline) or across (V, rotary) its cylinders.
+    pub cutaway: bool,
+}
+
+impl Default for Layers {
+    fn default() -> Self {
+        Self {
+            temperature: true,
+            flow: true,
+            combustion: true,
+            cutaway: false,
+        }
+    }
+}
+
+/// The flow marks run at this share of the gas's speed, so they can be followed by eye.
+pub const FLOW_SCALE: f32 = 0.05;
+
+/// Flow marks per pipe at each detail.
+fn marks(d: Detail) -> usize {
+    match d {
+        Detail::Low => 0,
+        Detail::Medium => 4,
+        Detail::High => 8,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct View3dState {
+    /// How far round its pipe each pipe's flow marks have run (0..1).
+    phases: Vec<f32>,
+    pub layers: Layers,
     pub mode: ViewMode,
     /// Whether the renderer is installed (a wgpu device exists); without it the view is 2D.
     pub available: bool,
@@ -35,6 +74,8 @@ pub struct View3dState {
 impl Default for View3dState {
     fn default() -> Self {
         Self {
+            phases: Vec::new(),
+            layers: Layers::default(),
             mode: ViewMode::ThreeD,
             available: false,
             camera: None,
@@ -66,13 +107,71 @@ impl View3dState {
     }
 
     /// Fill the shared frame (still parts then moving ones) for the cylinders of `snap`.
-    fn fill(&mut self, snap: &Snapshot, aspect: f32) {
+    fn fill(&mut self, snap: &Snapshot, aspect: f32, dt: f32) {
         let Some(s) = &self.scene else { return };
         scene::moving(&snap.def, &snap.cylinders, &mut self.moving);
+        self.phases.resize(s.pipes.len(), 0.0);
+        let n_marks = if self.layers.flow && !snap.pipes.is_empty() {
+            marks(self.governor.detail)
+        } else {
+            0
+        };
         if let Ok(mut sh) = self.shared.lock() {
             sh.instances.clear();
             sh.instances.extend_from_slice(&s.static_parts);
-            sh.instances.extend_from_slice(&self.moving);
+            // the pipes in their temperature (the wall's when it is modelled, else the gas's)
+            if self.layers.temperature {
+                for p in &s.pipes {
+                    if let Some(g) = snap.pipes.get(p.pipe) {
+                        let c = super::colormap::temperature(g.wall_k.unwrap_or(g.temperature_k));
+                        for i in &mut sh.instances[p.instances.clone()] {
+                            i.color = c;
+                        }
+                    }
+                }
+            }
+            let combustion = self.layers.combustion;
+            sh.instances.extend(
+                self.moving
+                    .iter()
+                    .filter(|i| combustion || i.part != scene::Part::Charge),
+            );
+            // the flow marks: each pipe's run on at its gas's speed, coloured by the gas
+            for (p, phase) in s.pipes.iter().zip(&mut self.phases) {
+                let Some(g) = snap.pipes.get(p.pipe) else {
+                    continue;
+                };
+                let len: f32 = p.runs.iter().map(super::routing::Run::length).sum();
+                if len > 0.0 {
+                    *phase =
+                        (*phase + g.velocity_m_s as f32 * FLOW_SCALE * dt / len).rem_euclid(1.0);
+                }
+                let r = p.runs.first().map_or(0.0, |_| {
+                    s.static_parts[p.instances.start]
+                        .model
+                        .x_axis
+                        .truncate()
+                        .length()
+                });
+                let mut c = super::colormap::temperature(g.temperature_k);
+                c[3] = 0.3;
+                for k in 0..n_marks {
+                    if let Some(at) =
+                        super::routing::point_along(&p.runs, *phase + k as f32 / n_marks as f32)
+                    {
+                        sh.instances.push(scene::Instance {
+                            part: scene::Part::Joint,
+                            model: glam::Mat4::from_scale_rotation_translation(
+                                glam::Vec3::splat(1.15 * r),
+                                glam::Quat::IDENTITY,
+                                at,
+                            ),
+                            color: c,
+                        });
+                    }
+                }
+            }
+            sh.clip = self.layers.cutaway.then(|| scene::cut_plane(&snap.def));
             if let Some(c) = &self.camera {
                 sh.view_proj = c.view_proj(aspect);
             }
@@ -88,6 +187,61 @@ fn start_yaw(def: &EngineDef) -> f32 {
     } else {
         0.6
     }
+}
+
+/// The temperature layer's legend in the view's lower left corner: the colour map from 300 to
+/// 1300 K, or a note when the exhaust has no gas data.
+fn legend(ui: &egui::Ui, rect: egui::Rect, no_data: bool) {
+    use super::colormap::{COLD_K, HOT_K, temperature};
+    let p = ui.painter_at(rect);
+    let origin = rect.left_bottom() + egui::vec2(12.0, -28.0);
+    let font = egui::FontId::proportional(11.0);
+    let text = egui::Color32::from_gray(200);
+    if no_data {
+        p.text(
+            origin,
+            egui::Align2::LEFT_CENTER,
+            "Temperature: no exhaust gas data",
+            font,
+            text,
+        );
+        return;
+    }
+    let (w, h, steps) = (160.0, 10.0, 32);
+    for k in 0..steps {
+        let t = COLD_K + (HOT_K - COLD_K) * (k as f64 + 0.5) / steps as f64;
+        let [r, g, b, _] = temperature(t).map(|c| (c * 255.0) as u8);
+        let x0 = origin.x + w * k as f32 / steps as f32;
+        p.rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(x0, origin.y - h / 2.0),
+                egui::pos2(x0 + w / steps as f32 + 0.5, origin.y + h / 2.0),
+            ),
+            0.0,
+            egui::Color32::from_rgb(r, g, b),
+        );
+    }
+    p.text(
+        origin + egui::vec2(0.0, 12.0),
+        egui::Align2::LEFT_TOP,
+        "300 K",
+        font.clone(),
+        text,
+    );
+    p.text(
+        origin + egui::vec2(w, 12.0),
+        egui::Align2::RIGHT_TOP,
+        "1300 K",
+        font.clone(),
+        text,
+    );
+    p.text(
+        origin + egui::vec2(w + 8.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        format!("gas flow marks at ×{FLOW_SCALE} speed"),
+        font,
+        text,
+    );
 }
 
 /// The bar over the engine view: 2D / 3D and the detail.
@@ -123,6 +277,12 @@ pub fn bar(ui: &mut egui::Ui, st: &mut View3dState) {
             if choice != st.governor.manual() {
                 st.governor.set_manual(choice);
             }
+            ui.menu_button("Layers", |ui| {
+                ui.checkbox(&mut st.layers.temperature, "Temperature");
+                ui.checkbox(&mut st.layers.flow, "Gas flow");
+                ui.checkbox(&mut st.layers.combustion, "Combustion");
+                ui.checkbox(&mut st.layers.cutaway, "Cut-away");
+            });
             ui.small("drag: turn · wheel: zoom · double-click: reframe");
         }
     });
@@ -150,7 +310,8 @@ pub fn show(ui: &mut egui::Ui, st: &mut View3dState, snap: &Snapshot) {
     }
     st.governor.observe(1000.0 * ui.input(|i| i.unstable_dt));
     let aspect = rect.width() / rect.height().max(1.0);
-    st.fill(snap, aspect);
+    let dt = ui.input(|i| i.unstable_dt).min(0.1);
+    st.fill(snap, aspect, dt);
     let e_over_r = snap
         .def
         .geometry
@@ -167,6 +328,10 @@ pub fn show(ui: &mut egui::Ui, st: &mut View3dState, snap: &Snapshot) {
     };
     ui.painter()
         .add(egui_wgpu::Callback::new_paint_callback(rect, frame));
+    // over the scene: painted after its callback
+    if st.layers.temperature {
+        legend(ui, rect, snap.pipes.is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -278,7 +443,7 @@ mod tests {
                     c.piston_m = def.geometry.piston_position(c.cycle_deg.to_radians());
                 }
                 let t0 = Instant::now();
-                st.fill(&snap, 1920.0 / 1080.0);
+                st.fill(&snap, 1920.0 / 1080.0, 1.0 / 60.0);
                 let frame = render::Frame3d {
                     shared: st.shared.clone(),
                     size_px: [1920, 1080],
@@ -321,5 +486,104 @@ mod tests {
                 c.0, c.1, g.0, g.1
             );
         }
+    }
+
+    #[test]
+    fn the_layers_menu_toggles_combustion_and_the_cut() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let st = View3dState {
+            available: true,
+            ..View3dState::default()
+        };
+        let mut h = Harness::new_ui_state(|ui, s: &mut View3dState| bar(ui, s), st);
+        h.get_by_label("Layers").click();
+        h.run();
+        h.get_by_label("Cut-away").click();
+        h.run();
+        assert!(h.state().layers.cutaway);
+        if h.query_by_label("Combustion").is_none() {
+            h.get_by_label("Layers").click();
+            h.run();
+        }
+        h.get_by_label("Combustion").click();
+        h.run();
+        assert!(!h.state().layers.combustion);
+    }
+
+    #[test]
+    fn layers_shape_the_frame() {
+        let def = EngineDef::inline4();
+        let mut st = View3dState::default();
+        st.sync(&def);
+        let snap = crate::sim::Simulation::new(def, 48_000.0, 1).snapshot();
+        st.fill(&snap, 1.5, 0.0);
+        let count = |st: &View3dState| {
+            let sh = st.shared.lock().unwrap();
+            (
+                sh.instances
+                    .iter()
+                    .filter(|i| i.part == scene::Part::Charge)
+                    .count(),
+                sh.clip,
+            )
+        };
+        assert_eq!(count(&st), (4, None));
+        st.layers = Layers {
+            combustion: false,
+            cutaway: true,
+            ..Layers::default()
+        };
+        st.fill(&snap, 1.5, 0.0);
+        assert_eq!(count(&st), (0, Some((glam::Vec3::Z, 0.0))));
+    }
+
+    #[test]
+    fn the_pipes_take_their_temperature_and_the_marks_run_with_the_gas() {
+        use engine_core::exhaust::PipeState;
+        let def = EngineDef::inline4();
+        let mut st = View3dState::default();
+        st.governor.set_manual(Some(Detail::Medium));
+        st.sync(&def);
+        let mut snap = crate::sim::Simulation::new(def, 48_000.0, 1).snapshot();
+        let n = st.scene.as_ref().unwrap().pipes.len();
+        snap.pipes = (0..n)
+            .map(|_| PipeState {
+                temperature_k: 900.0,
+                velocity_m_s: 20.0,
+                wall_k: None,
+            })
+            .collect();
+        st.fill(&snap, 1.5, 0.0);
+        let path = st.scene.as_ref().unwrap().pipes[0].clone();
+        let len: f32 = path
+            .runs
+            .iter()
+            .map(super::super::routing::Run::length)
+            .sum();
+        {
+            let sh = st.shared.lock().unwrap();
+            let hot = super::super::colormap::temperature(900.0);
+            assert!(
+                sh.instances[path.instances.clone()]
+                    .iter()
+                    .all(|i| i.color == hot)
+            );
+            // 4 marks per pipe at Medium
+            let glowing = sh.instances.iter().filter(|i| i.color[3] == 0.3).count();
+            assert_eq!(glowing, 4 * n);
+        }
+        // after 0.1 s the marks have run 20 · 0.05 · 0.1 = 0.1 m along their pipe
+        st.fill(&snap, 1.5, 0.1);
+        assert!(
+            (st.phases[0] - 0.1 / len).abs() < 1e-5,
+            "{} vs {}",
+            st.phases[0],
+            0.1 / len
+        );
+        // no gas data: no marks, the pipes keep their colour
+        snap.pipes.clear();
+        st.fill(&snap, 1.5, 0.1);
+        let sh = st.shared.lock().unwrap();
+        assert!(!sh.instances.iter().any(|i| i.color[3] == 0.3));
     }
 }

@@ -45,6 +45,7 @@ pub enum Part {
     Turbine,
     Compressor,
     Intercooler,
+    Charge,
 }
 
 impl Part {
@@ -94,6 +95,8 @@ impl MeshKind {
     ];
 }
 
+/// A placed unit mesh. `color` is sRGB; its fourth value is 1 − the part's own light: 1 for every
+/// lit part, down to 0 for a charge burning (drawn at full colour whatever the lighting).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Instance {
     pub part: Part,
@@ -108,6 +111,8 @@ pub struct Scene {
     pub bounds: (Vec3, f32),
     /// The same for the engine itself (block, head, crank train): what the camera starts on.
     pub focus: (Vec3, f32),
+    /// The exhaust pipes the simulation reports gas for, in its order.
+    pub pipes: Vec<super::ducts::PipePath>,
 }
 
 /// Cylinder pitch along the crank, bores (a drawing choice: the file has no bore spacing).
@@ -228,10 +233,12 @@ pub fn build(def: &EngineDef) -> Scene {
         let radius = (0.5 * len + w).hypot(1.6 * r) * 1.05;
         let charge_to = super::ducts::intake(def, &mut out);
         let focus = enclosing(&out);
-        super::ducts::exhaust(def, charge_to, &mut out);
+        let mut pipes = Vec::new();
+        super::ducts::exhaust(def, charge_to, &mut out, &mut pipes);
         return Scene {
             bounds: (centre, holding(&out, centre, radius)),
             focus,
+            pipes,
             static_parts: out,
         };
     }
@@ -290,12 +297,37 @@ pub fn build(def: &EngineDef) -> Scene {
     let centre = Vec3::new(0.5 * span, 0.0, 0.0);
     let charge_to = super::ducts::intake(def, &mut out);
     let focus = enclosing(&out);
-    super::ducts::exhaust(def, charge_to, &mut out);
+    let mut pipes = Vec::new();
+    super::ducts::exhaust(def, charge_to, &mut out, &mut pipes);
     Scene {
         bounds: (centre, holding(&out, centre, radius)),
         focus,
+        pipes,
         static_parts: out,
     }
+}
+
+/// The cut-away plane for this engine (normal, offset; the side n·p > offset is cut away): an
+/// inline engine is opened lengthwise through its cylinders' axes (its front half, toward the
+/// camera's start, goes); a V, flat or rotary engine across its last cylinder or rotor, which
+/// shows the V or the rotor in section.
+pub fn cut_plane(def: &EngineDef) -> (Vec3, f32) {
+    let g = def.geometry;
+    if let Some(rotor) = g.rotor {
+        let rotors = def.cylinders.div_ceil(3).max(1);
+        return (Vec3::X, (rotors - 1) as f32 * 1.5 * rotor.width_m as f32);
+    }
+    if def.layout.bank_angle_deg > 0.0 {
+        let cols = def
+            .layout
+            .place(def.cylinders)
+            .iter()
+            .map(|p| p.1)
+            .max()
+            .unwrap_or(0);
+        return (Vec3::X, cols as f32 * PITCH_BORES as f32 * g.bore_m as f32);
+    }
+    (Vec3::Z, 0.0)
 }
 
 /// A radius about `centre` of at least `radius` that holds every part's both ends (a unit mesh
@@ -406,6 +438,18 @@ pub fn moving(def: &EngineDef, cylinders: &[CylinderView], out: &mut Vec<Instanc
                 color,
             })
         };
+        // the charge between the crown and the head, coloured by its temperature, glowing
+        // while it burns
+        let mut gas = super::colormap::temperature(c.temperature_k);
+        if c.burning {
+            gas[3] = 0.0;
+        }
+        put(
+            Part::Charge,
+            Mat4::from_translation(Vec3::new(x, crown, 0.0))
+                * Mat4::from_scale(Vec3::new(0.49 * b, (deck - crown).max(1e-4), 0.49 * b)),
+            gas,
+        );
         put(
             Part::Piston,
             Mat4::from_translation(Vec3::new(x, crown - 0.6 * b, 0.0))
@@ -712,5 +756,52 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_charge_fills_the_chamber_and_glows_while_it_burns() {
+        let d = EngineDef::inline4();
+        let g = d.geometry;
+        let (r, l, b) = (g.crank_radius() as f32, g.rod_m as f32, g.bore_m as f32);
+        let clear = (g.clearance_volume() / g.piston_area()) as f32;
+        let mut v = views(&d, |_| 0.0);
+        v[0].temperature_k = 2000.0;
+        v[0].burning = true;
+        let mut out = Vec::new();
+        moving(&d, &v, &mut out);
+        let charges: Vec<_> = out.iter().filter(|i| i.part == Part::Charge).collect();
+        assert_eq!(charges.len(), 4);
+        // at TDC: from the crown (r + l + 0.35 b) up the clearance height to the deck
+        let (s, _, t) = charges[0].model.to_scale_rotation_translation();
+        assert!((t.y - (r + l + 0.35 * b)).abs() < 1e-6, "{t}");
+        assert!((s.y - clear).abs() < 1e-6, "{s}");
+        assert_eq!(charges[0].color[3], 0.0, "burning: its own light");
+        assert_eq!(charges[1].color[3], 1.0);
+        assert_eq!(
+            charges[0].color[..3],
+            super::super::colormap::temperature(2000.0)[..3]
+        );
+        // at BDC the charge is a stroke taller
+        moving(&d, &views(&d, |_| 180.0), &mut out);
+        let c = out.iter().find(|i| i.part == Part::Charge).unwrap();
+        let (s2, _, _) = c.model.to_scale_rotation_translation();
+        assert!((s2.y - clear - 2.0 * r).abs() < 1e-5, "{s2}");
+    }
+
+    #[test]
+    fn the_cut_goes_through_the_cylinders() {
+        // inline: the plane of the axes (z = 0); a V: across its last pair of cylinders, 3
+        // pitches along for the cross-plane (4 per bank); a rotary: across its second rotor
+        assert_eq!(cut_plane(&EngineDef::inline4()), (Vec3::Z, 0.0));
+        let v8 = EngineDef::crossplane_v8();
+        let x = 3.0 * PITCH_BORES as f32 * v8.geometry.bore_m as f32;
+        let (n, d) = cut_plane(&v8);
+        assert_eq!(n, Vec3::X);
+        assert!((d - x).abs() < 1e-6);
+        let rx = EngineDef::mazda_renesis();
+        let w = rx.geometry.rotor.unwrap().width_m as f32;
+        let (n, d) = cut_plane(&rx);
+        assert_eq!(n, Vec3::X);
+        assert!((d - 1.5 * w).abs() < 1e-6);
     }
 }

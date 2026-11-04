@@ -40,6 +40,8 @@ pub struct MeshKey {
 pub struct Shared {
     pub view_proj: Mat4,
     pub instances: Vec<Instance>,
+    /// The cut-away plane (normal, offset), when the layer is on.
+    pub clip: Option<(Vec3, f32)>,
 }
 
 /// One frame's paint callback.
@@ -75,6 +77,8 @@ struct GpuInstance {
 struct Globals {
     view_proj: [[f32; 4]; 4],
     light: [f32; 4],
+    /// The cut-away plane: fragments where n·p > d are discarded (n = 0: no cut).
+    clip: [f32; 4],
 }
 
 struct GpuMesh {
@@ -419,8 +423,10 @@ impl egui_wgpu::CallbackTrait for Frame3d {
                 return Vec::new();
             };
             res.stage(&shared.instances);
-            shared.view_proj
+            (shared.view_proj, shared.clip)
         };
+        let (view_proj, clip) = view_proj;
+        let clip = clip.map_or([0.0; 4], |(n, d)| [n.x, n.y, n.z, d]);
         res.upload_instances(device, queue);
         let light = Vec3::new(0.4, 0.8, 0.45).normalize();
         queue.write_buffer(
@@ -429,6 +435,7 @@ impl egui_wgpu::CallbackTrait for Frame3d {
             bytemuck::bytes_of(&Globals {
                 view_proj: view_proj.to_cols_array_2d(),
                 light: [light.x, light.y, light.z, 0.25],
+                clip,
             }),
         );
         let (Some(target), Some((instances, _))) = (&res.target, &res.instances) else {

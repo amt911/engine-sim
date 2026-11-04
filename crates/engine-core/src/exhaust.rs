@@ -1033,6 +1033,37 @@ fn segments_duct(
     duct.unwrap_or_else(|| Duct::new(vec![pipe(fallback.0, fallback.1)]))
 }
 
+/// A pipe's gas as the 3D view shows it ([`ExhaustNet::probe`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PipeState {
+    /// The gas's mean temperature, K: from the pipe's speed of sound, T = c²/(γR).
+    pub temperature_k: f64,
+    /// The gas's mean speed along the pipe, m/s, + out towards the tail: the mean mass flow over
+    /// ρA at atmospheric pressure and that temperature.
+    pub velocity_m_s: f64,
+    /// The wall's temperature, K, when the gas temperature model runs ([`crate::pipe_heat`]).
+    pub wall_k: Option<f64>,
+}
+
+impl PipeState {
+    fn of(pipe: &Pipe, mass_flow: f64, wall_k: Option<f64>) -> Self {
+        let c = pipe.gas_sound_speed();
+        let t = c * c / (crate::gas::GAMMA * crate::gas::R_AIR);
+        let (_, d) = pipe.size();
+        let rho = crate::units::ATM_PA / (crate::gas::R_AIR * t);
+        let area = std::f64::consts::PI * 0.25 * d * d;
+        Self {
+            temperature_k: t,
+            velocity_m_s: if rho * area > 0.0 {
+                mass_flow / (rho * area)
+            } else {
+                0.0
+            },
+            wall_k,
+        }
+    }
+}
+
 /// Runtime network for one engine at one time step.
 #[derive(Debug, Clone)]
 pub struct ExhaustNet {
@@ -1591,6 +1622,26 @@ impl ExhaustNet {
     }
 
     /// The mean flows the pipes' friction last followed: (per cylinder, per branch), kg/s.
+    /// Each primary's gas (by cylinder), then each branch's collector's, into `out` (cleared;
+    /// no allocation once it has room). Read-only: for the UI, at its rate, never per step.
+    pub fn probe(&self, out: &mut Vec<PipeState>) {
+        out.clear();
+        let (per_cyl, per_branch) = (&self.mean_flows.0, &self.mean_flows.1);
+        let flow = |v: &[f64], i: usize| v.get(i).copied().unwrap_or(0.0);
+        // the walls are walked primaries first (crate::pipe_heat), so the first n are theirs
+        let walls = self.heat.as_ref().map_or(&[][..], |h| &h.walls[..]);
+        for (i, p) in self.primaries.iter().enumerate() {
+            out.push(PipeState::of(
+                p,
+                flow(per_cyl, i),
+                walls.get(i).map(|w| w.wall_k),
+            ));
+        }
+        for (k, b) in self.branches.iter().enumerate() {
+            out.push(PipeState::of(&b.collector, flow(per_branch, k), None));
+        }
+    }
+
     pub fn mean_flows(&self) -> (&[f64], &[f64]) {
         (&self.mean_flows.0, &self.mean_flows.1)
     }
@@ -3418,5 +3469,43 @@ mod probe {
             f += 50.0;
         }
         println!("full linear sweep {s}");
+    }
+
+    #[test]
+    fn the_probe_reads_each_pipes_gas_by_hand() {
+        // a primary at the default 600 m/s: T = 600²/(1.4·287) = 895.968 K, ρ = 101 325 /
+        // (287 · 895.968) = 0.394042 kg/m³; 0.01 kg/s through a 40 mm bore (12.566 cm²) is
+        // 20.1952 m/s
+        let mut net = ExhaustNet::new(&ExhaustDef::default(), 4, 1.0 / 48_000.0);
+        net.set_mean_flow(&[0.01, 0.0, -0.01, 0.0], &[0.02]);
+        let mut out = Vec::new();
+        net.probe(&mut out);
+        assert_eq!(out.len(), 5, "four primaries and one collector");
+        assert!(
+            (out[0].temperature_k - 895.968).abs() < 1e-3,
+            "{:?}",
+            out[0]
+        );
+        assert!((out[0].velocity_m_s - 20.1952).abs() < 1e-3, "{:?}", out[0]);
+        assert_eq!(out[1].velocity_m_s, 0.0);
+        assert!(
+            (out[2].velocity_m_s + 20.1952).abs() < 1e-3,
+            "reversion runs backwards"
+        );
+        assert_eq!(
+            out[0].wall_k, None,
+            "no wall model unless the gas temperature runs"
+        );
+        assert!(out[4].velocity_m_s > 0.0);
+    }
+
+    #[test]
+    fn the_probe_allocates_nothing_once_it_has_room() {
+        let net = ExhaustNet::new(&ExhaustDef::default(), 4, 1.0 / 48_000.0);
+        let mut out = Vec::with_capacity(16);
+        let ptr = out.as_ptr();
+        net.probe(&mut out);
+        net.probe(&mut out);
+        assert_eq!((out.len(), out.capacity(), out.as_ptr()), (5, 16, ptr));
     }
 }
