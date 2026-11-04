@@ -25,11 +25,10 @@ Last updated: 2026-11-04.
 Spec `2026-11-04-transmissions-hybrid-design.md`, approved 2026-11-04 with **transmission noise**
 added by the user. One PR each, in this order:
 
-1. **Gear noise** on the existing manual box:
+1. **Gear noise** on the existing manual box (plan `2026-11-04-gear-noise.md`):
    - whine at the mesh orders (spur vs helical);
-   - rattle of the unloaded gears;
-   - shift impacts.
-2. **Sequential** (dog box, flat shift, straight-cut whine).
+   - rattle of the unloaded gears.
+2. **Sequential** (dog box, flat shift, straight-cut whine, the dogs' engagement impacts).
 3. **DSG** (dual clutch).
 4. **Torque-converter automatic.**
 5. **CVT** (belt pitch whine).
