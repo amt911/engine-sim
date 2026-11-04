@@ -451,8 +451,15 @@ mod tests {
                 .unwrap();
             // and close up, cut open, to look at the parts themselves
             drop(h);
-            if let Some(c) = state.view3d.camera.as_mut() {
-                c.distance *= 0.35;
+            let piston = state.view3d.shared.lock().ok().and_then(|sh| {
+                sh.instances
+                    .iter()
+                    .find(|i| i.part == crate::view3d::scene::Part::Piston)
+                    .map(|i| i.model.w_axis.truncate())
+            });
+            if let (Some(c), Some(p)) = (state.view3d.camera.as_mut(), piston) {
+                c.target = p;
+                c.distance *= 0.3;
             }
             let rs = kw::create_render_state(
                 kw::default_wgpu_setup(),

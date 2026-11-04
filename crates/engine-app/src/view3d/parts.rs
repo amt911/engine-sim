@@ -10,6 +10,11 @@ use glam::{Mat4, Vec3};
 /// The piston, its three rings and its wrist pin (origin: the wrist pin's centre, reference bore
 /// 86 mm).
 const PISTON_GLB: &[u8] = include_bytes!("../../../../assets/3d-parts/out/piston.glb");
+/// The connecting rod with its cap, bolts, shells and bush (origin: the big end's centre, the
+/// small end at +Y, `stretch` weights 0 at the big end to 1 at the small end).
+const CONROD_GLB: &[u8] = include_bytes!("../../../../assets/3d-parts/out/conrod.glb");
+/// The reference rod's length, m.
+const REF_ROD: f32 = 0.143;
 /// The reference engine's bore, m (README: bore 86, stroke 86, rod 143 mm).
 const REF_BORE: f32 = 0.086;
 
@@ -151,6 +156,54 @@ pub fn piston_unit_mesh() -> Result<Mesh, PartError> {
     ))
 }
 
+/// The realistic rod for `rod_over_bore` (length between centres over the bore) in the
+/// procedural rod's unit frame: that box is centred between the crankpin and the wrist pin, the
+/// rod's length tall, 0.14 bore wide along the crank and 0.2 bore deep (`scene::bar_between`).
+/// Stretched by the README's rule `p' = s·p + w·(rod − s·0.143)·Ŷ`; in bores, the scale cancels.
+pub fn rod_unit_mesh(rod_over_bore: f32) -> Result<Mesh, PartError> {
+    let mut part = load(CONROD_GLB)?;
+    stretch_rod(&mut part, rod_over_bore);
+    Ok(rod_frame(&part, rod_over_bore))
+}
+
+/// The rod asset, read once (none if unreadable: the primitives stay).
+pub fn rod_asset() -> Option<&'static GlbPart> {
+    static ROD: std::sync::OnceLock<Option<GlbPart>> = std::sync::OnceLock::new();
+    ROD.get_or_init(|| {
+        load(CONROD_GLB)
+            .inspect_err(|e| {
+                eprintln!("3D view: conrod.glb unreadable ({e}), drawing the primitive")
+            })
+            .ok()
+    })
+    .as_ref()
+}
+
+/// [`rod_unit_mesh`] from the asset read once.
+pub fn rod(rod_over_bore: f32) -> Option<Mesh> {
+    let mut part = rod_asset()?.clone();
+    stretch_rod(&mut part, rod_over_bore);
+    Some(rod_frame(&part, rod_over_bore))
+}
+
+fn stretch_rod(part: &mut GlbPart, rod_over_bore: f32) {
+    // in bores: the reference rod's 0.143/0.086 stretched to `rod_over_bore` by each vertex's
+    // weight (the shank's normals are left as built: a stretch along it barely turns them)
+    let extra = rod_over_bore - REF_ROD / REF_BORE;
+    for (p, &w) in part.positions.iter_mut().zip(&part.stretch_w) {
+        *p = *p / REF_BORE + w * extra * Vec3::Y;
+    }
+}
+
+fn rod_frame(part: &GlbPart, rod_over_bore: f32) -> Mesh {
+    to_unit(
+        part,
+        1.0,
+        Vec3::new(0.0, -0.5 * rod_over_bore, 0.0),
+        Vec3::new(0.14, rod_over_bore, 0.2),
+    )
+}
+
 /// [`piston_unit_mesh`], built once (none if the asset cannot be read: the primitive stays).
 pub fn piston() -> Option<&'static Mesh> {
     static PISTON: std::sync::OnceLock<Option<Mesh>> = std::sync::OnceLock::new();
@@ -227,6 +280,58 @@ mod tests {
             .map(|v| Vec3::from(v.normal).normalize())
             .fold(Vec3::ZERO, |a, n| a + n);
         assert!(top.y > 0.0, "{top}");
+    }
+
+    /// The rod's mesh back in metres for `rod` and `bore` (the instance's scale and centre).
+    fn rod_world(rod: f32, bore: f32) -> Vec<Vec3> {
+        let m = rod_unit_mesh(rod / bore).expect("the realistic rod");
+        assert_eq!(
+            super::rod(rod / bore).as_ref(),
+            Some(&m),
+            "the cached asset, the same"
+        );
+        let (scale, centre) = (Vec3::new(0.14 * bore, rod, 0.2 * bore), Vec3::Y * 0.5 * rod);
+        m.vertices
+            .iter()
+            .map(|v| Vec3::from(v.pos) * scale + centre)
+            .collect()
+    }
+
+    #[test]
+    fn the_rod_stretches_its_small_end_only() {
+        let at_ref = bounds(rod_world(0.143, 0.086).into_iter());
+        let longer = bounds(rod_world(0.160, 0.086).into_iter());
+        // 17 mm longer between centres: the small end's top 17 mm higher, the big end's bottom
+        // where it was, its width unchanged
+        assert!(
+            ((longer.1.y - at_ref.1.y) - 0.017).abs() < 0.2e-3,
+            "{at_ref:?} {longer:?}"
+        );
+        assert!((longer.0.y - at_ref.0.y).abs() < 0.1e-3);
+        assert!((longer.1.z - at_ref.1.z).abs() < 0.1e-3);
+        // a bigger engine scales it all: bore 100 mm, rod 143·100/86 = 166.3 mm
+        let big = bounds(rod_world(0.143 * 100.0 / 86.0, 0.100).into_iter());
+        let k = 100.0 / 86.0;
+        assert!((big.1.y - k * at_ref.1.y).abs() < 0.2e-3, "{big:?}");
+        assert!((big.0.y - k * at_ref.0.y).abs() < 0.2e-3);
+    }
+
+    #[test]
+    fn the_rod_asset_carries_its_stretch() {
+        let p = load(CONROD_GLB).expect("conrod.glb");
+        // the big end's eye (round the origin) does not stretch; the small end's (0.143 up) does
+        let near = |y: f32| {
+            p.positions
+                .iter()
+                .zip(&p.stretch_w)
+                .filter(|(q, _)| (q.y - y).abs() < 0.005 && q.x.abs() < 0.01)
+                .map(|(_, &w)| w)
+                .collect::<Vec<_>>()
+        };
+        let (big, small) = (near(0.0), near(REF_ROD));
+        assert!(!big.is_empty() && !small.is_empty());
+        assert!(big.iter().all(|&w| w < 0.05), "{big:?}");
+        assert!(small.iter().all(|&w| w > 0.95), "{small:?}");
     }
 
     #[test]

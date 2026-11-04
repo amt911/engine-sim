@@ -10,10 +10,15 @@ pub fn local_bounds(kind: MeshKind) -> (Vec3, Vec3) {
         // the realistic piston: its skirt 0.08 under the primitive's base, its dome 0.02 over the
         // top, its rings 1.02 out (`parts::piston_unit_mesh`)
         MeshKind::Piston => (Vec3::new(-1.03, -0.1, -1.03), Vec3::new(1.03, 1.03, 1.03)),
-        MeshKind::Cylinder | MeshKind::Liner | MeshKind::PistonRing | MeshKind::WristPin => {
-            (Vec3::new(-1.0, 0.0, -1.0), Vec3::new(1.0, 1.0, 1.0))
-        }
+        MeshKind::Cylinder
+        | MeshKind::Liner
+        | MeshKind::PistonRing
+        | MeshKind::WristPin
+        | MeshKind::RodEye => (Vec3::new(-1.0, 0.0, -1.0), Vec3::new(1.0, 1.0, 1.0)),
         MeshKind::Cuboid => (Vec3::splat(-0.5), Vec3::splat(0.5)),
+        // the realistic rod's big end reaches past the primitive bar: about 0.4 bore round the
+        // crankpin, which is 2 depths (0.2 bore) and 0.25 rod lengths of the shortest rods
+        MeshKind::Rod => (Vec3::new(-1.0, -0.8, -2.2), Vec3::new(1.0, 0.65, 2.2)),
         MeshKind::Sphere => (Vec3::splat(-1.0), Vec3::splat(1.0)),
         // the housing's outer wall reaches 1 + e + 0.22 < 1.6 of its generating radius
         MeshKind::Housing | MeshKind::HousingRing => {

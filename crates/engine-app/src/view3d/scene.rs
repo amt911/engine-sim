@@ -54,7 +54,6 @@ impl Part {
         match self {
             Part::Block
             | Part::Head
-            | Part::Rod
             | Part::ApexSeal
             | Part::Plenum
             | Part::Airbox
@@ -68,6 +67,8 @@ impl Part {
             Part::Piston => MeshKind::Piston,
             Part::PistonRing => MeshKind::PistonRing,
             Part::WristPin => MeshKind::WristPin,
+            Part::Rod => MeshKind::Rod,
+            Part::RodEye => MeshKind::RodEye,
             _ => MeshKind::Cylinder,
         }
     }
@@ -86,10 +87,12 @@ pub enum MeshKind {
     Piston,
     PistonRing,
     WristPin,
+    Rod,
+    RodEye,
 }
 
 impl MeshKind {
-    pub const ALL: [MeshKind; 11] = [
+    pub const ALL: [MeshKind; 13] = [
         MeshKind::Cylinder,
         MeshKind::Cuboid,
         MeshKind::Housing,
@@ -101,6 +104,8 @@ impl MeshKind {
         MeshKind::Piston,
         MeshKind::PistonRing,
         MeshKind::WristPin,
+        MeshKind::Rod,
+        MeshKind::RodEye,
     ];
 }
 

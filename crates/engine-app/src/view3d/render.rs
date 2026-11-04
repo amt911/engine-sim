@@ -35,6 +35,8 @@ pub struct MeshKey {
     pub e_over_r: f32,
     /// The realistic parts of `assets/3d-parts` (Medium and High) instead of the primitives.
     pub realistic: bool,
+    /// The rod's length over the bore (the realistic rod is stretched to it).
+    pub rod_over_bore: f32,
 }
 
 /// The frame's scene, written by the UI thread and read by `prepare`.
@@ -410,6 +412,15 @@ pub fn unit_mesh(kind: MeshKind, key: MeshKey) -> Mesh {
             Some(_) if key.realistic => Mesh::nothing(),
             _ => mesh::cylinder(s),
         },
+        MeshKind::Rod => match super::parts::rod(key.rod_over_bore) {
+            Some(m) if key.realistic => m,
+            _ => mesh::cuboid(),
+        },
+        // the realistic rod carries its eyes
+        MeshKind::RodEye => match super::parts::rod_asset() {
+            Some(_) if key.realistic => Mesh::nothing(),
+            _ => mesh::cylinder(s),
+        },
     }
 }
 
@@ -513,6 +524,7 @@ mod tests {
             segments: 12,
             e_over_r: 0.0,
             realistic,
+            rod_over_bore: 143.0 / 86.0,
         };
         let cylinder = mesh::cylinder(12).vertices.len();
         // Low: the primitives; Medium and High: the realistic piston, which carries its own
@@ -526,7 +538,9 @@ mod tests {
             cylinder
         );
         assert!(unit_mesh(MeshKind::Piston, key(true)).vertices.len() > 10 * cylinder);
-        for kind in [MeshKind::PistonRing, MeshKind::WristPin] {
+        assert_eq!(unit_mesh(MeshKind::Rod, key(false)), mesh::cuboid());
+        assert!(unit_mesh(MeshKind::Rod, key(true)).vertices.len() > 10 * cylinder);
+        for kind in [MeshKind::PistonRing, MeshKind::WristPin, MeshKind::RodEye] {
             let m = unit_mesh(kind, key(true));
             assert_eq!(m.indices.len(), 3);
             assert!(m.vertices.iter().all(|v| v.pos == m.vertices[0].pos));
@@ -540,6 +554,7 @@ mod tests {
             segments: 12,
             e_over_r: 0.15,
             realistic: true,
+            rod_over_bore: 1.6,
         };
         for kind in MeshKind::ALL {
             let m = unit_mesh(kind, key);
