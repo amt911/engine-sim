@@ -37,6 +37,105 @@ fn scaled(
     changed
 }
 
+/// The editor's name for a catalogue measure.
+fn measure_label(measure: &str) -> &'static str {
+    match measure {
+        "primary_length_m" => "Primary length",
+        "primary_diameter_m" => "Primary Ø",
+        "collector_length_m" => "Collector length",
+        "collector_diameter_m" => "Collector Ø",
+        "tail_length_m" => "Tail pipe length",
+        "tail_diameter_m" => "Tail pipe Ø",
+        _ => "Exhaust measure",
+    }
+}
+
+/// Amber lines under the measure they name: outside what real engines this size use. Never blocks.
+fn exhaust_warnings(
+    ui: &mut egui::Ui,
+    warnings: &[engine_core::catalogue::Warning],
+    measure: &str,
+) {
+    for w in warnings.iter().filter(|w| w.measure == measure) {
+        ui.colored_label(
+            egui::Color32::from_rgb(230, 160, 30),
+            format!(
+                "{} {:.0} mm — real engines this size use {:.0}–{:.0} mm",
+                measure_label(measure),
+                w.value * 1000.0,
+                w.range.0 * 1000.0,
+                w.range.1 * 1000.0
+            ),
+        );
+    }
+}
+
+/// The catalogue's exhaust: headers, system, the current choice, re-size.
+fn exhaust_system(ui: &mut egui::Ui, d: &mut engine_core::engine::EngineDef) {
+    use engine_core::catalogue::{Headers, System, choose_exhaust, headers_for, resize};
+    ui.label("Exhaust system");
+    let headers = headers_for(d);
+    let chosen = d.systems.as_ref().and_then(|s| s.exhaust.clone());
+    let mut pick: Option<(Headers, System)> = None;
+    ui.horizontal(|ui| {
+        ui.label("Headers:");
+        for h in &headers {
+            let name = match h {
+                Headers::Single => "Single pipe",
+                Headers::FourOne => "4-1",
+                Headers::FourTwoOne => "4-2-1",
+                Headers::Log => "Log manifold",
+            };
+            let on = chosen.as_ref().map(|c| c.headers) == Some(*h);
+            if ui.selectable_label(on, name).clicked()
+                && let Some(c) = &chosen
+            {
+                pick = Some((*h, c.system));
+            }
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("System:");
+        for (s, name) in [
+            (System::Road, "Road"),
+            (System::Sport, "Sport"),
+            (System::Race, "Race"),
+        ] {
+            let on = chosen.as_ref().map(|c| c.system) == Some(s);
+            if ui.selectable_label(on, name).clicked() {
+                // the headers of the choice if the engine takes them, else its first
+                let h = chosen
+                    .as_ref()
+                    .map(|c| c.headers)
+                    .filter(|h| headers.contains(h))
+                    .or_else(|| headers.first().copied());
+                pick = h.map(|h| (h, s));
+            }
+        }
+    });
+    if let Some((h, s)) = pick {
+        choose_exhaust(d, h, s);
+    }
+    if let Some(c) = d.systems.as_ref().and_then(|s| s.exhaust.clone()) {
+        ui.label(format!(
+            "Chosen: {:?} headers, {:?} system — re-sized for {} × {:.0} cc",
+            c.headers,
+            c.system,
+            d.cylinders,
+            d.geometry.displacement() * 1e6
+        ));
+        if !c.kept.is_empty() {
+            ui.label(format!("Kept as you set them: {}", c.kept.join(", ")));
+        }
+        if ui.button("Re-size all").clicked() {
+            if let Some(c) = d.systems.as_mut().and_then(|s| s.exhaust.as_mut()) {
+                c.kept.clear();
+            }
+            resize(d);
+        }
+    }
+}
+
 /// The exhaust after each collector, segment by segment: fields, reorder, remove, add.
 fn segments_editor(ui: &mut egui::Ui, x: &mut engine_core::exhaust::ExhaustDef) {
     use engine_core::exhaust::Segment;
@@ -445,6 +544,9 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
     egui::CollapsingHeader::new("Exhaust")
         .default_open(true)
         .show(ui, |ui| {
+            exhaust_system(ui, d);
+            let warnings = engine_core::catalogue::out_of_range(d);
+            let exhaust_before = d.exhaust.clone();
             let x = &mut d.exhaust;
             scaled(
                 ui,
@@ -454,6 +556,7 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
                 10.0,
                 "Primary length (mm)",
             );
+            exhaust_warnings(ui, &warnings, "primary_length_m");
             scaled(
                 ui,
                 &mut x.primary_diameter_m,
@@ -462,6 +565,7 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
                 1.0,
                 "Primary Ø (mm)",
             );
+            exhaust_warnings(ui, &warnings, "primary_diameter_m");
             ui.horizontal(|ui| {
                 let l = ui.label("Collectors");
                 ui.add(
@@ -490,6 +594,7 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
                 1.0,
                 "Collector Ø (mm)",
             );
+            exhaust_warnings(ui, &warnings, "collector_diameter_m");
             let (tail_length, tail_diameter) = x.tail_mut();
             scaled(
                 ui,
@@ -507,6 +612,7 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
                 1.0,
                 "Tail pipe Ø (mm)",
             );
+            exhaust_warnings(ui, &warnings, "tail_diameter_m");
             ui.add_enabled_ui(x.groups(d.cylinders).len() > 1, |ui| {
                 ui.add(
                     slider(&mut x.tail_spacing_m, 0.1..=2.0)
@@ -517,6 +623,9 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
             .response
             .on_disabled_hover_text("One tail pipe: nothing to spread");
             segments_editor(ui, x);
+            if *x != exhaust_before {
+                engine_core::catalogue::note_hand_edits(d);
+            }
         });
 
     egui::CollapsingHeader::new("Sound")
@@ -1174,5 +1283,82 @@ mod tests {
         let mut h = harness(d);
         nudge(&mut h, "Cylinders");
         assert_eq!(h.state().def.cylinders, MAX_CYLINDERS);
+    }
+
+    fn press_button(h: &mut Harness<'static, UiState>, label: &str) {
+        h.get_by_role_and_label(egui::accesskit::Role::Button, label)
+            .click();
+        h.run();
+    }
+
+    fn tail_len(h: &mut Harness<'static, UiState>) -> f64 {
+        *h.state_mut().def.exhaust.tail_mut().0
+    }
+
+    fn four_cylinder_single() -> Harness<'static, UiState> {
+        let mut h = harness(EngineDef::single());
+        for _ in 0..3 {
+            nudge(&mut h, "Cylinders");
+        }
+        assert_eq!(h.state().def.cylinders, 4);
+        h
+    }
+
+    #[test]
+    fn choosing_road_exhaust_on_a_four_cylinder_single() {
+        use engine_core::catalogue::{Headers, System, size_exhaust, survey};
+        use engine_core::exhaust::Segment;
+        let mut h = four_cylinder_single();
+        press_button(&mut h, "Road");
+        assert!(h.state().engine_dirty);
+        let def = &h.state().def;
+        let path = &def.exhaust.after_collector;
+        assert!(path.iter().any(|s| matches!(s, Segment::Catalyst { .. })));
+        let mufflers = path
+            .iter()
+            .filter(|s| matches!(s, Segment::Muffler { .. }))
+            .count();
+        assert_eq!(mufflers, 2);
+        let mut plain = def.clone();
+        plain.systems = None;
+        let sized = size_exhaust(&plain, Headers::FourOne, System::Road, &survey());
+        assert_eq!(def.exhaust.collector_diameter_m, sized.collector_diameter_m);
+        let before = def.exhaust.collector_diameter_m;
+        // fewer cylinders: the chosen exhaust is re-sized, and says so
+        h.state_mut().engine_dirty = false;
+        h.get_by_role_and_label(egui::accesskit::Role::Slider, "Cylinders")
+            .focus();
+        h.run();
+        h.key_press(egui::Key::ArrowLeft);
+        h.run();
+        assert_eq!(h.state().def.cylinders, 3);
+        assert_ne!(h.state().def.exhaust.collector_diameter_m, before);
+        h.get_by_label_contains("re-sized for 3");
+    }
+
+    #[test]
+    fn a_hand_edit_survives_a_resize() {
+        let mut h = four_cylinder_single();
+        press_button(&mut h, "Road");
+        nudge(&mut h, "Tail pipe length (mm)");
+        let edited = tail_len(&mut h);
+        h.get_by_role_and_label(egui::accesskit::Role::Slider, "Cylinders")
+            .focus();
+        h.run();
+        h.key_press(egui::Key::ArrowLeft);
+        h.run();
+        assert_eq!(h.state().def.cylinders, 3);
+        assert_eq!(tail_len(&mut h), edited);
+        // "Re-size all" forgets the hand edit
+        press_button(&mut h, "Re-size all");
+        assert_ne!(tail_len(&mut h), edited);
+    }
+
+    #[test]
+    fn the_forty_mm_collector_is_flagged() {
+        let h = four_cylinder_single();
+        h.get_by_label_contains("Collector Ø 40 mm");
+        // never blocking: the engine still goes to the sim
+        assert!(h.state().engine_dirty);
     }
 }
