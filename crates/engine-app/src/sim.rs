@@ -20,7 +20,7 @@ pub struct Snapshot {
     pub plenum_pa: f64,
     pub crank_deg: f64,
     pub cylinders: Vec<CylinderView>,
-    /// The exhaust pipes' gas (empty: no data, e.g. a finite-volume exhaust), for the 3D view.
+    /// The exhaust pipes' gas (empty: no data), for the 3D view.
     pub pipes: Vec<engine_core::exhaust::PipeState>,
     /// Cylinder 1 pressure (Pa) for each degree of the 720° cycle, last value seen.
     pub pressure_trace: Vec<f32>,

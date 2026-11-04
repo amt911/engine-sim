@@ -4,7 +4,11 @@
 //! atmosphere. Mechanics: analytic crank-slider with a lumped flywheel inertia.
 //! Model ladder and references: `docs/research/simulador-motor-rust.md`.
 
-use crate::combustion::{AFR_STOICH, LHV_GASOLINE, flame_angle_scale, laminar_flame_speed, wiebe};
+use crate::combustion::{
+    AFR_STOICH, AFR_STOICH_DIESEL, Combustion, LHV_DIESEL, LHV_GASOLINE, RING_DECAY_S, RING_MODES,
+    RING_SHARE, RING_SPREAD, WATSON_DURATION_DEG, Watson, draper_hz, flame_angle_scale,
+    ignition_delay_deg, laminar_flame_speed, wiebe,
+};
 use crate::exhaust::{
     ArrivalProbe, BlockIn, BlockOut, ExhaustDef, ExhaustLink, ExhaustModel, ExhaustNet, Segment,
 };
@@ -16,7 +20,7 @@ use crate::jet_noise::JetNoise;
 use crate::layout::Layout;
 use crate::listener::Listener;
 use crate::sound::SoundDef;
-use crate::structure::StructureResponse;
+use crate::structure::{BlockModes, StructureResponse};
 use crate::thermo::Composition;
 use crate::units::{ATM_PA, deg_to_rad, rad_s_to_rpm, rpm_to_rad_s};
 use crate::valve::ValveTiming;
@@ -38,6 +42,9 @@ pub struct EngineDef {
     /// How the cylinders stand (inline, V, flat): drawn by the app.
     #[serde(default)]
     pub layout: Layout,
+    /// Spark-ignited premixed charge (the default) or a diesel's compression ignition.
+    #[serde(default, skip_serializing_if = "Combustion::is_spark")]
+    pub combustion: Combustion,
     pub intake_valve: ValveTiming,
     pub exhaust_valve: ValveTiming,
     /// Honda VTEC: when the valves' high lobes engage ([`ValveTiming::high`]); none: fixed lobes.
@@ -175,6 +182,7 @@ impl EngineDef {
             cylinders: 1,
             firing_order: vec![1],
             layout: Layout::default(),
+            combustion: Combustion::Spark,
             intake_valve: ValveTiming {
                 open_deg: 345.0,
                 duration_deg: 250.0,
@@ -259,6 +267,133 @@ impl EngineDef {
         }
         .with_tail_pipe()
         .with_catalyst()
+    }
+
+    /// VW 1.9 SDI (AEY/ASY, Golf IV / Polo, 1997–2005): a direct-injection, naturally aspirated
+    /// diesel. 1896 cc from 79.5 × 95.5 mm, CR 19.5, 47 kW (64 PS) at 4200 rpm, 125 N·m at
+    /// 2200–2600, firing 1-3-4-2, SOHC with two valves per cylinder (Wikipedia, "List of
+    /// Volkswagen Group diesel engines"). Not public, estimated: rod, valves, cams, pump
+    /// advance, intake and exhaust lengths, inertia.
+    pub fn vw_sdi() -> Self {
+        let mut d = Self {
+            name: "VW 1.9 SDI (diesel inline-4)".into(),
+            geometry: CylinderGeometry {
+                bore_m: 0.0795,
+                stroke_m: 0.0955,
+                rod_m: 0.144,
+                compression_ratio: 19.5,
+                rotor: None,
+            },
+            cylinders: 4,
+            firing_order: vec![1, 3, 4, 2],
+            layout: Layout::default(),
+            combustion: Combustion::Diesel(crate::combustion::DieselDef {
+                // ESTIMATE, fitted: 4° brings the ALH's same-cylinder hit similarity at 1–2 kHz to 0.77 (recordings 0.70–0.86)
+                spray_spread_deg: 4.0,
+                ..crate::combustion::DieselDef::default()
+            }),
+            // one 36 mm intake and one 31 mm exhaust valve, lift a quarter of each (ESTIMATES);
+            // a diesel's small overlap: IVO 10° BTDC, IVC 40° ABDC, EVO 45° BBDC, EVC 10° ATDC
+            // (typical values; ESTIMATE)
+            intake_valve: ValveTiming {
+                open_deg: 350.0,
+                duration_deg: 230.0,
+                max_lift_m: 0.009,
+                diameter_m: 0.036,
+                high: None,
+            },
+            exhaust_valve: ValveTiming {
+                open_deg: 135.0,
+                duration_deg: 235.0,
+                max_lift_m: 0.0078,
+                diameter_m: 0.031,
+                high: None,
+            },
+            // a dual-mass flywheel's engine side (estimate)
+            flywheel_inertia_kgm2: 0.2,
+            plenum_volume_m3: 3.0e-3,
+            // the intake's bore where a petrol engine's throttle would be (there is none)
+            throttle_diameter_m: 0.06,
+            idle_throttle: 0.0,
+            idle_rpm: 900.0,
+            // a cast four-into-one manifold: short primaries (ESTIMATE); after it the road car's
+            // catalyst and two silencers (below)
+            exhaust: ExhaustDef {
+                primary_length_m: 0.3,
+                collector_length_m: 0.2,
+                tail_length_m: 2.0,
+                ..ExhaustDef::default()
+            },
+            // The air cleaner's box and its snorkel: with no throttle every intake pulse reaches
+            // the mouth, and an open bore drowned the block's combustion noise by 6–18 dB from
+            // 250 Hz to 4 kHz (FINDINGS 2026-10-31). Golf IV-sized box, ≈ 8 L, one Ø 65 mm duct
+            // 0.5 m long: ESTIMATES
+            intake: IntakeDef {
+                model: IntakeModel::Fv,
+                runner_length_m: 0.4,
+                runner_diameter_m: 0.036,
+                airbox: Some(crate::intake_fv::AirboxDef {
+                    volume_m3: 0.008,
+                    ducts: 1,
+                    duct_length_m: 0.5,
+                    duct_diameter_m: 0.065,
+                }),
+                ..IntakeDef::default()
+            },
+            redline_rpm: 4800.0,
+            starter_torque_nm: 90.0,
+            vehicle: crate::drivetrain::VehicleDef::inline4(),
+            friction: crate::friction::FrictionDef {
+                valvetrain: crate::friction::Valvetrain::SohcDirectActing,
+                ..crate::friction::FrictionDef::default()
+            },
+            ..Self::single()
+        };
+        // Its block is what is heard at idle, and each cylinder strikes it in its own place.
+        d.sound.block_modes = 1.0;
+        // A road car's exhaust: catalyst, centre and rear silencers sized by the rule of thumb
+        // ([`crate::exhaust::road_exhaust`], 45 mm pipes; ESTIMATE). An open pipe left the
+        // exhaust 36–45 dB over the block below 250 Hz.
+        d.exhaust.after_collector = crate::exhaust::road_exhaust(d.displacement_m3(), 0.045);
+        d
+    }
+
+    /// VW 1.9 TDI (ALH, Golf IV, 1997–2006): the SDI's block and direct injection with a Garrett
+    /// VNT-15 and an intercooler. 66 kW at 4000 rpm, 210 N·m at 1800–1900 (kfz-tech.de; forum
+    /// quotes of VW's sheet); bore, stroke and ratio from the same family's sheet (Vento 1.9 TDI).
+    /// Not public, estimated: the wheel's sizes, the nozzle's range, the boost, the smoke limit.
+    pub fn vw_tdi() -> Self {
+        let mut d = Self::vw_sdi();
+        d.name = "VW 1.9 TDI (diesel inline-4, VNT turbo)".into();
+        // the Golf IV's pipes: its ALH intermediate section takes 60 mm clamps (Mecatechnic
+        // GC20334), so about 55 mm of pipe (ESTIMATE). At the SDI's 45 mm the tail's jet hissed
+        // 11 dB over at full boost, 4–16 kHz.
+        d.exhaust.tail_diameter_m = 0.055;
+        d.exhaust.after_collector = crate::exhaust::road_exhaust(d.displacement_m3(), 0.055);
+        d.combustion = Combustion::Diesel(crate::combustion::DieselDef {
+            // a turbo diesel runs richer than the NA's 1.4: ESTIMATE
+            full_load_lambda: 1.25,
+            // The maker's torque, at a DI diesel's 210 g/kWh (Heywood §1.8, about its best):
+            // 210 N·m at 1900 rpm is 41.8 kW, 2.44 g/s, 63.3 injections/s: 38.5 mg; 66 kW at 4000
+            // is 3.85 g/s, 133 injections/s: 29 mg
+            fuel_stop_kg: vec![(1900.0, 38.5e-6), (4000.0, 29.0e-6)],
+            spray_spread_deg: 4.0,
+            ..crate::combustion::DieselDef::default()
+        });
+        d.turbo = Some(crate::turbo::TurboDef {
+            // ESTIMATES: a small passenger-diesel wheel, about 0.9 bar over the atmosphere
+            compressor_tip_diameter_m: 0.046,
+            inducer_diameter_m: 0.032,
+            exit_width_m: 0.0035,
+            wastegate_pa: 0.9e5,
+            wastegate_area_m2: 0.0,
+            turbine_area_m2: 1.5e-4,
+            vnt_open_area_m2: 5.0e-4,
+            // no throttle to close against the boost
+            bov_area_m2: 0.0,
+            ..crate::turbo::TurboDef::default()
+        });
+        d
     }
 
     /// Mazda 13B-MSP RENESIS (RX-8, 2003–2012): two rotors, e 15 mm, R 105 mm, B 80 mm →
@@ -746,6 +881,7 @@ impl EngineDef {
             // (IVO 20° BTDC, IVC 70° ABDC); the exhaust's EVO 43° BBDC, EVC 23° ATDC fitted
             // within the usual 40–70° / 10–45° to the recordings' firing harmonics and the
             // patent's muffler response, the power held in the published range.
+            combustion: Combustion::Spark,
             // That is the timing floored; the cams turn there on dual VVT-i (Toyota). At idle the
             // intake sits retarded and the exhaust advanced, so the valves barely overlap and
             // the charge is not half residual: the 1LR-GUE's ranges are not published, those
@@ -1051,6 +1187,7 @@ impl EngineDef {
                 bank_angle_deg: 90.0,
                 banks: vec![vec![1, 2, 3, 4], vec![5, 6, 7, 8]],
             },
+            combustion: Combustion::Spark,
             intake_valve: ValveTiming {
                 open_deg: 340.0,
                 duration_deg: 270.0,
@@ -1137,6 +1274,7 @@ impl EngineDef {
                 bank_angle_deg: 90.0,
                 banks: vec![vec![1, 3, 5, 7], vec![2, 4, 6, 8]],
             },
+            combustion: Combustion::Spark,
             intake_valve: ValveTiming {
                 open_deg: 350.0,
                 duration_deg: 250.0,
@@ -1427,6 +1565,13 @@ const LIMITER_HYSTERESIS_RPM: f64 = 200.0;
 ///
 /// Air path: trim of the bypass, per unit of the air the engine swallows at idle.
 const IAC_KP: f64 = 0.05;
+/// A diesel's idle governor on its fuel share: proportional per relative speed error, integral
+/// per second, and the most fuel it gives (my calls: an idle needs ~5–10 % of full fuel).
+const DIESEL_IDLE_KP: f64 = 1.5;
+const DIESEL_IDLE_KI_PER_S: f64 = 1.0;
+const DIESEL_IDLE_MAX_FUEL: f64 = 0.4;
+/// The top governor cuts the fuel to zero over this many rpm before the redline.
+const DIESEL_GOVERNOR_DROOP_RPM: f64 = 300.0;
 const IAC_KI_PER_S: f64 = 0.5;
 /// An electronic throttle closes nearly to its stop (5 % of the base opening is left as the
 /// plate's leakage), and an idle actuator passes a few percent of the bore at most.
@@ -1461,6 +1606,8 @@ struct Burn {
     /// ends leaves unburnt.
     fuel_kg: f64,
     air_kg: f64,
+    /// A diesel's burn: the Watson double Wiebe over `duration_deg` instead of one Wiebe.
+    watson: Option<Watson>,
 }
 
 impl Burn {
@@ -1798,6 +1945,13 @@ struct CylinderState {
     /// injector is open most of the stroke), so a cut-off reaches a cylinder at its next
     /// exhaust opening, up to a cycle after the cut, and the charges already injected burn.
     injected: bool,
+    /// A diesel's injected fuel on its way to lighting: the ignition-delay integral's progress
+    /// (Livengood–Wu, lights at 1) and the time since injection, s.
+    delay: Option<(f64, f64)>,
+    /// The chamber's modes ringing ([`RING_MODES`]), as (real, imaginary) pressure, Pa.
+    ring: [(f64, f64); 3],
+    /// This lighting's frequency scale ([`RING_SPREAD`]) on each mode.
+    ring_scale: [f64; 3],
     /// Gas temperature in this cylinder's exhaust primary, and the primary's wall temperature,
     /// K: what reversion pushes back, and how much volume it is.
     port_t: f64,
@@ -2045,6 +2199,10 @@ pub struct Engine {
     limiter_cut: bool,
     /// The idle-speed control's spark trim, degrees (negative = retarded); 0 off idle.
     idle_spark_deg: f64,
+    /// A diesel's fuel per cycle as a share of its full-load fuel (pedal and governors), and
+    /// its idle governor's integral.
+    diesel_fuel: f64,
+    fuel_gov: f64,
     /// Opening the throttle dashpot holds (fraction of the plate's area), decaying.
     dashpot: f64,
     /// Throttle plate position in pedal units (0..=1), following the pedal at the actuator's
@@ -2082,6 +2240,8 @@ pub struct Engine {
     /// The block's structure response per bank at the step it was built for
     /// ([`crate::structure`]; each bank's side radiates its own cylinders' combustion).
     structure: Option<(f64, Vec<StructureResponse>)>,
+    /// Each bank's wall modes, and a buffer of its cylinders' pressures.
+    block_modes: Option<(f64, Vec<BlockModes>, Vec<f64>)>,
     /// Each cylinder's bank ([`crate::layout::Layout::place`]) and the number of banks, kept
     /// with the listener (rebuilt with it).
     bank_of: Vec<usize>,
@@ -2221,6 +2381,19 @@ fn pedal_opening(t: f64) -> f64 {
     1.0 - (t * PI * 0.5).cos()
 }
 
+/// The generator's next draw, uniform in −1..1 (xorshift64*).
+fn xorshift_noise(rng: &mut u64) -> f64 {
+    *rng ^= *rng >> 12;
+    *rng ^= *rng << 25;
+    *rng ^= *rng >> 27;
+    let x = rng.wrapping_mul(0x2545_F491_4F6C_DD1D);
+    (x >> 11) as f64 / (1u64 << 52) as f64 - 1.0
+}
+
+/// Spread of a diesel's ignition delay from cycle to cycle, as a share of it, per unit jitter
+/// (ESTIMATE: the spray's mixing varies as the flame's does; Heywood §9.4.2 for the petrol's).
+const DELAY_DISPERSION: f64 = 0.05;
+
 /// Crank angle `a` (deg) crossed in the step (prev, cur], on the 720° circle.
 fn crossed(prev: f64, cur: f64, a: f64) -> bool {
     let span = crate::units::wrap(cur - prev, 720.0);
@@ -2256,6 +2429,9 @@ impl Engine {
                     charge_bias: 1.0,
                     armed: false,
                     injected: true,
+                    delay: None,
+                    ring: [(0.0, 0.0); 3],
+                    ring_scale: [1.0; 3],
                     port_t: PIPE_COLD_K,
                     port_flow: 0.0,
                     port_outflow: 0.0,
@@ -2310,6 +2486,8 @@ impl Engine {
             cam_advance: cams,
             iac_rate: 0.0,
             idle_spark_deg: 0.0,
+            diesel_fuel: 0.0,
+            fuel_gov: 0.0,
             dashpot: 0.0,
             plate: 0.0,
             iac_last_rpm: initial_rpm,
@@ -2338,6 +2516,7 @@ impl Engine {
             tail_pipes,
             listener: None,
             structure: None,
+            block_modes: None,
             bank_of: Vec::new(),
             n_banks: 1,
             seat_strikes: Vec::new(),
@@ -2415,11 +2594,7 @@ impl Engine {
 
     /// xorshift64*: uniform in [-1, 1). Seeded, so the sim stays deterministic.
     fn noise(&mut self) -> f64 {
-        self.rng ^= self.rng >> 12;
-        self.rng ^= self.rng << 25;
-        self.rng ^= self.rng >> 27;
-        let x = self.rng.wrapping_mul(0x2545_F491_4F6C_DD1D);
-        (x >> 11) as f64 / (1u64 << 52) as f64 - 1.0
+        xorshift_noise(&mut self.rng)
     }
 
     /// Trim the idle air towards `idle_rpm` while the pedal is released and the engine runs
@@ -2455,6 +2630,10 @@ impl Engine {
     }
 
     fn idle_control(&mut self, dt: f64, c: &Controls) {
+        if self.def.combustion.diesel().is_some() {
+            self.diesel_governor(dt, c);
+            return;
+        }
         let rpm = self.rpm();
         let target = self.def.idle_rpm;
         let raw = (rpm - self.iac_last_rpm) / dt;
@@ -2482,6 +2661,25 @@ impl Engine {
         self.idle_spark_deg = self.slew_spark(trim.clamp(-r, r) - r, dt);
     }
 
+    /// A diesel's fuel: the pedal's share of full-load fuel, never under what the idle governor
+    /// asks (a PI holding the idle speed, as an injection pump's idle spring does) and cut over
+    /// the last [`DIESEL_GOVERNOR_DROOP_RPM`] before the redline (the top governor's droop).
+    fn diesel_governor(&mut self, dt: f64, c: &Controls) {
+        let rpm = self.rpm();
+        let target = self.def.idle_rpm;
+        let err = (target - rpm) / target;
+        self.fuel_gov =
+            (self.fuel_gov + DIESEL_IDLE_KI_PER_S * err * dt).clamp(0.0, DIESEL_IDLE_MAX_FUEL);
+        let idle = (self.fuel_gov + DIESEL_IDLE_KP * err).clamp(0.0, DIESEL_IDLE_MAX_FUEL);
+        let top = ((self.def.redline_rpm - rpm) / DIESEL_GOVERNOR_DROOP_RPM).clamp(0.0, 1.0);
+        let want = if c.ignition {
+            c.throttle.clamp(0.0, 1.0).max(idle)
+        } else {
+            0.0
+        };
+        self.diesel_fuel = want * top;
+    }
+
     /// The air an engine swallows at its idle speed, as a fraction of its full throttle area:
     /// ṁ = ρ·V_d·N/120 at a typical idle manifold (30 kPa, 300 K), through a choked orifice
     /// from the atmosphere. The idle loop's gains are per this, so they mean the same on a
@@ -2502,8 +2700,11 @@ impl Engine {
         let cut = self.def.overrun_fuel_cut_rpm;
         let resume = (self.def.idle_rpm + FUEL_REACTIVATION_ABOVE_IDLE_RPM)
             .min(cut - FUEL_CUT_HYSTERESIS_RPM);
-        self.overrun_cut =
-            cut > 0.0 && throttle <= 0.01 && (rpm > cut || (self.overrun_cut && rpm > resume));
+        // a diesel's governor already gives no fuel above idle with the pedal up
+        self.overrun_cut = self.def.combustion.is_spark()
+            && cut > 0.0
+            && throttle <= 0.01
+            && (rpm > cut || (self.overrun_cut && rpm > resume));
         let red = if self.def.shutoff_rpm > 0.0 {
             self.def.shutoff_rpm
         } else {
@@ -2549,6 +2750,10 @@ impl Engine {
     }
 
     fn throttle_area(&self, throttle: f64) -> f64 {
+        if self.def.combustion.diesel().is_some() {
+            // no throttle: the intake stands open, the pedal meters fuel
+            return DISCHARGE_CD * PI * 0.25 * self.def.throttle_diameter_m.powi(2);
+        }
         let t = throttle.clamp(0.0, 1.0);
         // The idle bypass, trimmed by the idle-speed control. While the overrun cut-off holds,
         // the ECU opens it in proportion to speed above DECEL_AIR_BASE_RPM (its deceleration air):
@@ -2677,6 +2882,7 @@ impl Engine {
         let mut gas_torque = 0.0;
         let spark_rpm = self.rpm();
         let retard = torque_intervention(c.torque_cut, self.charge_share);
+        let diesel = self.def.combustion.diesel().cloned();
         let n_cyl = self.cyl.len();
         for i in 0..n_cyl {
             let arriving = match (&self.net, &self.remote.0) {
@@ -2804,9 +3010,14 @@ impl Engine {
                 }
                 let burned = intake_exchange(cs, f.dm);
                 // port injection: the charge carries fuel unless the ECU cut its injection
+                // (a diesel breathes air; its fuel is injected at the end of compression)
                 let fresh = Composition {
                     burned,
-                    fuelled: if cs.injected { 1.0 } else { 0.0 },
+                    fuelled: if cs.injected && diesel.is_none() {
+                        1.0
+                    } else {
+                        0.0
+                    },
                 };
                 cylinder_flow(cs, &th, into_cyl, fresh);
             }
@@ -2954,10 +3165,16 @@ impl Engine {
                 // the burned gas the intake gave back is no air to fuel
                 let fresh =
                     (cs.trapped_kg - cs.residual_kg - cs.reinducted_burned_kg.max(0.0)).max(0.0);
-                let air = fresh * AFR_STOICH / (1.0 + AFR_STOICH);
+                let air = if diesel.is_some() {
+                    fresh
+                } else {
+                    fresh * AFR_STOICH / (1.0 + AFR_STOICH)
+                };
                 let film_x =
                     crate::fuel::deposit_fraction(film_x, cs.gas.pressure(), self.omega.abs());
-                let fuel = if cs.injected {
+                let fuel = if diesel.is_some() {
+                    0.0
+                } else if cs.injected {
                     cs.film.meter(air / AFR_STOICH, film_x, film_share).1
                 } else {
                     cs.film.intake(0.0, film_x, film_share)
@@ -2992,14 +3209,115 @@ impl Engine {
             // The spark fires on the first step at or past its angle (within the half cycle
             // after it), so a timing that moved earlier past the crank still fires this charge,
             // and one that moved later cannot fire it again. A cut cylinder's charge passes.
-            if cs.armed && crate::units::wrap(cur - spark_deg, 720.0) < 360.0 {
+            if let Some(d) = &diesel {
+                // the pump injects at its advance, once per charge, if this charge was fuelled
+                let soi = 720.0 - d.soi_btdc(rpm_now, self.def.idle_rpm, self.def.redline_rpm);
+                if cs.armed && crate::units::wrap(cur - soi, 720.0) < 360.0 {
+                    cs.armed = false;
+                    if cs.injected && self.diesel_fuel > 0.0 {
+                        let j = self.def.sound.combustion_jitter;
+                        let mut draw =
+                            || -> f64 { (0..3).map(|_| xorshift_noise(&mut self.rng)).sum() };
+                        let (quantity, delay) = (draw(), draw());
+                        let fuel = self.diesel_fuel
+                            * d.full_fuel_kg(rpm_now, cs.air_kg)
+                            * (1.0 + CHARGE_DISPERSION * j * quantity);
+                        self.fuel_ledger.into_cylinders += fuel;
+                        cs.fuel_kg += fuel;
+                        // the delay ends when its integral reaches 1: starting off 0 spreads it
+                        cs.delay = Some((DELAY_DISPERSION * j * delay, 0.0));
+                    }
+                }
+                // the delay runs in the air the compression heats (Livengood–Wu integral of the
+                // Hardenberg–Hase delay at each step's p, T); at its end the fuel lights
+                if let Some((progress, since)) = cs.delay {
+                    let step_deg = crate::units::wrap(cur - prev, 720.0);
+                    let tau = ignition_delay_deg(
+                        cs.gas.pressure() / 1e5,
+                        cs.t_k,
+                        mean_piston_speed,
+                        d.cetane,
+                    );
+                    let (progress, since) = (progress + step_deg / tau, since + dt);
+                    cs.delay = Some((progress, since));
+                    if progress >= 1.0 {
+                        cs.delay = None;
+                        let (fuel, air) = (cs.fuel_kg, cs.air_kg);
+                        let phi = fuel * AFR_STOICH_DIESEL / air.max(1e-12);
+                        cs.burn = Some(Burn {
+                            start_deg: cur,
+                            duration_deg: WATSON_DURATION_DEG,
+                            energy_j: crate::fuel::burnable(fuel, air)
+                                * LHV_DIESEL
+                                * COMBUSTION_EFFICIENCY
+                                * cs.charge_bias,
+                            released: 0.0,
+                            fuel_kg: fuel,
+                            air_kg: air,
+                            watson: Some(Watson {
+                                spray_delay: std::array::from_fn(|_| {
+                                    0.5 * (xorshift_noise(&mut self.rng) + 1.0)
+                                        * d.spray_spread_deg
+                                        * self.def.sound.combustion_jitter
+                                        / WATSON_DURATION_DEG
+                                }),
+                                // Watson's K₂ fits the whole nozzle's burn, its sprays' spread
+                                // in it: one spray alone is sharper (ESTIMATE: half as wide,
+                                // width ∝ K₂^(−1/K₁) with K₁ ≈ 2)
+                                k2: 4.0 * Watson::new(phi, since * 1e3, rpm_now).k2,
+                                ..Watson::new(phi, since * 1e3, rpm_now)
+                            }),
+                        });
+                        // the premixed burn's pressure step at about the clearance volume,
+                        // (γ − 1)·Q/V, rings the chamber: each lighting strikes it differently
+                        let watson = Watson::new(phi, since * 1e3, rpm_now);
+                        let v_c = g.displacement() / (g.compression_ratio - 1.0).max(1.0);
+                        let q =
+                            crate::fuel::burnable(fuel, air) * LHV_DIESEL * COMBUSTION_EFFICIENCY;
+                        let step = (crate::gas::GAMMA - 1.0) * watson.beta * q / v_c;
+                        let strike = self.def.sound.chamber_ring * RING_SHARE * step;
+                        for ((z, scale), (_, share)) in
+                            cs.ring.iter_mut().zip(&mut cs.ring_scale).zip(RING_MODES)
+                        {
+                            *scale = 1.0 + RING_SPREAD * xorshift_noise(&mut self.rng);
+                            let phase = PI * xorshift_noise(&mut self.rng);
+                            let hit = 1.0 + 0.5 * xorshift_noise(&mut self.rng);
+                            *z = (
+                                strike * share * hit * phase.cos(),
+                                strike * share * hit * phase.sin(),
+                            );
+                        }
+                        (cs.fuel_kg, cs.air_kg) = (0.0, 0.0);
+                        self.combustions += 1;
+                    }
+                }
+            } else if cs.armed && crate::units::wrap(cur - spark_deg, 720.0) < 360.0 {
                 cs.armed = false;
                 // an empty or fuelless charge has no flame (`cycle_flame`)
                 new_burn = c.ignition;
             }
+            if diesel.is_some() && cs.ring[0] != (0.0, 0.0) {
+                let c_gas = (crate::gas::GAMMA * crate::gas::R_AIR * cs.t_k.max(1.0)).sqrt();
+                let decay = (-dt / RING_DECAY_S).exp();
+                for ((z, scale), (rho, _)) in cs.ring.iter_mut().zip(&cs.ring_scale).zip(RING_MODES)
+                {
+                    let w = 2.0 * PI * draper_hz(rho, c_gas * scale, g.bore_m) * dt;
+                    let (sin, cos) = w.sin_cos();
+                    *z = (
+                        decay * (z.0 * cos - z.1 * sin),
+                        decay * (z.0 * sin + z.1 * cos),
+                    );
+                }
+                // under a pascal it is silent: stop turning it
+                if cs.ring[0].0.hypot(cs.ring[0].1) < 1.0 {
+                    cs.ring = [(0.0, 0.0); 3];
+                }
+            }
             // The exhaust valve opens on whatever the flame has not burnt yet: it leaves
             // unburnt with the gas (a partial burn), as does a charge that never lit.
             if crossed(prev, cur, exhaust_valve.open_deg) {
+                // fuel still waiting to light leaves with the gas, unburnt (below)
+                cs.delay = None;
                 if let Some(b) = cs.burn.take() {
                     cs.slip.add(b.unburnt());
                 }
@@ -3018,7 +3336,10 @@ impl Engine {
                 if since > 360.0 {
                     since -= 720.0;
                 }
-                let x = wiebe(since, b.duration_deg);
+                let x = match &b.watson {
+                    Some(w) => w.burned(since / b.duration_deg),
+                    None => wiebe(since, b.duration_deg),
+                };
                 cs.u_j += b.energy_j * (x - b.released);
                 // what burns turns the fresh charge into products
                 cs.comp.burned =
@@ -3112,6 +3433,7 @@ impl Engine {
                         released: 0.0,
                         fuel_kg: fuel,
                         air_kg: air,
+                        watson: None,
                     });
                     (cs.fuel_kg, cs.air_kg) = (0.0, 0.0);
                     self.combustions += 1;
@@ -3425,10 +3747,37 @@ impl Engine {
                 let (comb, head) = s.split_at_mut(n_banks);
                 for (b, out) in block.iter_mut().enumerate().take(n_banks) {
                     let bank = self.cyl.iter().zip(&self.bank_of).filter(|&(_, &k)| k == b);
-                    let p = crate::structure::combustion_drive(
-                        bank.map(|(cs, _)| cs.gas.pressure()),
-                        g.bore_m,
-                    ) / n_banks as f64;
+                    let voice = snd.block_modes;
+                    let p = if voice > 0.0 {
+                        let n = self.cyl.len();
+                        if self.block_modes.as_ref().is_none_or(|m| m.0 != dt) {
+                            let modes = (0..n_banks)
+                                .map(|_| BlockModes::new(n / n_banks, dt))
+                                .collect();
+                            self.block_modes = Some((dt, modes, Vec::with_capacity(n)));
+                        }
+                        // just filled when missing
+                        let Some(bm) = self.block_modes.as_mut() else {
+                            continue;
+                        };
+                        bm.2.clear();
+                        bm.2.extend(bank.map(|(cs, _)| {
+                            cs.gas.pressure() + cs.ring.iter().map(|z| z.0).sum::<f64>()
+                        }));
+                        let mean = bm.2.iter().sum::<f64>() / bm.2.len().max(1) as f64;
+                        let modal = bm.1[b].process(&bm.2);
+                        crate::structure::combustion_drive(
+                            [(1.0 - voice) * mean + voice * modal],
+                            g.bore_m,
+                        ) / n_banks as f64
+                    } else {
+                        crate::structure::combustion_drive(
+                            bank.map(|(cs, _)| {
+                                cs.gas.pressure() + cs.ring.iter().map(|z| z.0).sum::<f64>()
+                            }),
+                            g.bore_m,
+                        ) / n_banks as f64
+                    };
                     let ticks = head[b].process(snd.mechanical * seats);
                     let ticks = self.bay.get_mut(b).map_or(ticks, |f| f.process(ticks));
                     *out = comb[b].process(snd.block * p) + ticks;
@@ -3718,15 +4067,19 @@ impl Engine {
         }
     }
 
-    /// The exhaust pipes' gas for the 3D view ([`ExhaustNet::probe`]): false (and `out` empty)
-    /// when the net runs elsewhere (its own thread) or the exhaust is finite-volume: no data.
+    /// The exhaust pipes' gas for the 3D view ([`ExhaustNet::probe`], [`ExhaustFv::probe`]):
+    /// false (and `out` empty) when the net runs elsewhere (its own thread): no data.
     pub fn probe_exhaust(&self, out: &mut Vec<crate::exhaust::PipeState>) -> bool {
-        match &self.net {
-            Some(net) => {
+        match (&self.fv, &self.net) {
+            (Some(fv), _) => {
+                fv.probe(out);
+                true
+            }
+            (None, Some(net)) => {
                 net.probe(out);
                 true
             }
-            None => {
+            (None, None) => {
                 out.clear();
                 false
             }
@@ -4565,6 +4918,91 @@ mod tests {
             rms(&jet),
             rms(&off_quiet)
         );
+    }
+
+    /// The TDI's sound at idle for `seconds`, its first second of settling dropped.
+    fn tdi_idle(edit: impl Fn(&mut crate::sound::SoundDef), seconds: f64) -> Vec<f64> {
+        let mut d = EngineDef::vw_tdi();
+        edit(&mut d.sound);
+        let mut e = Engine::new(d, 900.0, 1);
+        let c = Controls::default();
+        let dt = 1.0 / 48_000.0;
+        let n = (seconds / dt) as usize;
+        let out: Vec<f64> = (0..n).map(|_| e.step(dt, &c)).collect();
+        out[48_000..].to_vec()
+    }
+
+    #[test]
+    fn a_diesels_cycles_differ_from_each_other() {
+        // cylinder 1's peak pressure, cycle by cycle at idle: identical cycles barely spread it
+        let spread = |jitter: f64| {
+            let mut d = EngineDef::vw_tdi();
+            d.sound.combustion_jitter = jitter;
+            let mut e = Engine::new(d, 900.0, 1);
+            let c = Controls::default();
+            for _ in 0..48_000 {
+                e.step(DT, &c);
+            }
+            let (mut peaks, mut best, mut last) = (Vec::new(), 0.0_f64, e.cylinder(0).cycle_deg);
+            while peaks.len() < 20 {
+                e.step(DT, &c);
+                let v = e.cylinder(0);
+                if v.cycle_deg < last {
+                    peaks.push(best);
+                    best = 0.0;
+                }
+                last = v.cycle_deg;
+                best = best.max(v.pressure_pa);
+            }
+            let peaks = &peaks[1..];
+            let mean = peaks.iter().sum::<f64>() / peaks.len() as f64;
+            (peaks.iter().map(|p| (p - mean).powi(2)).sum::<f64>() / peaks.len() as f64).sqrt()
+        };
+        let (on, off) = (spread(1.0), spread(0.0));
+        // without jitter the idle governor's hunting still spreads it: the jitter adds to that
+        assert!(on > 1.3 * off, "{on} Pa with, {off} Pa without");
+    }
+
+    #[test]
+    fn a_diesels_chamber_rings_above_what_its_slow_burn_reaches() {
+        let high = |x: &[f64]| {
+            x.windows(3)
+                .map(|w| (w[2] - 2.0 * w[1] + w[0]).powi(2))
+                .sum::<f64>()
+        };
+        let on = high(&tdi_idle(|_| {}, 2.5));
+        let off = high(&tdi_idle(|s| s.chamber_ring = 0.0, 2.5));
+        // the second difference weighs the highs: at least 6 dB more of them with the ringing
+        assert!(on > 4.0 * off, "{on} with, {off} without");
+    }
+
+    #[test]
+    fn a_diesels_cylinders_each_strike_the_block_in_their_own_voice_at_the_same_level() {
+        let high = |x: &[f64]| {
+            x.windows(3)
+                .map(|w| (w[2] - 2.0 * w[1] + w[0]).powi(2))
+                .sum::<f64>()
+        };
+        let on = tdi_idle(|_| {}, 2.5);
+        let off = tdi_idle(|s| s.block_modes = 0.0, 2.5);
+        assert_ne!(on, off);
+        // the modes keep the mean level of what they replace: within 3 dB
+        let ratio = high(&on) / high(&off);
+        assert!((0.5..2.0).contains(&ratio), "{ratio}");
+    }
+
+    #[test]
+    fn a_diesels_sprays_change_how_each_cycle_strikes() {
+        let hits = |spread: f64| {
+            let mut d = EngineDef::vw_tdi();
+            if let Combustion::Diesel(x) = &mut d.combustion {
+                x.spray_spread_deg = spread;
+            }
+            let mut e = Engine::new(d, 900.0, 1);
+            let c = Controls::default();
+            (0..72_000).map(|_| e.step(DT, &c)).collect::<Vec<f64>>()
+        };
+        assert_ne!(hits(4.0), hits(0.0));
     }
 
     #[test]
@@ -6548,6 +6986,176 @@ mod tests {
             rel(&u),
             rel(&e)
         );
+    }
+
+    /// Steepest rise of cylinder 0's pressure, bar per crank degree, held at `rpm` with the
+    /// pedal at `pedal`, firing or (`fire` false) motored, after settling.
+    fn peak_pressure_rise(def: EngineDef, rpm: f64, pedal: f64, fire: bool) -> f64 {
+        let mut e = Engine::new(def, rpm, 1);
+        let c = Controls {
+            throttle: pedal,
+            hold_rpm: Some(rpm),
+            ignition: fire,
+            ..Controls::default()
+        };
+        for _ in 0..(1.0 / DT) as usize {
+            e.step(DT, &c);
+        }
+        let deg_per_step = rpm * 6.0 * DT;
+        let (mut last, mut peak) = (e.cyl[0].gas.pressure(), 0.0f64);
+        for _ in 0..(10.0 * 120.0 / rpm / DT) as usize {
+            e.step(DT, &c);
+            let p = e.cyl[0].gas.pressure();
+            peak = peak.max((p - last) / 1e5 / deg_per_step);
+            last = p;
+        }
+        peak
+    }
+
+    #[test]
+    fn a_diesels_light_load_burn_spikes_and_its_full_load_burn_does_not() {
+        // Lyn's two phases (Heywood 1988 §10.2, Fig. 10-9): the fuel mixed during the delay
+        // burns at once — at light load a large share of little fuel, a pressure spike over the
+        // compression's own rise (the knock that is the diesel's clatter); at full load most
+        // fuel burns as it mixes, no faster than the compression rose
+        let d = EngineDef::vw_sdi();
+        let light = peak_pressure_rise(d.clone(), 1500.0, 0.2, true);
+        let light_motored = peak_pressure_rise(d.clone(), 1500.0, 0.2, false);
+        assert!(
+            light > 1.5 * light_motored,
+            "{light:.2} vs {light_motored:.2} bar/°"
+        );
+        let full = peak_pressure_rise(d.clone(), 2500.0, 1.0, true);
+        let full_motored = peak_pressure_rise(d, 2500.0, 1.0, false);
+        assert!(
+            full < 1.2 * full_motored,
+            "{full:.2} vs {full_motored:.2} bar/°"
+        );
+    }
+
+    #[test]
+    fn vw_sdi_matches_published_specs() {
+        // 1896 cc from 79.5 × 95.5 mm, CR 19.5, a diesel
+        let d = EngineDef::vw_sdi();
+        assert!((d.displacement_m3() * 1e6 - 1896.0).abs() < 3.0);
+        assert_eq!(d.geometry.compression_ratio, 19.5);
+        assert!(d.combustion.diesel().is_some());
+    }
+
+    #[test]
+    fn a_diesel_idles_on_its_governor_with_its_intake_open() {
+        let mut e = Engine::new(EngineDef::vw_sdi(), 900.0, 1);
+        let c = Controls::default();
+        for _ in 0..(3.0 / DT) as usize {
+            e.step(DT, &c);
+        }
+        let n = (1.0 / DT) as usize;
+        let (mut fuel, mut lo, mut hi) = (0.0, f64::MAX, 0.0f64);
+        // the mean over a whole cycle (133 ms at 900 rpm) cancels the ripple of the firings
+        let cycle = (0.133 / DT) as usize;
+        let mut rpms = Vec::with_capacity(n);
+        for _ in 0..n {
+            e.step(DT, &c);
+            fuel += e.diesel_fuel / n as f64;
+            lo = lo.min(e.rpm());
+            hi = hi.max(e.rpm());
+            rpms.push(e.rpm());
+        }
+        let means: Vec<f64> = rpms
+            .windows(cycle)
+            .step_by(cycle / 4)
+            .map(|w| w.iter().sum::<f64>() / cycle as f64)
+            .collect();
+        let hunt = means.iter().cloned().fold(0.0, f64::max)
+            - means.iter().cloned().fold(f64::MAX, f64::min);
+        assert!(hunt < 20.0, "the governor hunts over {hunt:.0} rpm");
+        // the firings' own ripple: four hits a cycle on a light flywheel
+        assert!(hi - lo < 130.0, "idle {lo:.0}–{hi:.0}");
+        let rpm = e.rpm();
+        assert!((800.0..1000.0).contains(&rpm), "idle {rpm}");
+        assert!(e.combustions > 10);
+        // no throttle: the manifold stays near the atmosphere at idle
+        assert!(
+            e.plenum_pressure_pa() > 0.9 * ATM_PA,
+            "{}",
+            e.plenum_pressure_pa()
+        );
+        // a lean burn: the governor's idle fuel is a small share of full-load fuel
+        assert!(fuel > 0.0 && fuel < 0.3, "{fuel}");
+    }
+
+    #[test]
+    fn a_diesel_with_its_pedal_up_above_idle_gets_no_fuel() {
+        // the governor, not a cut-off: above idle with no pedal it asks for nothing
+        let mut e = Engine::new(EngineDef::vw_sdi(), 3000.0, 1);
+        let c = Controls {
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        for _ in 0..(0.5 / DT) as usize {
+            e.step(DT, &c);
+        }
+        assert_eq!(e.diesel_fuel, 0.0);
+    }
+
+    /// Cylinder 0's pressure level in the 1/3 octave at 1 kHz, dB re 20 µPa (Anderton's CPR),
+    /// held at `rpm` with the pedal at `pedal`.
+    fn cylinder_pressure_level_1k(def: EngineDef, rpm: f64, pedal: f64) -> f64 {
+        let mut e = Engine::new(def, rpm, 1);
+        let c = Controls {
+            throttle: pedal,
+            hold_rpm: Some(rpm),
+            ..Controls::default()
+        };
+        for _ in 0..(1.0 / DT) as usize {
+            e.step(DT, &c);
+        }
+        let n = (20.0 * 120.0 / rpm / DT) as usize;
+        let x: Vec<f64> = (0..n)
+            .map(|_| {
+                e.step(DT, &c);
+                e.cyl[0].gas.pressure()
+            })
+            .collect();
+        // power in 891–1122 Hz by direct DFT over the band's bins
+        let fs = 1.0 / DT;
+        let df = fs / n as f64;
+        let (k0, k1) = ((891.0 / df) as usize, (1122.0 / df) as usize);
+        let mut pw = 0.0;
+        for k in k0..=k1 {
+            let w = 2.0 * std::f64::consts::PI * k as f64 / n as f64;
+            let (mut re, mut im) = (0.0, 0.0);
+            for (i, v) in x.iter().enumerate() {
+                re += v * (w * i as f64).cos();
+                im += v * (w * i as f64).sin();
+            }
+            pw += 2.0 * (re * re + im * im) / (n as f64 * n as f64);
+        }
+        10.0 * (pw / (20e-6f64 * 20e-6)).log10()
+    }
+
+    #[test]
+    fn a_diesel_shakes_its_block_as_anderton_measured() {
+        // Anderton (SAE 790270): the cylinder pressure level at 1 kHz, 1000 rpm, averages 156 dB
+        // for naturally aspirated DI diesels and 130 dB for petrol engines — the 26 dB that make
+        // a diesel's combustion noise. Ours must keep at least 20 of them
+        let sdi = cylinder_pressure_level_1k(EngineDef::vw_sdi(), 1000.0, 1.0);
+        let k20 = cylinder_pressure_level_1k(EngineDef::honda_k20a(), 1000.0, 1.0);
+        assert!(sdi - k20 > 20.0, "SDI {sdi:.1} dB, K20A {k20:.1} dB");
+    }
+
+    #[test]
+    fn the_sdi_breathes_through_its_air_box_and_silencers() {
+        // without them its open intake and tail drowned the block's clatter (FINDINGS)
+        let d = EngineDef::vw_sdi();
+        assert!(d.intake.airbox.is_some());
+        let mufflers = d
+            .exhaust
+            .after_collector
+            .iter()
+            .filter(|s| matches!(s, crate::exhaust::Segment::Muffler { .. }))
+            .count();
+        assert_eq!(mufflers, 2);
     }
 
     #[test]
@@ -9086,19 +9694,21 @@ mod probe {
     }
 
     #[test]
-    fn a_finite_volume_exhaust_has_no_gas_for_the_view() {
+    fn a_finite_volume_exhaust_shows_its_gas_too() {
+        // the FV pipes (K20A, LFA… run them) report their gas as the waveguide's do
         let mut def = EngineDef::inline4();
         def.exhaust.model = crate::exhaust::ExhaustModel::Fv;
+        let groups = def.exhaust.groups(def.cylinders).len();
         let mut e = Engine::new(def, 2000.0, 1);
-        for _ in 0..480 {
+        for _ in 0..4800 {
             e.step(1.0 / 48_000.0, &Controls::default());
         }
-        let mut out = vec![crate::exhaust::PipeState {
-            temperature_k: 1.0,
-            velocity_m_s: 1.0,
-            wall_k: None,
-        }];
-        assert!(!e.probe_exhaust(&mut out));
-        assert!(out.is_empty(), "stale states cleared");
+        let mut out = Vec::new();
+        assert!(e.probe_exhaust(&mut out));
+        assert_eq!(out.len(), 4 + groups);
+        assert!(
+            out.iter()
+                .all(|p| p.temperature_k > 300.0 && p.velocity_m_s.is_finite())
+        );
     }
 }
