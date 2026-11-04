@@ -347,6 +347,8 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
 - **3D view with intake, exhaust and turbo (2026-11-03, `bench_3d_frame`, LFA V10, RTX 3080 Ti):**
   CPU 0.014 ms mean / 0.02 ms p99; GPU 0.10 ms mean, p99 0.1–0.2 ms (one 1.9 ms p99 at Low under
   another session's load). Pipes are still parts (built once per definition).
+
+- 2026-11-04: building an `ExhaustNet` designs every silencer's and catalyst's filter: 1.3 s on the LFA, 0.2 s on the K20A (release, loaded machine); the FV net 0.08–0.15 s. An engine edit used to rebuild it on the first step, stalling the sound; `Engine::adopt_exhaust_from` now keeps it when the exhaust is unchanged (LFA first block after a bore edit 1137 → 6 ms). Slider drags sent one rebuild plus one quality-benchmark thread per frame; `runner::EditGate` paces them (≤ 1 rebuild / 250 ms, benchmark after 1 s still).
 - **3D view with the realistic parts (2026-11-04, `bench_3d_frame`, LFA V10, RTX 3080 Ti):** CPU
   0.017 ms mean / 0.03 ms p99 at every level; GPU mean Low 0.11 ms (primitives), Medium 0.16 ms,
   High 0.19 ms (the realistic piston, rod, throw, valves: about twice the primitives' 0.10 ms).

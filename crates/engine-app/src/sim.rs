@@ -168,12 +168,16 @@ impl Simulation {
             return;
         };
         let rpm = self.engine.rpm();
-        self.engine = Engine::with_fidelity(
+        let mut next = Engine::with_fidelity(
             def,
             rpm,
             self.engine.combustions() ^ 0x5EED,
             self.quality.fidelity(),
         );
+        // an edit that leaves the exhaust keeps its network: rebuilding it designs every
+        // silencer's filter again (a second on the LFA, the sound stalled meanwhile)
+        next.adopt_exhaust_from(&mut self.engine);
+        self.engine = next;
     }
     /// The engine as the user defined it (the physics may run a cheaper version of it).
     pub fn def(&self) -> &EngineDef {
@@ -1057,6 +1061,29 @@ pub(crate) mod tests {
         let s = sim.snapshot();
         assert_eq!((s.gear, s.speed_m_s), (0, 0.0));
         assert_eq!(sim.vehicle().def().mass_kg, 1480.0);
+    }
+
+    #[test]
+    fn an_edit_elsewhere_keeps_the_exhaust_built() {
+        let mut sim = Simulation::new(EngineDef::inline4(), FS, 1);
+        render_secs(&mut sim, 0.05);
+        let model = sim.engine().exhaust_model();
+        assert!(model.is_some());
+        let mut d = EngineDef::inline4();
+        d.geometry.bore_m *= 1.05;
+        sim.replace_engine(d.clone());
+        assert_eq!(
+            sim.engine().exhaust_model(),
+            model,
+            "taken over, not rebuilt"
+        );
+        d.exhaust.primary_length_m *= 1.2;
+        sim.replace_engine(d);
+        assert_eq!(
+            sim.engine().exhaust_model(),
+            None,
+            "a new exhaust is built anew"
+        );
     }
 
     #[test]
