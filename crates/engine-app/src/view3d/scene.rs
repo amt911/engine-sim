@@ -31,6 +31,11 @@ pub enum Part {
     /// A valve's stem (its head is the valve itself; the realistic valve draws both).
     IntakeStem,
     ExhaustStem,
+    /// A valve's spring and its cam (realistic detail only: they draw nothing at Low).
+    IntakeSpring,
+    ExhaustSpring,
+    IntakeCam,
+    ExhaustCam,
     Housing,
     SidePlate,
     Rotor,
@@ -63,6 +68,14 @@ impl Part {
         }
     }
 
+    /// A spring or a cam: drawn at the realistic detail only.
+    pub fn is_valve_train(self) -> bool {
+        matches!(
+            self,
+            Part::IntakeSpring | Part::ExhaustSpring | Part::IntakeCam | Part::ExhaustCam
+        )
+    }
+
     /// Which unit mesh draws it.
     pub fn mesh(self) -> MeshKind {
         match self {
@@ -85,6 +98,9 @@ impl Part {
             Part::Plug => MeshKind::Plug,
             Part::IntakeValve | Part::ExhaustValve => MeshKind::Valve,
             Part::IntakeStem | Part::ExhaustStem => MeshKind::ValveStem,
+            Part::IntakeSpring | Part::ExhaustSpring => MeshKind::ValveSpring,
+            Part::IntakeCam => MeshKind::IntakeCam,
+            Part::ExhaustCam => MeshKind::ExhaustCam,
             Part::RodEye => MeshKind::RodEye,
             _ => MeshKind::Cylinder,
         }
@@ -109,13 +125,16 @@ pub enum MeshKind {
     Throw,
     Valve,
     ValveStem,
+    ValveSpring,
+    IntakeCam,
+    ExhaustCam,
     ApexSeal,
     Eccentric,
     Plug,
 }
 
 impl MeshKind {
-    pub const ALL: [MeshKind; 19] = [
+    pub const ALL: [MeshKind; 22] = [
         MeshKind::Cylinder,
         MeshKind::Cuboid,
         MeshKind::Housing,
@@ -132,6 +151,9 @@ impl MeshKind {
         MeshKind::Throw,
         MeshKind::Valve,
         MeshKind::ValveStem,
+        MeshKind::ValveSpring,
+        MeshKind::IntakeCam,
+        MeshKind::ExhaustCam,
         MeshKind::ApexSeal,
         MeshKind::Eccentric,
         MeshKind::Plug,
@@ -160,6 +182,36 @@ pub struct Scene {
 
 /// Cylinder pitch along the crank, bores (a drawing choice: the file has no bore spacing).
 pub const PITCH_BORES: f64 = 1.2;
+
+/// The head's height over the deck, bores: up to the valve springs' seats (README: 0.0566 m at
+/// 86 mm), where the realistic valve train starts. A drawing choice, the 2D view is unchanged.
+pub const HEAD_B: f32 = super::parts::SPRING_SEAT_B;
+
+/// The tallest lift a valve's lobe makes (a VTEC valve's high lobe included): what its cam is
+/// built for.
+pub fn lobe_lift_m(v: &engine_core::valve::ValveTiming) -> f64 {
+    v.high
+        .map_or(v.max_lift_m, |h| h.max_lift_m.max(v.max_lift_m))
+}
+
+/// The cam's turn from its nose-down pose (on the valve's tip), rad: the flank angle that gives
+/// the valve's lift on this lobe, on the side of the lobe's centre `cycle_deg` is (the cam turns
+/// at half the crank's speed, so half the crank angle from the lobe's centre); on the base
+/// circle it keeps turning with the crank. Phasers and VTEC move the real centre, not this one.
+fn cam_turn(v: &engine_core::valve::ValveTiming, lift_m: f64, cycle_deg: f64) -> f32 {
+    let centre = v.open_deg + 0.5 * v.duration_deg;
+    let d = (cycle_deg - centre + 360.0).rem_euclid(720.0) - 360.0;
+    let side = if d < 0.0 { -1.0 } else { 1.0 };
+    let top = lobe_lift_m(v).max(1e-9);
+    let ratio = (lift_m / top) as f32;
+    let flank = super::parts::cam_angle(ratio);
+    let nominal = (0.5 * d as f32).to_radians().abs();
+    side * if ratio > 1e-4 {
+        flank
+    } else {
+        nominal.max(flank)
+    }
+}
 
 // One colour per kind of part, as engine cut-away drawings do: cast iron and aluminium greys
 // for the structure, the liners teal, the crank train violet, bearings and rings brass.
@@ -318,8 +370,9 @@ pub fn build(def: &EngineDef) -> Scene {
                 color: LINER,
             });
         }
-        let head = Mat4::from_translation(Vec3::new(x0 + 0.5 * len, deck + 0.175 * b, 0.0))
-            * Mat4::from_scale(Vec3::new(len + 0.2 * b, 0.35 * b, 1.3 * b));
+        // up to the springs' seats, so the realistic valve train stands on it
+        let head = Mat4::from_translation(Vec3::new(x0 + 0.5 * len, deck + 0.5 * HEAD_B * b, 0.0))
+            * Mat4::from_scale(Vec3::new(len + 0.2 * b, HEAD_B * b, 1.3 * b));
         out.push(Instance {
             part: Part::Head,
             model: rot * head,
@@ -335,7 +388,8 @@ pub fn build(def: &EngineDef) -> Scene {
         ),
         color: BRASS,
     });
-    let reach = deck + 0.35 * b;
+    // the cams stand 1.37 bore over the deck, their noses 0.33 bore past that
+    let reach = deck + (super::parts::STEM_B + super::parts::CAM_BASE_B + 0.11) * b;
     let radius = (0.5 * span + 0.7 * b).hypot(reach.max(1.2 * r + 0.5 * b)) * 1.05;
     let centre = Vec3::new(0.5 * span, 0.0, 0.0);
     let charge_to = super::ducts::intake(def, &mut out);
@@ -547,12 +601,15 @@ pub fn moving(def: &EngineDef, cylinders: &[CylinderView], out: &mut Vec<Instanc
             );
         }
         let side = exhaust_side(def, bank);
-        for (dz, lift, part, stem, color) in [
+        for (dz, lift, part, stem, spring, camp, timing, color) in [
             (
                 -0.25 * side,
                 c.intake_lift_m,
                 Part::IntakeValve,
                 Part::IntakeStem,
+                Part::IntakeSpring,
+                Part::IntakeCam,
+                &def.intake_valve,
                 INTAKE,
             ),
             (
@@ -560,6 +617,9 @@ pub fn moving(def: &EngineDef, cylinders: &[CylinderView], out: &mut Vec<Instanc
                 c.exhaust_lift_m,
                 Part::ExhaustValve,
                 Part::ExhaustStem,
+                Part::ExhaustSpring,
+                Part::ExhaustCam,
+                &def.exhaust_valve,
                 EXHAUST,
             ),
         ] {
@@ -575,7 +635,29 @@ pub fn moving(def: &EngineDef, cylinders: &[CylinderView], out: &mut Vec<Instanc
             put(
                 stem,
                 Mat4::from_translation(Vec3::new(x, face, z))
-                    * Mat4::from_scale(Vec3::new(0.03 * b, 0.5 * b, 0.03 * b)),
+                    * Mat4::from_scale(Vec3::new(0.03 * b, HEAD_B * b, 0.03 * b)),
+                color,
+            );
+            // the realistic valve train: the spring on its seat in the head, closing up with the
+            // lift; the cam on the closed tip, turning at half the crank's speed
+            put(
+                spring,
+                Mat4::from_translation(Vec3::new(x, deck + HEAD_B * b, z))
+                    * Mat4::from_scale(Vec3::new(
+                        b,
+                        b * super::parts::spring_squash(lift as f32 / b),
+                        b,
+                    )),
+                STEEL,
+            );
+            let tip = deck + super::parts::STEM_B * b;
+            put(
+                camp,
+                Mat4::from_translation(Vec3::new(x, tip + super::parts::CAM_BASE_B * b, z))
+                    * Mat4::from_rotation_x(
+                        std::f32::consts::PI + cam_turn(timing, lift, c.cycle_deg),
+                    )
+                    * Mat4::from_scale(Vec3::splat(b)),
                 color,
             );
         }
@@ -608,6 +690,119 @@ mod tests {
             .filter(|i| i.part == part)
             .map(|i| i.model)
             .collect()
+    }
+
+    fn deck_of(d: &EngineDef) -> f32 {
+        let g = d.geometry;
+        let (r, l, b) = (g.crank_radius() as f32, g.rod_m as f32, g.bore_m as f32);
+        r + l + 0.35 * b + (g.clearance_volume() / g.piston_area()) as f32
+    }
+
+    #[test]
+    fn the_head_reaches_the_springs_seats() {
+        let d = EngineDef::inline4();
+        let b = d.geometry.bore_m as f32;
+        let s = build(&d);
+        let head = s
+            .static_parts
+            .iter()
+            .find(|i| i.part == Part::Head)
+            .unwrap()
+            .model;
+        // the box spans y -0.5..0.5 of its unit: its top is the seat, 0.0566 m at 86 mm = 0.658 bore
+        let top = head.transform_point3(Vec3::new(0.0, 0.5, 0.0)).y;
+        assert!(
+            (top - (deck_of(&d) + 0.0566 / 0.086 * b)).abs() < 1e-4 * b,
+            "{top}"
+        );
+        // its bottom stays on the deck
+        let low = head.transform_point3(Vec3::new(0.0, -0.5, 0.0)).y;
+        assert!((low - deck_of(&d)).abs() < 1e-6, "{low}");
+        // and the springs stand on that top, the cams over the valve tips (1.15 bore) by their
+        // base circle (0.22 bore)
+        let mut out = Vec::new();
+        moving(&d, &views(&d, |_| 0.0), &mut out);
+        for part in [Part::IntakeSpring, Part::ExhaustSpring] {
+            for m in of(&out, part) {
+                assert!((m.w_axis.y - top).abs() < 1e-6);
+            }
+        }
+        for part in [Part::IntakeCam, Part::ExhaustCam] {
+            for m in of(&out, part) {
+                let want = deck_of(&d) + (1.15 + 0.22) * b;
+                assert!((m.w_axis.y - want).abs() < 2e-3 * b, "{}", m.w_axis.y);
+            }
+        }
+        // the stems reach the head's top
+        for m in of(&out, Part::IntakeStem) {
+            assert!((m.y_axis.y - 0.0566 / 0.086 * b).abs() < 1e-4 * b);
+        }
+    }
+
+    #[test]
+    fn the_spring_is_compressed_by_the_lift() {
+        let d = EngineDef::inline4();
+        let b = d.geometry.bore_m as f32;
+        let mut v = views(&d, |_| 0.0);
+        v[0].intake_lift_m = 0.00946 * b as f64 / 0.086;
+        let mut out = Vec::new();
+        moving(&d, &v, &mut out);
+        // hand: (0.0378 − 0.00946)/0.0378 = 0.74974 of the free height, other springs free
+        let springs = of(&out, Part::IntakeSpring);
+        assert!((springs[0].y_axis.y / b - 0.74974).abs() < 1e-3);
+        assert!((springs[1].y_axis.y / b - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_cam_rides_the_tip_of_the_valve_it_opens() {
+        // at any point of the lift the lowest point of the (turned) lobe is the valve's tip:
+        // closed tip 1.15 bore over the face, less the lift
+        let d = EngineDef::inline4();
+        let b = d.geometry.bore_m as f32;
+        let lobe = |intake: bool| {
+            let v = if intake {
+                &d.intake_valve
+            } else {
+                &d.exhaust_valve
+            };
+            super::super::parts::cam((lobe_lift_m(v) / b as f64) as f32).unwrap()
+        };
+        let centre = d.intake_valve.open_deg + 0.5 * d.intake_valve.duration_deg;
+        for (cycle, ratio) in [
+            (centre, 1.0),
+            (centre - 50.0, 0.6),
+            (centre + 50.0, 0.6),
+            (centre - 75.0, 0.2),
+        ] {
+            let mut v = views(&d, |_| cycle);
+            let lift = ratio * lobe_lift_m(&d.intake_valve);
+            v[0].intake_lift_m = lift;
+            let mut out = Vec::new();
+            moving(&d, &v, &mut out);
+            let m = of(&out, Part::IntakeCam)[0];
+            let low = lobe(true)
+                .vertices
+                .iter()
+                .map(|p| m.transform_point3(Vec3::from(p.pos) * Vec3::splat(1.0)).y)
+                .fold(f32::MAX, f32::min);
+            let tip = deck_of(&d) + 1.15 * b - lift as f32;
+            assert!((low - tip).abs() < 0.004 * b, "{cycle}: {low} vs {tip}");
+        }
+    }
+
+    #[test]
+    fn the_cam_turns_at_half_the_crank_speed() {
+        let d = EngineDef::inline4();
+        // on the base circle the lobe turns half the crank angle: 40° of crank, 20° of cam
+        let angle = |cycle: f64| {
+            let mut out = Vec::new();
+            moving(&d, &views(&d, |_| cycle), &mut out);
+            let m = of(&out, Part::IntakeCam)[0];
+            m.y_axis.z.atan2(m.y_axis.y)
+        };
+        let far = d.intake_valve.open_deg + 0.5 * d.intake_valve.duration_deg + 200.0;
+        let turn = (angle(far + 40.0) - angle(far)).to_degrees();
+        assert!((turn - 20.0).abs() < 0.5, "{turn}");
     }
 
     #[test]

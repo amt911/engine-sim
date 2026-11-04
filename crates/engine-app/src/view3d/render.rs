@@ -39,6 +39,10 @@ pub struct MeshKey {
     pub rod_over_bore: f32,
     /// Half the stroke over the bore (the realistic throw is stretched to it).
     pub throw_over_bore: f32,
+    /// The tallest lift of the intake and exhaust lobes over the bore (the realistic cams are built
+    /// for them).
+    pub intake_lobe_over_bore: f32,
+    pub exhaust_lobe_over_bore: f32,
 }
 
 /// The frame's scene, written by the UI thread and read by `prepare`.
@@ -458,6 +462,19 @@ pub fn unit_mesh(kind: MeshKind, key: MeshKey) -> Mesh {
             Some(_) if key.realistic => Mesh::nothing(),
             _ => mesh::cylinder(s),
         },
+        // the valve train exists at the realistic detail only
+        MeshKind::ValveSpring => match super::parts::spring() {
+            Some(m) if key.realistic => m.clone(),
+            _ => Mesh::nothing(),
+        },
+        MeshKind::IntakeCam => match super::parts::cam(key.intake_lobe_over_bore) {
+            Some(m) if key.realistic => m,
+            _ => Mesh::nothing(),
+        },
+        MeshKind::ExhaustCam => match super::parts::cam(key.exhaust_lobe_over_bore) {
+            Some(m) if key.realistic => m,
+            _ => Mesh::nothing(),
+        },
         // the realistic rod carries its eyes
         MeshKind::RodEye => match super::parts::rod_asset() {
             Some(_) if key.realistic => Mesh::nothing(),
@@ -568,6 +585,8 @@ mod tests {
             realistic,
             rod_over_bore: 143.0 / 86.0,
             throw_over_bore: 0.5,
+            intake_lobe_over_bore: 0.11,
+            exhaust_lobe_over_bore: 0.11,
         };
         let cylinder = mesh::cylinder(12).vertices.len();
         // Low: the primitives; Medium and High: the realistic piston, which carries its own
@@ -641,6 +660,8 @@ mod tests {
             realistic: true,
             rod_over_bore: 1.6,
             throw_over_bore: 0.5,
+            intake_lobe_over_bore: 0.11,
+            exhaust_lobe_over_bore: 0.11,
         };
         for kind in MeshKind::ALL {
             let m = unit_mesh(kind, key);

@@ -187,6 +187,29 @@ pub fn card(def: &EngineDef, scene: &Scene, parts: &[Instance], index: usize) ->
                 ("Temperature".into(), "no data (not simulated)".into()),
             ],
         ),
+        Part::IntakeSpring | Part::ExhaustSpring | Part::IntakeCam | Part::ExhaustCam => {
+            let intake = matches!(part.part, Part::IntakeSpring | Part::IntakeCam);
+            let v = if intake {
+                &def.intake_valve
+            } else {
+                &def.exhaust_valve
+            };
+            (
+                if matches!(part.part, Part::IntakeSpring | Part::ExhaustSpring) {
+                    "Valve spring"
+                } else {
+                    "Cam"
+                },
+                vec![
+                    (
+                        "Valve".into(),
+                        if intake { "intake" } else { "exhaust" }.into(),
+                    ),
+                    ("Max lift".into(), mm(v.max_lift_m)),
+                    ("Duration".into(), format!("{:.0}°", v.duration_deg)),
+                ],
+            )
+        }
     };
     Some(Card {
         title: title.into(),
