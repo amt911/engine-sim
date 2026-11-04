@@ -20,7 +20,28 @@ Last updated: 2026-11-04.
   - silencer handles (v0.45.0).
   - The editor has no undo, so the 3D view has none either.
 
-## Now: transmissions and hybrid
+## Now: editing that is fluid, and engines that sound right when edited (user, 2026-11-04)
+
+1. **Bug: a parameter changed in the 3D view lags the app for ~20 s.** This breaks the 3D
+   view's one anti-goal (bad performance). Find the cause by measuring, then fix it with a
+   regression test.
+2. **Editing fluid and visible:**
+   - the dots are confusing; edits should feel continuous and be easy to see;
+   - the engine should answer while dragging, not only on release, if the rebuild allows it.
+3. **Typical parts and typical sizes:** a catalogue of real components with their real
+   dimensions, so an engine built from them sounds good. Examples:
+   - road and race exhaust manifolds;
+   - silencers;
+   - intake runners and plenums;
+   - cams.
+
+   The editor should also say when a combination is out of what real engines use. Today, "if
+   you start touching parameters, they sound awful". Find out whether that is the simulator
+   or the physics: measure edited engines against real ones of the same sizes. If the model
+   is wrong, fix it; if the engine really is badly sized, the editor says so and the catalogue
+   offers the real parts.
+
+## Next: transmissions and hybrid
 
 Spec `2026-11-04-transmissions-hybrid-design.md`, approved 2026-11-04 with **transmission noise**
 added by the user. One PR each, in this order:
