@@ -225,16 +225,19 @@ fn bore_for(def: &EngineDef, cylinders: usize, rpm: f64, speed: f64, range: (f64
         .clamp(range.0, range.1)
 }
 
-/// Silencer attenuation at the firing frequency, dB. ESTIMATE: a road car meets its drive-by limit
-/// about 20 dB under an open pipe at the firing order; a sport silencer half that. To be confirmed
-/// by the user's ear (spec).
-pub fn silencer_target_db(system: System) -> f64 {
-    match system {
-        System::Road => 20.0,
-        System::Sport => 10.0,
-        System::Race => 0.0,
-    }
-}
+/// The transmission loss, dB, each packed straight-through can takes at the firing frequency of the
+/// tuned rpm. This is the rule the user's ear chose on 2026-11-04: of the road, sport and race
+/// probes, the road system with packed straight-through silencers sized to 10 dB at 0.75 x redline
+/// sounded best (the expansion-chamber layouts, 20 dB per chamber, "suenan mal"). The loss is the
+/// lined-duct one `silencer2d` solves by mode matching (Munjal, *Acoustics of Ducts and Mufflers*,
+/// ch. 9, dissipative mufflers with a perforated tube).
+pub const SILENCER_TL_DB: f64 = 10.0;
+
+/// Packing of the cans, Pa*s/m^2 per metre of fibre (E-glass / basalt wool, 100-150 kg/m^3: Munjal
+/// ch. 9, Table 9.1 range); the value the probe the user liked used.
+pub const PACKING_RESISTIVITY: f64 = 16_000.0;
+/// Porosity of that fibre (Munjal ch. 9: 0.95-0.98 for a lightly packed wool).
+pub const PACKING_POROSITY: f64 = 0.95;
 
 /// An expansion chamber's area ratio for `tl_db` at its peak: Munjal (*Acoustics of Ducts and
 /// Mufflers*, ch. 3) `TL = 10·log10(1 + ¼(m − 1/m)²·sin²kL)`, at `kL = π/2`, solved for m.
@@ -242,6 +245,42 @@ pub fn chamber_ratio(tl_db: f64) -> f64 {
     // ¼(m − 1/m)² = 10^(TL/10) − 1 → m − 1/m = x → m = (x + √(x² + 4))/2
     let x = 2.0 * (10f64.powf(tl_db.max(0.0) / 10.0) - 1.0).sqrt();
     0.5 * (x + (x * x + 4.0).sqrt())
+}
+
+/// The shell diameter, m, of a packed straight-through can (`len` long, tube of `tube` bore) whose
+/// transmission loss at `f` is `tl_db`: the narrowest shell, found by bisection between a snug 1.3
+/// bores and the editor's widest (the loss grows with the annulus). If even the widest falls short,
+/// the widest.
+fn shell_for(tube: f64, len: f64, f: f64, tl_db: f64) -> f64 {
+    let gas = crate::silencer2d::Gas {
+        c: crate::exhaust::C_TAIL,
+        rho: crate::exhaust::tail_reference_density(),
+    };
+    let loss = |d: f64| {
+        crate::silencer2d::Silencer {
+            r1: 0.5 * tube,
+            r2: 0.5 * d,
+            len,
+            resistivity: Some(PACKING_RESISTIVITY),
+            perforate: crate::silencer2d::Perforate::default(),
+        }
+        .transmission_loss_db(f, gas)
+        .unwrap_or(0.0)
+    };
+    let (mut lo, mut hi) = (tube * 1.3, SILENCER_DIAMETER_M.1);
+    if lo >= hi || loss(lo) >= tl_db {
+        return lo.min(hi);
+    }
+    // 16 halvings of the bracket: a few micrometres
+    for _ in 0..16 {
+        let mid = 0.5 * (lo + hi);
+        if loss(mid) < tl_db {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    hi
 }
 
 /// The exhaust of `h` and `s` sized for `def` (its other fields kept).
@@ -301,15 +340,14 @@ pub fn size_exhaust(def: &EngineDef, h: Headers, s: System, sv: &Survey) -> Exha
     let branch_cyl = if merged { def.cylinders } else { per_collector };
     let tail = bore_for(def, branch_cyl, n_t, sv.v_tail, TAIL_DIAMETER_M);
     let firing_hz = branch_cyl as f64 * n_t / 120.0;
-    let can = |f: f64, tl: f64, tube: f64| Segment::Muffler {
-        // a quarter wave at f in the tail's gas: the chamber's first peak (kL = π/2)
-        length_m: (crate::exhaust::C_TAIL / (4.0 * f))
-            .clamp(SILENCER_LENGTH_M.0, SILENCER_LENGTH_M.1),
-        diameter_m: (tail * chamber_ratio(tl).sqrt())
-            .clamp(SILENCER_DIAMETER_M.0.max(tube * 1.2), SILENCER_DIAMETER_M.1),
-        tube_diameter_m: tube,
-        packing_resistivity: crate::exhaust::default_resistivity(),
-        packing_porosity: crate::exhaust::default_porosity(),
+    // a packed straight-through can of `len`, its tube at the tail's bore, its shell the narrowest
+    // that takes SILENCER_TL_DB at the firing frequency (bisection over the 2D solver's loss)
+    let can = |len: f64| Segment::Muffler {
+        length_m: len,
+        diameter_m: shell_for(tail, len, firing_hz, SILENCER_TL_DB),
+        tube_diameter_m: tail,
+        packing_resistivity: PACKING_RESISTIVITY,
+        packing_porosity: PACKING_POROSITY,
     };
     let pipe = |len: f64| Segment::Pipe {
         length_m: len,
@@ -323,20 +361,10 @@ pub fn size_exhaust(def: &EngineDef, h: Headers, s: System, sv: &Survey) -> Exha
         wall_m: 0.000165,
     };
     let system = match s {
-        System::Road => vec![
-            cat,
-            pipe(0.4),
-            can(firing_hz, silencer_target_db(s), 0.0),
-            pipe(0.6),
-            can(2.0 * firing_hz, silencer_target_db(s), 0.0),
-            pipe(0.4),
-        ],
-        System::Sport => vec![
-            cat,
-            pipe(0.6),
-            can(firing_hz, silencer_target_db(s), tail),
-            pipe(0.5),
-        ],
+        // ESTIMATE: lengths of the probe the user liked (2026-11-04); the cans' sizes are the rule
+        System::Road => vec![cat, pipe(0.4), can(0.35), pipe(0.6), can(0.45), pipe(0.4)],
+        // one straight-through silencer and a shorter tail (spec)
+        System::Sport => vec![cat, pipe(0.4), can(0.45), pipe(0.3)],
         System::Race => vec![pipe(1.0)],
     };
     x.tail_length_m = 1.0;
@@ -593,6 +621,89 @@ mod tests {
         assert!((slow / fast - 2.0).abs() < 1e-9, "{fast} {slow}");
     }
 
+    fn packed_cans(x: &ExhaustDef) -> Vec<(f64, f64, f64)> {
+        x.after_collector
+            .iter()
+            .filter_map(|s| match *s {
+                crate::exhaust::Segment::Muffler {
+                    length_m,
+                    diameter_m,
+                    tube_diameter_m,
+                    ..
+                } if tube_diameter_m > 0.0 => Some((length_m, diameter_m, tube_diameter_m)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// the packed can's transmission loss, dB, at `f`, by the 2D solver the exhaust itself uses
+    fn can_loss_db(can: (f64, f64, f64), f: f64) -> f64 {
+        use crate::exhaust::C_TAIL;
+        let gas = crate::silencer2d::Gas {
+            c: C_TAIL,
+            rho: crate::exhaust::tail_reference_density(),
+        };
+        crate::silencer2d::Silencer {
+            r1: 0.5 * can.2,
+            r2: 0.5 * can.1,
+            len: can.0,
+            resistivity: Some(PACKING_RESISTIVITY),
+            perforate: crate::silencer2d::Perforate::default(),
+        }
+        .transmission_loss_db(f, gas)
+        .unwrap()
+    }
+
+    #[test]
+    fn road_has_two_packed_cans_and_sport_one_each_taking_the_target_loss() {
+        let d = EngineDef::inline4();
+        let f = 4.0 * tuned_rpm(d.redline_rpm, false) / 120.0;
+        for (system, n_cans, tail_after) in [(System::Road, 2, 0.4), (System::Sport, 1, 0.3)] {
+            let x = sized(&d, Headers::FourOne, system);
+            let tail = x.outlet_diameter();
+            let cans = packed_cans(&x);
+            assert_eq!(cans.len(), n_cans, "{system:?}");
+            for c in cans {
+                // all tubes at the tail's bore; a shell between a snug 1.3 bores and the editor's 0.4 m
+                assert!((c.2 - tail).abs() < 1e-12, "{c:?} {tail}");
+                assert!(
+                    c.1 >= 1.3 * tail - 1e-9 && c.1 <= SILENCER_DIAMETER_M.1,
+                    "{c:?}"
+                );
+                // it takes the target, and no more than needed: a 2 % narrower shell would not
+                let tl = can_loss_db(c, f);
+                assert!(tl >= SILENCER_TL_DB - 0.05, "{tl} dB {c:?}");
+                if c.1 > 1.3 * tail + 1e-6 {
+                    let narrower = can_loss_db((c.0, 0.98 * c.1, c.2), f);
+                    assert!(narrower < SILENCER_TL_DB + 0.05, "{narrower} dB {c:?}");
+                }
+            }
+            // no empty expansion chamber is left in either system
+            assert!(!x.after_collector.iter().any(|s| matches!(
+                s,
+                crate::exhaust::Segment::Muffler { tube_diameter_m, .. } if *tube_diameter_m == 0.0
+            )));
+            assert!(matches!(
+                x.after_collector.last(),
+                Some(crate::exhaust::Segment::Pipe { length_m, .. }) if (*length_m - tail_after).abs() < 1e-12
+            ));
+        }
+        // sport is the shorter system
+        let len = |s| -> f64 {
+            sized(&d, Headers::FourOne, s)
+                .after_collector
+                .iter()
+                .map(|g| match *g {
+                    crate::exhaust::Segment::Pipe { length_m, .. }
+                    | crate::exhaust::Segment::Muffler { length_m, .. }
+                    | crate::exhaust::Segment::Catalyst { length_m, .. } => length_m,
+                    _ => 0.0,
+                })
+                .sum()
+        };
+        assert!(len(System::Sport) < len(System::Road));
+    }
+
     #[test]
     fn munjals_chamber_gives_its_target_loss() {
         // m for 20 dB at kL = π/2: (m − 1/m) = 2·√(10² − 1) = 19.900, m = 19.950
@@ -602,31 +713,12 @@ mod tests {
             chamber_ratio(20.0)
         );
         assert!((chamber_ratio(0.0) - 1.0).abs() < 1e-12);
-        // the road silencer of a 2.0 L four tuned at 5250 rpm: firing 175 Hz, a quarter wave in
-        // the tail's 500 m/s gas: 0.714 m; its shell √m = 4.47 times the tail's bore
+        // the road system of a 2.0 L four tuned at 5250 rpm: a catalyst, then two packed
+        // straight-through cans (the layout the user's ear chose, see SILENCER_TL_DB)
         let mut d = EngineDef::inline4();
         d.redline_rpm = 7000.0;
         let x = sized(&d, Headers::FourOne, System::Road);
-        let cans: Vec<_> = x
-            .after_collector
-            .iter()
-            .filter_map(|s| match *s {
-                crate::exhaust::Segment::Muffler {
-                    length_m,
-                    diameter_m,
-                    ..
-                } => Some((length_m, diameter_m)),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(cans.len(), 2, "two silencers");
-        assert!((cans[0].0 - 0.714).abs() < 0.005, "{:?}", cans);
-        let tail = x.outlet_diameter();
-        assert!(
-            (cans[0].1 / tail - 19.950f64.sqrt()).abs() < 0.02,
-            "{:?} {tail}",
-            cans
-        );
+        assert_eq!(packed_cans(&x).len(), 2, "two silencers");
         assert!(
             x.after_collector
                 .iter()
@@ -680,6 +772,9 @@ mod tests {
     }
 
     proptest::proptest! {
+        // each case solves the 2D silencer model ~35 times per header (debug build: seconds), so
+        // fewer cases than the default 256; the sizing is clamped, the ranges are what is checked
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(24))]
         #[test]
         fn every_choice_is_a_valid_engine_in_range(
             cyl in 1usize..=12, layout in 0usize..3, redline in 4000.0f64..9000.0, sys in 0usize..3,

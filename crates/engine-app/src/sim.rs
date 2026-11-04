@@ -1259,3 +1259,116 @@ mod quality_tests {
         assert_eq!(sim.engine().rpm(), rpm);
     }
 }
+
+/// The catalogue's check against the real thing: the one-cylinder preset raised to four cylinders
+/// with a Road exhaust must sound like the inline-4 preset (catalogue spec, plan task 5).
+/// `cargo test -p engine-app --release a_road_exhaust -- --ignored --nocapture`
+///
+/// MEASURED 2026-11-04 (High quality, 3 s at 3000 rpm / 50 %): centroid 2939 vs 3023 Hz (84 Hz
+/// apart) and level -32.55 vs -21.32 dBFS (11.2 dB under): it MISSES, and by the plan it is not
+/// tuned; the numbers go to the user with the clips.
+#[cfg(test)]
+mod catalogue_sound {
+    use super::tests::{FS, render_secs, rms};
+    use super::*;
+
+    /// Spectral centroid, Hz, of the Hann-windowed last 2^17 samples (radix-2 FFT).
+    pub(super) fn centroid_hz(x: &[f32]) -> f64 {
+        const N: usize = 1 << 17;
+        let x = &x[x.len() - N..];
+        let mut re: Vec<f64> = x
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let w = 0.5 - 0.5 * (2.0 * std::f64::consts::PI * i as f64 / N as f64).cos();
+                *s as f64 * w
+            })
+            .collect();
+        let mut im = vec![0.0; N];
+        let mut j = 0;
+        for i in 1..N {
+            let mut bit = N >> 1;
+            while j & bit != 0 {
+                j ^= bit;
+                bit >>= 1;
+            }
+            j |= bit;
+            if i < j {
+                re.swap(i, j);
+            }
+        }
+        let mut len = 2;
+        while len <= N {
+            let ang = -2.0 * std::f64::consts::PI / len as f64;
+            for start in (0..N).step_by(len) {
+                for k in 0..len / 2 {
+                    let (s, c) = (ang * k as f64).sin_cos();
+                    let (a, b) = (start + k, start + k + len / 2);
+                    let (tr, ti) = (re[b] * c - im[b] * s, re[b] * s + im[b] * c);
+                    (re[b], im[b]) = (re[a] - tr, im[a] - ti);
+                    (re[a], im[a]) = (re[a] + tr, im[a] + ti);
+                }
+            }
+            len <<= 1;
+        }
+        let (mut num, mut den) = (0.0, 0.0);
+        for k in 1..N / 2 {
+            let m = (re[k] * re[k] + im[k] * im[k]).sqrt();
+            num += m * k as f64 * FS / N as f64;
+            den += m;
+        }
+        num / den
+    }
+
+    #[test]
+    fn the_centroid_of_a_tone_is_its_frequency() {
+        let x: Vec<f32> = (0..(1 << 17))
+            .map(|i| (2.0 * std::f64::consts::PI * 1000.0 * i as f64 / FS).sin() as f32)
+            .collect();
+        assert!(
+            (centroid_hz(&x) - 1000.0).abs() < 5.0,
+            "{}",
+            centroid_hz(&x)
+        );
+    }
+
+    pub(super) fn four_cylinder_single(system: engine_core::catalogue::System) -> EngineDef {
+        use engine_core::catalogue::{Headers, size_exhaust, survey};
+        let mut d = EngineDef::single();
+        d.set_cylinders(4);
+        d.exhaust = size_exhaust(&d, Headers::FourOne, system, &survey());
+        d
+    }
+
+    pub(super) fn render(def: &EngineDef, rpm: f64, throttle: f64, secs: f64) -> Vec<f32> {
+        let mut sim = Simulation::with_quality(
+            def.clone(),
+            VehicleDef::default(),
+            FS,
+            1,
+            crate::quality::Quality::High,
+        );
+        sim.controls.throttle = throttle;
+        sim.controls.hold_rpm = Some(rpm);
+        let _ = render_secs(&mut sim, 1.5);
+        render_secs(&mut sim, secs)
+    }
+
+    #[test]
+    #[ignore]
+    fn a_road_exhaust_makes_the_four_cylinder_single_sound_like_the_inline4() {
+        let single = render(
+            &four_cylinder_single(engine_core::catalogue::System::Road),
+            3000.0,
+            0.5,
+            3.0,
+        );
+        let inline4 = render(&EngineDef::inline4(), 3000.0, 0.5, 3.0);
+        let db = |x: &[f32]| 20.0 * rms(x).max(1e-9).log10();
+        let (cs, ci) = (centroid_hz(&single), centroid_hz(&inline4));
+        let (ls, li) = (db(&single), db(&inline4));
+        println!("centroid single {cs:.0} Hz, inline4 {ci:.0} Hz; level {ls:.2} / {li:.2} dBFS");
+        assert!((cs - ci).abs() <= 50.0, "centroid {cs:.0} vs {ci:.0} Hz");
+        assert!((ls - li).abs() <= 1.5, "level {ls:.2} vs {li:.2} dBFS");
+    }
+}
