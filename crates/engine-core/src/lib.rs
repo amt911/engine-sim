@@ -18,6 +18,7 @@ pub mod intake_fv;
 pub mod jet_noise;
 pub mod layout;
 pub mod lining;
+pub mod mechanical;
 pub mod listener;
 pub mod narrow_tube;
 pub mod pipe_heat;
