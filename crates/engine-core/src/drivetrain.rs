@@ -33,9 +33,6 @@ pub const LOCK_SLIP: f64 = 0.5;
 const SLIP_EPS: f64 = 2.0;
 /// Speed (m/s) over which rolling resistance fades in, so a stopped car does not creep back.
 const ROLL_FADE_SPEED: f64 = 0.1;
-/// Low-pass time constant of the locked clutch's required-torque estimate, s. Filters the
-/// combustion pulses, which a real clutch rides out by micro-slip.
-const TORQUE_FILTER_TAU: f64 = 0.02;
 /// Clutch engagement rate when the pedal is released (1 / s): about 0.7 s to full.
 const CLUTCH_ENGAGE_RATE: f64 = 1.5;
 /// The crank's inertia the vehicle assumes until told (`Vehicle::set_engine_inertia`), kg·m².
@@ -283,8 +280,6 @@ pub struct Vehicle {
     /// Engagement rate when the clutch closes, 1/s.
     engage_rate: f64,
     locked: bool,
-    prev_omega: f64,
-    required_nm: f64,
     /// Set after an overload: no relock until the slip has grown past `2·LOCK_SLIP`.
     relock_blocked: bool,
     /// The crank's own inertia (flywheel and crank), kg·m²: the shuffle's other mass.
@@ -308,8 +303,6 @@ impl Vehicle {
             clutch_target: 1.0,
             engage_rate: CLUTCH_ENGAGE_RATE,
             locked: false,
-            prev_omega: 0.0,
-            required_nm: 0.0,
             relock_blocked: false,
             engine_inertia: DEFAULT_ENGINE_INERTIA,
             twist: 0.0,
@@ -485,8 +478,6 @@ impl Vehicle {
                 self.twist += (engine_omega - self.car_omega) * h;
             }
             self.speed_m_s = self.car_omega * r / g;
-            self.prev_omega = engine_omega;
-            self.required_nm = t;
             return Load {
                 torque_nm: t,
                 inertia_kgm2: 0.0,
@@ -501,7 +492,6 @@ impl Vehicle {
             self.locked = true;
             self.car_omega = self.speed_m_s / r * g;
             self.twist = self.slip_torque / k;
-            self.required_nm = self.slip_torque;
             return Load {
                 torque_nm: self.slip_torque,
                 inertia_kgm2: 0.0,
