@@ -200,7 +200,7 @@ engine:
         shell_thickness_m: 0.001
         shell_density_kg_m3: 4510.0
         shell_area_m2: 0.1382300767579509
-        shell_resonance_hz: 300.0
+        shell_resonance_hz: 7420.0
     steepening: true
     gas_temperature: true
   intake:

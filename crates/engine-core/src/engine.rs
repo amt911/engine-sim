@@ -1121,10 +1121,16 @@ impl EngineDef {
                         shell_thickness_m: 0.001,
                         shell_density_kg_m3: 4510.0,
                         shell_area_m2: std::f64::consts::PI * 0.22 * 0.20,
-                        // its first resonance: ESTIMATE, set where the shell leaves the held
-                        // 6700 rpm lows at the dyno recording's (docs/FINDINGS.md, 2026-11-01);
-                        // a limp wall puts 12-18 dB over it
-                        shell_resonance_hz: 300.0,
+                        // what moves its volume: the cylinder breathing against its hoop
+                        // stiffness, first resonant at the ring frequency f = c_L/(2πR), c_L =
+                        // √(E/(ρ(1 − ν²))) = √(105 GPa/(4510·(1 − 0.34²))) = 5130 m/s for
+                        // commercially pure titanium, R = 0.11 m: 7420 Hz (Fahy & Gardonio,
+                        // *Sound and Structural Vibration*, §2.10; Leissa, *Vibration of Shells*).
+                        // Below it the wall is stiffness-held and pushes little air. (A 300 Hz
+                        // panel resonance fitted to the 6700 rpm dyno lows rang the silencer at
+                        // the 3000 rpm firing order, 18 dB over the tail, and the orders' guard
+                        // stands better without it: 9.6 dB against 9.9.)
+                        shell_resonance_hz: 7420.0,
                     }),
                 }),
             },
