@@ -919,6 +919,149 @@ pub(crate) fn after_collector(
     )
 }
 
+
+/// Area ratio from which a step out into a wider passage is an abrupt expansion that sheds the
+/// flow (a sudden-expansion loss (1 − σ)² ≥ 0.11 at σ = 1/1.5; below it the jet stays mostly
+/// attached and its noise is left to the pipes).
+pub const EXPANSION_RATIO_MIN: f64 = 1.5;
+
+/// Where along the exhaust an [`ExpansionSite`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SiteAt {
+    /// A primary (0-based cylinder) jetting into its collector.
+    Collector { primary: usize },
+    /// The step into segment `index` of the collector's path ([`ExhaustDef::path`]).
+    Segment { index: usize },
+    /// A branch's path jetting into the shared duct of a [`Merge`].
+    MergeJunction,
+    /// The step into segment `index` of the merge's shared duct.
+    MergedSegment { index: usize },
+    /// The open end: the branch's tail (or the merge's outlet) jetting into the air.
+    Exit,
+}
+
+/// An abrupt area expansion of the exhaust, where the flow separates and sheds vortices: a
+/// source of duct flow noise ([`crate::jet_noise::DuctJet`]; Davies & Holland 1999 §4). `branch`
+/// is the collector it belongs to (None: after a merge); `d_jet` the passage the flow leaves,
+/// `d_down` the one it enters (for the exit: the tail itself, which carries its waves out).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExpansionSite {
+    pub branch: Option<usize>,
+    pub at: SiteAt,
+    pub d_jet: f64,
+    pub d_down: f64,
+}
+
+/// The bore the flow passes through in `seg`: a straight-through silencer's tube, an empty can's
+/// shell, a catalyst's face. None for a side resonator (off the flow).
+fn passage_diameter(seg: &Segment) -> Option<f64> {
+    match *seg {
+        Segment::Pipe { diameter_m, .. } | Segment::Catalyst { diameter_m, .. } => Some(diameter_m),
+        Segment::Measured { bore_m, .. } => Some(bore_m),
+        Segment::Muffler {
+            diameter_m,
+            tube_diameter_m,
+            ..
+        } => Some(if tube_diameter_m > 0.0 && tube_diameter_m < diameter_m {
+            tube_diameter_m
+        } else {
+            diameter_m
+        }),
+        Segment::Resonator { .. } => None,
+    }
+}
+
+/// The expansions along `segments` entered from a passage of `d_from`, pushed as `at(index)`;
+/// returns the last passage's diameter.
+fn path_sites(
+    segments: &[Segment],
+    mut d_from: f64,
+    branch: Option<usize>,
+    at: impl Fn(usize) -> SiteAt,
+    out: &mut Vec<ExpansionSite>,
+) -> f64 {
+    for (index, seg) in segments.iter().enumerate() {
+        let Some(d) = passage_diameter(seg) else {
+            continue;
+        };
+        if d * d >= EXPANSION_RATIO_MIN * d_from * d_from {
+            out.push(ExpansionSite {
+                branch,
+                at: at(index),
+                d_jet: d_from,
+                d_down: d,
+            });
+        }
+        d_from = d;
+    }
+    d_from
+}
+
+/// Every abrupt area expansion of `def`'s exhaust for an engine of `cylinders`, in a fixed
+/// order both exhaust models share: for each collector (in `def.collectors` order, or one for
+/// all), its primaries' jets into it, the expansions along its path, and its exit (none when a
+/// [`Merge`] takes the paths); then each branch's step into the merge, the merge's own
+/// expansions and its outlet. The bypass silencer's inner chambers are not listed.
+pub fn expansion_sites(def: &ExhaustDef, cylinders: usize) -> Vec<ExpansionSite> {
+    let groups: Vec<Vec<usize>> = if def.collectors.is_empty() {
+        vec![(0..cylinders).collect()]
+    } else {
+        def.collectors
+            .iter()
+            .map(|g| g.iter().map(|c| c.saturating_sub(1)).collect())
+            .collect()
+    };
+    let path = def.path();
+    let mut out = Vec::new();
+    let mut branch_exit = Vec::with_capacity(groups.len());
+    let (dp, dc) = (def.primary_diameter_m, def.collector_diameter_m);
+    for (b, group) in groups.iter().enumerate() {
+        if dc * dc >= EXPANSION_RATIO_MIN * dp * dp {
+            for &primary in group {
+                out.push(ExpansionSite {
+                    branch: Some(b),
+                    at: SiteAt::Collector { primary },
+                    d_jet: dp,
+                    d_down: dc,
+                });
+            }
+        }
+        let d_end = path_sites(&path, dc, Some(b), |index| SiteAt::Segment { index }, &mut out);
+        branch_exit.push(d_end);
+        if def.merge.is_none() {
+            out.push(ExpansionSite {
+                branch: Some(b),
+                at: SiteAt::Exit,
+                d_jet: d_end,
+                d_down: d_end,
+            });
+        }
+    }
+    if let Some(m) = &def.merge {
+        let d_shared = m.segments.iter().find_map(passage_diameter).unwrap_or(m.outlet_diameter_m);
+        for (b, &d_end) in branch_exit.iter().enumerate() {
+            if d_shared * d_shared >= EXPANSION_RATIO_MIN * d_end * d_end {
+                out.push(ExpansionSite {
+                    branch: Some(b),
+                    at: SiteAt::MergeJunction,
+                    d_jet: d_end,
+                    d_down: d_shared,
+                });
+            }
+        }
+        // the first shared segment is the junction's own duct: its expansions start after it
+        let rest = m.segments.get(1..).unwrap_or(&[]);
+        path_sites(rest, d_shared, None, |i| SiteAt::MergedSegment { index: i + 1 }, &mut out);
+        out.push(ExpansionSite {
+            branch: None,
+            at: SiteAt::Exit,
+            d_jet: m.outlet_diameter_m,
+            d_down: m.outlet_diameter_m,
+        });
+    }
+    out
+}
+
 /// The duct of `path`'s segments, its last pipe carrying `transmission`; a lone pipe of
 /// `fallback` (length, diameter) if the path is empty. The lining's segment length no longer
 /// applies here: a packed silencer is its 2D transmission ([`crate::silencer2d`]), not a lumped
@@ -1909,6 +2052,101 @@ impl ExhaustNet {
 
 #[cfg(test)]
 mod tests {
+    use super::{ExpansionSite, SiteAt, expansion_sites};
+
+    fn site(branch: Option<usize>, at: SiteAt, d_jet: f64, d_down: f64) -> ExpansionSite {
+        ExpansionSite { branch, at, d_jet, d_down }
+    }
+
+    #[test]
+    fn the_inline4_expands_where_by_hand() {
+        // presets/inline4.yaml: 4 primaries of 40 mm into one 55 mm collector ((55/40)² = 1.89
+        // ≥ 1.5: each primary's jet expands), the collector into a 139.9 mm catalyst (6.5×),
+        // the catalyst into the 50 mm tail (a contraction: none), the tail's exit
+        let ex = crate::engine::EngineDef::inline4().exhaust;
+        let want = vec![
+            site(Some(0), SiteAt::Collector { primary: 0 }, 0.04, 0.055),
+            site(Some(0), SiteAt::Collector { primary: 1 }, 0.04, 0.055),
+            site(Some(0), SiteAt::Collector { primary: 2 }, 0.04, 0.055),
+            site(Some(0), SiteAt::Collector { primary: 3 }, 0.04, 0.055),
+            site(Some(0), SiteAt::Segment { index: 0 }, 0.055, 0.1399),
+            site(Some(0), SiteAt::Exit, 0.05, 0.05),
+        ];
+        assert_eq!(expansion_sites(&ex, 4), want);
+    }
+
+    #[test]
+    fn the_lfa_sites_by_hand() {
+        // presets/lfa-v10.yaml: banks 1–5 and 6–10, primaries 42 mm into 65 mm collectors
+        // (2.4×), each into a 153.4 mm catalyst, its 70 mm pipe into the shared 85 mm duct
+        // ((85/70)² = 1.47 < 1.5: no expansion site), one merged exit of 103.9 mm. The bypass
+        // silencer's chambers are not sites (this plan's ruling).
+        let ex = crate::engine::EngineDef::lfa_v10().exhaust;
+        let got = expansion_sites(&ex, 10);
+        let collectors = got
+            .iter()
+            .filter(|s| matches!(s.at, SiteAt::Collector { .. }))
+            .count();
+        assert_eq!(collectors, 10);
+        assert_eq!(
+            got.iter().filter(|s| s.at == SiteAt::Segment { index: 0 }).count(),
+            2
+        );
+        assert!(!got.iter().any(|s| s.at == SiteAt::MergeJunction));
+        let exits: Vec<_> = got.iter().filter(|s| s.at == SiteAt::Exit).collect();
+        assert_eq!(exits.len(), 1);
+        assert_eq!(exits[0].branch, None);
+        assert!((exits[0].d_jet - 0.103_923_048_454_132_62).abs() < 1e-12);
+        // the second bank's collector sites carry cylinders 6–10 (indices 5–9)
+        assert_eq!(got[6].at, SiteAt::Collector { primary: 5 });
+        assert_eq!(got[6].branch, Some(1));
+    }
+
+    #[test]
+    fn a_pipe_no_wider_than_its_primaries_has_only_its_exit() {
+        // primaries and collector alike (no expansion), one plain pipe of the same bore
+        let mut ex = crate::engine::EngineDef::inline4().exhaust;
+        ex.primary_diameter_m = 0.05;
+        ex.collector_diameter_m = 0.05;
+        ex.after_collector = vec![super::Segment::Pipe {
+            length_m: 1.0,
+            diameter_m: 0.05,
+        }];
+        assert_eq!(
+            expansion_sites(&ex, 4),
+            vec![site(Some(0), SiteAt::Exit, 0.05, 0.05)]
+        );
+    }
+
+    #[test]
+    fn an_empty_chamber_is_a_site_and_a_straight_through_one_is_not() {
+        let mut ex = crate::engine::EngineDef::inline4().exhaust;
+        ex.after_collector = vec![
+            super::Segment::Muffler {
+                length_m: 0.3,
+                diameter_m: 0.15,
+                tube_diameter_m: 0.05,
+                packing_resistivity: 16000.0,
+                packing_porosity: 0.95,
+            },
+            super::Segment::Muffler {
+                length_m: 0.3,
+                diameter_m: 0.15,
+                tube_diameter_m: 0.0,
+                packing_resistivity: 0.0,
+                packing_porosity: 1.0,
+            },
+            super::Segment::Pipe {
+                length_m: 0.5,
+                diameter_m: 0.05,
+            },
+        ];
+        let got = expansion_sites(&ex, 4);
+        // the 55 mm collector into the 50 mm tube: no; the tube into the empty 150 mm can: yes
+        assert!(!got.iter().any(|s| s.at == SiteAt::Segment { index: 0 }));
+        assert!(got.contains(&site(Some(0), SiteAt::Segment { index: 1 }, 0.05, 0.15)));
+    }
+
     #[test]
     fn a_limp_shell_moves_by_the_mass_law() {
         // A wall of 4.5 kg/m² (1 mm of titanium) between gas of ρc 250 and air of ρc 413.4
