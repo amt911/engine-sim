@@ -3567,6 +3567,7 @@ impl Engine {
         match (&mut self.net, &mut self.fv, &mut self.remote.0) {
             (_, Some(fv), _) => {
                 fv.set_outflow_mach(&self.tail_mach);
+                fv.set_engine_speed(rpm);
                 fv.step();
                 if let Some(j) = &mut self.jet_net {
                     j.prepare(&self.tail_mach, None);
@@ -8710,6 +8711,8 @@ mod tests {
             let s = &mut d.sound;
             (s.flow_noise, s.block, s.mechanical, s.intake) = (0.0, 0.0, 0.0, 0.0);
             (s.valve_jet, s.combustion_jitter) = (0.0, 0.0);
+            // the impacts strike random points and the duct noise is noise: random sources too
+            (s.piston_slap, s.main_bearings, s.duct_flow) = (0.0, 0.0, 0.0);
             let rpm = 0.85 * d.redline_rpm;
             let mut e = Engine::new(d, rpm, 1);
             let c = Controls {
@@ -9552,6 +9555,35 @@ mod tests {
             rms_f > 0.5 * rms_w && rms_f < 2.0 * rms_w,
             "FV {rms_f} Pa, waveguide {rms_w} Pa"
         );
+    }
+
+    #[test]
+    fn the_fv_exhaust_merges_its_banks_into_the_valved_silencer() {
+        // after the collectors both models run the same linear path: the LFA's banks merge into
+        // its valved silencer. Measured on the FV with its own per-bank tails: +14.5 dB over the
+        // waveguide at 3000 rpm WOT (5.9 against 1.75 Pa). Same bound as the inline-4's: a
+        // factor of two
+        for def in [EngineDef::lfa_v10()] {
+            let at = |model: ExhaustModel| {
+                let mut d = def.clone();
+                d.exhaust.model = model;
+                let mut e = Engine::new(d, 3000.0, 1);
+                let c = Controls {
+                    throttle: 1.0,
+                    hold_rpm: Some(3000.0),
+                    ..Controls::default()
+                };
+                run(&mut e, 0.5, &c);
+                let x = run(&mut e, 0.2, &c);
+                (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt()
+            };
+            let (w, f) = (at(ExhaustModel::Waveguide), at(ExhaustModel::Fv));
+            assert!(
+                f > 0.5 * w && f < 2.0 * w,
+                "{}: FV {f} Pa, waveguide {w} Pa",
+                def.name
+            );
+        }
     }
 
     #[test]
