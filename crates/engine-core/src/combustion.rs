@@ -81,6 +81,13 @@ pub const RING_MODES: [(f64, f64); 3] = [(1.841, 1.0), (3.054, 0.5), (3.832, 0.3
 /// The first mode's pressure as a share of the premixed burn's step (ESTIMATE: a bar or so on the
 /// ten bar a light-load premixed burn adds; compared with recordings by ear).
 pub const RING_SHARE: f64 = 0.1;
+
+/// The first mode's pressure when a diesel lights, Pa: [`RING_SHARE`] of the premixed burn's
+/// step at about the clearance volume, (γ − 1)·β·Q/V_c (the heat `q_j` released at constant
+/// volume, its premixed share `beta`), times the sound level `level` (`sound.chamber_ring`).
+pub fn ring_strike_pa(level: f64, beta: f64, q_j: f64, v_c_m3: f64) -> f64 {
+    level * RING_SHARE * (crate::gas::GAMMA - 1.0) * beta * q_j / v_c_m3
+}
 /// The ringing's decay time, s (ESTIMATE: traces show it gone in a few milliseconds; viscous and
 /// wall losses, Guardiola et al., *Appl. Energy* 2018).
 pub const RING_DECAY_S: f64 = 0.6e-3;
@@ -237,6 +244,19 @@ impl DieselDef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_chamber_is_struck_by_a_tenth_of_the_premixed_step() {
+        // by hand: 1 kJ released, half of it premixed, in 50 cm³ of clearance:
+        // (1.4 − 1)·0.5·1000 / 5e-5 = 4 MPa step; a tenth of it, 0.4 MPa, at level 1;
+        // level 2 doubles it
+        let s = ring_strike_pa(1.0, 0.5, 1000.0, 5e-5);
+        assert!((s - 4.0e5).abs() < 1.0, "{s}");
+        let s2 = ring_strike_pa(2.0, 0.5, 1000.0, 5e-5);
+        assert!((s2 - 8.0e5).abs() < 1.0, "{s2}");
+        // nothing premixed, nothing struck
+        assert_eq!(ring_strike_pa(1.0, 0.0, 1000.0, 5e-5), 0.0);
+    }
 
     #[test]
     fn a_nozzles_sprays_light_apart_and_burn_the_same_fuel() {
