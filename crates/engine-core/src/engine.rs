@@ -2253,6 +2253,9 @@ pub struct Engine {
     /// The structure's mechanical impacts under way (age s, weight, bank): main journals and
     /// pistons thrown across their clearances ([`crate::mechanical`]).
     impacts: Vec<(f64, f64, usize)>,
+    /// The intake's air cleaner at its step, as built (`intake.air_cleaner`, resolved for this
+    /// engine); none without one, or with a modelled surge tank.
+    air_cleaner: Option<(f64, crate::air_cleaner::AirCleaner)>,
     /// Each cylinder's rod and side force at the last step, N (their sign changes are impacts).
     impact_forces: Vec<(f64, f64)>,
     /// Σk² of the impacts begun together (k in one step: they add in phase, k² unit energies),
@@ -2539,6 +2542,7 @@ impl Engine {
             n_banks: 1,
             seat_strikes: Vec::new(),
             impacts: Vec::new(),
+            air_cleaner: None,
             impact_forces: Vec::new(),
             impact_count: (0, 0.0, 0.0),
             impact_unit: None,
@@ -3700,6 +3704,18 @@ impl Engine {
             }
             None => drawn,
         };
+        // through the air cleaner's box and snorkel to its mouth ([`crate::air_cleaner`])
+        let cleaner = self.cleaner_def();
+        let heard = match cleaner {
+            Some(def) => {
+                if self.air_cleaner.as_ref().is_none_or(|c| c.0 != dt) {
+                    self.air_cleaner = Some((dt, crate::air_cleaner::AirCleaner::new(&def, dt)));
+                }
+                self.air_cleaner.as_mut().map_or(heard, |c| c.1.process(heard))
+            }
+            None => heard,
+        };
+        let snd = &self.def.sound;
         let intake_flow = -snd.intake * heard / AIR_DENSITY;
         self.texture_signal = intake_flow;
         // each tail's jet: its exit velocity u = (ρc·u)/ρc, its own distance to the listener
@@ -3890,9 +3906,11 @@ impl Engine {
         // them and the air, a bank's five trumpets heard apart put the LFA's 5th cycle order
         // 16 dB over a real one's (docs/FINDINGS.md, 2026-10-29); one point cancels it as the
         // tank would damp it.
-        let mouth_area = match &self.def.intake.airbox {
-            Some(b) => b.ducts.max(1) as f64 * PI * 0.25 * b.duct_diameter_m.powi(2),
-            None => {
+        let cleaner_mouth = self.cleaner_def().map(|c| c.mouth_area());
+        let mouth_area = match (&self.def.intake.airbox, cleaner_mouth) {
+            (Some(b), _) => b.ducts.max(1) as f64 * PI * 0.25 * b.duct_diameter_m.powi(2),
+            (None, Some(a)) => a,
+            (None, None) => {
                 let d = if self.def.intake.individual_throttles {
                     self.def.intake.runner_diameter_m
                 } else {
@@ -4210,6 +4228,19 @@ impl Engine {
     pub fn attach_exhaust(&mut self, net: ExhaustNet) {
         self.remote = RemoteSlot(None);
         self.net = Some(net);
+    }
+
+    /// The air cleaner the mouth draws through, resolved for this engine: none when it is not
+    /// fitted or a surge tank (`intake.airbox`) is modelled instead.
+    fn cleaner_def(&self) -> Option<crate::air_cleaner::AirCleanerDef> {
+        let c = self.def.intake.air_cleaner;
+        (c.fitted && self.def.intake.airbox.is_none()).then(|| {
+            c.resolved(
+                self.def.displacement_m3(),
+                self.def.redline_rpm,
+                self.def.throttle_diameter_m,
+            )
+        })
     }
 
     /// Exit velocity at each tail pipe this step, m/s (mean from mass continuity).
@@ -9499,6 +9530,54 @@ mod tests {
         };
         let d = level(1.0) - level(0.0);
         assert!(d.abs() < 1.0, "{d:.2} dB");
+    }
+
+    /// The intake mouth alone (every other source off but the exhaust pulses, which the mouth
+    /// tops at 3000 WOT on a bare inline-4), A-weighted power of the output over 0.4 s.
+    fn mouth_power(mut d: EngineDef, rpm: f64) -> f64 {
+        let s = &mut d.sound;
+        (s.flow_noise, s.valve_jet, s.block, s.mechanical) = (0.0, 0.0, 0.0, 0.0);
+        (s.main_bearings, s.piston_slap, s.chamber_ring) = (0.0, 0.0, 0.0);
+        let with = |intake: f64| {
+            let mut d = d.clone();
+            d.sound.intake = intake;
+            let mut e = Engine::new(d, rpm, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(rpm),
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &c);
+            run(&mut e, 0.4, &c)
+        };
+        let (on, off) = (with(1.0), with(0.0));
+        let mut a = crate::mechanical::AWeighting::new(DT);
+        on.iter().zip(&off).map(|(x, y)| a.process(x - y).powi(2)).sum()
+    }
+
+    #[test]
+    fn an_air_cleaner_takes_off_what_raff_measured() {
+        // Raff & Perry 1973 Fig. 14: the standard air cleaner took 8.5 dB(A) off the open
+        // intake — a 5.9 L diesel truck, the only measured insertion loss found (no car air
+        // box's was): the cleaner must take a substantial 5–15 dB(A), not tuned to the number
+        let fitted = mouth_power(EngineDef::inline4(), 3000.0);
+        let mut bare = EngineDef::inline4();
+        bare.intake.air_cleaner.fitted = false;
+        let bare = mouth_power(bare, 3000.0);
+        let il = 10.0 * (bare / fitted).log10();
+        assert!((5.0..15.0).contains(&il), "{il:.1} dB(A)");
+    }
+
+    #[test]
+    fn the_turbo_cleaner_sits_before_the_compressor() {
+        // the K20C1's mouth draws through its cleaner too: quieter than bare, and finite
+        let mut bare = EngineDef::honda_k20c1();
+        bare.intake.air_cleaner.fitted = false;
+        let (fitted, bare) = (
+            mouth_power(EngineDef::honda_k20c1(), 3000.0),
+            mouth_power(bare, 3000.0),
+        );
+        assert!(fitted.is_finite() && fitted < bare, "{fitted} vs {bare}");
     }
 
     #[test]
