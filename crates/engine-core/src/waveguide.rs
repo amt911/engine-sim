@@ -1099,8 +1099,7 @@ impl Duct {
                 if self.node_flows.len() != n - 1 {
                     self.node_flows = vec![0.0; n - 1];
                 }
-                self.node_flows[k] =
-                    areas[0] * (incoming[0] - out[0]) / self.pipes[k].sound_speed;
+                self.node_flows[k] = areas[0] * (incoming[0] - out[0]) / self.pipes[k].sound_speed;
                 if let Some(add) = self.injected.get_mut(k) {
                     out[0] += add[0];
                     out[1] += add[1];
@@ -1314,7 +1313,11 @@ mod tests {
         for _ in 0..2000 {
             duct.send(100.0, 0.0);
         }
-        assert!((duct.node_flow(0) - 3e-4).abs() < 3e-6, "{}", duct.node_flow(0));
+        assert!(
+            (duct.node_flow(0) - 3e-4).abs() < 3e-6,
+            "{}",
+            duct.node_flow(0)
+        );
         assert!((duct.far_flow() - 3e-4).abs() < 3e-6, "{}", duct.far_flow());
         assert_eq!(duct.node_flow(7), 0.0);
     }

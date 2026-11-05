@@ -680,7 +680,8 @@ mod tests {
     #[test]
     fn the_duct_jet_rms_follows_u_squared() {
         // p ∝ √W ∝ U²; a 20 mm downstream duct puts the cut-on at 14.6 kHz, out of the way
-        let r = duct_rms(40.0, 0.05, 0.02, 1.0 / 48_000.0) / duct_rms(20.0, 0.05, 0.02, 1.0 / 48_000.0);
+        let r =
+            duct_rms(40.0, 0.05, 0.02, 1.0 / 48_000.0) / duct_rms(20.0, 0.05, 0.02, 1.0 / 48_000.0);
         assert!((r - 4.0).abs() < 0.4, "{r}");
     }
 

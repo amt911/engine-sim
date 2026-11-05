@@ -1493,3 +1493,27 @@ some 15–25 dB over our I4s.
 fart in a toilet"). Filling gaps with reverberation is wrong however well the envelope metric likes it.
 **Kept.** `sound.block_modes` for (1), `spray_spread_deg` for (2). (3) is open: prototype clips only, the
 source is not identified. Phone and YouTube recordings cannot judge below about 125 Hz.
+
+## Low rpm on the measured source levels: the impacts heard as an open engine (2026-11-05)
+
+- **Cause:** the piston/journal impacts (Part A) bypassed the engine bay, the valve ticks'
+  2026-11-01 failure again. LFA free idle 2 kHz −10.7 / 4 kHz −13.1 dB re total against −27 /
+  −35 on the real exhaust-mic idle and −28…−40 / −34…−43 on four YouTube idles. Through the bay:
+  −22.2 / −24.8. Raff & Perry 1973 Fig. 1 (no load 2.5–5 dB under full load at 1000 rpm, ≈ 0 from
+  3000) via the manifold pressure: −25.5 / −27.4; 1–3 kHz band −23.5 dB re 50–300 Hz = the real
+  idle's. Load explains ≤ 5 dB, never the 16 dB excess.
+- **Exposed, not caused:** the listener's rigid ground image combs the tails' highs (~1.2 kHz
+  notches; LFA 6000 WOT ripple 2–7.5 kHz 20.3 dB with the ground, 8.2 without; 60 real steady
+  segments median 4.5, p25–p75 2.9–6.7). The broadband impacts used to fill the notches.
+- **Matched against recordings (`scripts/realism/tilt.py`, octaves re total by rpm):** the LFA at
+  3000–5000 WOT is 10–20 dB short of every YouTube LFA in 2–8 kHz (3000: −28/−34/−43 at 2/4/8 kHz
+  vs −8…−14/−9…−16/−12…−23), the same before this change. Not general: K20A, EJ25 and V8 at 3000
+  WOT sit at or above the 209 real segments' median; inline4 a little dark. The LFA's idle-to-peak
+  range is 47 dB against 21–30 dB on Sonniss stationary-mic idle+blip recordings (inline4 27.6,
+  K20A 28.4, V8 36.2, TDI 15.3): the LFA's closed-valve silencer path (ESTIMATED chambers) is the
+  outlier. The general defect stays the firing-rhythm modulation: 35–70 % on every preset at 3000
+  WOT against 9.6 % real.
+- **tilt.py's rpm:** harmonic summation picks f0/2 when the half orders are strong (our LFA's bank
+  orders at 8600 rpm sit 4–5 dB under the firing ones; the real LFA's 14–17 dB, papers/recordings
+  README) — an octave correction climbs while odd multiples sit 3 dB under the even ones; use held
+  renders (known rpm) for our side.

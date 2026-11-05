@@ -7,10 +7,20 @@ fn main() {
     let a: Vec<String> = std::env::args().collect();
     let swept: f64 = a[1].parse().expect("swept");
     let d: f64 = a[2].parse().expect("pipe d");
-    let gas = Gas { c: 500.0, rho: 101_325.0 / (287.0 * 622.0) };
+    let gas = Gas {
+        c: 500.0,
+        rho: 101_325.0 / (287.0 * 622.0),
+    };
     let fs = 192_000.0;
     for seg in road_exhaust(swept, d) {
-        if let Segment::Muffler { length_m, diameter_m, tube_diameter_m, packing_resistivity, .. } = seg {
+        if let Segment::Muffler {
+            length_m,
+            diameter_m,
+            tube_diameter_m,
+            packing_resistivity,
+            ..
+        } = seg
+        {
             let s = Silencer {
                 r1: 0.5 * tube_diameter_m,
                 r2: 0.5 * diameter_m,
@@ -21,7 +31,11 @@ fn main() {
             let eq = s.transmission_eq(gas, fs);
             print!("silencer L {length_m} D {diameter_m:.3} tube {tube_diameter_m}:");
             for f in [50.0, 100.0, 200.0, 400.0, 800.0, 1600.0, 3200.0] {
-                print!("  {f}Hz TL {:.1} eq {:.1}", s.transmission_loss_db(f, gas).unwrap_or(f64::NAN), eq.response_db(f, fs));
+                print!(
+                    "  {f}Hz TL {:.1} eq {:.1}",
+                    s.transmission_loss_db(f, gas).unwrap_or(f64::NAN),
+                    eq.response_db(f, fs)
+                );
             }
             println!();
         }

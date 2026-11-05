@@ -6,7 +6,8 @@ use engine_core::engine::*;
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let text = std::fs::read_to_string(&a[1]).expect("preset");
-    let def = engine_core::config::from_str(&text, engine_core::config::Format::Yaml).expect("yaml");
+    let def =
+        engine_core::config::from_str(&text, engine_core::config::Format::Yaml).expect("yaml");
     let rpm: f64 = a[2].parse().expect("rpm");
     let thr: f64 = a[3].parse().expect("load");
     let dt = 1.0 / 48_000.0;
@@ -29,7 +30,9 @@ fn main() {
     let n = x.len() as f64;
     let mean = x.iter().sum::<f64>() / n;
     let rms = (x.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n).sqrt();
-    let (lo, hi) = x.iter().fold((f64::MAX, f64::MIN), |(l, h), &v| (l.min(v), h.max(v)));
+    let (lo, hi) = x
+        .iter()
+        .fold((f64::MAX, f64::MIN), |(l, h), &v| (l.min(v), h.max(v)));
     println!(
         "{} {rpm} {thr}: mean {mean:.4} kg/s, rms ripple {:.0} %, swing {:.0} %",
         a[1].rsplit('/').next().unwrap_or(""),

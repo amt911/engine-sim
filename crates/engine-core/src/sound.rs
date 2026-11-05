@@ -25,6 +25,13 @@ pub struct SoundDef {
     /// Holland 1999 §4) at each site's own instantaneous flow. 1 = that law at the one
     /// calibrated K, 0 = off.
     pub duct_flow: f64,
+    /// Main bearings struck across their oil clearance at each load reversal, heard through
+    /// the block ([`crate::mechanical`]): 1 = the measured petrol engine's mechanical noise
+    /// (Lalor et al. 1980, shared with `piston_slap`), 0 = none.
+    pub main_bearings: f64,
+    /// Pistons slapping the liner at each side-thrust reversal ([`crate::mechanical`]): 1 =
+    /// physical, 0 = none.
+    pub piston_slap: f64,
     /// The block's radiated combustion noise ([`crate::structure`]): the cylinder pressure
     /// through the measured structure response of engine blocks, 1 = physical, 0 = off.
     pub block: f64,
@@ -95,6 +102,8 @@ impl Default for SoundDef {
             intake: 1.0,
             valve_jet: 1.0,
             duct_flow: 1.0,
+            main_bearings: 1.0,
+            piston_slap: 1.0,
             block: 1.0,
             mechanical: 1.0,
             chamber_ring: 1.0,
@@ -187,6 +196,21 @@ mod tests {
         assert_eq!(old.duct_flow, 1.0);
         let s = SoundDef {
             duct_flow: 0.5,
+            ..SoundDef::default()
+        };
+        let json: SoundDef = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        let yaml: SoundDef =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&s).unwrap()).unwrap();
+        assert_eq!((json, yaml), (s.clone(), s));
+    }
+
+    #[test]
+    fn the_impacts_round_trip_and_old_files_hear_them() {
+        let old: SoundDef = serde_yaml_ng::from_str("reverb: 0.2\n").unwrap();
+        assert_eq!((old.main_bearings, old.piston_slap), (1.0, 1.0));
+        let s = SoundDef {
+            main_bearings: 0.5,
+            piston_slap: 0.25,
             ..SoundDef::default()
         };
         let json: SoundDef = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();

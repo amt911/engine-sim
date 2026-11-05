@@ -1121,10 +1121,16 @@ impl EngineDef {
                         shell_thickness_m: 0.001,
                         shell_density_kg_m3: 4510.0,
                         shell_area_m2: std::f64::consts::PI * 0.22 * 0.20,
-                        // its first resonance: ESTIMATE, set where the shell leaves the held
-                        // 6700 rpm lows at the dyno recording's (docs/FINDINGS.md, 2026-11-01);
-                        // a limp wall puts 12-18 dB over it
-                        shell_resonance_hz: 300.0,
+                        // what moves its volume: the cylinder breathing against its hoop
+                        // stiffness, first resonant at the ring frequency f = c_L/(2πR), c_L =
+                        // √(E/(ρ(1 − ν²))) = √(105 GPa/(4510·(1 − 0.34²))) = 5130 m/s for
+                        // commercially pure titanium, R = 0.11 m: 7420 Hz (Fahy & Gardonio,
+                        // *Sound and Structural Vibration*, §2.10; Leissa, *Vibration of Shells*).
+                        // Below it the wall is stiffness-held and pushes little air. (A 300 Hz
+                        // panel resonance fitted to the 6700 rpm dyno lows rang the silencer at
+                        // the 3000 rpm firing order, 18 dB over the tail, and the orders' guard
+                        // stands better without it: 9.6 dB against 9.9.)
+                        shell_resonance_hz: 7420.0,
                     }),
                 }),
             },
@@ -1141,6 +1147,14 @@ impl EngineDef {
                 runner_length_m: 0.325,
                 runner_diameter_m: 0.045,
                 individual_throttles: true,
+                // and, like the surge tank, no rule-sized air cleaner: the approved fit
+                // (2026-10-31) and its guard against the real car (`engine-app` sim tests:
+                // RMS 9.9 dB bare, 13.9 with the rule's 19 L box) were made on the bare trumpets;
+                // the car's own intake comes in with its surge tanks (PR #33)
+                air_cleaner: crate::air_cleaner::AirCleanerDef {
+                    fitted: false,
+                    ..crate::air_cleaner::AirCleanerDef::default()
+                },
                 ..IntakeDef::default()
             },
             redline_rpm: 9000.0,
@@ -1531,6 +1545,11 @@ const TORQUE_AVG_TAU_S: f64 = 0.15;
 const BLOWBY_AREA_FRACTION: f64 = 1e-4;
 /// Level of the 1D intake's induction source relative to the exhaust (lumped: trumpets sit in the
 /// engine bay, further from the listener than the tail pipes). Estimate.
+/// Manifold pressure of an engine turning with no load, in atmospheres: the throttle shut to
+/// what holds the speed, 0.3–0.4 bar (Heywood, *Internal Combustion Engine Fundamentals*, §7.2:
+/// idle and light-load manifold pressures; ESTIMATE, the low end). Where the mechanical noise
+/// reads Raff & Perry's no-load curve ([`crate::mechanical::mechanical_dba_at_1m_loaded`]).
+const NO_LOAD_MAP_RATIO: f64 = 0.3;
 /// Density of the air the intake draws, kg/m³ (1 atm, 300 K).
 const AIR_DENSITY: f64 = crate::units::ATM_PA / (crate::gas::R_AIR * 300.0);
 /// Throttle plate actuator speed, full travel per second (0.1 s closed to wide open).
@@ -2252,6 +2271,37 @@ pub struct Engine {
     n_banks: usize,
     /// Valve strikes still ringing: (time since the strike, s; its peak force, N).
     seat_strikes: Vec<(f64, f64)>,
+    /// The structure's mechanical impacts under way (age s, weight, bank): main journals and
+    /// pistons thrown across their clearances ([`crate::mechanical`]).
+    impacts: Vec<(f64, f64, usize, usize)>,
+    /// The block's modes each bank's impacts strike ([`crate::mechanical::IMPACT_POINTS`]
+    /// points), at their step, and the step's (point, pseudo-pressure) pairs (scratch).
+    impact_modes: Option<(f64, Vec<crate::structure::BlockModes>)>,
+    impact_inputs: Vec<(usize, f64)>,
+    /// The draws of the points the impacts strike (seeded: deterministic).
+    impact_rng: u64,
+    /// The intake's air cleaner at its step, as built (`intake.air_cleaner`, resolved for this
+    /// engine); none without one, or with a modelled surge tank.
+    air_cleaner: Option<(f64, crate::air_cleaner::AirCleaner)>,
+    /// Each cylinder's rod and side force at the last step, N (their sign changes are impacts).
+    impact_forces: Vec<(f64, f64)>,
+    /// Impacts counted (each at a point of its own: they add in power, one unit energy each),
+    /// the time counted over since the rate was last taken, and that rate, per second
+    /// ([`crate::mechanical`]: the level is shared among them).
+    impact_count: (usize, f64, f64),
+    /// The A-weighted energy at 1 m of one unit impact through the block, Pa²·s, for its step.
+    impact_unit: Option<(f64, f64)>,
+    /// The impacts' own path through the block's response (one per bank), at its step.
+    impact_structure: Option<(f64, Vec<StructureResponse>)>,
+    /// The combustion's A-weighting at its step, its A-weighted power summed and counted since
+    /// the impacts' rate was last taken, and that last cycle's mean power, Pa² at 1 m: the
+    /// impacts make up the rest of the measured curve's ([`crate::mechanical`]).
+    combustion_weight: Option<(f64, crate::mechanical::AWeighting)>,
+    combustion_power: (f64, usize, f64),
+    /// Impacts begun this step (for tests and probes).
+    pub(crate) impacts_this_step: usize,
+    /// What the structure radiated this step, Pa at 1 m, all banks (for tests and probes).
+    pub(crate) structure_out: f64,
     /// The engine bay round each bank's side of the block ([`crate::engine_bay`]), built with
     /// the listener.
     bay: Vec<crate::engine_bay::BayFilter>,
@@ -2526,6 +2576,19 @@ impl Engine {
             bank_of: Vec::new(),
             n_banks: 1,
             seat_strikes: Vec::new(),
+            impacts: Vec::new(),
+            impact_modes: None,
+            impact_inputs: Vec::new(),
+            impact_rng: seed.wrapping_mul(0xD1B5_4A32_D192_ED03) | 1,
+            air_cleaner: None,
+            impact_forces: Vec::new(),
+            impact_count: (0, 0.0, 0.0),
+            impact_unit: None,
+            impact_structure: None,
+            combustion_weight: None,
+            combustion_power: (0.0, 0, 0.0),
+            impacts_this_step: 0,
+            structure_out: 0.0,
             bay: Vec::new(),
             texture_signal: 0.0,
             jets: Vec::new(),
@@ -2798,6 +2861,7 @@ impl Engine {
         let shaft_k = self.def.chamber_ratio();
         let crank_deg = self.theta.to_degrees() * shaft_k;
         let rpm_now = self.rpm();
+        self.impacts_this_step = 0;
         // the ECU's throttle demand: the pedal, trimmed by a torque cut's air channel towards
         // the charge whose most retarded burn gives the cut's share
         let cut = c.torque_cut.clamp(0.0, 1.0);
@@ -2923,6 +2987,36 @@ impl Engine {
             let prev = self.cyl[i].cycle_deg;
             let cur = crate::units::wrap(crank_deg - self.cyl[i].offset_deg, 720.0);
             let theta_c = deg_to_rad(cur);
+            // The rod's and the liner's loads: each sign change throws a journal or the piston
+            // across its clearance, an impact on the structure ([`crate::mechanical`])
+            if g.rotor.is_none() && self.omega > 0.0 {
+                if self.impact_forces.len() != self.cyl.len() {
+                    self.impact_forces = vec![(0.0, 0.0); self.cyl.len()];
+                }
+                let m = crate::mechanical::reciprocating_mass_kg(g.bore_m);
+                let p_gauge = self.cyl[i].gas.pressure() - ATM_PA;
+                let rod = crate::mechanical::rod_axial_force(&g, theta_c, p_gauge, self.omega, m);
+                let side =
+                    crate::mechanical::piston_side_force(&g, theta_c, p_gauge, self.omega, m);
+                let (rod0, side0) = self.impact_forces[i];
+                let bank = self.bank_of.get(i).copied().unwrap_or(0);
+                let snd = &self.def.sound;
+                for (crossed, weight) in [
+                    (rod0 * rod < 0.0, snd.main_bearings),
+                    (side0 * side < 0.0, snd.piston_slap),
+                ] {
+                    if crossed {
+                        let r = &mut self.impact_rng;
+                        *r ^= *r << 13;
+                        *r ^= *r >> 7;
+                        *r ^= *r << 17;
+                        let at = (*r >> 33) as usize % crate::mechanical::IMPACT_POINTS;
+                        self.impacts.push((0.0, weight, bank, at));
+                        self.impacts_this_step += 1;
+                    }
+                }
+                self.impact_forces[i] = (rod, side);
+            }
             // the injection for the charge to come is made during the exhaust stroke, onto the
             // closed valve: it starts as the exhaust valve opens and is done before the intake
             // opens; a cut decided after it started no longer reaches this charge
@@ -3654,7 +3748,6 @@ impl Engine {
         // The intake mouth is a sink of the air it draws in: a monopole of volume flow
         // −ṁ/ρ₀ (1D: what the trumpets take in; 0D: the throttle's flow), heard from the
         // tails' mean distance — no gain chosen by ear. `sound.intake` scales it (1 = physical).
-        let snd = &self.def.sound;
         // `drawn`: the mouth's mass flow into the engine, kg/s (1D: held between FV steps). With
         // a turbo the air filter's flow is the compressor's: the throttle's swings reach it
         // through the charge air's low-pass (`TurboState::charge_tau_s`)
@@ -3665,6 +3758,20 @@ impl Engine {
             }
             None => drawn,
         };
+        // through the air cleaner's box and snorkel to its mouth ([`crate::air_cleaner`])
+        let cleaner = self.cleaner_def();
+        let heard = match cleaner {
+            Some(def) => {
+                if self.air_cleaner.as_ref().is_none_or(|c| c.0 != dt) {
+                    self.air_cleaner = Some((dt, crate::air_cleaner::AirCleaner::new(&def, dt)));
+                }
+                self.air_cleaner
+                    .as_mut()
+                    .map_or(heard, |c| c.1.process(heard))
+            }
+            None => heard,
+        };
+        let snd = &self.def.sound;
         let intake_flow = -snd.intake * heard / AIR_DENSITY;
         self.texture_signal = intake_flow;
         // each tail's jet: its exit velocity u = (ρc·u)/ρc, its own distance to the listener
@@ -3744,6 +3851,79 @@ impl Engine {
             *t += dt;
         }
         self.seat_strikes.retain(|(t, _)| *t <= SEAT_PULSE_S);
+        // The mechanical impacts: one level for all of them, the measured petrol engine's at
+        // this speed and load (`mechanical_dba_at_1m_loaded`), shared among the impacts of the last cycle — each
+        // a half-sine of the seat strikes' width through the block's response, A-weighted
+        // energy `impact_unit` at 1 m, so their train's power is the curve's.
+        let mut impact = [0.0; 2];
+        {
+            let period = if rpm_now > 0.0 {
+                120.0 / rpm_now
+            } else {
+                f64::INFINITY
+            };
+            self.impact_count.0 += self.impacts_this_step;
+            self.impact_count.1 += dt;
+            if self.impact_count.1 >= period {
+                self.impact_count.2 = self.impact_count.0 as f64 / self.impact_count.1;
+                self.impact_count.0 = 0;
+                self.impact_count.1 = 0.0;
+                let (sum, n, _) = self.combustion_power;
+                self.combustion_power = (0.0, 0, if n > 0 { sum / n as f64 } else { 0.0 });
+            } else if !period.is_finite() {
+                self.impact_count = (0, 0.0, 0.0);
+                self.combustion_power = (0.0, 0, 0.0);
+            }
+            if self.impact_unit.is_none_or(|u| u.0 != dt) {
+                self.impact_unit = Some((dt, crate::mechanical::unit_impact_energy(dt)));
+            }
+            let unit = self.impact_unit.map_or(0.0, |u| u.1);
+            let rate = self.impact_count.2;
+            // the measured curve is the whole engine's: the impacts carry what the combustion
+            // (its last cycle) leaves of it, in power
+            // at the load the manifold says: shut (no load) at NO_LOAD_MAP_RATIO of an
+            // atmosphere, full at one (a boosted engine reads full)
+            let map = self.plenum_pressure_pa() / crate::units::ATM_PA;
+            let load = (map - NO_LOAD_MAP_RATIO) / (1.0 - NO_LOAD_MAP_RATIO);
+            let whole = crate::mechanical::rms_pa_from_dba(
+                crate::mechanical::mechanical_dba_at_1m_loaded(rpm_now, load),
+            );
+            let target = (whole * whole - self.combustion_power.2).max(0.0);
+            let amp = if rate > 0.0 && unit > 0.0 {
+                (target / (rate * unit)).sqrt()
+            } else {
+                0.0
+            };
+            let n_banks = self.n_banks.clamp(1, 2);
+            if self
+                .impact_modes
+                .as_ref()
+                .is_none_or(|m| m.0 != dt || m.1.len() != n_banks)
+            {
+                let modes = (0..n_banks)
+                    .map(|_| {
+                        crate::structure::BlockModes::new(crate::mechanical::IMPACT_POINTS, dt)
+                    })
+                    .collect();
+                self.impact_modes = Some((dt, modes));
+            }
+            if let Some((_, modes)) = &mut self.impact_modes {
+                for (b, m) in modes.iter_mut().enumerate() {
+                    self.impact_inputs.clear();
+                    for (t, weight, bank, at) in &self.impacts {
+                        if (*bank).min(n_banks - 1) == b {
+                            self.impact_inputs
+                                .push((*at, *weight * amp * seat_pulse(1.0, *t)));
+                        }
+                    }
+                    impact[b] = m.process_at(&self.impact_inputs);
+                }
+            }
+            for i in self.impacts.iter_mut() {
+                i.0 += dt;
+            }
+            self.impacts.retain(|(t, _, _, _)| *t <= SEAT_PULSE_S);
+        }
         // (always run: a few multiplies a step, and an engine without either is silent here).
         // Per bank: a bank's side of the block carries its own cylinders' combustion (Anderton's
         // response is the whole engine's for one cylinder's pressure, so each of the n banks'
@@ -3751,6 +3931,20 @@ impl Engine {
         // what one bank fires and the other does not stays apart to be heard from either side).
         let n_banks = self.n_banks.clamp(1, 2);
         let mut block = [0.0; 2];
+        let mut combustion = 0.0;
+        if self
+            .impact_structure
+            .as_ref()
+            .is_none_or(|s| s.0 != dt || s.1.len() != n_banks)
+        {
+            self.impact_structure = Some((
+                dt,
+                (0..n_banks).map(|_| StructureResponse::new(dt)).collect(),
+            ));
+        }
+        if self.combustion_weight.as_ref().is_none_or(|w| w.0 != dt) {
+            self.combustion_weight = Some((dt, crate::mechanical::AWeighting::new(dt)));
+        }
         {
             if self
                 .structure
@@ -3763,9 +3957,10 @@ impl Engine {
                 self.structure = Some((dt, s));
             }
             let seats = seat_force / g.piston_area() / n_banks as f64;
-            // The seats tick in the head, under the valve cover: what they shake radiates up into
-            // the bay's lined top and leaves through the bay (`vehicle.engine_bay`). The
-            // combustion shakes the whole block, whose skirt and sump radiate into the open
+            // The seats tick in the head, under the valve cover, and the pistons and journals
+            // knock in the bores and the crankcase: what they shake radiates into the bay and
+            // leaves through it (`vehicle.engine_bay`; heard without it, a LFA idle's 2–4 kHz sat
+            // 12–20 dB over recorded ones, docs/FINDINGS.md 2026-11-05). The combustion shakes the whole block, whose skirt and sump radiate into the open
             // underside: it is heard without the bay (ESTIMATE: the bay taken as closed above
             // the head only; with the whole block behind it the LFA at 6700 rpm full load loses
             // the 3–4 kHz orders the dyno recording has, docs/FINDINGS.md 2026-11-01).
@@ -3792,8 +3987,11 @@ impl Engine {
                         }));
                         let mean = bm.2.iter().sum::<f64>() / bm.2.len().max(1) as f64;
                         let modal = bm.1[b].process(&bm.2);
+                        // the bank's cylinders as `combustion_drive` takes them, their sum over
+                        // √n: the mean (or its modal voice) times √n
+                        let root_n = (bm.2.len().max(1) as f64).sqrt();
                         crate::structure::combustion_drive(
-                            [(1.0 - voice) * mean + voice * modal],
+                            [root_n * ((1.0 - voice) * mean + voice * modal)],
                             g.bore_m,
                         ) / n_banks as f64
                     } else {
@@ -3805,11 +4003,25 @@ impl Engine {
                         ) / n_banks as f64
                     };
                     let ticks = head[b].process(snd.mechanical * seats);
-                    let ticks = self.bay.get_mut(b).map_or(ticks, |f| f.process(ticks));
-                    *out = comb[b].process(snd.block * p) + ticks;
+                    let struck = self
+                        .impact_structure
+                        .as_mut()
+                        .and_then(|s| s.1.get_mut(b))
+                        .map_or(0.0, |r| r.process(impact[b]));
+                    let inside = ticks + struck;
+                    let inside = self.bay.get_mut(b).map_or(inside, |f| f.process(inside));
+                    let burn = comb[b].process(snd.block * p);
+                    combustion += burn;
+                    *out = burn + inside;
                 }
             }
         };
+        if let Some((_, w)) = &mut self.combustion_weight {
+            let a = w.process(combustion);
+            self.combustion_power.0 += a * a;
+            self.combustion_power.1 += 1;
+        }
+        self.structure_out = block.iter().sum();
         // the engine's own sources, heard from where it sits: each bank's side of the block, and
         // the intake mouth on the centre line. The mouth is the air box's inlet ducts if there
         // is one (their total area), else a runner's trumpet with individual throttles, else
@@ -3817,9 +4029,11 @@ impl Engine {
         // them and the air, a bank's five trumpets heard apart put the LFA's 5th cycle order
         // 16 dB over a real one's (docs/FINDINGS.md, 2026-10-29); one point cancels it as the
         // tank would damp it.
-        let mouth_area = match &self.def.intake.airbox {
-            Some(b) => b.ducts.max(1) as f64 * PI * 0.25 * b.duct_diameter_m.powi(2),
-            None => {
+        let cleaner_mouth = self.cleaner_def().map(|c| c.mouth_area());
+        let mouth_area = match (&self.def.intake.airbox, cleaner_mouth) {
+            (Some(b), _) => b.ducts.max(1) as f64 * PI * 0.25 * b.duct_diameter_m.powi(2),
+            (None, Some(a)) => a,
+            (None, None) => {
                 let d = if self.def.intake.individual_throttles {
                     self.def.intake.runner_diameter_m
                 } else {
@@ -4137,6 +4351,19 @@ impl Engine {
     pub fn attach_exhaust(&mut self, net: ExhaustNet) {
         self.remote = RemoteSlot(None);
         self.net = Some(net);
+    }
+
+    /// The air cleaner the mouth draws through, resolved for this engine: none when it is not
+    /// fitted or a surge tank (`intake.airbox`) is modelled instead.
+    fn cleaner_def(&self) -> Option<crate::air_cleaner::AirCleanerDef> {
+        let c = self.def.intake.air_cleaner;
+        (c.fitted && self.def.intake.airbox.is_none()).then(|| {
+            c.resolved(
+                self.def.displacement_m3(),
+                self.def.redline_rpm,
+                self.def.throttle_diameter_m,
+            )
+        })
     }
 
     /// Exit velocity at each tail pipe this step, m/s (mean from mass continuity).
@@ -4781,6 +5008,9 @@ mod tests {
             duct_flow: 0.0,
             mechanical,
             block,
+            // the seats and the combustion alone: the piston and journal impacts off
+            piston_slap: 0.0,
+            main_bearings: 0.0,
             ..crate::sound::SoundDef::default()
         };
         let mut e = Engine::new(d, 3000.0, 1);
@@ -5044,6 +5274,8 @@ mod tests {
     /// The TDI's sound at idle for `seconds`, its first second of settling dropped.
     fn tdi_idle(edit: impl Fn(&mut crate::sound::SoundDef), seconds: f64) -> Vec<f64> {
         let mut d = EngineDef::vw_tdi();
+        // the combustion path's own highs: the mechanical impacts left out
+        (d.sound.main_bearings, d.sound.piston_slap) = (0.0, 0.0);
         edit(&mut d.sound);
         let mut e = Engine::new(d, 900.0, 1);
         let c = Controls::default();
@@ -7762,6 +7994,8 @@ mod tests {
         d.sound = crate::sound::SoundDef {
             flow_noise: 0.0,
             mechanical: 0.0,
+            main_bearings: 0.0,
+            piston_slap: 0.0,
             block: 0.0,
             combustion_jitter: 0.0,
             intake: 0.0,
@@ -8426,6 +8660,7 @@ mod tests {
             let s = &mut d.sound;
             (s.flow_noise, s.block, s.mechanical, s.combustion_jitter) = (0.0, 0.0, 0.0, 0.0);
             s.duct_flow = 0.0;
+            (s.main_bearings, s.piston_slap) = (0.0, 0.0);
             s.valve_jet = jet;
             let rpm = 6000.0;
             let mut e = Engine::new(d, rpm, 1);
@@ -9342,6 +9577,263 @@ mod tests {
         );
     }
 
+    /// The structure's mechanical impacts alone (everything else the structure radiates off),
+    /// held at `rpm` full load for 0.5 s after 0.3 s: their A-weighted level at 1 m, dB.
+    /// Whatever bay `d` has stays: the measured curve is a bare engine's (a test bed), so the
+    /// tests against it take the bay out.
+    fn impacts_dba(d: EngineDef, rpm: f64) -> (f64, usize) {
+        impacts_dba_at(d, rpm, 1.0)
+    }
+
+    /// [`impacts_dba`] at a throttle of `throttle`.
+    fn impacts_dba_at(mut d: EngineDef, rpm: f64, throttle: f64) -> (f64, usize) {
+        d.sound.block = 0.0;
+        d.sound.mechanical = 0.0;
+        let mut e = Engine::new(d, rpm, 1);
+        let c = Controls {
+            throttle,
+            hold_rpm: Some(rpm),
+            ..Controls::default()
+        };
+        run(&mut e, 0.3, &c);
+        let mut a = crate::mechanical::AWeighting::new(DT);
+        let n = (0.5 / DT) as usize;
+        let mut sum = 0.0;
+        let mut strikes = 0;
+        for _ in 0..n {
+            e.step(DT, &c);
+            let y = a.process(e.structure_out);
+            sum += y * y;
+            strikes += e.impacts_this_step;
+        }
+        (10.0 * (sum / n as f64 / 4e-10).log10(), strikes)
+    }
+
+    #[test]
+    fn an_impact_train_reads_the_measured_curve() {
+        // a bare engine, as Lalor et al. measured on the test bed
+        for rpm in [3000.0, 6000.0] {
+            let mut d = EngineDef::inline4();
+            d.vehicle.engine_bay = None;
+            let (db, strikes) = impacts_dba(d, rpm);
+            let want = crate::mechanical::mechanical_dba_at_1m(rpm);
+            assert!(strikes > 0);
+            assert!(
+                (db - want).abs() < 1.0,
+                "{rpm}: {db:.1} dB(A) against {want:.1}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_impacts_do_not_repeat_cycle_to_cycle() {
+        // each impact strikes the block at a point of its own (its clearance and oil film, the
+        // journal it lands on): one cycle's mechanical noise is not the last one's — measured,
+        // a deterministic train correlates 0.99 between cycles and buzzes as a comb of lines
+        let mut d = EngineDef::inline4();
+        (d.sound.block, d.sound.mechanical) = (0.0, 0.0);
+        let rpm = 3000.0;
+        let mut e = Engine::new(d, rpm, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(rpm),
+            ..Controls::default()
+        };
+        run(&mut e, 0.3, &c);
+        let cycle = (120.0 / rpm / DT).round() as usize;
+        let x: Vec<f64> = (0..4 * cycle)
+            .map(|_| {
+                e.step(DT, &c);
+                e.structure_out
+            })
+            .collect();
+        let (a, b) = (&x[cycle..2 * cycle], &x[2 * cycle..3 * cycle]);
+        let dot: f64 = a.iter().zip(b).map(|(p, q)| p * q).sum();
+        let na: f64 = a.iter().map(|p| p * p).sum::<f64>().sqrt();
+        let nb: f64 = b.iter().map(|p| p * p).sum::<f64>().sqrt();
+        let corr = dot / (na * nb);
+        assert!(corr.abs() < 0.5, "cycle-to-cycle correlation {corr:.2}");
+    }
+
+    #[test]
+    fn the_whole_structure_reads_the_measured_curve() {
+        // Lalor et al.'s curve is the engine's whole measured noise, combustion and mechanical
+        // together: with the block's combustion noise on, the impacts make up the rest, so the
+        // structure's total A-weighted level at 1 m is the curve's (±1 dB), not curve + block
+        for rpm in [3000.0, 6000.0] {
+            let mut d = EngineDef::inline4();
+            d.sound.mechanical = 0.0;
+            d.vehicle.engine_bay = None;
+            let mut e = Engine::new(d, rpm, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(rpm),
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &c);
+            let mut a = crate::mechanical::AWeighting::new(DT);
+            let n = (0.5 / DT) as usize;
+            let s: f64 = (0..n)
+                .map(|_| {
+                    e.step(DT, &c);
+                    a.process(e.structure_out).powi(2)
+                })
+                .sum();
+            let db = 10.0 * (s / n as f64 / 4e-10).log10();
+            let want = crate::mechanical::mechanical_dba_at_1m(rpm);
+            assert!(
+                (db - want).abs() < 1.0,
+                "{rpm}: {db:.1} dB(A) against {want:.1}"
+            );
+        }
+    }
+
+    #[test]
+    fn unloaded_at_low_speed_the_impacts_read_raffs_lower_curve() {
+        // throttle shut at 1000 rev/min the manifold sits near a third of an atmosphere: no load,
+        // so the impacts read the no-load curve, 3.8 dB under the full-load one (Raff & Perry
+        // 1973, Fig. 1), not the full-load curve
+        let mut d = EngineDef::inline4();
+        d.vehicle.engine_bay = None;
+        let rpm = 1000.0;
+        let (db, _) = impacts_dba_at(d, rpm, 0.0);
+        let want = crate::mechanical::mechanical_dba_at_1m_loaded(rpm, 0.0);
+        assert!((db - want).abs() < 1.0, "{db:.1} dB(A) against {want:.1}");
+    }
+
+    #[test]
+    fn the_engine_bay_muffles_the_impacts() {
+        // the pistons slap the bores and the journals knock in the crankcase: the block's walls,
+        // inside the bay, radiate them, so they leave through the bay as the valve ticking does.
+        // The default bay takes 4.0 dB at 63 Hz and 14.2 dB at 4 kHz (`engine_bay`'s tests);
+        // the impacts' A-weighted level, mostly 1–4 kHz, loses most of the latter. Heard with
+        // no bay (an open engine), a LFA idle's 2 and 4 kHz octaves sat 12–20 dB over four
+        // recorded ones (docs/FINDINGS.md, 2026-11-05).
+        let rpm = 3000.0;
+        let mut bare = EngineDef::inline4();
+        bare.vehicle.engine_bay = None;
+        let mut bayed = EngineDef::inline4();
+        bayed.vehicle.engine_bay = Some(crate::engine_bay::EngineBay::default());
+        let (open, _) = impacts_dba(bare, rpm);
+        let (shut, _) = impacts_dba(bayed, rpm);
+        assert!(
+            open - shut > 8.0 && open - shut < 15.0,
+            "bay took {:.1} dB(A) off the impacts",
+            open - shut
+        );
+    }
+
+    #[test]
+    fn rotaries_have_no_piston_impacts() {
+        let (_, strikes) = impacts_dba(EngineDef::mazda_renesis(), 3000.0);
+        assert_eq!(strikes, 0);
+    }
+
+    #[test]
+    fn a_stopped_engine_makes_no_impacts() {
+        // the starter turns a new engine by default: the impacts come only while the crank turns
+        let mut e = Engine::new(EngineDef::inline4(), 0.0, 1);
+        let c = Controls::default();
+        for _ in 0..2000 {
+            let still = e.omega <= 0.0;
+            e.step(DT, &c);
+            if still {
+                assert_eq!(e.impacts_this_step, 0);
+            }
+            assert!(e.structure_out.is_finite());
+        }
+        let mut e = Engine::new(EngineDef::inline4(), 0.0, 1);
+        e.omega = 0.0;
+        let held = Controls {
+            hold_rpm: Some(0.0),
+            ..Controls::default()
+        };
+        for _ in 0..200 {
+            e.step(DT, &held);
+            assert_eq!(e.impacts_this_step, 0);
+        }
+    }
+
+    #[test]
+    fn a_diesel_keeps_its_combustion_level() {
+        // the mechanical curve is a petrol engine's: on the TDI at 2000 rev/min it stays under
+        // the diesel's own combustion noise (Anderton: diesels ≈ 15 dB(A) above petrol)
+        let level = |on: f64| {
+            let mut d = EngineDef::vw_tdi();
+            d.sound.main_bearings = on;
+            d.sound.piston_slap = on;
+            let mut e = Engine::new(d, 2000.0, 1);
+            let c = Controls {
+                throttle: 0.3,
+                hold_rpm: Some(2000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &c);
+            let mut a = crate::mechanical::AWeighting::new(DT);
+            let n = (0.5 / DT) as usize;
+            let s: f64 = (0..n)
+                .map(|_| {
+                    e.step(DT, &c);
+                    a.process(e.structure_out).powi(2)
+                })
+                .sum();
+            10.0 * (s / n as f64).log10()
+        };
+        let d = level(1.0) - level(0.0);
+        assert!(d.abs() < 1.0, "{d:.2} dB");
+    }
+
+    /// The intake mouth alone (every other source off but the exhaust pulses, which the mouth
+    /// tops at 3000 WOT on a bare inline-4), A-weighted power of the output over 0.4 s.
+    fn mouth_power(mut d: EngineDef, rpm: f64) -> f64 {
+        let s = &mut d.sound;
+        (s.flow_noise, s.valve_jet, s.block, s.mechanical) = (0.0, 0.0, 0.0, 0.0);
+        (s.main_bearings, s.piston_slap, s.chamber_ring) = (0.0, 0.0, 0.0);
+        let with = |intake: f64| {
+            let mut d = d.clone();
+            d.sound.intake = intake;
+            let mut e = Engine::new(d, rpm, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(rpm),
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &c);
+            run(&mut e, 0.4, &c)
+        };
+        let (on, off) = (with(1.0), with(0.0));
+        let mut a = crate::mechanical::AWeighting::new(DT);
+        on.iter()
+            .zip(&off)
+            .map(|(x, y)| a.process(x - y).powi(2))
+            .sum()
+    }
+
+    #[test]
+    fn an_air_cleaner_takes_off_what_raff_measured() {
+        // Raff & Perry 1973 Fig. 14: the standard air cleaner took 8.5 dB(A) off the open
+        // intake — a 5.9 L diesel truck, the only measured insertion loss found (no car air
+        // box's was): the cleaner must take a substantial 5–15 dB(A), not tuned to the number
+        let fitted = mouth_power(EngineDef::inline4(), 3000.0);
+        let mut bare = EngineDef::inline4();
+        bare.intake.air_cleaner.fitted = false;
+        let bare = mouth_power(bare, 3000.0);
+        let il = 10.0 * (bare / fitted).log10();
+        assert!((5.0..15.0).contains(&il), "{il:.1} dB(A)");
+    }
+
+    #[test]
+    fn the_turbo_cleaner_sits_before_the_compressor() {
+        // the K20C1's mouth draws through its cleaner too: quieter than bare, and finite
+        let mut bare = EngineDef::honda_k20c1();
+        bare.intake.air_cleaner.fitted = false;
+        let (fitted, bare) = (
+            mouth_power(EngineDef::honda_k20c1(), 3000.0),
+            mouth_power(bare, 3000.0),
+        );
+        assert!(fitted.is_finite() && fitted < bare, "{fitted} vs {bare}");
+    }
+
     #[test]
     fn a_turbo_engine_keeps_its_downstream_sites() {
         // the K20C1's turbine sits between collector and tail: its path's sites still sound
@@ -9355,7 +9847,11 @@ mod tests {
         };
         let x = run(&mut e, 0.3, &c);
         assert!(x.iter().all(|v| v.is_finite()));
-        let net = e.net.as_ref().or(e.jet_net.as_ref()).expect("a waveguide net");
+        let net = e
+            .net
+            .as_ref()
+            .or(e.jet_net.as_ref())
+            .expect("a waveguide net");
         assert_eq!(net.duct_sites(), want);
         assert_eq!(net.duct_flow_gain(), 1.0);
     }
@@ -9373,13 +9869,15 @@ mod tests {
         run(&mut old, 0.05, &c);
         let mut d = EngineDef::inline4();
         d.sound.duct_flow = 0.5;
-        d.exhaust.after_collector.push(crate::exhaust::Segment::Muffler {
-            length_m: 0.3,
-            diameter_m: 0.15,
-            tube_diameter_m: 0.0,
-            packing_resistivity: 0.0,
-            packing_porosity: 1.0,
-        });
+        d.exhaust
+            .after_collector
+            .push(crate::exhaust::Segment::Muffler {
+                length_m: 0.3,
+                diameter_m: 0.15,
+                tube_diameter_m: 0.0,
+                packing_resistivity: 0.0,
+                packing_porosity: 1.0,
+            });
         let want = crate::exhaust::expansion_sites(&d.exhaust, 4).len();
         let mut e = Engine::new(d, 3000.0, 1);
         assert!(!e.adopt_exhaust_from(&mut old));
@@ -9425,7 +9923,10 @@ mod tests {
         for (s, m) in sites.iter().zip(&sum) {
             if matches!(s.at, crate::exhaust::SiteAt::Collector { .. }) {
                 let r: f64 = m / (sum[into_catalyst] / 4.0);
-                assert!((r - 1.0).abs() < 0.15, "collector site {s:?}: {r:.3} of a quarter");
+                assert!(
+                    (r - 1.0).abs() < 0.15,
+                    "collector site {s:?}: {r:.3} of a quarter"
+                );
             }
         }
     }
@@ -9446,7 +9947,10 @@ mod tests {
             run(&mut e, 0.2, &c)
         };
         let (m, r) = mean_rms_of_difference(&heard(1.0), &heard(0.0));
-        assert!(r > 1e-3 && m.abs() < 0.05 * r, "duct flow on FV: mean {m} rms {r} Pa");
+        assert!(
+            r > 1e-3 && m.abs() < 0.05 * r,
+            "duct flow on FV: mean {m} rms {r} Pa"
+        );
     }
 
     #[test]
@@ -9604,8 +10108,10 @@ mod tests {
         // SAE 790270 eq. 3: the attenuation links one cylinder's pressure to the whole engine's
         // noise). The figure's structure response there (26, 39.5, 47 dB for 1 kPa) gives 0.33,
         // 0.47, 0.16 Pa at 1 m: 0.43 Pa rms, × (86/100 mm)^2.5 = 0.686 for the bore (the curve is
-        // for 100 mm, noise ∝ bore⁵): 0.29 Pa, 0.089 Pa at the 3.27 m to the ear. The real pulse
-        // rises faster than a Gaussian (more above 300 Hz), so up to a few times that
+        // for 100 mm, noise ∝ bore⁵): 0.29 Pa, 0.089 Pa at the 3.27 m to the ear. Raised by the
+        // 6.3 dB (×2.07) that bring the curve to Anderton's eq. 9, and the four cylinders summed
+        // over √4 (×2 at the firing orders): 0.37 Pa. The real pulse rises faster than a
+        // Gaussian (more above 300 Hz), so up to a few times that
         let heard = |block: f64, distance: f64| {
             let mut d = EngineDef::inline4();
             d.sound.block = block;
@@ -9623,7 +10129,7 @@ mod tests {
         };
         let (m, near) = mean_rms_of_difference(&heard(1.0, 3.0), &heard(0.0, 3.0));
         assert!(
-            (0.04..0.27).contains(&near) && m.abs() < 0.05 * near,
+            (0.15..1.1).contains(&near) && m.abs() < 0.05 * near,
             "block: mean {m} rms {near} Pa"
         );
         // a spherical spreader, 1/r: the ear 1.3 m above the tails, so 3 m and 6 m out are

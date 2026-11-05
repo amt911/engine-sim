@@ -919,7 +919,6 @@ pub(crate) fn after_collector(
     )
 }
 
-
 /// Area ratio from which a step out into a wider passage is an abrupt expansion that sheds the
 /// flow (a sudden-expansion loss (1 − σ)² ≥ 0.11 at σ = 1/1.5; below it the jet stays mostly
 /// attached and its noise is left to the pipes).
@@ -1019,7 +1018,13 @@ pub fn expansion_sites(def: &ExhaustDef, cylinders: usize) -> Vec<ExpansionSite>
                 });
             }
         }
-        let d_end = path_sites(&path, dc, Some(b), |index| SiteAt::Segment { index }, &mut out);
+        let d_end = path_sites(
+            &path,
+            dc,
+            Some(b),
+            |index| SiteAt::Segment { index },
+            &mut out,
+        );
         branch_exit.push(d_end);
         if def.merge.is_none() {
             out.push(ExpansionSite {
@@ -1031,7 +1036,11 @@ pub fn expansion_sites(def: &ExhaustDef, cylinders: usize) -> Vec<ExpansionSite>
         }
     }
     if let Some(m) = &def.merge {
-        let d_shared = m.segments.iter().find_map(passage_diameter).unwrap_or(m.outlet_diameter_m);
+        let d_shared = m
+            .segments
+            .iter()
+            .find_map(passage_diameter)
+            .unwrap_or(m.outlet_diameter_m);
         for (b, &d_end) in branch_exit.iter().enumerate() {
             if d_shared * d_shared >= EXPANSION_RATIO_MIN * d_end * d_end {
                 out.push(ExpansionSite {
@@ -1044,7 +1053,13 @@ pub fn expansion_sites(def: &ExhaustDef, cylinders: usize) -> Vec<ExpansionSite>
         }
         // the first shared segment is the junction's own duct: its expansions start after it
         let rest = m.segments.get(1..).unwrap_or(&[]);
-        path_sites(rest, d_shared, None, |i| SiteAt::MergedSegment { index: i + 1 }, &mut out);
+        path_sites(
+            rest,
+            d_shared,
+            None,
+            |i| SiteAt::MergedSegment { index: i + 1 },
+            &mut out,
+        );
         out.push(ExpansionSite {
             branch: None,
             at: SiteAt::Exit,
@@ -2212,7 +2227,8 @@ impl ExhaustNet {
                 b.tail.send(*near, clamp_wave(*back));
             }
             let back = if noise { reflected + exit } else { reflected };
-            sh.duct.send(clamp_wave(outgoing[self.branches.len()]), clamp_wave(back));
+            sh.duct
+                .send(clamp_wave(outgoing[self.branches.len()]), clamp_wave(back));
         }
         for i in 0..n {
             let a = self.primaries[i].area_m2;
@@ -2229,7 +2245,12 @@ mod tests {
     use super::{ExpansionSite, SiteAt, expansion_sites};
 
     fn site(branch: Option<usize>, at: SiteAt, d_jet: f64, d_down: f64) -> ExpansionSite {
-        ExpansionSite { branch, at, d_jet, d_down }
+        ExpansionSite {
+            branch,
+            at,
+            d_jet,
+            d_down,
+        }
     }
 
     /// An inline-4 net driven 0.2 s by firing-like pulses (each primary 0.06 kg/s for a fifth of
@@ -2289,7 +2310,9 @@ mod tests {
         let def = crate::engine::EngineDef::inline4().exhaust;
         let mut net = super::ExhaustNet::new(&def, 4, dt);
         setup(&mut net);
-        (0..(0.6 / dt) as usize).map(|_| net.step(&[flow; 4])).collect()
+        (0..(0.6 / dt) as usize)
+            .map(|_| net.step(&[flow; 4]))
+            .collect()
     }
 
     #[test]
@@ -2373,7 +2396,9 @@ mod tests {
             .count();
         assert_eq!(collectors, 10);
         assert_eq!(
-            got.iter().filter(|s| s.at == SiteAt::Segment { index: 0 }).count(),
+            got.iter()
+                .filter(|s| s.at == SiteAt::Segment { index: 0 })
+                .count(),
             2
         );
         assert!(!got.iter().any(|s| s.at == SiteAt::MergeJunction));

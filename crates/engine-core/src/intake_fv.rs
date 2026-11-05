@@ -47,6 +47,9 @@ pub struct IntakeDef {
     /// The surge tank (air box) the trumpets draw from, breathing through its inlet ducts;
     /// none: the trumpets (or the throttle) open straight to the air.
     pub airbox: Option<AirboxDef>,
+    /// The air cleaner the engine draws through when no surge tank (`airbox`) is modelled
+    /// ([`crate::air_cleaner`]): its box, snorkel and element filter what the mouth radiates.
+    pub air_cleaner: crate::air_cleaner::AirCleanerDef,
 }
 
 /// A surge tank: a 0D volume fed by `ducts` equal inlet ducts from the atmosphere. With
@@ -127,6 +130,7 @@ impl Default for IntakeDef {
             film_fraction: 0.18,
             film_tau_s: 1.0,
             airbox: None,
+            air_cleaner: crate::air_cleaner::AirCleanerDef::default(),
         }
     }
 }
@@ -1346,6 +1350,27 @@ mod tests {
         assert!((f - 64.6).abs() < 0.5, "{f} Hz");
         assert!((b.effective_duct_length() - 0.46525).abs() < 1e-9);
         assert!(f > 54.0 && f < 1.5 * 54.0);
+    }
+
+    #[test]
+    fn the_air_cleaner_round_trips_and_an_old_file_has_one_fitted() {
+        let old: IntakeDef = serde_yaml_ng::from_str("runner_length_m: 0.3\n").unwrap();
+        assert!(old.air_cleaner.fitted);
+        assert_eq!(old.air_cleaner.volume_m3, 0.0);
+        let d = IntakeDef {
+            air_cleaner: crate::air_cleaner::AirCleanerDef {
+                fitted: true,
+                volume_m3: 9e-3,
+                snorkel_length_m: 0.25,
+                snorkel_diameter_m: 0.07,
+                filter_resistance_pa_s_m3: 11_000.0,
+            },
+            ..IntakeDef::default()
+        };
+        let json: IntakeDef = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+        let yaml: IntakeDef =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&d).unwrap()).unwrap();
+        assert_eq!((json, yaml), (d.clone(), d));
     }
 
     #[test]

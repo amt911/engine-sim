@@ -4,7 +4,8 @@
 use engine_core::config::{Format, from_str, to_string};
 fn main() {
     let a: Vec<String> = std::env::args().collect();
-    let mut def = from_str(&std::fs::read_to_string(&a[1]).expect("in"), Format::Yaml).expect("yaml");
+    let mut def =
+        from_str(&std::fs::read_to_string(&a[1]).expect("in"), Format::Yaml).expect("yaml");
     let branches = def.exhaust.groups(def.cylinders as usize).len().max(1);
     let swept = def.displacement_m3() / branches as f64;
     let d = def.exhaust.tail_diameter_m;
