@@ -2229,6 +2229,8 @@ pub struct Engine {
     /// carry it), and what its tails radiate adds to the FV tails'. Its sources, per cylinder.
     jet_net: Option<ExhaustNet>,
     jet_flows: Vec<f64>,
+    /// The FV exhaust's expansion sites' mass flows, handed to `jet_net` each step (scratch).
+    site_flows: Vec<f64>,
     /// Non-linear finite-volume exhaust, when `exhaust.model` is `fv`.
     fv: Option<ExhaustFv>,
     /// The silencers' designed equalizers, kept across rebuilds ([`Engine::adopt_exhaust_from`]).
@@ -2513,6 +2515,7 @@ impl Engine {
             net: None,
             jet_net: None,
             jet_flows: Vec::new(),
+            site_flows: Vec::new(),
             fv: None,
             eq_memo: crate::silencer2d::EqMemo::default(),
             intake_net: None,
@@ -2873,7 +2876,7 @@ impl Engine {
                         .with_scheme(self.fidelity.pipe_scheme),
                     );
                 }
-                if self.def.sound.valve_jet <= 0.0 {
+                if self.def.sound.valve_jet <= 0.0 && self.def.sound.duct_flow <= 0.0 {
                     self.jet_net = None;
                 } else if self.jet_net.as_ref().is_none_or(|n| n.dt != dt) {
                     self.jet_net = Some(ExhaustNet::with_memo(
@@ -3473,6 +3476,9 @@ impl Engine {
                 fv.step();
                 if let Some(j) = &mut self.jet_net {
                     j.prepare(&self.tail_mach, None);
+                    // the duct flow noise rides the jet net on the FV gas's own flow
+                    fv.site_flows(&mut self.site_flows);
+                    j.set_site_flows(&self.site_flows);
                     j.step(&self.jet_flows);
                     self.jet_flows.iter_mut().for_each(|f| *f = 0.0);
                 }
@@ -9371,6 +9377,64 @@ mod tests {
         let net = e.net.as_ref().expect("the inline-4's waveguide");
         assert_eq!(net.duct_sites(), want);
         assert_eq!(net.duct_flow_gain(), 0.5);
+    }
+
+    #[test]
+    fn the_fv_site_flows_follow_the_cells() {
+        // FV inline-4 at 3000 WOT: over whole cycles what each primary jets into the collector
+        // is a quarter of what leaves by the tail (mass conserved through the collector and the
+        // path; each site reads its own cell)
+        let mut d = EngineDef::inline4();
+        d.exhaust.model = ExhaustModel::Fv;
+        let mut e = Engine::new(d.clone(), 3000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.3, &c);
+        let sites = crate::exhaust::expansion_sites(&d.exhaust, 4);
+        let mut sum = vec![0.0; sites.len()];
+        let mut flows = Vec::new();
+        let steps = (0.2 / DT).round() as usize; // five cycles at 3000 rpm
+        for _ in 0..steps {
+            e.step(DT, &c);
+            e.fv.as_ref().expect("FV").site_flows(&mut flows);
+            assert_eq!(flows.len(), sites.len());
+            for (s, f) in sum.iter_mut().zip(&flows) {
+                *s += f / steps as f64;
+            }
+        }
+        let exit = sites
+            .iter()
+            .position(|s| s.at == crate::exhaust::SiteAt::Exit)
+            .expect("an exit");
+        assert!(sum[exit] > 0.0, "exit {}", sum[exit]);
+        for (s, m) in sites.iter().zip(&sum) {
+            if matches!(s.at, crate::exhaust::SiteAt::Collector { .. }) {
+                let r: f64 = m / (sum[exit] / 4.0);
+                assert!((r - 1.0).abs() < 0.15, "collector site {s:?}: {r:.3} of a quarter");
+            }
+        }
+    }
+
+    #[test]
+    fn the_fv_engines_hiss_at_their_expansions_too() {
+        let heard = |gain: f64| {
+            let mut d = EngineDef::inline4();
+            d.exhaust.model = ExhaustModel::Fv;
+            d.sound.duct_flow = gain;
+            let mut e = Engine::new(d, 3000.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(3000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &c);
+            run(&mut e, 0.2, &c)
+        };
+        let (m, r) = mean_rms_of_difference(&heard(1.0), &heard(0.0));
+        assert!(r > 1e-3 && m.abs() < 0.05 * r, "duct flow on FV: mean {m} rms {r} Pa");
     }
 
     #[test]

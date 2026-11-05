@@ -56,6 +56,9 @@ pub struct ExhaustFv {
     tails: Vec<f64>,
     /// Mass that left the FV pipes for the designed path in the last physics step, kg.
     vented: f64,
+    /// The exhaust's area expansions ([`crate::exhaust::expansion_sites`]), for
+    /// [`ExhaustFv::site_flows`].
+    sites: Vec<crate::exhaust::ExpansionSite>,
 }
 
 /// The node at a collector's far end between the FV collector (its last cell `inner`, area
@@ -366,6 +369,31 @@ impl ExhaustFv {
             acc_t: vec![0.0; cylinders],
             tails: vec![0.0; def.groups(cylinders).len()],
             vented: 0.0,
+            sites: crate::exhaust::expansion_sites(def, cylinders),
+        }
+    }
+
+    /// Each expansion site's mass flow this instant, kg/s (+ towards the tail), in
+    /// [`crate::exhaust::expansion_sites`] order: a primary's jet from its last cell, a path's
+    /// sites and its exit from the collector's last cell, a merge's from all the collectors.
+    pub fn site_flows(&self, out: &mut Vec<f64>) {
+        let outflow = |pipe: &Pipe1d| match (pipe.cells.last(), pipe.area.last()) {
+            (Some(c), Some(&a)) => {
+                let w = c.to_prim();
+                w.rho * w.u * a
+            }
+            _ => 0.0,
+        };
+        out.clear();
+        for site in &self.sites {
+            use crate::exhaust::SiteAt;
+            out.push(match (site.at, site.branch) {
+                (SiteAt::Collector { primary }, _) => {
+                    self.primaries.get(primary).map_or(0.0, outflow)
+                }
+                (_, Some(b)) => self.branches.get(b).map_or(0.0, |br| outflow(&br.out)),
+                (_, None) => self.branches.iter().map(|br| outflow(&br.out)).sum(),
+            });
         }
     }
 
