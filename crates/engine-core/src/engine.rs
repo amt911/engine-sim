@@ -6,8 +6,8 @@
 
 use crate::combustion::{
     AFR_STOICH, AFR_STOICH_DIESEL, Combustion, LHV_DIESEL, LHV_GASOLINE, RING_DECAY_S, RING_MODES,
-    RING_SHARE, RING_SPREAD, WATSON_DURATION_DEG, Watson, draper_hz, flame_angle_scale,
-    ignition_delay_deg, laminar_flame_speed, wiebe,
+    RING_SPREAD, WATSON_DURATION_DEG, Watson, draper_hz, flame_angle_scale, ignition_delay_deg,
+    laminar_flame_speed, wiebe,
 };
 use crate::exhaust::{
     ArrivalProbe, BlockIn, BlockOut, ExhaustDef, ExhaustLink, ExhaustModel, ExhaustNet, Segment,
@@ -3284,8 +3284,12 @@ impl Engine {
                         let v_c = g.displacement() / (g.compression_ratio - 1.0).max(1.0);
                         let q =
                             crate::fuel::burnable(fuel, air) * LHV_DIESEL * COMBUSTION_EFFICIENCY;
-                        let step = (crate::gas::GAMMA - 1.0) * watson.beta * q / v_c;
-                        let strike = self.def.sound.chamber_ring * RING_SHARE * step;
+                        let strike = crate::combustion::ring_strike_pa(
+                            self.def.sound.chamber_ring,
+                            watson.beta,
+                            q,
+                            v_c,
+                        );
                         for ((z, scale), (_, share)) in
                             cs.ring.iter_mut().zip(&mut cs.ring_scale).zip(RING_MODES)
                         {
