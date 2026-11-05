@@ -56,6 +56,11 @@ pub struct ExhaustFv {
     tails: Vec<f64>,
     /// Mass that left the FV pipes for the designed path in the last physics step, kg.
     vented: f64,
+    /// The duct the branches' tails join, its open end or valved silencer
+    /// ([`ExhaustDef::merge`]): the same linear path as the waveguide's after the collectors.
+    shared: Option<crate::exhaust::Shared>,
+    /// The merge junction's scratch (areas, incoming, outgoing): no allocation per step.
+    merge_scratch: [Vec<f64>; 3],
 }
 
 /// The node at a collector's far end between the FV collector (its last cell `inner`, area
@@ -346,7 +351,14 @@ impl ExhaustFv {
                     arriving: 0.0,
                 }
             })
-            .collect();
+            .collect::<Vec<Branch>>();
+        let shared = crate::exhaust::Shared::new(
+            def,
+            branches.len(),
+            dt,
+            crate::exhaust::LINING_SEGMENT_M,
+            memo,
+        );
         // 0.8 · cell / (|u| + c)_max with 800 m/s for hot, fast exhaust
         let dt_target = 0.8 * CELL_M / 800.0;
         let substeps = ((dt_target / dt).floor() as usize).max(1);
@@ -366,6 +378,8 @@ impl ExhaustFv {
             acc_t: vec![0.0; cylinders],
             tails: vec![0.0; def.groups(cylinders).len()],
             vented: 0.0,
+            shared,
+            merge_scratch: Default::default(),
         }
     }
 
@@ -433,18 +447,62 @@ impl ExhaustFv {
         // the designed paths: what each collector sends, on its line between pipe steps
         let f = self.count as f64 / self.substeps as f64;
         let mut radiated = 0.0;
-        for (b, tail) in self.branches.iter_mut().zip(self.tails.iter_mut()) {
-            let sent = between(b.sent, f);
-            let (reflected, out) = b.end.process(b.duct.at_far());
-            b.duct.send(sent, reflected);
-            *tail = out;
-            radiated += out;
+        match &mut self.shared {
+            None => {
+                for (b, tail) in self.branches.iter_mut().zip(self.tails.iter_mut()) {
+                    let sent = between(b.sent, f);
+                    let (reflected, out) = b.end.process(b.duct.at_far());
+                    b.duct.send(sent, reflected);
+                    *tail = out;
+                    radiated += out;
+                }
+            }
+            Some(sh) => {
+                // the tails' far ends join the shared duct as on the waveguide
+                let [areas, incoming, outgoing] = &mut self.merge_scratch;
+                sh.solve_merge(
+                    self.branches
+                        .iter()
+                        .map(|b| (b.duct.end_areas().1, b.duct.at_far())),
+                    areas,
+                    incoming,
+                    outgoing,
+                );
+                let n = self.branches.len();
+                radiated = sh.radiate(outgoing[n], 0.0, self.dt);
+                let share = radiated / n.max(1) as f64;
+                for ((b, tail), back) in self
+                    .branches
+                    .iter_mut()
+                    .zip(self.tails.iter_mut())
+                    .zip(outgoing.iter())
+                {
+                    let sent = between(b.sent, f);
+                    b.duct.send(sent, crate::exhaust::clamp_wave(*back));
+                    *tail = share;
+                }
+            }
         }
         radiated
     }
 
+    /// The engine speed, rpm, that a bypass valve follows (it opens above its `open_rpm`).
+    pub fn set_engine_speed(&mut self, rpm: f64) {
+        if let Some(sh) = &mut self.shared {
+            sh.set_engine_speed(rpm);
+        }
+    }
+
+    /// A bypass valve's opening fraction (0 shut … 1 open), if the exhaust has one.
+    pub fn bypass_opening(&self) -> Option<f64> {
+        self.shared.as_ref()?.bypass_opening()
+    }
+
     /// Mean outflow Mach number at each tail's open end ([`OpenEnd::set_outflow_mach`]).
     pub fn set_outflow_mach(&mut self, mach: &[f64]) {
+        if let Some(sh) = &mut self.shared {
+            sh.set_outflow_mach(mach);
+        }
         for (b, m) in self.branches.iter_mut().zip(mach) {
             b.end.set_outflow_mach(*m);
         }
