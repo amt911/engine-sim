@@ -16,8 +16,12 @@
 
 use std::f64::consts::PI;
 
-/// Peak of the fitted response, dB re 20 µPa at 1 m for 1 kPa (before the shape terms).
-const GAIN_DB: f64 = 107.85;
+/// Peak of the fitted response, dB re 20 µPa at 1 m for 1 kPa (before the shape terms): the
+/// review's median (107.85) raised by 6.3 dB, so that a gasoline engine's average cylinder
+/// pressure spectrum gives Anderton's own prediction of its combustion noise (SAE 790270
+/// eq. 9, ±2.5 dB(A) against measured engines; test
+/// `a_petrol_pressure_spectrum_makes_andertons_noise`). The review's curve shape stays.
+const GAIN_DB: f64 = 114.15;
 /// Triple pole of the rising flank, Hz.
 const FA_HZ: f64 = 3291.4;
 /// Single pole, Hz.
@@ -197,9 +201,11 @@ impl BlockModes {
 /// What drives the block's response: one cylinder's pressure, the engine's own number of
 /// cylinders already in the measured attenuation (Anderton, *Relation between combustion system
 /// and engine noise*, SAE 790270, eq. 3: P² = (cylinder pressure × bore²)²/S, with S measured on
-/// whole engines against one cylinder's pressure). At the firing harmonics the cylinders' mean
-/// is any one cylinder's pressure, so the mean of `cylinders_pa` drives it, and their firing
-/// pattern stays in the sound. The curve is for a 100 mm bore and the noise grows with the
+/// whole engines against one cylinder's pressure spectrum). The cylinders' sum over √n keeps
+/// that spectrum's power where the noise is (the bands from a few hundred Hz up hold many cycle
+/// orders, the cylinders' parts of them add in power: n·P₁/n), and their firing pattern stays in
+/// the sound. (Their mean kept only the firing orders, 1/n of each band's power: −6 dB on a
+/// four, −10 on a V10.) The curve is for a 100 mm bore and the noise grows with the
 /// bore's fifth power (Anderton: the direct force with its fourth, the attenuation falling with
 /// the first), so the drive scales by (bore / 0.1 m)^2.5. Pa.
 pub fn combustion_drive(cylinders_pa: impl IntoIterator<Item = f64>, bore_m: f64) -> f64 {
@@ -209,7 +215,7 @@ pub fn combustion_drive(cylinders_pa: impl IntoIterator<Item = f64>, bore_m: f64
     if n == 0 {
         return 0.0;
     }
-    sum / n as f64 * (bore_m / 0.1).powf(2.5)
+    sum / (n as f64).sqrt() * (bore_m / 0.1).powf(2.5)
 }
 
 #[cfg(test)]
@@ -284,12 +290,13 @@ mod tests {
     #[test]
     fn the_block_is_driven_by_one_cylinders_pressure_scaled_to_the_bore() {
         // Anderton (SAE 790270) eq. 3: P² = (cylinder pressure × bore²)²/S, one cylinder's
-        // pressure (its engine's noise already in S), S measured at 100 mm, noise ∝ bore⁵:
-        // ten equal 2 bar cylinders of 88 mm drive it as 2 bar × 0.88^2.5 = 2e5 × 0.726452
+        // pressure spectrum (its engine's noise already in S), S measured at 100 mm, noise ∝
+        // bore⁵; the cylinders summed over √n: ten equal 2 bar cylinders of 88 mm drive it as
+        // 10 · 2e5/√10 · 0.88^2.5 = 632 455.5 · 0.726452 = 459 449.1
         let ten = [2e5; 10];
-        assert!((combustion_drive(ten, 0.088) - 145_290.4).abs() < 1.0);
-        // at 100 mm, the mean pressure itself
-        assert!((combustion_drive([1e5, 3e5], 0.1) - 2e5).abs() < 1e-9);
+        assert!((combustion_drive(ten, 0.088) - 459_449.1).abs() < 1.0);
+        // at 100 mm, two cylinders: (1e5 + 3e5)/√2 = 282 842.7
+        assert!((combustion_drive([1e5, 3e5], 0.1) - 282_842.712_5).abs() < 1e-3);
         assert_eq!(combustion_drive([], 0.1), 0.0);
     }
 
@@ -310,8 +317,9 @@ mod tests {
     #[test]
     fn the_block_radiates_as_the_nine_measured_engines() {
         // digitised median of Hidraulica 3/2021 Fig. 1 (nine diesel engines), dB re 20 µPa at
-        // 1 m for 1 kPa; the fit stays within 5.5 dB of it (worst 5 dB at 250 Hz, where the
-        // engines spread ±10 dB)
+        // 1 m for 1 kPa, raised by the 6.3 dB that bring it to Anderton's own prediction
+        // (`a_petrol_pressure_spectrum_makes_andertons_noise`); the fit stays within 5.5 dB of
+        // its shape (worst 5 dB at 250 Hz, where the engines spread ±10 dB)
         let figure = [
             (125.0, 17.0),
             (200.0, 33.0),
@@ -326,6 +334,7 @@ mod tests {
         ];
         for fs in [96_000.0, 192_000.0] {
             for (f, db) in figure {
+                let db = db + 6.3;
                 let got = srf_db(f, fs);
                 assert!(
                     (got - db).abs() < 5.5,
@@ -346,5 +355,58 @@ mod tests {
         }
         assert!(y.abs() < 1e-6, "{y}");
         assert!(srf_db(25.0, 96_000.0) < srf_db(1000.0, 96_000.0) - 60.0);
+    }
+
+    #[test]
+    fn a_petrol_pressure_spectrum_makes_andertons_noise() {
+        // Anderton, SAE 790270: a gasoline engine's reduced cylinder pressure spectrum is
+        // CP_R(1.0) = 133 dB with combustion index n = 6.3 (Fig. 14): the level in each
+        // one-third octave is 133 + 10·n·log₁₀(N/f) dB re 20 µPa. Its combustion noise at 1 m
+        // is eq. (9): CP_R + 50·log₁₀B + 10·n·log₁₀(N/1000) − K₁, K₁ = 175.5 dB(A) at n = 6.3
+        // (Fig. 13, read ±0.5): for B = 86 mm at 3000 rev/min,
+        // 133 + 96.7 + 30.1 − 175.5 = 84.3 dB(A).
+        // One cylinder's pressure, its cycle harmonics given each band's level, through the
+        // block as the engine drives it.
+        let dt = 1.0 / 96_000.0;
+        let (rpm, bore) = (3000.0, 0.086);
+        let f_cycle = rpm / 120.0;
+        let mut rng = 0x2545_F491_4F6C_DD1Du64;
+        let mut harmonics = Vec::new();
+        let mut k = 1usize;
+        loop {
+            let f = k as f64 * f_cycle;
+            if f > 10_000.0 {
+                break;
+            }
+            // the band's power shared among the harmonics in it: a third octave holds
+            // 0.2316·f/f_cycle of them
+            let band_db = 133.0 + 63.0 * (rpm / f).log10();
+            let p_rms = 20e-6 * 10f64.powf(band_db / 20.0) / (0.2316 * f / f_cycle).max(1.0).sqrt();
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            let phase = (rng >> 11) as f64 / (1u64 << 53) as f64 * std::f64::consts::TAU;
+            if f >= 100.0 {
+                harmonics.push((f, p_rms * std::f64::consts::SQRT_2, phase));
+            }
+            k += 1;
+        }
+        let mut block = StructureResponse::new(dt);
+        let mut a = crate::mechanical::AWeighting::new(dt);
+        let n = (1.0 / dt) as usize;
+        let mut sum = 0.0;
+        for i in 0..n {
+            let t = i as f64 * dt;
+            let p: f64 = harmonics
+                .iter()
+                .map(|&(f, amp, ph)| amp * (std::f64::consts::TAU * f * t + ph).sin())
+                .sum();
+            let y = a.process(block.process(combustion_drive([p], bore)));
+            if i > n / 4 {
+                sum += y * y;
+            }
+        }
+        let db = 10.0 * (sum / (n - n / 4 - 1) as f64 / 4e-10).log10();
+        assert!((db - 84.3).abs() < 2.0, "{db:.1} dB(A) against Anderton's 84.3");
     }
 }

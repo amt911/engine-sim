@@ -43,6 +43,119 @@ pub fn rms_pa_from_dba(db: f64) -> f64 {
     20e-6 * 10f64.powf(db / 20.0)
 }
 
+/// Reciprocating mass (piston, pin, rings, the rod's small end) per bore³, kg/m³: a production
+/// petrol piston set of 0.35–0.45 kg at 86 mm bore (ESTIMATE, from the prototype `e472fb2`'s
+/// survey; no preset carries its piston's mass).
+pub const RECIP_MASS_PER_BORE3: f64 = 600.0;
+
+/// The reciprocating mass of a cylinder of `bore_m`, kg ([`RECIP_MASS_PER_BORE3`]).
+pub fn reciprocating_mass_kg(bore_m: f64) -> f64 {
+    RECIP_MASS_PER_BORE3 * bore_m.powi(3)
+}
+
+/// The force along the cylinder's axis the piston puts on the rod, N (+ towards the crank):
+/// the gas's `p_gauge`·A less the reciprocating inertia m·ω²·r·(cos θ + λ cos 2θ) (the
+/// slider-crank's piston acceleration to second order in λ = r/l; Heywood, *Internal
+/// Combustion Engine Fundamentals*, §2.2). Its sign changes are when the main and big-end
+/// journals cross their oil clearance (Raff & Perry 1973 §2.3; Lalor et al. 1980).
+pub fn rod_axial_force(
+    g: &crate::geometry::CylinderGeometry,
+    theta: f64,
+    p_gauge: f64,
+    omega: f64,
+    m_recip: f64,
+) -> f64 {
+    let r = g.crank_radius();
+    let lambda = r / g.rod_m;
+    let accel = omega * omega * r * (theta.cos() + lambda * (2.0 * theta).cos());
+    p_gauge * g.piston_area() - m_recip * accel
+}
+
+/// The piston's thrust on the liner, N: the axial force times tan φ, φ the rod's angle
+/// (sin φ = λ sin θ). It reverses at TDC and BDC and wherever the axial force does, and each
+/// reversal throws the piston across its clearance: piston slap (Ungar & Ross, *Vibrations and
+/// noise due to piston-slap in reciprocating machinery*, JSV 2(2), 1965; Haddad & Pullen 1974).
+pub fn piston_side_force(
+    g: &crate::geometry::CylinderGeometry,
+    theta: f64,
+    p_gauge: f64,
+    omega: f64,
+    m_recip: f64,
+) -> f64 {
+    let sin_phi = g.crank_radius() / g.rod_m * theta.sin();
+    let tan_phi = sin_phi / (1.0 - sin_phi * sin_phi).max(1e-9).sqrt();
+    rod_axial_force(g, theta, p_gauge, omega, m_recip) * tan_phi
+}
+
+/// The A-weighting of IEC 61672-1 as a filter at step `dt`: four zeros at 0 Hz, poles at
+/// 20.6 Hz (twice), 107.7, 737.9 and 12 194 Hz (twice), each pole a first-order section by
+/// the bilinear transform with its frequency pre-warped, normalized to 0 dB at 1 kHz.
+#[derive(Debug, Clone)]
+pub struct AWeighting {
+    /// Sections (b0, b1, a1, x₁, y₁).
+    sections: [(f64, f64, f64, f64, f64); 6],
+    gain: f64,
+}
+
+impl AWeighting {
+    const POLES_HZ: [f64; 6] = [20.6, 20.6, 107.7, 737.9, 12_194.0, 12_194.0];
+
+    pub fn new(dt: f64) -> Self {
+        let fs = 1.0 / dt;
+        let mut sections = [(0.0, 0.0, 0.0, 0.0, 0.0); 6];
+        for (k, &f) in Self::POLES_HZ.iter().enumerate() {
+            let w = (std::f64::consts::PI * f.min(0.45 * fs) / fs).tan();
+            // the four low poles carry a zero at DC each (s/(s + ω)); the two high ones are
+            // low-passes (ω/(s + ω))
+            let (b0, b1) = if k < 4 {
+                (1.0 / (1.0 + w), -1.0 / (1.0 + w))
+            } else {
+                (w / (1.0 + w), w / (1.0 + w))
+            };
+            sections[k] = (b0, b1, (w - 1.0) / (1.0 + w), 0.0, 0.0);
+        }
+        let mut a = Self { sections, gain: 1.0 };
+        a.gain = 1.0 / a.magnitude(1000.0, fs);
+        a
+    }
+
+    fn magnitude(&self, f: f64, fs: f64) -> f64 {
+        let z = num_complex::Complex64::from_polar(1.0, 2.0 * std::f64::consts::PI * f / fs);
+        let zi = z.inv();
+        self.sections
+            .iter()
+            .map(|&(b0, b1, a1, _, _)| ((b0 + b1 * zi) / (1.0 + a1 * zi)).norm())
+            .product()
+    }
+
+    pub fn process(&mut self, x: f64) -> f64 {
+        let mut v = x;
+        for (b0, b1, a1, x1, y1) in self.sections.iter_mut() {
+            let y = *b0 * v + *b1 * *x1 - *a1 * *y1;
+            *x1 = v;
+            *y1 = y;
+            v = y;
+        }
+        self.gain * v
+    }
+}
+
+/// The A-weighted energy at 1 m of one unit impact (a half-sine of unit peak pseudo-pressure
+/// over the seat strikes' width, `crate::engine::seat_pulse`) through the block's response
+/// ([`crate::structure::StructureResponse`]), Pa²·s, at step `dt`: a train of impacts at a
+/// rate R and peak a has power R·a²·this.
+pub fn unit_impact_energy(dt: f64) -> f64 {
+    let mut block = crate::structure::StructureResponse::new(dt);
+    let mut a = AWeighting::new(dt);
+    let n = (0.1 / dt).ceil() as usize;
+    (0..n)
+        .map(|k| {
+            let y = a.process(block.process(crate::engine::seat_pulse(1.0, k as f64 * dt)));
+            y * y * dt
+        })
+        .sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -67,5 +180,63 @@ mod tests {
     fn decibels_to_pascals_by_hand() {
         // 94 dB re 20 µPa is 1.002 Pa rms (20e-6 · 10^(94/20) = 1.0024)
         assert!((rms_pa_from_dba(94.0) - 1.0024).abs() < 1e-4);
+    }
+
+    fn geometry() -> crate::geometry::CylinderGeometry {
+        let mut g = crate::engine::EngineDef::inline4().geometry;
+        g.stroke_m = 0.086;
+        g.rod_m = 0.145;
+        g
+    }
+
+    #[test]
+    fn a_weighting_by_the_standard() {
+        // IEC 61672-1 Table 3: A-weighting −19.1 dB at 100 Hz, 0.0 at 1 kHz, −2.5 at 10 kHz
+        let fs = 192_000.0;
+        for (f, want) in [(100.0, -19.1), (1000.0, 0.0), (10_000.0, -2.5)] {
+            let mut a = AWeighting::new(1.0 / fs);
+            let n = (fs * 0.5) as usize;
+            let (mut e_in, mut e_out) = (0.0, 0.0);
+            for k in 0..n {
+                let x = (2.0 * std::f64::consts::PI * f * k as f64 / fs).sin();
+                let y = a.process(x);
+                if k > n / 2 {
+                    e_in += x * x;
+                    e_out += y * y;
+                }
+            }
+            let db = 10.0 * (e_out / e_in).log10();
+            assert!((db - want).abs() < 0.3, "{f} Hz: {db:.2} dB");
+        }
+    }
+
+    #[test]
+    fn the_rod_pulls_at_tdc_when_motored_by_hand() {
+        // 0.4 kg reciprocating at 3000 rev/min (ω = 314.16 rad/s), r = 43 mm, l = 145 mm
+        // (λ = 0.2966): at TDC the inertia pulls the rod with m·ω²·r·(1 + λ)
+        // = 0.4 · 98 696 · 0.043 · 1.2966 = 2201 N, so the axial force is −2201 N
+        let w = 3000.0 * std::f64::consts::PI / 30.0;
+        let f = rod_axial_force(&geometry(), 0.0, 0.0, w, 0.4);
+        assert!((f + 2201.0).abs() < 2.0, "{f}");
+        // and 1 MPa on a 86 mm piston (5809 N) beats it: pushing
+        let f = rod_axial_force(&geometry(), 0.0, 1.0e6, w, 0.4);
+        assert!((f - (5808.8 - 2201.0)).abs() < 3.0, "{f}");
+    }
+
+    #[test]
+    fn the_side_force_reverses_at_tdc_and_bdc() {
+        // motored: the rod's angle changes sign at TDC and BDC, so does the thrust on the liner
+        let w = 3000.0 * std::f64::consts::PI / 30.0;
+        let g = geometry();
+        let side = |deg: f64| piston_side_force(&g, deg.to_radians(), 0.0, w, 0.4);
+        for at in [0.0, 180.0] {
+            assert!(side(at - 2.0) * side(at + 2.0) < 0.0, "no reversal at {at}°");
+        }
+    }
+
+    #[test]
+    fn a_piston_weighs_by_its_bore_cubed() {
+        // 600 kg/m³ of bore³: an 86 mm bore's piston, pin and small end, 0.3816 kg
+        assert!((reciprocating_mass_kg(0.086) - 0.3816).abs() < 1e-3);
     }
 }
