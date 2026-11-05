@@ -36,14 +36,11 @@ TO_025M = 20 * math.log10(3.0 / 0.25)
 
 
 def with_sources(text, on):
-    """The preset with every known `sound.*` source at 1.0 if in `on`, else 0.0 (keys the
-    preset lacks are added under `sound:`)."""
+    """The preset with each `sound.*` source it has at 1.0 if in `on`, else 0.0 (a source the
+    binary does not know is not in its saved file, and is left out)."""
     for k in SOURCES:
         v = "1.0" if k in on else "0.0"
-        if re.search(rf"\n    {k}: ", text):
-            text = re.sub(rf"(\n    {k}: )[0-9.]+", rf"\g<1>{v}", text)
-        else:
-            text = text.replace("\n  sound:\n", f"\n  sound:\n    {k}: {v}\n", 1)
+        text = re.sub(rf"(\n    {k}: )[0-9.]+", rf"\g<1>{v}", text)
     return text
 
 
@@ -69,7 +66,11 @@ def main(argv):
         return self_test()
     binary, preset, rpm, load = argv[0], argv[1], int(argv[2]), float(argv[3])
     out = argv[4] if len(argv) > 4 else tempfile.mkdtemp()
-    text = open(preset).read()
+    # the preset as this binary saves it: every source it knows is in the file
+    saved = os.path.join(out, "saved.yaml")
+    subprocess.run([binary, "--engine", preset, "--save", saved], check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    text = open(saved).read()
     print(f"{os.path.basename(preset)} {rpm} rpm load {load} (listener 3 m)")
     for name, on in ALONE.items():
         yml = os.path.join(out, f"{name}_{rpm}_{load}.yaml")
