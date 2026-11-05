@@ -115,6 +115,12 @@ lines below bind even if you never open the document; open it before working on 
 - **Debugging** → [docs/agents/debugging.md](docs/agents/debugging.md), before chasing a bug. Measure
   before ablating; more than three reproductions → a shortcut script before the fourth; a review
   finding is not a reproduction; every assertion is seen failing once.
+- **Sound realism ("it sounds synthetic")** →
+  [docs/agents/debugging.md](docs/agents/debugging.md#sound-realism--look-first-measure-what-the-ear-hears).
+  Look at waveform + spectrogram beside the reference before any theory; a metric counts only once
+  it separates the user's past ear verdicts; compare at matched rpm, load, exhaust and microphone;
+  Ange's new simulator's audio is a measurable target; one validated metric, then physics — no clip
+  per guess.
 - **Agentic PR verification (mandatory)** → [docs/agents/pr-verification.md](docs/agents/pr-verification.md).
   Every PR gets a verdict from a pass that runs the real app (headless render + GUI launch), as a PR
   comment.
