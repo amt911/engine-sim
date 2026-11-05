@@ -27,7 +27,13 @@ pub fn local_bounds(kind: MeshKind) -> (Vec3, Vec3) {
         MeshKind::Throw => (Vec3::new(-5.8, -1.9, -10.5), Vec3::new(5.8, 2.9, 2.5)),
         // the realistic valve on its head's frame (0.17 × 0.04 × 0.17 bore): the head on the
         // face, the stem 0.5 bore up, past 12 units
-        MeshKind::Valve => (Vec3::new(-1.05, -0.1, -1.05), Vec3::new(1.05, 13.5, 1.05)),
+        MeshKind::Valve => (Vec3::new(-1.05, -0.1, -1.05), Vec3::new(1.05, 29.0, 1.05)),
+        // in bores about their seat/shaft: the spring 0.44 tall, 0.16 round; the cam 0.33 bore
+        // out in y and z, the shaft 0.3 either side along the crank
+        MeshKind::ValveSpring => (Vec3::new(-0.2, -0.02, -0.2), Vec3::new(0.2, 0.46, 0.2)),
+        MeshKind::IntakeCam | MeshKind::ExhaustCam => {
+            (Vec3::new(-0.31, -0.35, -0.35), Vec3::new(0.31, 0.35, 0.35))
+        }
         MeshKind::Rod => (Vec3::new(-1.0, -0.8, -2.2), Vec3::new(1.0, 0.65, 2.2)),
         MeshKind::Sphere => (Vec3::splat(-1.0), Vec3::splat(1.0)),
         // the housing's outer wall reaches 1 + e + 0.22 < 1.6 of its generating radius

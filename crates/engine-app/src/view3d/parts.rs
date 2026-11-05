@@ -25,9 +25,22 @@ const COUNTERWEIGHT_B: f32 = 0.74;
 /// A valve with its keepers and retainer (origin: the face's centre, closed, stem +Y; `stretch`
 /// weights 0 on the head, 1 on the tip, keepers and retainer).
 const VALVE_GLB: &[u8] = include_bytes!("../../../../assets/3d-parts/out/valve.glb");
-/// The reference stem, face to tip, m (README) and the scene's, in bores (the head's box).
+/// The reference stem, face to tip, m (README).
 const REF_STEM: f32 = 0.0989;
-const SCENE_STEM_B: f32 = 0.5;
+/// The valve spring (origin: its seat in the head, axis +Y).
+const SPRING_GLB: &[u8] = include_bytes!("../../../../assets/3d-parts/out/valve_spring.glb");
+/// The bucket-follower cam lobe with a stub of camshaft (shaft along +X, nose +Y at angle 0;
+/// morph target 0 adds the lift).
+const CAM_GLB: &[u8] = include_bytes!("../../../../assets/3d-parts/out/cam_lobe.glb");
+/// Where the valve train stands over the closed valve's face, in bores (all scale with the bore,
+/// README): the stem's tip, the spring's seat in the head (0.0566 m at 86 mm), the spring's free
+/// height (0.0378 m), the cam's base circle (scripts: 0.22 B) and the lobe's reference lift
+/// (0.00946 m = 0.11 B).
+pub const STEM_B: f32 = REF_STEM / REF_BORE;
+pub const SPRING_SEAT_B: f32 = 0.0566 / REF_BORE;
+pub const SPRING_HEIGHT_B: f32 = 0.0378 / REF_BORE;
+pub const CAM_BASE_B: f32 = 0.22;
+const CAM_LIFT_REF_B: f32 = 0.11;
 /// The Wankel rotor with its seals, gear and bearing (real size: e 15, R 105, width 80 mm, the
 /// RENESIS; its plane x–z, apex 0 on +x, centred in y: the frame of `mesh::rotor`).
 const ROTOR_GLB: &[u8] = include_bytes!("../../../../assets/3d-parts/out/wankel_rotor.glb");
@@ -300,15 +313,111 @@ pub fn valve_asset() -> Option<&'static GlbPart> {
 }
 
 /// The realistic valve in the procedural valve head's unit frame: that disc stands on the face,
-/// 0.17 bore in radius (the asset's head too, README) and 0.04 bore thick. Its stem is brought to
-/// the scene's 0.5 bore by the README's rule (`p' = s·p + w·(stem − s·0.0989)·Ŷ`).
+/// 0.17 bore in radius (the asset's head too, README) and 0.04 bore thick. Its stem keeps the
+/// asset's 1.15 bore (README rule `p' = s·p + w·(stem − s·0.0989)·Ŷ` with the stem scaling with
+/// the bore: no stretch).
 pub fn valve() -> Option<Mesh> {
-    let mut part = valve_asset()?.clone();
-    let extra = SCENE_STEM_B - REF_STEM / REF_BORE;
-    for (p, &w) in part.positions.iter_mut().zip(&part.stretch_w) {
-        *p = *p / REF_BORE + w * extra * Vec3::Y;
+    let part = valve_asset()?;
+    Some(to_unit(
+        part,
+        1.0 / REF_BORE,
+        Vec3::ZERO,
+        Vec3::new(0.17, 0.04, 0.17),
+    ))
+}
+
+/// The spring, in bores about its seat (instance: translate to the seat, scale by the bore, y by
+/// [`spring_squash`]), built once.
+pub fn spring() -> Option<&'static Mesh> {
+    static SPRING: std::sync::OnceLock<Option<Mesh>> = std::sync::OnceLock::new();
+    SPRING
+        .get_or_init(|| {
+            load(SPRING_GLB)
+                .inspect_err(|e| {
+                    eprintln!("3D view: valve_spring.glb unreadable ({e}), drawing nothing")
+                })
+                .ok()
+                .map(|p| to_unit(&p, 1.0 / REF_BORE, Vec3::ZERO, Vec3::ONE))
+        })
+        .as_ref()
+}
+
+/// The factor on the spring's height at a lift of `lift_b` bores (README: scale y by
+/// `(s·0.0378 − lift)/(s·0.0378)`; kept above a sliver so a wild lift cannot flatten it).
+pub fn spring_squash(lift_b: f32) -> f32 {
+    ((SPRING_HEIGHT_B - lift_b) / SPRING_HEIGHT_B).max(0.05)
+}
+
+/// The cam asset, read once.
+fn cam_asset() -> Option<&'static GlbPart> {
+    static CAM: std::sync::OnceLock<Option<GlbPart>> = std::sync::OnceLock::new();
+    CAM.get_or_init(|| {
+        load(CAM_GLB)
+            .inspect_err(|e| eprintln!("3D view: cam_lobe.glb unreadable ({e}), drawing nothing"))
+            .ok()
+    })
+    .as_ref()
+}
+
+/// The cam (lobe and a stub of shaft) in bores about the camshaft, its nose +Y at angle 0, for a
+/// lobe that lifts `lift_b` bores: morph target 0 with weight `lift/0.11 − 1` (README: exact, the
+/// profile is linear in the lift).
+pub fn cam(lift_b: f32) -> Option<Mesh> {
+    let part = cam_asset()?;
+    let w = lift_b.max(0.0) / CAM_LIFT_REF_B - 1.0;
+    let moved: Vec<Vec3> = part
+        .positions
+        .iter()
+        .enumerate()
+        .map(|(i, &p)| p + w * part.morph0.get(i).copied().unwrap_or(Vec3::ZERO))
+        .collect();
+    let at = GlbPart {
+        positions: moved,
+        ..part.clone()
+    };
+    Some(to_unit(&at, 1.0 / REF_BORE, Vec3::ZERO, Vec3::ONE))
+}
+
+/// How far the cam is turned from its nose on the follower, rad, when the valve is at `ratio` of
+/// its lobe's lift (1 at the nose, 0 on the base circle, where it returns the angle the flank
+/// starts at). Inverts the flat follower's contact height, the support of the lobe over the
+/// shaft, which the profile makes `base + lift·g(angle)` for every lift (README).
+pub fn cam_angle(ratio: f32) -> f32 {
+    static TABLE: std::sync::OnceLock<Vec<f32>> = std::sync::OnceLock::new();
+    const STEP_DEG: f32 = 0.5;
+    let table = TABLE.get_or_init(|| {
+        let Some(part) = cam_asset() else {
+            return vec![1.0, 0.0];
+        };
+        // support height of the lobe at the reference lift for 0..=180°
+        let h: Vec<f32> = (0..=360)
+            .map(|k| {
+                let (s, c) = (k as f32 * STEP_DEG).to_radians().sin_cos();
+                part.positions
+                    .iter()
+                    .map(|p| (p.y * c - p.z * s) / REF_BORE)
+                    .fold(f32::MIN, f32::max)
+            })
+            .collect();
+        let (top, base) = (h[0], h[360]);
+        h.iter().map(|v| (v - base) / (top - base)).collect()
+    });
+    let ratio = ratio.clamp(0.0, 1.0);
+    // g falls from 1 to ~0 down the flank, then stays on the base circle: the first angle where
+    // it has fallen to the ratio (to a hair above 0 for the base circle's start)
+    let target = ratio.max(0.004);
+    let k = table.iter().position(|&g| g <= target).unwrap_or(0);
+    if k == 0 {
+        return 0.0;
     }
-    Some(to_unit(&part, 1.0, Vec3::ZERO, Vec3::new(0.17, 0.04, 0.17)))
+    // linear between the two samples
+    let (g0, g1) = (table[k - 1], table[k]);
+    let t = if g0 > g1 {
+        (g0 - target) / (g0 - g1)
+    } else {
+        0.0
+    };
+    ((k - 1) as f32 + t) * STEP_DEG.to_radians()
 }
 
 /// The realistic rotor in the procedural rotor's unit frame (0.97 R across, 0.9 width deep from
@@ -602,17 +711,76 @@ mod tests {
         });
         assert!((r - 0.17).abs() < 0.005, "{r}");
         assert!(low > -0.005, "{low}");
-        // the tip end (weight 1) moved down by 0.0989/0.086 − 0.5 = 0.65 bore: its top at the
-        // asset's top less that
-        let asset = valve_asset().unwrap();
-        let top_ref = asset
-            .positions
-            .iter()
-            .map(|p| p.y / REF_BORE)
-            .fold(f32::MIN, f32::max);
+        // the stem keeps the asset's length, 0.0989 m at 86 mm = 1.15 bore (README), scaled with
+        // the bore: the tip stands 1.15 bore over the face
         let top = bores.iter().map(|(p, _)| p.y).fold(f32::MIN, f32::max);
-        let drop = REF_STEM / REF_BORE - SCENE_STEM_B;
-        assert!((top - (top_ref - drop)).abs() < 1e-3, "{top} {top_ref}");
+        assert!((top - 0.0989 / 0.086).abs() < 1e-3, "{top}");
+        assert!((STEM_B - 1.15).abs() < 1e-3, "{STEM_B}");
+    }
+
+    #[test]
+    fn the_spring_closes_up_with_lift() {
+        // README: scale y by (s·0.0378 − lift)/(s·0.0378). A lift of 0.00946 m on the 86 mm
+        // reference (0.11 bore): (0.0378 − 0.00946)/0.0378 = 0.74974
+        assert!((spring_squash(0.00946 / 0.086) - 0.74974).abs() < 1e-3);
+        assert_eq!(spring_squash(0.0), 1.0);
+        // never flat or inverted, whatever the lift
+        assert!(spring_squash(1.0) > 0.0);
+        // the asset: its seat at the origin, free height 0.44 bore (scripts: H_REF = 0.44 B)
+        let m = spring().expect("valve_spring.glb");
+        let (lo, hi) = bounds(m.vertices.iter().map(|v| Vec3::from(v.pos)));
+        assert!(
+            lo.y.abs() < 0.02 && (hi.y - 0.0378 / 0.086).abs() < 0.02,
+            "{lo} {hi}"
+        );
+        // the seat in the head: 0.0566 m at 86 mm (README)
+        assert!(
+            (SPRING_SEAT_B - 0.0566 / 0.086).abs() < 1e-4,
+            "{SPRING_SEAT_B}"
+        );
+    }
+
+    #[test]
+    fn the_cam_nose_reaches_the_lift() {
+        // the nose (+Y at angle 0) stands base radius + lift over the camshaft: 0.22 bore base
+        // circle (scripts: R_BASE = 0.22 B) + 0.11 bore at the reference lift; the profile is
+        // linear in the lift, so the morph weight lift/0.11 − 1 is exact (README)
+        let top = |lift_b: f32| {
+            let m = cam(lift_b).expect("cam_lobe.glb");
+            m.vertices.iter().map(|v| v.pos[1]).fold(f32::MIN, f32::max)
+        };
+        assert!((top(0.11) - 0.33).abs() < 0.005, "{}", top(0.11));
+        assert!((top(0.0) - 0.22).abs() < 0.005, "{}", top(0.0));
+        assert!((top(0.07) - 0.29).abs() < 0.005, "{}", top(0.07));
+        let m = cam(0.07).unwrap();
+        assert!(
+            m.vertices
+                .iter()
+                .all(|v| (Vec3::from(v.normal).length() - 1.0).abs() < 1e-3)
+        );
+    }
+
+    #[test]
+    fn the_cam_angle_follows_the_lift_down_the_flank() {
+        // full lift: the nose on the follower (angle 0); none: the base circle (beyond the
+        // lobe's 80° half duration, cam degrees: scripts HALF_DUR)
+        assert!(cam_angle(1.0).abs() < 0.01);
+        let base = cam_angle(0.0).to_degrees();
+        assert!((base - 80.0).abs() < 6.0, "{base}");
+        let (a, b) = (cam_angle(0.8), cam_angle(0.3));
+        assert!(0.0 < a && a < b && b < cam_angle(0.0));
+        // and the cam really touches the follower: turned by the angle, the lobe's highest point
+        // over the shaft is the base radius + the ratio of its lift
+        let lobe = cam(0.11).unwrap();
+        for ratio in [0.2f32, 0.5, 0.9] {
+            let phi = cam_angle(ratio);
+            let h = lobe
+                .vertices
+                .iter()
+                .map(|v| v.pos[1] * phi.cos() - v.pos[2] * phi.sin())
+                .fold(f32::MIN, f32::max);
+            assert!((h - (0.22 + ratio * 0.11)).abs() < 0.004, "{ratio}: {h}");
+        }
     }
 
     #[test]

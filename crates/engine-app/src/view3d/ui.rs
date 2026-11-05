@@ -170,6 +170,10 @@ impl View3dState {
     fn fill(&mut self, snap: &Snapshot, aspect: f32, dt: f32) {
         let Some(s) = &self.scene else { return };
         scene::moving(&snap.def, &snap.cylinders, &mut self.moving);
+        // Low draws no valve train: its parts would be invisible but still clickable
+        if !self.governor.detail.realistic() {
+            self.moving.retain(|i| !i.part.is_valve_train());
+        }
         self.phases.resize(s.pipes.len(), 0.0);
         let n_marks = if self.layers.flow && !snap.pipes.is_empty() {
             marks(self.governor.detail)
@@ -468,6 +472,8 @@ pub fn show(
             realistic: st.governor.detail.realistic(),
             rod_over_bore: rod_over_bore(&snap.def),
             throw_over_bore: throw_over_bore(&snap.def),
+            intake_lobe_over_bore: lobe_over_bore(&snap.def, true),
+            exhaust_lobe_over_bore: lobe_over_bore(&snap.def, false),
         },
     };
     ui.painter()
@@ -588,6 +594,17 @@ pub fn show(
 /// Half the stroke over the bore: what the realistic throw's mesh depends on.
 fn throw_over_bore(def: &EngineDef) -> f32 {
     (0.5 * def.geometry.stroke_m / def.geometry.bore_m.max(1e-6)) as f32
+}
+
+/// The tallest lift of the intake (or exhaust) lobe over the bore: what the realistic cam's
+/// mesh depends on.
+fn lobe_over_bore(def: &EngineDef, intake: bool) -> f32 {
+    let v = if intake {
+        &def.intake_valve
+    } else {
+        &def.exhaust_valve
+    };
+    (scene::lobe_lift_m(v) / def.geometry.bore_m.max(1e-6)) as f32
 }
 
 /// The rod's length over the bore: what the realistic rod's mesh depends on.
@@ -749,6 +766,8 @@ mod tests {
                         realistic: detail.realistic(),
                         rod_over_bore: rod_over_bore(&def),
                         throw_over_bore: throw_over_bore(&def),
+                        intake_lobe_over_bore: lobe_over_bore(&def, true),
+                        exhaust_lobe_over_bore: lobe_over_bore(&def, false),
                     },
                 };
                 let mut enc = rs.device.create_command_encoder(&Default::default());
