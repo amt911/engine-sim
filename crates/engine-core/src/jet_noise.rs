@@ -85,11 +85,7 @@ impl JetNoise {
 
     /// Uniform white noise of unit variance (xorshift64*).
     fn white(&mut self) -> f64 {
-        self.rng ^= self.rng >> 12;
-        self.rng ^= self.rng << 25;
-        self.rng ^= self.rng >> 27;
-        let u = (self.rng.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 / (1u64 << 53) as f64;
-        (u - 0.5) * 12f64.sqrt()
+        white(&mut self.rng)
     }
 
     /// One step of `dt`: the jet's sound pressure at the listener, Pa.
@@ -262,11 +258,7 @@ impl ValveJet {
         a_pipe: f64,
         dt: f64,
     ) -> f64 {
-        self.rng ^= self.rng >> 12;
-        self.rng ^= self.rng << 25;
-        self.rng ^= self.rng >> 27;
-        let x = (self.rng.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 / (1u64 << 53) as f64;
-        let white = (x - 0.5) * 12f64.sqrt();
+        let white = white(&mut self.rng);
         let (level, u, d) = valve_jet_level(cyl, port, a_curtain, a_pipe);
         if level == 0.0 {
             self.spectrum
@@ -278,6 +270,99 @@ impl ValveJet {
         // unit white noise through the shape keeps 2·f_F·∫G/fs of its variance
         let kept = (2.0 * f_peak * Self::SHAPE_INTEGRAL * dt).sqrt();
         level / kept * self.spectrum.process(white, f_peak, dt)
+    }
+}
+
+/// The duct-flow constant K of [`duct_flow_power_w`], dimensionless, one for every engine:
+/// the fraction of ρ·A·U³ (the jet's kinetic power flux, scaled by M) radiated as sound. Set
+/// once by calibrating every preset's treble against 209 real steady recordings
+/// (`scripts/realism/calibrate-duct-flow.sh`, `docs/FACTS.md`).
+pub const DUCT_FLOW_K: f64 = 1.0e-4;
+/// Mach number up to which flow noise in ducts was measured to scale as U⁴/c (Davies &
+/// Holland 1999, §4: "with M < 0.3, which is typical for intake and exhaust flows").
+pub const DUCT_U4_MACH_LIMIT: f64 = 0.3;
+
+/// Acoustic power of the flow noise made where a jet of area `a_jet` (m²) at speed `u` (m/s)
+/// leaves an abrupt area expansion, in gas of density `rho` and sound speed `c`, W:
+/// W = K·ρ·A·U⁴/c — the scaling measured in ducts carrying only plane waves (Davies & Holland,
+/// "I.C. engine intake and exhaust system noise", JSV 223(3), 1999, §4; vortex shedding at the
+/// expansion and shear-layer mixing). No flow, or flow back towards the jet: 0.
+pub fn duct_flow_power_w(k: f64, rho: f64, a_jet: f64, u: f64, c: f64) -> f64 {
+    if u <= 0.0 || c <= 0.0 {
+        return 0.0;
+    }
+    let u2 = u * u;
+    k * rho * a_jet * u2 * u2 / c
+}
+
+/// First cut-on of a round duct of diameter `d`, Hz: 1.84·c/(π·d), the first diametral mode
+/// (Munjal, *Acoustics of Ducts and Mufflers*); below it only plane waves propagate.
+pub fn duct_cut_on_hz(c: f64, d: f64) -> f64 {
+    1.84 * c / (PI * d)
+}
+
+/// The rms pressure of the plane wave carrying half of `w` (W) along a duct of area `a` (m²)
+/// in gas of impedance `rho_c`: W/2 = p²·A/(ρc), p = √(½·W·ρc/A).
+pub fn plane_wave_rms_pa(w: f64, rho_c: f64, a: f64) -> f64 {
+    (0.5 * w * rho_c / a).sqrt()
+}
+
+/// Uniform white noise of unit variance (xorshift64*), one step of `rng`.
+fn white(rng: &mut u64) -> f64 {
+    *rng ^= *rng >> 12;
+    *rng ^= *rng << 25;
+    *rng ^= *rng >> 27;
+    let x = (rng.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 / (1u64 << 53) as f64;
+    (x - 0.5) * 12f64.sqrt()
+}
+
+/// The flow noise of one abrupt area expansion ([`duct_flow_power_w`]) as the plane-wave
+/// pressure it sends each way into a duct of **1 m²** — the caller scales it by 1/√A of each
+/// side (p ∝ 1/√A, [`plane_wave_rms_pa`]). Seeded white noise through Tam's fine-scale shape
+/// ([`FineScale`]) peaking at 0.2·U/D_jet (the shear layer's Strouhal number, as the valve jets);
+/// above the downstream duct's cut-on its power density scales as U⁶/c³ instead (Davies &
+/// Holland 1999 §4), so it is multiplied there by (M/[`DUCT_U4_MACH_LIMIT`])²: a first-order
+/// shelf at the cut-on.
+#[derive(Debug, Clone)]
+pub struct DuctJet {
+    rng: u64,
+    spectrum: FineScale,
+    /// One-pole low-pass state at the cut-on (the shelf's split).
+    shelf: f64,
+}
+
+impl DuctJet {
+    pub fn new(seed: u64) -> Self {
+        Self {
+            rng: seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1,
+            spectrum: FineScale::new(),
+            shelf: 0.0,
+        }
+    }
+
+    /// One step of `dt` for a jet at `u` m/s (+ into the expansion) of diameter `d_jet` into a
+    /// duct of diameter `d_down`, in gas of density `rho` and sound speed `c`: the pressure, Pa,
+    /// sent each way into a 1 m² duct. 0 with no flow or reversed flow.
+    pub fn step(&mut self, u: f64, rho: f64, c: f64, d_jet: f64, d_down: f64, dt: f64) -> f64 {
+        let x = white(&mut self.rng);
+        if u <= 0.0 || d_jet <= 0.0 {
+            self.spectrum
+                .process(0.0, self.spectrum.f_peak.max(1.0), dt);
+            self.shelf = 0.0;
+            return 0.0;
+        }
+        let a_jet = 0.25 * PI * d_jet * d_jet;
+        let w = duct_flow_power_w(DUCT_FLOW_K, rho, a_jet, u, c);
+        let level = plane_wave_rms_pa(w, rho * c, 1.0);
+        let f_peak = (PEAK_STROUHAL * u / d_jet).min(0.05 / dt);
+        let kept = (2.0 * f_peak * ValveJet::SHAPE_INTEGRAL * dt).sqrt();
+        let y = level / kept * self.spectrum.process(x, f_peak, dt);
+        // the shelf: below the cut-on as it is, above it × M/0.3 in amplitude
+        let f_co = duct_cut_on_hz(c, d_down).min(0.45 / dt);
+        let a = 1.0 - (-2.0 * PI * f_co * dt).exp();
+        self.shelf += a * (y - self.shelf);
+        let gain = u / c / DUCT_U4_MACH_LIMIT;
+        self.shelf + gain * (y - self.shelf)
     }
 }
 
@@ -533,5 +618,84 @@ mod tests {
             inside > 3.0 * outside,
             "inside {inside:.3e} outside {outside:.3e}"
         );
+    }
+
+    // --- duct flow noise (Davies & Holland 1999, §4) ---
+
+    #[test]
+    fn the_duct_law_by_hand() {
+        // W = K·ρ·A·U⁴/c = 1e-4 · 0.6 · 2e-3 · 50⁴ / 500 = 1e-4 · 7500 / 500 = 1.5e-3 W
+        let w = duct_flow_power_w(1e-4, 0.6, 2e-3, 50.0, 500.0);
+        assert!((w - 1.5e-3).abs() < 1e-12, "{w}");
+        // U⁴: twice the speed, sixteen times the power
+        let w2 = duct_flow_power_w(1e-4, 0.6, 2e-3, 100.0, 500.0);
+        assert!((w2 / w - 16.0).abs() < 1e-9, "{}", w2 / w);
+    }
+
+    #[test]
+    fn cut_on_of_a_50mm_pipe_in_hot_gas() {
+        // 1.84·500/(π·0.05) = 920/0.157080 = 5856.9 Hz
+        let f = duct_cut_on_hz(500.0, 0.05);
+        assert!((f - 5856.9).abs() < 0.2, "{f}");
+    }
+
+    #[test]
+    fn plane_wave_level_by_hand() {
+        // √(½·1.5e-3·400/2e-3) = √150 = 12.247 Pa
+        let p = plane_wave_rms_pa(1.5e-3, 400.0, 2e-3);
+        assert!((p - 150f64.sqrt()).abs() < 1e-9, "{p}");
+    }
+
+    #[test]
+    fn no_flow_no_duct_noise() {
+        let mut j = DuctJet::new(3);
+        for u in [0.0, -20.0] {
+            for _ in 0..1000 {
+                assert_eq!(j.step(u, 0.6, 500.0, 0.05, 0.1, 1.0 / 48_000.0), 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn a_duct_jet_is_deterministic() {
+        let (mut a, mut b) = (DuctJet::new(7), DuctJet::new(7));
+        for _ in 0..10_000 {
+            let (x, y) = (
+                a.step(40.0, 0.6, 500.0, 0.05, 0.1, 1.0 / 48_000.0),
+                b.step(40.0, 0.6, 500.0, 0.05, 0.1, 1.0 / 48_000.0),
+            );
+            assert_eq!(x.to_bits(), y.to_bits());
+        }
+    }
+
+    fn duct_rms(u: f64, d_jet: f64, d_down: f64, dt: f64) -> f64 {
+        let mut j = DuctJet::new(11);
+        let n = (0.5 / dt) as usize;
+        let s: f64 = (0..n)
+            .map(|_| j.step(u, 0.6, 500.0, d_jet, d_down, dt).powi(2))
+            .sum();
+        (s / n as f64).sqrt()
+    }
+
+    #[test]
+    fn the_duct_jet_rms_follows_u_squared() {
+        // p ∝ √W ∝ U²; a 20 mm downstream duct puts the cut-on at 14.6 kHz, out of the way
+        let r = duct_rms(40.0, 0.05, 0.02, 1.0 / 48_000.0) / duct_rms(20.0, 0.05, 0.02, 1.0 / 48_000.0);
+        assert!((r - 4.0).abs() < 0.4, "{r}");
+    }
+
+    #[test]
+    fn a_coarse_step_stays_finite() {
+        let mut j = DuctJet::new(5);
+        let dt = 1.0 / 12_000.0;
+        let mut s = 0.0;
+        for _ in 0..12_000 {
+            let x = j.step(300.0, 0.6, 500.0, 0.01, 0.05, dt);
+            assert!(x.is_finite());
+            s += x * x;
+        }
+        let coarse = (s / 12_000.0).sqrt();
+        let fine = duct_rms(300.0, 0.01, 0.05, 1.0 / 48_000.0);
+        assert!(coarse < 10.0 * fine, "coarse {coarse} fine {fine}");
     }
 }
