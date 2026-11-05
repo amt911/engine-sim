@@ -515,7 +515,53 @@ pub fn graphic_eq(target_db: &[f64], fs: f64) -> Cascade {
     )
 }
 
+/// Silencer equalizers already designed, by their silencer, gas and rate (each design solves the
+/// mode matching at every band: most of a second on a big silencer). The design is a pure
+/// function of those, so a remembered one is the same, bit for bit; an engine rebuilt after an
+/// edit that leaves a silencer alone takes it from here instead of solving it again.
+#[derive(Debug, Clone, Default)]
+pub struct EqMemo(Vec<([u64; 10], Cascade)>);
+
+/// How many designs a memo keeps (the oldest goes first): a few engines' silencers.
+const MEMO_KEEP: usize = 32;
+
+impl EqMemo {
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 impl Silencer {
+    /// [`Silencer::transmission_eq`] through `memo`.
+    pub fn transmission_eq_in(&self, gas: Gas, fs: f64, memo: &mut EqMemo) -> Cascade {
+        let key = [
+            self.r1,
+            self.r2,
+            self.len,
+            self.resistivity.unwrap_or(-1.0),
+            self.perforate.porosity,
+            self.perforate.wall_m,
+            self.perforate.hole_m,
+            gas.c,
+            gas.rho,
+            fs,
+        ]
+        .map(f64::to_bits);
+        if let Some((_, eq)) = memo.0.iter().find(|(k, _)| *k == key) {
+            return eq.clone();
+        }
+        let eq = self.transmission_eq(gas, fs);
+        if memo.0.len() >= MEMO_KEEP {
+            memo.0.remove(0);
+        }
+        memo.0.push((key, eq.clone()));
+        eq
+    }
+
     /// The silencer's transmission as an equalizer at `fs`: −TL at [`eq_points`] in `gas`
     /// (a point the matching fails on takes its neighbour's).
     pub fn transmission_eq(&self, gas: Gas, fs: f64) -> Cascade {
@@ -625,6 +671,29 @@ mod tests {
         }
     }
     const AIR: Gas = Gas { c: 343.0, rho: 1.2 };
+
+    #[test]
+    fn a_designed_silencer_is_remembered_and_the_same() {
+        let (s, fs) = (jsv262(Some(16_000.0)), 48_000.0);
+        let fresh = s.transmission_eq(AIR, fs);
+        let mut memo = EqMemo::default();
+        assert_eq!(s.transmission_eq_in(AIR, fs, &mut memo), fresh);
+        assert_eq!(memo.len(), 1);
+        assert_eq!(
+            s.transmission_eq_in(AIR, fs, &mut memo),
+            fresh,
+            "remembered"
+        );
+        assert_eq!(memo.len(), 1, "not designed again");
+        // another rate, gas or silencer is another design
+        let other = s.transmission_eq_in(AIR, 96_000.0, &mut memo);
+        assert_ne!(other, fresh);
+        let warm = Gas { c: 500.0, rho: 0.6 };
+        assert_ne!(s.transmission_eq_in(warm, fs, &mut memo), fresh);
+        let longer = Silencer { len: 0.3, ..s };
+        assert_ne!(longer.transmission_eq_in(AIR, fs, &mut memo), fresh);
+        assert_eq!(memo.len(), 4);
+    }
 
     #[test]
     fn an_empty_chamber_passes_where_it_is_whole_half_waves_long() {

@@ -896,7 +896,12 @@ const TAIL_T: f64 = C_TAIL * C_TAIL / (crate::gas::GAMMA * crate::gas::R_AIR);
 /// (ch. 3); catalysts as their narrow channels ([`catalyst_brick`]); resonators as
 /// side branches between their neighbours. `muffler_transmission` stays an extra lumped loss on
 /// the last pipe (1 = none).
-pub(crate) fn after_collector(def: &ExhaustDef, dt: f64, lining_m: f64) -> Duct {
+pub(crate) fn after_collector(
+    def: &ExhaustDef,
+    dt: f64,
+    lining_m: f64,
+    memo: &mut crate::silencer2d::EqMemo,
+) -> Duct {
     // with a merge the muffler's transmission factor belongs to the shared duct's last pipe
     let transmission = if def.merge.is_some() {
         1.0
@@ -910,6 +915,7 @@ pub(crate) fn after_collector(def: &ExhaustDef, dt: f64, lining_m: f64) -> Duct 
         dt,
         lining_m,
         def.steepening,
+        memo,
     )
 }
 
@@ -929,6 +935,7 @@ fn segments_duct(
     dt: f64,
     _lining_m: f64,
     steep: bool,
+    memo: &mut crate::silencer2d::EqMemo,
 ) -> Duct {
     let rho_c = crate::gas::GAMMA * crate::units::ATM_PA / C_TAIL;
     let plain = |len: f64, d: f64| Pipe::new(len, d, C_TAIL, dt, LOSS_PER_M);
@@ -940,90 +947,91 @@ fn segments_duct(
         .iter()
         .rposition(|s| !matches!(s, Segment::Resonator { .. }));
     for (i, seg) in path.iter().enumerate() {
-        let piece = match *seg {
-            Segment::Pipe {
-                length_m,
-                diameter_m,
-            } => {
-                let mut p = pipe(length_m, diameter_m);
-                if Some(i) == last_pipe {
-                    p = p.with_extra_gain(transmission);
+        let piece =
+            match *seg {
+                Segment::Pipe {
+                    length_m,
+                    diameter_m,
+                } => {
+                    let mut p = pipe(length_m, diameter_m);
+                    if Some(i) == last_pipe {
+                        p = p.with_extra_gain(transmission);
+                    }
+                    Duct::new(vec![p])
                 }
-                Duct::new(vec![p])
-            }
-            Segment::Muffler {
-                length_m,
-                diameter_m,
-                tube_diameter_m,
-                packing_resistivity,
-                packing_porosity: _,
-            } => {
-                if tube_diameter_m > 0.0 && tube_diameter_m < diameter_m {
-                    // the packed (or empty) shell round the perforated tube, by the 2D model:
-                    // its transmission on the tube's waves both ways
-                    let silencer = crate::silencer2d::Silencer {
-                        r1: 0.5 * tube_diameter_m,
-                        r2: 0.5 * diameter_m,
-                        len: length_m,
-                        resistivity: (packing_resistivity > 0.0).then_some(packing_resistivity),
-                        perforate: crate::silencer2d::Perforate::default(),
-                    };
-                    let gas = crate::silencer2d::Gas {
+                Segment::Muffler {
+                    length_m,
+                    diameter_m,
+                    tube_diameter_m,
+                    packing_resistivity,
+                    packing_porosity: _,
+                } => {
+                    if tube_diameter_m > 0.0 && tube_diameter_m < diameter_m {
+                        // the packed (or empty) shell round the perforated tube, by the 2D model:
+                        // its transmission on the tube's waves both ways
+                        let silencer = crate::silencer2d::Silencer {
+                            r1: 0.5 * tube_diameter_m,
+                            r2: 0.5 * diameter_m,
+                            len: length_m,
+                            resistivity: (packing_resistivity > 0.0).then_some(packing_resistivity),
+                            perforate: crate::silencer2d::Perforate::default(),
+                        };
+                        let gas = crate::silencer2d::Gas {
+                            c: C_TAIL,
+                            rho: crate::units::ATM_PA / (crate::gas::R_AIR * TAIL_T),
+                        };
+                        // the perforated tube is no smooth wall: linear, its loss the packing's
+                        Duct::new(vec![
+                            plain(length_m, tube_diameter_m)
+                                .with_filter(silencer.transmission_eq_in(gas, 1.0 / dt, memo)),
+                        ])
+                    } else {
+                        Duct::new(vec![pipe(length_m, diameter_m)])
+                    }
+                }
+                Segment::Catalyst {
+                    length_m,
+                    diameter_m,
+                    cells_per_in2,
+                    wall_m,
+                } => {
+                    // the channels carry the waves, with their walls' viscous and thermal losses
+                    let p = crate::units::ATM_PA;
+                    let gas = DuctGas {
                         c: C_TAIL,
-                        rho: crate::units::ATM_PA / (crate::gas::R_AIR * TAIL_T),
+                        rho: p / (crate::gas::R_AIR * TAIL_T),
+                        mu: gas_viscosity(TAIL_T),
+                        p,
                     };
-                    // the perforated tube is no smooth wall: linear, its loss the packing's
-                    Duct::new(vec![
-                        plain(length_m, tube_diameter_m)
-                            .with_filter(silencer.transmission_eq(gas, 1.0 / dt)),
-                    ])
-                } else {
-                    Duct::new(vec![pipe(length_m, diameter_m)])
+                    catalyst_brick(length_m, diameter_m, cells_per_in2, wall_m, gas, dt)
                 }
-            }
-            Segment::Catalyst {
-                length_m,
-                diameter_m,
-                cells_per_in2,
-                wall_m,
-            } => {
-                // the channels carry the waves, with their walls' viscous and thermal losses
-                let p = crate::units::ATM_PA;
-                let gas = DuctGas {
-                    c: C_TAIL,
-                    rho: p / (crate::gas::R_AIR * TAIL_T),
-                    mu: gas_viscosity(TAIL_T),
-                    p,
-                };
-                catalyst_brick(length_m, diameter_m, cells_per_in2, wall_m, gas, dt)
-            }
-            Segment::Measured {
-                length_m,
-                bore_m,
-                ref transmission_loss_db,
-            } => {
-                // the published loss on the waves both ways, like a packed silencer's
-                Duct::new(vec![plain(length_m, bore_m).with_filter(
-                    crate::silencer2d::measured_eq(transmission_loss_db, 1.0 / dt),
-                )])
-            }
-            Segment::Resonator {
-                neck_diameter_m,
-                neck_length_m,
-                volume_m3,
-            } => {
-                pending = Node::Shunt(Shunt::helmholtz(
+                Segment::Measured {
+                    length_m,
+                    bore_m,
+                    ref transmission_loss_db,
+                } => {
+                    // the published loss on the waves both ways, like a packed silencer's
+                    Duct::new(vec![plain(length_m, bore_m).with_filter(
+                        crate::silencer2d::measured_eq(transmission_loss_db, 1.0 / dt),
+                    )])
+                }
+                Segment::Resonator {
                     neck_diameter_m,
                     neck_length_m,
                     volume_m3,
-                    0.0,
-                    rho_c,
-                    C_TAIL,
-                    dt,
-                ));
-                continue;
-            }
-        };
+                } => {
+                    pending = Node::Shunt(Shunt::helmholtz(
+                        neck_diameter_m,
+                        neck_length_m,
+                        volume_m3,
+                        0.0,
+                        rho_c,
+                        C_TAIL,
+                        dt,
+                    ));
+                    continue;
+                }
+            };
         let node = std::mem::replace(&mut pending, Node::Plain);
         duct = Some(match duct.take() {
             Some(d) => d.then_through(node, piece),
@@ -1360,6 +1368,24 @@ impl ExhaustNet {
 
     /// [`ExhaustNet::new`] with the silencers' packing cut into `lining_m` segments.
     pub fn with_lining(def: &ExhaustDef, cylinders: usize, dt: f64, lining_m: f64) -> Self {
+        Self::with_memo(
+            def,
+            cylinders,
+            dt,
+            lining_m,
+            &mut crate::silencer2d::EqMemo::default(),
+        )
+    }
+
+    /// [`ExhaustNet::with_lining`], its silencers' equalizers taken from `memo` when designed
+    /// before (the same, bit for bit) and kept there.
+    pub fn with_memo(
+        def: &ExhaustDef,
+        cylinders: usize,
+        dt: f64,
+        lining_m: f64,
+        memo: &mut crate::silencer2d::EqMemo,
+    ) -> Self {
         let primaries = (0..cylinders)
             .map(|i| {
                 Pipe::new(
@@ -1389,7 +1415,7 @@ impl ExhaustNet {
                     ),
                     def.steepening,
                 ),
-                tail: after_collector(def, dt, lining_m),
+                tail: after_collector(def, dt, lining_m, memo),
                 end: OpenEnd::new(def.tail_diameter_m, dt),
                 turbine: None,
             })
@@ -1417,10 +1443,11 @@ impl ExhaustNet {
                     dt,
                     lining_m,
                     def.steepening,
+                    memo,
                 );
                 let valved = m.bypass.as_ref().map(|b| {
-                    let duct = |path: &[Segment], t: f64| {
-                        segments_duct(path, t, fallback, dt, lining_m, def.steepening)
+                    let mut duct = |path: &[Segment], t: f64| {
+                        segments_duct(path, t, fallback, dt, lining_m, def.steepening, memo)
                     };
                     Valved {
                         closed: duct(&b.closed, 1.0),

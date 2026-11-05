@@ -202,6 +202,43 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   - Cycle-to-cycle combustion already matches Soltau's WOT data (COV p_max 7–10 %, IMEP
     1.5–1.9 %).
   - Non-linear FV exhaust is not less periodic (7740 WOT, 1 kHz 0.76 vs waveguide 0.67).
+- **`scripts/authenticity.py`, a repeatable measure of it (2026-11-04)**: share of each band's
+  energy that does not repeat cycle to cycle (blocks of 8 cycles, rpm and ramp tracked), dB.
+  `FILE@T0:DUR~RPM!` for a render, `~RPM` for a recording with a known rpm (±3 %).
+  - Real, standing: Audi A4 2.0 TFSI revving ~3230: 63–250/250–1k/1–4k/4–12k = −7.0/−0.8/−0.5/0.0,
+    corr 0.83, HNR 7 dB; Unimog steady 2400 at the exhaust: −13.9/−4.3/−4.0/−1.4, corr 0.88,
+    HNR 9 dB. Onboard and pass-by clips carry wind and road too: not references.
+  - Render held 3200 at 5 % load: K20A −24.5/−20.1/−10.6/−1.2 (corr 0.997, HNR 25), inline-4
+    −19.8/−6.4/−3.1/−0.3 (HNR 18), LFA −10.9/−12.8/−7.9/−2.9; TDI 2400 −30.5/−16.7/−5.1/−1.0.
+  - **Ablation (K20A and inline-4 at 3200, 5 %)**: with `combustion_jitter` 0 everything
+    repeats (K20A −53/−42/−23/−6, HNR 47). Turning off flow_noise, valve_jet, intake, block or
+    mechanical changes no band by more than 0.7 dB. Every source of randomness we have is far
+    under the orders; the real engines' broadband sits ~8 dB under them (HNR), ours 18–25.
+  - Clean references (2026-11-04): Skoda Octavia 1.6 standing, mic at the catalyst, 1300 /
+    1550 rpm: −10.2/−3.4/−1.1/−0.3 and −13.5/−4.0/−2.7/−0.1 (inline-4 held there, 3 % load:
+    −13.6/−7.5/−3.1/−1.8: at no load we are within 2–4 dB). Porsche 911 SC cruising at constant
+    rpm, mic at the tails (`…constant_rpms_exhausts__0123.9…@7:9~2560`, `__0178.2…@4:13~3600`):
+    −21.8/−5.1/−1.3/0.0, −19.1/−7.1/−0.5/0.0, −20.0/−5.9/−1.7/−0.3, corr 0.98–0.99, HNR 17–20 —
+    under load the gap is 250 Hz–4 kHz only (ours −20…−27 / −6…−14). Viper V10 slow pass-by
+    ~2410: −6.7/−3.9/+0.7/+1.3.
+  - A random per-firing arrival-time jitter on the K20A render (diagnostic, scratchpad
+    `jitter/jitter.py`): σ 80 µs → −21.2/−15.0/−3.8/0.0; 160 µs → −15.7/−9.3/−1.2/0.1. The real
+    shape is less random at 63–250 Hz and more at 250 Hz–1 kHz than any jitter: some additive
+    broadband too.
+  - **`held:` pins the crank and hides part of the randomness.** Each cycle's IMEP spread moves a
+    free crank's speed; that random walk is real and `held` removes it. K20A free-running
+    (`--headless --throttle 0.1`, 3377 rpm): −17.4/−10.2/−7.3/−0.8 against held 3200 at 5 %:
+    −24.5/−20.1/−10.6/−1.2. Compare free revving with free revving (Audi A4 standing:
+    −7.0/−0.8/−0.5/0.0): the gap left is ~9 dB at 250 Hz–1 kHz and ~7 dB at 1–4 kHz.
+  - Literature search (2026-11-04): no paper splits tail-pipe noise into periodic and random with
+    values. Candidates by evidence: speed wander (above), pulse-amplitude spread (real 63–250 Hz
+    implies 10–30 %, ours 4–6 %), the tail jet's pulsed vortex rings (Sakurai et al. 2005, Honda
+    R&D Tech. Rev. 17(2): measured broadband above the 1D tones over 4 kHz; Powell 1953: a pulse
+    jet's broadband 25–30 dB over a steady jet's), the jet's hydrodynamic pressure on a close mic
+    (Arndt, Long & Glauser 1997, JFM 340), muffler flow noise at high flow (Davies & Holland 1999).
+  - Tail jets ×30 in amplitude (`sound.flow_noise: 30`, +29.5 dB, Powell's pulse-jet excess)
+    on the free-running K20A at 3377: no band moves more than 0.1 dB, rms equal to 4 digits. At
+    part load the U⁸ jet is far under the orders even boosted: not the missing randomness.
 - **Real LFA at load, clean reference (2026-10-29)**: chassis-dyno clip `dyno-gears.wav` 7.0–9.4 s
   (6060→7300 rpm, `scratchpad/opus-overrun/mosq/real/`, local only; `agent2/py/ang.py FILE 7.0 9.4 6600`):
   bands re total 63/125/250/500/1k/2k/4k/8k = −26.3/−22.7/−17.5/−4.7/−8.5/−5.1/−7.9/−16.9 dB, periodic share
@@ -353,3 +390,8 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   0.017 ms mean / 0.03 ms p99 at every level; GPU mean Low 0.11 ms (primitives), Medium 0.16 ms,
   High 0.19 ms (the realistic piston, rod, throw, valves: about twice the primitives' 0.10 ms).
   The 5850U iGPU is still unmeasured; Low keeps the primitives for it.
+- 2026-11-04: an `ExhaustNet`'s cost was its pipes' wall filters (fitted once per stage: a 1.84 m
+  pipe 70 ms) and the 2D silencer's equalizer (the LFA's packed silencer 0.7 s). Wall filters are
+  now fitted once per pipe; silencer equalizers are memoized (`silencer2d::EqMemo`, carried across
+  rebuilds). First block after an exhaust edit, release, loaded machine: K20A 178 → 26 ms,
+  LFA ~1100 → 100 ms; whole K20A net 194 → 23 ms.
