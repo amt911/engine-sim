@@ -275,9 +275,13 @@ impl ValveJet {
 
 /// The duct-flow constant K of [`duct_flow_power_w`], dimensionless, one for every engine:
 /// the fraction of ρ·A·U³ (the jet's kinetic power flux, scaled by M) radiated as sound. Set
-/// once by calibrating every preset's treble against 209 real steady recordings
-/// (`scripts/realism/calibrate-duct-flow.sh`, `docs/FACTS.md`).
-pub const DUCT_FLOW_K: f64 = 1.0e-4;
+/// once against a measured production exhaust: Davies & Holland (JSV 223(3), 1999, Fig. 1(c)), a
+/// 4-cylinder at 0.25 m reading ≈ 80 / 88 / 107 dB(A) at 1000 / 3000 / 6000 rpm full load.
+/// Three 4-cylinder presets with the rule-sized road silencers on the FV exhaust fit it best at
+/// 2.5·10⁻⁵ (6000 rpm: −1.2 dB mean; rms over the three speeds 5.7 dB, the rest the pulses'
+/// own +8 dB at 3000; `scripts/realism/` and `docs/FINDINGS.md`, 2026-11-06). The treble's
+/// firing-rhythm modulation does not set it: the flow noise follows the pulses it rides on.
+pub const DUCT_FLOW_K: f64 = 2.5e-5;
 /// Mach number up to which flow noise in ducts was measured to scale as U⁴/c (Davies &
 /// Holland 1999, §4: "with M < 0.3, which is typical for intake and exhaust flows").
 pub const DUCT_U4_MACH_LIMIT: f64 = 0.3;

@@ -9559,6 +9559,45 @@ mod tests {
     }
 
     #[test]
+    fn a_production_silenced_exhaust_reads_davies_at_6000() {
+        // Davies & Holland, JSV 223(3), 1999, Fig. 1(c): a production 4-cylinder exhaust at
+        // 0.25 m, 45°, full load: ≈ 107 dB(A) at 6000 rpm, where the flow noise of its expansions
+        // carries the highs (§1, §4). Three 4-cylinders on the FV exhaust with the rule-sized road
+        // silencers (`road_exhaust`), the exhaust's sources alone, at the listener's 3 m brought
+        // to 0.25 m by spherical spreading (+21.6 dB): their mean within 3 dB of it
+        let mut sum = 0.0;
+        let defs = [
+            EngineDef::inline4(),
+            EngineDef::honda_k20a(),
+            EngineDef::subaru_ej25(),
+        ];
+        for mut d in defs.clone() {
+            let branches = d.exhaust.groups(d.cylinders as usize).len().max(1);
+            let swept = d.displacement_m3() / branches as f64;
+            d.exhaust.after_collector =
+                crate::exhaust::road_exhaust(swept, d.exhaust.tail_diameter_m);
+            d.exhaust.model = ExhaustModel::Fv;
+            let s = &mut d.sound;
+            (s.intake, s.block, s.mechanical) = (0.0, 0.0, 0.0);
+            (s.piston_slap, s.main_bearings) = (0.0, 0.0);
+            let rpm = 6000.0;
+            let mut e = Engine::new(d, rpm, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(rpm),
+                ..Controls::default()
+            };
+            run(&mut e, 0.5, &c);
+            let mut a = crate::mechanical::AWeighting::new(DT);
+            let x = run(&mut e, 0.5, &c);
+            let p2 = x.iter().map(|v| a.process(*v).powi(2)).sum::<f64>() / x.len() as f64;
+            sum += 10.0 * (p2 / 4e-10).log10() + 20.0 * (3.0f64 / 0.25).log10();
+        }
+        let mean = sum / defs.len() as f64;
+        assert!((mean - 107.0).abs() < 3.0, "{mean:.1} dB(A) at 0.25 m");
+    }
+
+    #[test]
     fn the_fv_exhaust_merges_its_banks_into_the_valved_silencer() {
         // after the collectors both models run the same linear path: the LFA's banks merge into
         // its valved silencer. Measured on the FV with its own per-bank tails: +14.5 dB over the
