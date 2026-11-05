@@ -141,20 +141,35 @@ impl AWeighting {
 }
 
 /// The A-weighted energy at 1 m of one unit impact (a half-sine of unit peak pseudo-pressure
-/// over the seat strikes' width, `crate::engine::seat_pulse`) through the block's response
-/// ([`crate::structure::StructureResponse`]), Pa²·s, at step `dt`: a train of impacts at a
-/// rate R and peak a has power R·a²·this.
+/// over the seat strikes' width, `crate::engine::seat_pulse`) through the block's modes at one
+/// of its points and its response ([`crate::structure::StructureResponse`]), Pa²·s, at step
+/// `dt`: a train of impacts at a rate R and peak a has power R·a²·this.
 pub fn unit_impact_energy(dt: f64) -> f64 {
-    let mut block = crate::structure::StructureResponse::new(dt);
-    let mut a = AWeighting::new(dt);
+    // averaged over the points an impact may strike ([`IMPACT_POINTS`])
     let n = (0.1 / dt).ceil() as usize;
-    (0..n)
-        .map(|k| {
-            let y = a.process(block.process(crate::engine::seat_pulse(1.0, k as f64 * dt)));
-            y * y * dt
+    (0..IMPACT_POINTS)
+        .map(|at| {
+            let mut modes = crate::structure::BlockModes::new(IMPACT_POINTS, dt);
+            let mut block = crate::structure::StructureResponse::new(dt);
+            let mut a = AWeighting::new(dt);
+            (0..n)
+                .map(|k| {
+                    let p = crate::engine::seat_pulse(1.0, k as f64 * dt);
+                    let y = a.process(block.process(modes.process_at(&[(at, p)])));
+                    y * y * dt
+                })
+                .sum::<f64>()
         })
-        .sum()
+        .sum::<f64>()
+        / IMPACT_POINTS as f64
 }
+
+/// Points of the block an impact may strike, each its own voice of the block's modes
+/// ([`crate::structure::BlockModes`]): a journal, a cap, a liner's thrust side. Each impact
+/// lands on one drawn at random — the clearances and oil films are never the same twice, and a
+/// train of identical impacts is a comb of lines, not the noise engines make (ESTIMATE: enough
+/// points that no two consecutive impacts tend to share one).
+pub const IMPACT_POINTS: usize = 32;
 
 #[cfg(test)]
 mod tests {

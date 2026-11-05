@@ -183,6 +183,22 @@ impl BlockModes {
         }
     }
 
+    /// One step with force entering at a few points only: `(point, pseudo-pressure)` pairs
+    /// (a point is a "cylinder" of [`BlockModes::new`]), their sum through the whole block below
+    /// the first mode and each point's own voice above it (no averaging over the points).
+    pub fn process_at(&mut self, inputs: &[(usize, f64)]) -> f64 {
+        let total: f64 = inputs.iter().map(|&(_, p)| p).sum();
+        let mut out = self.rigid.process(total);
+        for (m, sh) in self.modes.iter_mut().zip(&self.shape) {
+            let u: f64 = inputs
+                .iter()
+                .map(|&(at, p)| sh.get(at).copied().unwrap_or(0.0) * p)
+                .sum();
+            out += m.process(u);
+        }
+        out
+    }
+
     /// One step: each cylinder's pressure, Pa; the pressure the block's response should see (the
     /// mean of the cylinders, as [`combustion_drive`], with each one's own voice above the
     /// first mode).

@@ -2252,15 +2252,21 @@ pub struct Engine {
     seat_strikes: Vec<(f64, f64)>,
     /// The structure's mechanical impacts under way (age s, weight, bank): main journals and
     /// pistons thrown across their clearances ([`crate::mechanical`]).
-    impacts: Vec<(f64, f64, usize)>,
+    impacts: Vec<(f64, f64, usize, usize)>,
+    /// The block's modes each bank's impacts strike ([`crate::mechanical::IMPACT_POINTS`]
+    /// points), at their step, and the step's (point, pseudo-pressure) pairs (scratch).
+    impact_modes: Option<(f64, Vec<crate::structure::BlockModes>)>,
+    impact_inputs: Vec<(usize, f64)>,
+    /// The draws of the points the impacts strike (seeded: deterministic).
+    impact_rng: u64,
     /// The intake's air cleaner at its step, as built (`intake.air_cleaner`, resolved for this
     /// engine); none without one, or with a modelled surge tank.
     air_cleaner: Option<(f64, crate::air_cleaner::AirCleaner)>,
     /// Each cylinder's rod and side force at the last step, N (their sign changes are impacts).
     impact_forces: Vec<(f64, f64)>,
-    /// Σk² of the impacts begun together (k in one step: they add in phase, k² unit energies),
-    /// the time counted over since the rate was last taken, and that rate, unit energies per
-    /// second ([`crate::mechanical`]: the level is shared among them).
+    /// Impacts counted (each at a point of its own: they add in power, one unit energy each),
+    /// the time counted over since the rate was last taken, and that rate, per second
+    /// ([`crate::mechanical`]: the level is shared among them).
     impact_count: (usize, f64, f64),
     /// The A-weighted energy at 1 m of one unit impact through the block, Pa²·s, for its step.
     impact_unit: Option<(f64, f64)>,
@@ -2542,6 +2548,9 @@ impl Engine {
             n_banks: 1,
             seat_strikes: Vec::new(),
             impacts: Vec::new(),
+            impact_modes: None,
+            impact_inputs: Vec::new(),
+            impact_rng: seed.wrapping_mul(0xD1B5_4A32_D192_ED03) | 1,
             air_cleaner: None,
             impact_forces: Vec::new(),
             impact_count: (0, 0.0, 0.0),
@@ -2959,7 +2968,12 @@ impl Engine {
                     (side0 * side < 0.0, snd.piston_slap),
                 ] {
                     if crossed {
-                        self.impacts.push((0.0, weight, bank));
+                        let r = &mut self.impact_rng;
+                        *r ^= *r << 13;
+                        *r ^= *r >> 7;
+                        *r ^= *r << 17;
+                        let at = (*r >> 33) as usize % crate::mechanical::IMPACT_POINTS;
+                        self.impacts.push((0.0, weight, bank, at));
                         self.impacts_this_step += 1;
                     }
                 }
@@ -3802,7 +3816,7 @@ impl Engine {
         let mut impact = [0.0; 2];
         {
             let period = if rpm_now > 0.0 { 120.0 / rpm_now } else { f64::INFINITY };
-            self.impact_count.0 += self.impacts_this_step * self.impacts_this_step;
+            self.impact_count.0 += self.impacts_this_step;
             self.impact_count.1 += dt;
             if self.impact_count.1 >= period {
                 self.impact_count.2 = self.impact_count.0 as f64 / self.impact_count.1;
@@ -3823,11 +3837,31 @@ impl Engine {
                 0.0
             };
             let n_banks = self.n_banks.clamp(1, 2);
-            for (t, weight, bank) in self.impacts.iter_mut() {
-                impact[(*bank).min(n_banks - 1)] += *weight * amp * seat_pulse(1.0, *t);
-                *t += dt;
+            if self
+                .impact_modes
+                .as_ref()
+                .is_none_or(|m| m.0 != dt || m.1.len() != n_banks)
+            {
+                let modes = (0..n_banks)
+                    .map(|_| crate::structure::BlockModes::new(crate::mechanical::IMPACT_POINTS, dt))
+                    .collect();
+                self.impact_modes = Some((dt, modes));
             }
-            self.impacts.retain(|(t, _, _)| *t <= SEAT_PULSE_S);
+            if let Some((_, modes)) = &mut self.impact_modes {
+                for (b, m) in modes.iter_mut().enumerate() {
+                    self.impact_inputs.clear();
+                    for (t, weight, bank, at) in &self.impacts {
+                        if (*bank).min(n_banks - 1) == b {
+                            self.impact_inputs.push((*at, *weight * amp * seat_pulse(1.0, *t)));
+                        }
+                    }
+                    impact[b] = m.process_at(&self.impact_inputs);
+                }
+            }
+            for i in self.impacts.iter_mut() {
+                i.0 += dt;
+            }
+            self.impacts.retain(|(t, _, _, _)| *t <= SEAT_PULSE_S);
         }
         // (always run: a few multiplies a step, and an engine without either is silent here).
         // Per bank: a bank's side of the block carries its own cylinders' combustion (Anderton's
@@ -9470,6 +9504,36 @@ mod tests {
             assert!(strikes > 0);
             assert!((db - want).abs() < 1.0, "{rpm}: {db:.1} dB(A) against {want:.1}");
         }
+    }
+
+    #[test]
+    fn the_impacts_do_not_repeat_cycle_to_cycle() {
+        // each impact strikes the block at a point of its own (its clearance and oil film, the
+        // journal it lands on): one cycle's mechanical noise is not the last one's — measured,
+        // a deterministic train correlates 0.99 between cycles and buzzes as a comb of lines
+        let mut d = EngineDef::inline4();
+        (d.sound.block, d.sound.mechanical) = (0.0, 0.0);
+        let rpm = 3000.0;
+        let mut e = Engine::new(d, rpm, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(rpm),
+            ..Controls::default()
+        };
+        run(&mut e, 0.3, &c);
+        let cycle = (120.0 / rpm / DT).round() as usize;
+        let x: Vec<f64> = (0..4 * cycle)
+            .map(|_| {
+                e.step(DT, &c);
+                e.structure_out
+            })
+            .collect();
+        let (a, b) = (&x[cycle..2 * cycle], &x[2 * cycle..3 * cycle]);
+        let dot: f64 = a.iter().zip(b).map(|(p, q)| p * q).sum();
+        let na: f64 = a.iter().map(|p| p * p).sum::<f64>().sqrt();
+        let nb: f64 = b.iter().map(|p| p * p).sum::<f64>().sqrt();
+        let corr = dot / (na * nb);
+        assert!(corr.abs() < 0.5, "cycle-to-cycle correlation {corr:.2}");
     }
 
     #[test]
