@@ -8615,6 +8615,7 @@ mod tests {
             d.exhaust.model = model;
             let s = &mut d.sound;
             (s.flow_noise, s.block, s.mechanical, s.combustion_jitter) = (0.0, 0.0, 0.0, 0.0);
+            (s.main_bearings, s.piston_slap) = (0.0, 0.0);
             s.valve_jet = jet;
             let rpm = 6000.0;
             let mut e = Engine::new(d, rpm, 1);
