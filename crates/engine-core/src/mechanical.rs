@@ -38,6 +38,25 @@ pub fn mechanical_dba_at_1m(rpm: f64) -> f64 {
     CRITICAL_DBA + slope * decades
 }
 
+/// How much quieter the engine is at no load than at full load at 1000 rev/min, dB: Raff &
+/// Perry (JSV 28(3), 1973, Fig. 1) engines A / B / C, 2.5 / 5 / 4 dB read off the figure, mean.
+/// Below the critical speed the throttled combustion's smaller gas forces throw the parts across
+/// their clearances less hard (§2.2: the combustion acts "upon the principal mechanism … in the
+/// sub-critical regime"); above it the inertia forces rule and load does not matter.
+pub const NO_LOAD_DROP_DB_AT_1000: f64 = 3.8;
+
+/// [`mechanical_dba_at_1m`] at a part load: `load` 1 at full load (the curve), 0 at no load
+/// (Raff's lower curve: the drop [`NO_LOAD_DROP_DB_AT_1000`] at 1000 rev/min, linear in log
+/// speed to none at [`CRITICAL_RPM`]), in between linear in dB; clamped to 0..1.
+pub fn mechanical_dba_at_1m_loaded(rpm: f64, load: f64) -> f64 {
+    let full = mechanical_dba_at_1m(rpm);
+    if rpm <= 0.0 || rpm >= CRITICAL_RPM {
+        return full;
+    }
+    let drop = NO_LOAD_DROP_DB_AT_1000 * (CRITICAL_RPM / rpm).log10() / 3f64.log10();
+    full - drop * (1.0 - load.clamp(0.0, 1.0))
+}
+
 /// The rms sound pressure of a level `db` re 20 µPa, Pa (0 for −∞).
 pub fn rms_pa_from_dba(db: f64) -> f64 {
     20e-6 * 10f64.powf(db / 20.0)
@@ -177,6 +196,39 @@ pub const IMPACT_POINTS: usize = 32;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unloaded_it_is_quieter_only_below_the_critical_speed() {
+        // Raff & Perry, JSV 28(3), 1973, Fig. 1, full load minus no load read off the figure for
+        // engines A / B / C: 2.5 / 5 / 4 dB at 1000 rev/min, 3.5 / 2 / 2 at 2000, ≈ 0 from 3000
+        // up ("beyond a certain speed, noise level is sensibly independent of load", §2.2)
+        let drop = |rpm| mechanical_dba_at_1m(rpm) - mechanical_dba_at_1m_loaded(rpm, 0.0);
+        assert!(
+            (2.5..=5.0).contains(&drop(1000.0)),
+            "1000: {}",
+            drop(1000.0)
+        );
+        assert!(
+            (1.0..=3.5).contains(&drop(2000.0)),
+            "2000: {}",
+            drop(2000.0)
+        );
+        assert_eq!(drop(3000.0), 0.0);
+        assert_eq!(drop(6000.0), 0.0);
+    }
+
+    #[test]
+    fn the_load_moves_it_between_the_two_curves() {
+        // full load is the curve; no load is Raff's lower one; half way, half the drop in dB
+        let full = mechanical_dba_at_1m(1000.0);
+        let none = mechanical_dba_at_1m_loaded(1000.0, 0.0);
+        assert_eq!(mechanical_dba_at_1m_loaded(1000.0, 1.0), full);
+        let half = mechanical_dba_at_1m_loaded(1000.0, 0.5);
+        assert!((half - 0.5 * (full + none)).abs() < 1e-9);
+        // a boosted engine is no louder than at full load, a negative load no quieter than none
+        assert_eq!(mechanical_dba_at_1m_loaded(1000.0, 1.6), full);
+        assert_eq!(mechanical_dba_at_1m_loaded(1000.0, -0.2), none);
+    }
 
     #[test]
     fn the_petrol_curve_by_the_figure() {

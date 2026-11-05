@@ -1545,6 +1545,11 @@ const TORQUE_AVG_TAU_S: f64 = 0.15;
 const BLOWBY_AREA_FRACTION: f64 = 1e-4;
 /// Level of the 1D intake's induction source relative to the exhaust (lumped: trumpets sit in the
 /// engine bay, further from the listener than the tail pipes). Estimate.
+/// Manifold pressure of an engine turning with no load, in atmospheres: the throttle shut to
+/// what holds the speed, 0.3–0.4 bar (Heywood, *Internal Combustion Engine Fundamentals*, §7.2:
+/// idle and light-load manifold pressures; ESTIMATE, the low end). Where the mechanical noise
+/// reads Raff & Perry's no-load curve ([`crate::mechanical::mechanical_dba_at_1m_loaded`]).
+const NO_LOAD_MAP_RATIO: f64 = 0.3;
 /// Density of the air the intake draws, kg/m³ (1 atm, 300 K).
 const AIR_DENSITY: f64 = crate::units::ATM_PA / (crate::gas::R_AIR * 300.0);
 /// Throttle plate actuator speed, full travel per second (0.1 s closed to wide open).
@@ -3835,7 +3840,7 @@ impl Engine {
         }
         self.seat_strikes.retain(|(t, _)| *t <= SEAT_PULSE_S);
         // The mechanical impacts: one level for all of them, the measured petrol engine's at
-        // this speed (`mechanical_dba_at_1m`), shared among the impacts of the last cycle — each
+        // this speed and load (`mechanical_dba_at_1m_loaded`), shared among the impacts of the last cycle — each
         // a half-sine of the seat strikes' width through the block's response, A-weighted
         // energy `impact_unit` at 1 m, so their train's power is the curve's.
         let mut impact = [0.0; 2];
@@ -3864,8 +3869,12 @@ impl Engine {
             let rate = self.impact_count.2;
             // the measured curve is the whole engine's: the impacts carry what the combustion
             // (its last cycle) leaves of it, in power
+            // at the load the manifold says: shut (no load) at NO_LOAD_MAP_RATIO of an
+            // atmosphere, full at one (a boosted engine reads full)
+            let map = self.plenum_pressure_pa() / crate::units::ATM_PA;
+            let load = (map - NO_LOAD_MAP_RATIO) / (1.0 - NO_LOAD_MAP_RATIO);
             let whole = crate::mechanical::rms_pa_from_dba(
-                crate::mechanical::mechanical_dba_at_1m(rpm_now),
+                crate::mechanical::mechanical_dba_at_1m_loaded(rpm_now, load),
             );
             let target = (whole * whole - self.combustion_power.2).max(0.0);
             let amp = if rate > 0.0 && unit > 0.0 {
@@ -3936,9 +3945,10 @@ impl Engine {
                 self.structure = Some((dt, s));
             }
             let seats = seat_force / g.piston_area() / n_banks as f64;
-            // The seats tick in the head, under the valve cover: what they shake radiates up into
-            // the bay's lined top and leaves through the bay (`vehicle.engine_bay`). The
-            // combustion shakes the whole block, whose skirt and sump radiate into the open
+            // The seats tick in the head, under the valve cover, and the pistons and journals
+            // knock in the bores and the crankcase: what they shake radiates into the bay and
+            // leaves through it (`vehicle.engine_bay`; heard without it, a LFA idle's 2–4 kHz sat
+            // 12–20 dB over recorded ones, docs/FINDINGS.md 2026-11-05). The combustion shakes the whole block, whose skirt and sump radiate into the open
             // underside: it is heard without the bay (ESTIMATE: the bay taken as closed above
             // the head only; with the whole block behind it the LFA at 6700 rpm full load loses
             // the 3–4 kHz orders the dyno recording has, docs/FINDINGS.md 2026-11-01).
@@ -3981,15 +3991,16 @@ impl Engine {
                         ) / n_banks as f64
                     };
                     let ticks = head[b].process(snd.mechanical * seats);
-                    let ticks = self.bay.get_mut(b).map_or(ticks, |f| f.process(ticks));
-                    let burn = comb[b].process(snd.block * p);
-                    combustion += burn;
                     let struck = self
                         .impact_structure
                         .as_mut()
                         .and_then(|s| s.1.get_mut(b))
                         .map_or(0.0, |r| r.process(impact[b]));
-                    *out = burn + struck + ticks;
+                    let inside = ticks + struck;
+                    let inside = self.bay.get_mut(b).map_or(inside, |f| f.process(inside));
+                    let burn = comb[b].process(snd.block * p);
+                    combustion += burn;
+                    *out = burn + inside;
                 }
             }
         };
@@ -4974,6 +4985,9 @@ mod tests {
             valve_jet: 0.0,
             mechanical,
             block,
+            // the seats and the combustion alone: the piston and journal impacts off
+            piston_slap: 0.0,
+            main_bearings: 0.0,
             ..crate::sound::SoundDef::default()
         };
         let mut e = Engine::new(d, 3000.0, 1);
@@ -9540,12 +9554,19 @@ mod tests {
 
     /// The structure's mechanical impacts alone (everything else the structure radiates off),
     /// held at `rpm` full load for 0.5 s after 0.3 s: their A-weighted level at 1 m, dB.
-    fn impacts_dba(mut d: EngineDef, rpm: f64) -> (f64, usize) {
+    /// Whatever bay `d` has stays: the measured curve is a bare engine's (a test bed), so the
+    /// tests against it take the bay out.
+    fn impacts_dba(d: EngineDef, rpm: f64) -> (f64, usize) {
+        impacts_dba_at(d, rpm, 1.0)
+    }
+
+    /// [`impacts_dba`] at a throttle of `throttle`.
+    fn impacts_dba_at(mut d: EngineDef, rpm: f64, throttle: f64) -> (f64, usize) {
         d.sound.block = 0.0;
         d.sound.mechanical = 0.0;
         let mut e = Engine::new(d, rpm, 1);
         let c = Controls {
-            throttle: 1.0,
+            throttle,
             hold_rpm: Some(rpm),
             ..Controls::default()
         };
@@ -9565,8 +9586,11 @@ mod tests {
 
     #[test]
     fn an_impact_train_reads_the_measured_curve() {
+        // a bare engine, as Lalor et al. measured on the test bed
         for rpm in [3000.0, 6000.0] {
-            let (db, strikes) = impacts_dba(EngineDef::inline4(), rpm);
+            let mut d = EngineDef::inline4();
+            d.vehicle.engine_bay = None;
+            let (db, strikes) = impacts_dba(d, rpm);
             let want = crate::mechanical::mechanical_dba_at_1m(rpm);
             assert!(strikes > 0);
             assert!(
@@ -9614,6 +9638,7 @@ mod tests {
         for rpm in [3000.0, 6000.0] {
             let mut d = EngineDef::inline4();
             d.sound.mechanical = 0.0;
+            d.vehicle.engine_bay = None;
             let mut e = Engine::new(d, rpm, 1);
             let c = Controls {
                 throttle: 1.0,
@@ -9636,6 +9661,41 @@ mod tests {
                 "{rpm}: {db:.1} dB(A) against {want:.1}"
             );
         }
+    }
+
+    #[test]
+    fn unloaded_at_low_speed_the_impacts_read_raffs_lower_curve() {
+        // throttle shut at 1000 rev/min the manifold sits near a third of an atmosphere: no load,
+        // so the impacts read the no-load curve, 3.8 dB under the full-load one (Raff & Perry
+        // 1973, Fig. 1), not the full-load curve
+        let mut d = EngineDef::inline4();
+        d.vehicle.engine_bay = None;
+        let rpm = 1000.0;
+        let (db, _) = impacts_dba_at(d, rpm, 0.0);
+        let want = crate::mechanical::mechanical_dba_at_1m_loaded(rpm, 0.0);
+        assert!((db - want).abs() < 1.0, "{db:.1} dB(A) against {want:.1}");
+    }
+
+    #[test]
+    fn the_engine_bay_muffles_the_impacts() {
+        // the pistons slap the bores and the journals knock in the crankcase: the block's walls,
+        // inside the bay, radiate them, so they leave through the bay as the valve ticking does.
+        // The default bay takes 4.0 dB at 63 Hz and 14.2 dB at 4 kHz (`engine_bay`'s tests);
+        // the impacts' A-weighted level, mostly 1–4 kHz, loses most of the latter. Heard with
+        // no bay (an open engine), a LFA idle's 2 and 4 kHz octaves sat 12–20 dB over four
+        // recorded ones (docs/FINDINGS.md, 2026-11-05).
+        let rpm = 3000.0;
+        let mut bare = EngineDef::inline4();
+        bare.vehicle.engine_bay = None;
+        let mut bayed = EngineDef::inline4();
+        bayed.vehicle.engine_bay = Some(crate::engine_bay::EngineBay::default());
+        let (open, _) = impacts_dba(bare, rpm);
+        let (shut, _) = impacts_dba(bayed, rpm);
+        assert!(
+            open - shut > 8.0 && open - shut < 15.0,
+            "bay took {:.1} dB(A) off the impacts",
+            open - shut
+        );
     }
 
     #[test]
