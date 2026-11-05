@@ -1357,13 +1357,15 @@ mod tests {
         let old: IntakeDef = serde_yaml_ng::from_str("runner_length_m: 0.3\n").unwrap();
         assert!(old.air_cleaner.fitted);
         assert_eq!(old.air_cleaner.volume_m3, 0.0);
-        let mut d = IntakeDef::default();
-        d.air_cleaner = crate::air_cleaner::AirCleanerDef {
-            fitted: true,
-            volume_m3: 9e-3,
-            snorkel_length_m: 0.25,
-            snorkel_diameter_m: 0.07,
-            filter_resistance_pa_s_m3: 11_000.0,
+        let d = IntakeDef {
+            air_cleaner: crate::air_cleaner::AirCleanerDef {
+                fitted: true,
+                volume_m3: 9e-3,
+                snorkel_length_m: 0.25,
+                snorkel_diameter_m: 0.07,
+                filter_resistance_pa_s_m3: 11_000.0,
+            },
+            ..IntakeDef::default()
         };
         let json: IntakeDef = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
         let yaml: IntakeDef =
