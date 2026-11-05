@@ -207,6 +207,7 @@ pub fn card(def: &EngineDef, scene: &Scene, parts: &[Instance], index: usize) ->
                     ),
                     ("Max lift".into(), mm(v.max_lift_m)),
                     ("Duration".into(), format!("{:.0}°", v.duration_deg)),
+                    ("Opens".into(), format!("{:.0}°", v.open_deg)),
                 ],
             )
         }
@@ -244,6 +245,21 @@ mod tests {
 
     fn row<'a>(c: &'a Card, label: &str) -> &'a str {
         &c.rows.iter().find(|r| r.0 == label).unwrap().1
+    }
+
+    #[test]
+    fn a_cam_shows_its_valves_timing() {
+        let mut d = EngineDef::inline4();
+        d.exhaust_valve.open_deg = 481.0;
+        let (s, parts) = frame(&d);
+        let k = parts
+            .iter()
+            .position(|i| i.part == Part::ExhaustCam)
+            .unwrap();
+        let c = card(&d, &s, &parts, k).unwrap();
+        assert_eq!(c.title, "Cam");
+        assert_eq!(row(&c, "Valve"), "exhaust");
+        assert_eq!(row(&c, "Opens"), "481°");
     }
 
     #[test]

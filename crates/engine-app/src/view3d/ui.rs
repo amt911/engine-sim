@@ -79,8 +79,34 @@ fn marks(d: Detail) -> usize {
     }
 }
 
+/// How long the edited parts stay tinted after the last change, s.
+pub const TINT_SECS: f64 = 0.5;
+
+/// The measure last edited and when its tint ends (egui's clock, s).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tint {
+    pub field: super::handles::Field,
+    pub until: f64,
+}
+
+/// A part's colour pulled to the highlight (the arrows' amber).
+fn tinted(c: [f32; 4]) -> [f32; 4] {
+    const AMBER: [f32; 3] = [1.0, 0.77, 0.16];
+    [
+        0.35 * c[0] + 0.65 * AMBER[0],
+        0.35 * c[1] + 0.65 * AMBER[1],
+        0.35 * c[2] + 0.65 * AMBER[2],
+        c[3],
+    ]
+}
+
 #[derive(Debug, Clone)]
 pub struct View3dState {
+    /// The measure being edited, tinted on the parts it changes until [`TINT_SECS`] after its
+    /// last change.
+    pub tint: Option<Tint>,
+    /// The measure whose parts were drawn tinted last frame.
+    pub tinted: Option<super::handles::Field>,
     /// Where the clicked part's handles stood on screen last frame (what each edits).
     pub handle_spots: Vec<(super::handles::Field, egui::Pos2)>,
     /// A handle being dragged.
@@ -106,6 +132,8 @@ pub struct View3dState {
 impl Default for View3dState {
     fn default() -> Self {
         Self {
+            tint: None,
+            tinted: None,
             handle_spots: Vec::new(),
             drag: None,
             selected: None,
@@ -134,6 +162,35 @@ impl View3dState {
             .instances
             .iter()
             .position(|i| i.part == part)
+    }
+
+    /// `field` was changed at `now`: its parts are tinted for [`TINT_SECS`] from now.
+    pub fn touch(&mut self, field: super::handles::Field, now: f64) {
+        self.tint = Some(Tint {
+            field,
+            until: now + TINT_SECS,
+        });
+    }
+
+    /// The measure tinted at `now`, if its time has not run out.
+    pub fn tint_field(&self, now: f64) -> Option<super::handles::Field> {
+        self.tint.filter(|t| now < t.until).map(|t| t.field)
+    }
+
+    /// Tint, in the frame just filled, the parts the measure being edited changes.
+    fn tint_frame(&mut self, def: &EngineDef, now: f64) {
+        self.tinted = self.tint_field(now);
+        let Some(field) = self.tinted else { return };
+        if let Ok(mut sh) = self.shared.lock() {
+            let mut parts = std::mem::take(&mut sh.instances);
+            let hit: Vec<usize> = (0..parts.len())
+                .filter(|&k| field.changes(def, &parts, k))
+                .collect();
+            for k in hit {
+                parts[k].color = tinted(parts[k].color);
+            }
+            sh.instances = parts;
+        }
     }
 
     /// The view to draw: 3D only when asked for and a renderer exists.
@@ -367,6 +424,7 @@ pub fn show(
     dirty: &mut bool,
 ) {
     st.sync(&snap.def);
+    let now = ui.input(|i| i.time);
     let (rect, resp) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
     // the handles of the clicked part, on screen: where each stands, the screen direction its
     // value grows along and how many pixels a metre of it takes there
@@ -434,6 +492,11 @@ pub fn show(
             d.value = value;
             *dirty |= super::handles::apply(edit, d.handle.field, d.value);
         }
+        // held: its parts stay tinted, and half a second after the last change
+        st.tint = Some(Tint {
+            field: d.handle.field,
+            until: now + TINT_SECS,
+        });
         if resp.drag_stopped() {
             st.drag = None;
         }
@@ -496,6 +559,7 @@ pub fn show(
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         st.selected = None;
     }
+    let mut tint_touched = None;
     if let (Some((k, pos)), Some(scene)) = (st.selected, &st.scene) {
         let card = st.shared.lock().ok().and_then(|sh| {
             let c = super::card::card(&snap.def, scene, &sh.instances, k)?;
@@ -543,6 +607,7 @@ pub fn show(
                                         .labelled_by(name.id);
                                     if r.changed() {
                                         *dirty |= super::handles::apply(edit, f, shown / k);
+                                        tint_touched = Some(f);
                                     }
                                     ui.end_row();
                                 }
@@ -551,6 +616,17 @@ pub fn show(
                     });
                 });
         }
+    }
+    if let Some(f) = tint_touched {
+        st.touch(f, now);
+    }
+    // the edited parts tinted while they change; the frame is plain again once the time is up
+    st.tint_frame(&snap.def, now);
+    if let Some(t) = st.tint.filter(|t| now < t.until) {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs_f64(
+                (t.until - now).min(TINT_SECS),
+            ));
     }
     // the handles over the scene as arrows, named with their values; the one under the pointer
     // or in the hand lit
@@ -902,5 +978,73 @@ mod tests {
         st.fill(&snap, 1.5, 0.1);
         let sh = st.shared.lock().unwrap();
         assert!(!sh.instances.iter().any(|i| i.color[3] == 0.3));
+    }
+
+    #[test]
+    fn an_edit_tints_its_parts_for_half_a_second() {
+        use super::super::handles::Field;
+        let mut t = View3dState::default();
+        assert_eq!(t.tint_field(0.0), None);
+        t.touch(Field::IntakeOpens, 10.0);
+        assert_eq!(t.tint_field(10.0), Some(Field::IntakeOpens));
+        assert_eq!(t.tint_field(10.49), Some(Field::IntakeOpens));
+        assert_eq!(t.tint_field(10.5), None, "off at the timeout");
+        // another touch while it is on takes it over and runs the clock again
+        t.touch(Field::Bore, 10.4);
+        t.touch(Field::Rod, 10.8);
+        assert_eq!(t.tint_field(11.2), Some(Field::Rod));
+        assert_eq!(t.tint_field(11.3), None);
+    }
+
+    #[test]
+    fn the_tint_colours_the_edited_parts_only() {
+        use super::super::handles::Field;
+        let def = EngineDef::inline4();
+        let mut st = View3dState::default();
+        st.governor.set_manual(Some(Detail::High));
+        st.sync(&def);
+        let snap = crate::sim::Simulation::new(def.clone(), 48_000.0, 1).snapshot();
+        st.fill(&snap, 1.5, 0.0);
+        let colours = |st: &View3dState| -> Vec<(scene::Part, [f32; 4])> {
+            let sh = st.shared.lock().unwrap();
+            sh.instances.iter().map(|i| (i.part, i.color)).collect()
+        };
+        let before = colours(&st);
+        // nothing touched: nothing tinted
+        st.tint_frame(&snap.def, 5.0);
+        assert_eq!(st.tinted, None);
+        assert_eq!(colours(&st), before);
+        st.touch(Field::IntakeOpens, 5.0);
+        st.tint_frame(&snap.def, 5.1);
+        assert_eq!(st.tinted, Some(Field::IntakeOpens));
+        let after = colours(&st);
+        let mut hit = 0;
+        for (b, a) in before.iter().zip(&after) {
+            if a.1 != b.1 {
+                hit += 1;
+                assert!(
+                    matches!(
+                        b.0,
+                        scene::Part::IntakeValve | scene::Part::IntakeStem | scene::Part::IntakeCam
+                    ),
+                    "{:?} tinted",
+                    b.0
+                );
+                // towards amber: red and green up, blue down
+                assert!(
+                    a.1[0] >= b.1[0] && a.1[1] >= b.1[1] && a.1[2] <= b.1[2],
+                    "{a:?} {b:?}"
+                );
+            }
+        }
+        assert!(
+            hit >= 3 * 4,
+            "{hit} parts tinted (4 cylinders × valve, stem, cam)"
+        );
+        // past the timeout the next frame is plain again
+        st.fill(&snap, 1.5, 0.0);
+        st.tint_frame(&snap.def, 5.6);
+        assert_eq!(st.tinted, None);
+        assert_eq!(colours(&st), before);
     }
 }

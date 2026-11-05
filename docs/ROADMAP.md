@@ -30,13 +30,14 @@ Last updated: 2026-11-04.
    `2026-11-04-3d-parts-integration.md`):
    - ✅ v0.47.0: piston, rod, crank throws, valves and the Wankel rotor, stretched by bore,
      stroke and rod;
-   - next: the valve springs, the cam lobes and camshaft, the Wankel housing, side plate and
-     eccentric shaft.
+   - ✅ v0.50.0: the Wankel housing, side plate and eccentric shaft;
+   - ✅ v0.51.0: the valve springs, the cam lobes and camshaft.
 3. **Editing fluid and visible** (the user chose arrows + card, 2026-11-04):
    - ✅ each editable measure an arrow with its name and value, lit under the pointer, grabbed
      anywhere along it; the engine follows while dragging; the camera stays put on an edit;
    - ✅ an exhaust edit rebuilds in 0.1 s on the LFA (#97);
-   - next: the edited part tinted while it changes; arrows for the timing (cam phase).
+   - ✅ v0.52.0: the edited part tinted amber while it changes (and 0.5 s after); an arrow on
+     each cam for the timing (the valve's opening angle).
 4. **Typical parts and typical sizes:** a catalogue of real components with their real
    dimensions, so an engine built from them sounds good. Examples:
    - road and race exhaust manifolds;
