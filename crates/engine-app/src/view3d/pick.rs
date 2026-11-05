@@ -15,7 +15,10 @@ pub fn local_bounds(kind: MeshKind) -> (Vec3, Vec3) {
         | MeshKind::PistonRing
         | MeshKind::WristPin
         | MeshKind::RodEye
-        | MeshKind::ValveStem => (Vec3::new(-1.0, 0.0, -1.0), Vec3::new(1.0, 1.0, 1.0)),
+        | MeshKind::ValveStem
+        | MeshKind::Plug => (Vec3::new(-1.0, 0.0, -1.0), Vec3::new(1.0, 1.0, 1.0)),
+        // the realistic eccentric shaft: its shaft runs past the lobe's ends
+        MeshKind::Eccentric => (Vec3::new(-1.05, -0.25, -1.05), Vec3::new(1.05, 1.1, 1.05)),
         MeshKind::Cuboid | MeshKind::ApexSeal => (Vec3::splat(-0.5), Vec3::splat(0.5)),
         // the realistic rod's big end reaches past the primitive bar: about 0.4 bore round the
         // crankpin, which is 2 depths (0.2 bore) and 0.25 rod lengths of the shortest rods
@@ -28,9 +31,9 @@ pub fn local_bounds(kind: MeshKind) -> (Vec3, Vec3) {
         MeshKind::Rod => (Vec3::new(-1.0, -0.8, -2.2), Vec3::new(1.0, 0.65, 2.2)),
         MeshKind::Sphere => (Vec3::splat(-1.0), Vec3::splat(1.0)),
         // the housing's outer wall reaches 1 + e + 0.22 < 1.6 of its generating radius
-        MeshKind::Housing | MeshKind::HousingRing => {
-            (Vec3::new(-1.6, 0.0, -1.6), Vec3::new(1.6, 1.0, 1.6))
-        }
+        MeshKind::HousingRing => (Vec3::new(-1.6, 0.0, -1.6), Vec3::new(1.6, 1.0, 1.6)),
+        // the realistic side plate: its stationary gear stands 2.4 of its depths forward
+        MeshKind::Housing => (Vec3::new(-1.6, -0.3, -1.6), Vec3::new(1.6, 2.5, 1.6)),
         // the realistic rotor's apexes reach R over the frame's 0.97 R, its gear past the face
         MeshKind::Rotor => (Vec3::new(-1.04, -0.1, -1.04), Vec3::new(1.04, 1.1, 1.04)),
         // a web: the pin end to 1.45, the counterweight to −1.1
