@@ -374,8 +374,9 @@ impl ExhaustFv {
     }
 
     /// Each expansion site's mass flow this instant, kg/s (+ towards the tail), in
-    /// [`crate::exhaust::expansion_sites`] order: a primary's jet from its last cell, a path's
-    /// sites and its exit from the collector's last cell, a merge's from all the collectors.
+    /// [`crate::exhaust::expansion_sites`] order: a primary's jet from its last cell, the
+    /// path's first step from the collector's last cell, its inner steps and its exit from the
+    /// designed path's waves there, a merge's from all the paths' ends.
     pub fn site_flows(&self, out: &mut Vec<f64>) {
         let outflow = |pipe: &Pipe1d| match (pipe.cells.last(), pipe.area.last()) {
             (Some(c), Some(&a)) => {
@@ -391,8 +392,14 @@ impl ExhaustFv {
                 (SiteAt::Collector { primary }, _) => {
                     self.primaries.get(primary).map_or(0.0, outflow)
                 }
-                (_, Some(b)) => self.branches.get(b).map_or(0.0, |br| outflow(&br.out)),
-                (_, None) => self.branches.iter().map(|br| outflow(&br.out)).sum(),
+                (SiteAt::Segment { index }, Some(b)) => self.branches.get(b).map_or(0.0, |br| {
+                    // inside the designed path: the flow through that node of its duct
+                    br.duct
+                        .segment_node(index)
+                        .map_or_else(|| outflow(&br.out), |node| br.duct.node_flow(node))
+                }),
+                (_, Some(b)) => self.branches.get(b).map_or(0.0, |br| br.duct.far_flow()),
+                (_, None) => self.branches.iter().map(|br| br.duct.far_flow()).sum(),
             });
         }
     }

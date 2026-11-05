@@ -1244,8 +1244,6 @@ struct DuctFlow {
     /// Each site's mass flow handed in from outside ([`ExhaustNet::set_site_flows`]), kg/s;
     /// empty: the net's own.
     given: Vec<f64>,
-    /// Each branch's mass flow out of its collector this step, kg/s (for the merge's sites).
-    branch_flows: Vec<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -1268,7 +1266,6 @@ impl DuctFlow {
             gain: 0.0,
             sites,
             given: Vec::new(),
-            branch_flows: vec![0.0; def.groups(cylinders).len()],
         }
     }
 
@@ -2091,12 +2088,10 @@ impl ExhaustNet {
                     junction(&areas, &incoming, &mut two);
                 }
             }
-            // the path's expansions and its exit, all on the flow leaving the collector (the
-            // path is short against the pulses' length)
+            // the path's expansions and its exit, each on the flow through it
             let mut exit = 0.0;
             if noise {
                 let own = areas[0] * (incoming[0] - two[0]) / C_COLLECTOR;
-                df.branch_flows[k] = own;
                 for i in 0..df.sites.len() {
                     let site = &df.sites[i].site;
                     if site.branch != Some(k) {
@@ -2104,21 +2099,22 @@ impl ExhaustNet {
                     }
                     let at = site.at;
                     match at {
-                        SiteAt::Segment { index } => {
-                            let p = df.pressure(i, own, C_TAIL, dt);
-                            match b.tail.segment_node(index) {
-                                None => {
-                                    two[0] += p / areas[0].sqrt();
-                                    two[1] += p / areas[1].sqrt();
-                                }
-                                Some(node) => {
-                                    let (a1, a2) = b.tail.node_areas(node);
-                                    b.tail.inject(node, p / a1.sqrt(), p / a2.sqrt());
-                                }
+                        SiteAt::Segment { index } => match b.tail.segment_node(index) {
+                            None => {
+                                let p = df.pressure(i, own, C_TAIL, dt);
+                                two[0] += p / areas[0].sqrt();
+                                two[1] += p / areas[1].sqrt();
                             }
-                        }
+                            Some(node) => {
+                                // the flow through that node (the last step's: one sample)
+                                let p = df.pressure(i, b.tail.node_flow(node), C_TAIL, dt);
+                                let (a1, a2) = b.tail.node_areas(node);
+                                b.tail.inject(node, p / a1.sqrt(), p / a2.sqrt());
+                            }
+                        },
                         SiteAt::Exit => {
-                            exit = df.pressure(i, own, C_TAIL, dt) / b.tail.end_areas().1.sqrt();
+                            let p = df.pressure(i, b.tail.far_flow(), C_TAIL, dt);
+                            exit = p / b.tail.end_areas().1.sqrt();
                         }
                         _ => {}
                     }
@@ -2158,26 +2154,26 @@ impl ExhaustNet {
             // and its outlet on all the branches' flow
             let mut exit = 0.0;
             if noise {
-                let total: f64 = df.branch_flows.iter().sum();
                 let shared_index = self.branches.len();
                 for i in 0..df.sites.len() {
                     let (branch, at) = (df.sites[i].site.branch, df.sites[i].site.at);
                     match (branch, at) {
                         (Some(bk), SiteAt::MergeJunction) => {
-                            let own = df.branch_flows.get(bk).copied().unwrap_or(0.0);
+                            let own = self.branches.get(bk).map_or(0.0, |b| b.tail.far_flow());
                             let p = df.pressure(i, own, C_TAIL, dt);
                             outgoing[bk] += p / areas[bk].sqrt();
                             outgoing[shared_index] += p / areas[shared_index].sqrt();
                         }
                         (None, SiteAt::MergedSegment { index }) => {
-                            let p = df.pressure(i, total, C_TAIL, dt);
                             if let Some(node) = sh.duct.segment_node(index) {
+                                let p = df.pressure(i, sh.duct.node_flow(node), C_TAIL, dt);
                                 let (a1, a2) = sh.duct.node_areas(node);
                                 sh.duct.inject(node, p / a1.sqrt(), p / a2.sqrt());
                             }
                         }
                         (None, SiteAt::Exit) => {
-                            exit = df.pressure(i, total, C_TAIL, dt) / sh.duct.end_areas().1.sqrt();
+                            let p = df.pressure(i, sh.duct.far_flow(), C_TAIL, dt);
+                            exit = p / sh.duct.end_areas().1.sqrt();
                         }
                         _ => {}
                     }

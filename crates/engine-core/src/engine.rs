@@ -9382,8 +9382,9 @@ mod tests {
     #[test]
     fn the_fv_site_flows_follow_the_cells() {
         // FV inline-4 at 3000 WOT: over whole cycles what each primary jets into the collector
-        // is a quarter of what leaves by the tail (mass conserved through the collector and the
-        // path; each site reads its own cell)
+        // is a quarter of what the collector sends into the catalyst (mass conserved through
+        // the junction, both read from FV cells); the exit, read from the designed path's waves
+        // (their own reference gas), carries flow out
         let mut d = EngineDef::inline4();
         d.exhaust.model = ExhaustModel::Fv;
         let mut e = Engine::new(d.clone(), 3000.0, 1);
@@ -9405,14 +9406,15 @@ mod tests {
                 *s += f / steps as f64;
             }
         }
-        let exit = sites
-            .iter()
-            .position(|s| s.at == crate::exhaust::SiteAt::Exit)
-            .expect("an exit");
+        let at = |want: crate::exhaust::SiteAt| {
+            sites.iter().position(|s| s.at == want).expect("the site")
+        };
+        let exit = at(crate::exhaust::SiteAt::Exit);
+        let into_catalyst = at(crate::exhaust::SiteAt::Segment { index: 0 });
         assert!(sum[exit] > 0.0, "exit {}", sum[exit]);
         for (s, m) in sites.iter().zip(&sum) {
             if matches!(s.at, crate::exhaust::SiteAt::Collector { .. }) {
-                let r: f64 = m / (sum[exit] / 4.0);
+                let r: f64 = m / (sum[into_catalyst] / 4.0);
                 assert!((r - 1.0).abs() < 0.15, "collector site {s:?}: {r:.3} of a quarter");
             }
         }
