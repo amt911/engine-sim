@@ -423,6 +423,9 @@ mod tests {
             }
         }
         let db = 10.0 * (sum / (n - n / 4 - 1) as f64 / 4e-10).log10();
-        assert!((db - 84.3).abs() < 2.0, "{db:.1} dB(A) against Anderton's 84.3");
+        assert!(
+            (db - 84.3).abs() < 2.0,
+            "{db:.1} dB(A) against Anderton's 84.3"
+        );
     }
 }

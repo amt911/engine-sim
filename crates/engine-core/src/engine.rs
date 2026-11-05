@@ -3725,7 +3725,9 @@ impl Engine {
                 if self.air_cleaner.as_ref().is_none_or(|c| c.0 != dt) {
                     self.air_cleaner = Some((dt, crate::air_cleaner::AirCleaner::new(&def, dt)));
                 }
-                self.air_cleaner.as_mut().map_or(heard, |c| c.1.process(heard))
+                self.air_cleaner
+                    .as_mut()
+                    .map_or(heard, |c| c.1.process(heard))
             }
             None => heard,
         };
@@ -3815,7 +3817,11 @@ impl Engine {
         // energy `impact_unit` at 1 m, so their train's power is the curve's.
         let mut impact = [0.0; 2];
         {
-            let period = if rpm_now > 0.0 { 120.0 / rpm_now } else { f64::INFINITY };
+            let period = if rpm_now > 0.0 {
+                120.0 / rpm_now
+            } else {
+                f64::INFINITY
+            };
             self.impact_count.0 += self.impacts_this_step;
             self.impact_count.1 += dt;
             if self.impact_count.1 >= period {
@@ -3830,7 +3836,9 @@ impl Engine {
             }
             let unit = self.impact_unit.map_or(0.0, |u| u.1);
             let rate = self.impact_count.2;
-            let target = crate::mechanical::rms_pa_from_dba(crate::mechanical::mechanical_dba_at_1m(rpm_now));
+            let target = crate::mechanical::rms_pa_from_dba(
+                crate::mechanical::mechanical_dba_at_1m(rpm_now),
+            );
             let amp = if rate > 0.0 && unit > 0.0 {
                 target / (rate * unit).sqrt()
             } else {
@@ -3843,7 +3851,9 @@ impl Engine {
                 .is_none_or(|m| m.0 != dt || m.1.len() != n_banks)
             {
                 let modes = (0..n_banks)
-                    .map(|_| crate::structure::BlockModes::new(crate::mechanical::IMPACT_POINTS, dt))
+                    .map(|_| {
+                        crate::structure::BlockModes::new(crate::mechanical::IMPACT_POINTS, dt)
+                    })
                     .collect();
                 self.impact_modes = Some((dt, modes));
             }
@@ -3852,7 +3862,8 @@ impl Engine {
                     self.impact_inputs.clear();
                     for (t, weight, bank, at) in &self.impacts {
                         if (*bank).min(n_banks - 1) == b {
-                            self.impact_inputs.push((*at, *weight * amp * seat_pulse(1.0, *t)));
+                            self.impact_inputs
+                                .push((*at, *weight * amp * seat_pulse(1.0, *t)));
                         }
                     }
                     impact[b] = m.process_at(&self.impact_inputs);
@@ -9502,7 +9513,10 @@ mod tests {
             let (db, strikes) = impacts_dba(EngineDef::inline4(), rpm);
             let want = crate::mechanical::mechanical_dba_at_1m(rpm);
             assert!(strikes > 0);
-            assert!((db - want).abs() < 1.0, "{rpm}: {db:.1} dB(A) against {want:.1}");
+            assert!(
+                (db - want).abs() < 1.0,
+                "{rpm}: {db:.1} dB(A) against {want:.1}"
+            );
         }
     }
 
@@ -9616,7 +9630,10 @@ mod tests {
         };
         let (on, off) = (with(1.0), with(0.0));
         let mut a = crate::mechanical::AWeighting::new(DT);
-        on.iter().zip(&off).map(|(x, y)| a.process(x - y).powi(2)).sum()
+        on.iter()
+            .zip(&off)
+            .map(|(x, y)| a.process(x - y).powi(2))
+            .sum()
     }
 
     #[test]

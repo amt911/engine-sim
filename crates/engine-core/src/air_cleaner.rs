@@ -82,7 +82,11 @@ impl AirCleanerDef {
         let rule = Self::rule_sized(displacement_m3, redline_rpm, throttle_d);
         Self {
             fitted: self.fitted,
-            volume_m3: if self.volume_m3 > 0.0 { self.volume_m3 } else { rule.volume_m3 },
+            volume_m3: if self.volume_m3 > 0.0 {
+                self.volume_m3
+            } else {
+                rule.volume_m3
+            },
             snorkel_length_m: self.snorkel_length_m.max(0.0),
             snorkel_diameter_m: if self.snorkel_diameter_m > 0.0 {
                 self.snorkel_diameter_m
@@ -211,7 +215,11 @@ mod tests {
             20.0 * amp.log10()
         };
         assert!((g(4.0 * 55.4) + 23.5).abs() < 1.0, "{}", g(4.0 * 55.4));
-        assert!(g(55.4) > 10.0, "a lossless box rings at its resonance: {}", g(55.4));
+        assert!(
+            g(55.4) > 10.0,
+            "a lossless box rings at its resonance: {}",
+            g(55.4)
+        );
     }
 
     #[test]

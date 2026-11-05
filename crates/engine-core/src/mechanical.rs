@@ -114,7 +114,10 @@ impl AWeighting {
             };
             sections[k] = (b0, b1, (w - 1.0) / (1.0 + w), 0.0, 0.0);
         }
-        let mut a = Self { sections, gain: 1.0 };
+        let mut a = Self {
+            sections,
+            gain: 1.0,
+        };
         a.gain = 1.0 / a.magnitude(1000.0, fs);
         a
     }
@@ -245,7 +248,10 @@ mod tests {
         let g = geometry();
         let side = |deg: f64| piston_side_force(&g, deg.to_radians(), 0.0, w, 0.4);
         for at in [0.0, 180.0] {
-            assert!(side(at - 2.0) * side(at + 2.0) < 0.0, "no reversal at {at}°");
+            assert!(
+                side(at - 2.0) * side(at + 2.0) < 0.0,
+                "no reversal at {at}°"
+            );
         }
     }
 
