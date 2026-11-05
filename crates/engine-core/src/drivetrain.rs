@@ -362,7 +362,11 @@ impl Vehicle {
     /// The car's speed referred to the crank, rad/s.
     pub fn car_omega(&self) -> f64 {
         let g = self.def.overall_ratio(self.gear);
-        if self.locked { self.car_omega } else { self.speed_m_s / self.def.wheel_radius_m * g }
+        if self.locked {
+            self.car_omega
+        } else {
+            self.speed_m_s / self.def.wheel_radius_m * g
+        }
     }
     pub fn def(&self) -> &VehicleDef {
         &self.def
@@ -1016,7 +1020,10 @@ mod tests {
             twist.push(v.twist_rad());
         }
         let mean = twist.iter().sum::<f64>() / twist.len() as f64;
-        let crossings = twist.windows(2).filter(|p| (p[0] - mean) * (p[1] - mean) < 0.0).count();
+        let crossings = twist
+            .windows(2)
+            .filter(|p| (p[0] - mean) * (p[1] - mean) < 0.0)
+            .count();
         crossings as f64 / 2.0 / (twist.len() as f64 * dt)
     }
 
@@ -1025,7 +1032,11 @@ mod tests {
         // fixture: J_v1 = 1000·0.3²/12² = 0.625 kg·m², J_e = 0.15: k₁ = (2π·3.5)²/(1/0.15 + 1/0.625)
         // = 483.61/8.2667 = 58.50 N·m/rad, and the twist rings at 3.5 Hz
         let mut v = locked_at(frictionless(), 1, 300.0);
-        assert!((v.stiffness_nm_rad() - 58.50).abs() < 0.05, "{}", v.stiffness_nm_rad());
+        assert!(
+            (v.stiffness_nm_rad() - 58.50).abs() < 0.05,
+            "{}",
+            v.stiffness_nm_rad()
+        );
         let f = ringing_hz(&mut v, 1e-4);
         assert!((f - 3.5).abs() < 0.1, "{f} Hz");
     }
@@ -1035,7 +1046,11 @@ mod tests {
         // gear 2 (G = 8): k = k₁·12²/8² = 131.6 N·m/rad, J_v = 90/64 = 1.406 kg·m²:
         // f = √(131.6·(1/0.15 + 1/1.406))/2π = √971.0/2π = 4.96 Hz
         let mut v = locked_at(frictionless(), 2, 300.0);
-        assert!((v.stiffness_nm_rad() - 131.6).abs() < 0.2, "{}", v.stiffness_nm_rad());
+        assert!(
+            (v.stiffness_nm_rad() - 131.6).abs() < 0.2,
+            "{}",
+            v.stiffness_nm_rad()
+        );
         let f = ringing_hz(&mut v, 1e-4);
         assert!((f - 4.96).abs() < 0.1, "{f} Hz");
     }
@@ -1053,7 +1068,10 @@ mod tests {
             v.step(dt, 300.0, 0.0);
         }
         let twist = v.twist_rad();
-        assert!((twist - t_road / v.stiffness_nm_rad()).abs() < 0.02 * twist.abs(), "{twist}");
+        assert!(
+            (twist - t_road / v.stiffness_nm_rad()).abs() < 0.02 * twist.abs(),
+            "{twist}"
+        );
         assert!((v.speed_m_s() - speed).abs() < 1e-3, "{}", v.speed_m_s());
     }
 
@@ -1088,7 +1106,10 @@ mod tests {
         assert!(!v.locked());
         let after = v.step(1e-4, 300.0 + 0.4, 0.0);
         assert!(v.locked());
-        assert!((after.torque_nm - before.torque_nm).abs() < 0.05 * 400.0, "{before:?} → {after:?}");
+        assert!(
+            (after.torque_nm - before.torque_nm).abs() < 0.05 * 400.0,
+            "{before:?} → {after:?}"
+        );
         assert_eq!(after.inertia_kgm2, 0.0);
     }
 
@@ -1113,5 +1134,33 @@ mod tests {
         let yaml: VehicleDef =
             serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&d).unwrap()).unwrap();
         assert_eq!((json, yaml), (d.clone(), d));
+    }
+
+    #[test]
+    fn above_the_shuffle_the_crank_turns_free_of_the_car() {
+        // A cycle's torque swinging ±10 N·m at 27 Hz (the cycle at 3300 rev/min) on a crank of
+        // 0.15 kg·m², locked in 1st (k = 58.50 N·m/rad, J_v = 0.625, ζ = 0): far above the 3.5 Hz
+        // shuffle the car's end barely moves, the spring only takes k/ω² off the crank's
+        // inertia: |ω_e| = A/(ω·(J_e − k/ω²)) = 10/(169.65·(0.15 − 58.50/28 781)) = 0.3984 rad/s.
+        // A rigid car would hold it to 10/(169.65·0.775) = 0.0761.
+        let mut v = locked_at(frictionless(), 1, 300.0);
+        let (dt, w) = (1e-5, 2.0 * std::f64::consts::PI * 27.0);
+        let mut om = 300.0;
+        let (mut re, mut im, mut count) = (0.0, 0.0, 0.0);
+        let n = (6.0 / dt) as usize;
+        for i in 0..n {
+            let t = i as f64 * dt;
+            let load = v.step(dt, om, 0.0);
+            om += (10.0 * (w * t).sin() - load.torque_nm) / (0.15 + load.inertia_kgm2) * dt;
+            // the 27 Hz part alone, over the last 27 whole periods (the slow shuffle the start
+            // set ringing projects out)
+            if t >= 5.0 {
+                re += om * (w * t).sin();
+                im += om * (w * t).cos();
+                count += 1.0;
+            }
+        }
+        let amp = 2.0 * (re * re + im * im).sqrt() / count;
+        assert!((amp - 0.3984).abs() < 0.02, "{amp}");
     }
 }
