@@ -4144,6 +4144,16 @@ impl Engine {
         &self.tail_u
     }
 
+    /// The mass flow out of each open end of the exhaust at the last step, kg/s (the linear
+    /// path's reference gas); empty when the exhaust runs on its own thread.
+    pub fn exit_flows(&self, out: &mut Vec<f64>) {
+        match (&self.net, &self.fv) {
+            (Some(n), _) => n.exit_flows(out),
+            (None, Some(fv)) => fv.exit_flows(out),
+            _ => out.clear(),
+        }
+    }
+
     /// How many cylinders the engine runs.
     pub fn cylinders(&self) -> usize {
         self.cyl.len()

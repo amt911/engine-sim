@@ -2007,6 +2007,17 @@ impl ExhaustNet {
         self.duct_flow.gain
     }
 
+    /// The flow out of each open end at the last step as A·Δp/c, kg/s of the tail's reference
+    /// gas (the junctions keep A·Δp: an inflow ṁ reads ṁ·C_PRIMARY/C_TAIL here), one per branch
+    /// or one for a merge's outlet. Its ripple over its mean is the pulsation's.
+    pub fn exit_flows(&self, out: &mut Vec<f64>) {
+        out.clear();
+        match &self.shared {
+            Some(sh) => out.push(sh.duct.far_flow()),
+            None => out.extend(self.branches.iter().map(|b| b.tail.far_flow())),
+        }
+    }
+
     /// How many expansion sites make duct flow noise.
     pub fn duct_sites(&self) -> usize {
         self.duct_flow.sites.len()
@@ -2312,6 +2323,23 @@ mod tests {
             0.03,
         );
         assert_eq!(bits_hash(&on), bits_hash(&off));
+    }
+
+    #[test]
+    fn a_steady_flow_leaves_by_the_exit() {
+        // 0.03 kg/s into each of four primaries, held. The junctions keep A·Δp (one ρc for all
+        // the pipes), so the tail's A·Δp/c reads the flow in its own reference gas:
+        // 0.12 · C_PRIMARY/C_TAIL = 0.12 · 600/500 = 0.144 kg/s (the walls' loss: ±5 %)
+        let dt = 1.0 / 48_000.0;
+        let def = crate::engine::EngineDef::inline4().exhaust;
+        let mut net = super::ExhaustNet::new(&def, 4, dt);
+        for _ in 0..(1.0 / dt) as usize {
+            net.step(&[0.03; 4]);
+        }
+        let mut out = Vec::new();
+        net.exit_flows(&mut out);
+        assert_eq!(out.len(), 1);
+        assert!((out[0] / 0.144 - 1.0).abs() < 0.05, "{}", out[0]);
     }
 
     #[test]

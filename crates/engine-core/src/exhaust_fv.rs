@@ -373,6 +373,13 @@ impl ExhaustFv {
         }
     }
 
+    /// The mass flow out of each branch's open end at the last step, kg/s (the designed path's
+    /// reference gas).
+    pub fn exit_flows(&self, out: &mut Vec<f64>) {
+        out.clear();
+        out.extend(self.branches.iter().map(|b| b.duct.far_flow()));
+    }
+
     /// Each expansion site's mass flow this instant, kg/s (+ towards the tail), in
     /// [`crate::exhaust::expansion_sites`] order: a primary's jet from its last cell, the
     /// path's first step from the collector's last cell, its inner steps and its exit from the
