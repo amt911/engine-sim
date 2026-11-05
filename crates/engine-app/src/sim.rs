@@ -108,8 +108,11 @@ impl Simulation {
         seed: u64,
         quality: Quality,
     ) -> Self {
+        // the car's driveline needs the crank's own inertia (the shuffle's other mass)
+        let mut car = Vehicle::new(vehicle);
+        car.set_engine_inertia(def.flywheel_inertia_kgm2);
         Self {
-            vehicle: Vehicle::new(vehicle),
+            vehicle: car,
             drive: DriveInput::default(),
             voice: voice_for(&def, sample_rate),
             anti_alias: anti_alias(sample_rate, quality),
@@ -148,9 +151,15 @@ impl Simulation {
     pub fn vehicle(&self) -> &Vehicle {
         &self.vehicle
     }
+    #[cfg(test)]
+    pub fn vehicle_mut_for_test(&mut self) -> &mut Vehicle {
+        &mut self.vehicle
+    }
     /// Swap the car (it stops, in neutral, so the new gearing cannot jump).
     pub fn replace_vehicle(&mut self, def: VehicleDef) {
         self.vehicle = Vehicle::new(def);
+        self.vehicle
+            .set_engine_inertia(self.def.flywheel_inertia_kgm2);
     }
     pub fn engine(&self) -> &Engine {
         &self.engine
@@ -957,6 +966,22 @@ pub(crate) mod tests {
         render_secs(&mut sim, 0.05);
         sim.drive.clutch_pedal = false;
         sim
+    }
+
+    #[test]
+    fn the_car_knows_the_cranks_inertia() {
+        // the driveline's spring is sized against the crank's own inertia: the engine's flywheel
+        let mut def = EngineDef::inline4();
+        def.flywheel_inertia_kgm2 = 0.3;
+        let mut sim = Simulation::with_quality(def, VehicleDef::inline4(), FS, 1, Quality::Ultra);
+        let mut v = Vehicle::new(VehicleDef::inline4());
+        v.set_engine_inertia(0.3);
+        v.set_gear(1);
+        sim.vehicle_mut_for_test().set_gear(1);
+        assert_eq!(sim.vehicle().stiffness_nm_rad(), v.stiffness_nm_rad());
+        sim.replace_vehicle(VehicleDef::inline4());
+        sim.vehicle_mut_for_test().set_gear(1);
+        assert_eq!(sim.vehicle().stiffness_nm_rad(), v.stiffness_nm_rad());
     }
 
     #[test]
