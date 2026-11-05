@@ -103,3 +103,26 @@ states for on-device checks — it applies to in-process tests with no exception
   enumerate what the old one did that the new one does not, and say it out loud in the PR — nothing
   will fail to compile. **An optional parameter that defaults to off is a capability that only
   exists if the caller remembers it**, which over a few months means it does not exist.
+
+## Sound realism — look first, measure what the ear hears
+
+Weeks went into "it still sounds synthetic" (2026-10 → 2026-11-05) because the measures used —
+long-term spectra and cycle-to-cycle randomness — were never checked against what the user heard.
+A diagnostic clip matched the real recording on every one of them and the user still called it "a
+lawnmower". The defect (a burst of treble at every firing, "a machine gun") was visible at a glance
+on a spectrogram, and FACTS already held it (2026-10-27: real treble envelope steady, ours 25 %
+modulated) without being followed up.
+
+- **Look before theorizing.** Plot waveform, spectrogram and spectrum of the render beside the
+  reference (same window, same scale) before forming a hypothesis.
+- **A metric must separate the ear's verdicts.** Before building on a measure, run it on every clip
+  the user has already judged; it counts only if it ranks them as the user did. Firing-rate envelope
+  modulation of the 0.8–5 kHz band did (real ≈ 12 % median over 209 steady segments, ours 30–150 %);
+  spectral balance and the stochastic share did not.
+- **Matched conditions.** Same rpm (check it by eye on the waveform — trackers lock on 2×), load,
+  exhaust (silenced or open) and microphone position. A muffled part-load render against an open
+  high-rpm demo, or an idle car miked at the catalyst (mechanical noise included), misleads.
+- **Ange's new simulator is a measurable target.** The audio of his devlog demos (stretches without
+  speech, `videos/Ange/`, local only) can be measured with the same tools as the recordings.
+- **One validated metric, then physics.** No diagnostic clip per guess: each one costs the user a
+  listen. Send clips to confirm a measured finding, not to search.
