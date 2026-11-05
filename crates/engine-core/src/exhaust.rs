@@ -1003,14 +1003,7 @@ fn path_sites(
 /// [`Merge`] takes the paths); then each branch's step into the merge, the merge's own
 /// expansions and its outlet. The bypass silencer's inner chambers are not listed.
 pub fn expansion_sites(def: &ExhaustDef, cylinders: usize) -> Vec<ExpansionSite> {
-    let groups: Vec<Vec<usize>> = if def.collectors.is_empty() {
-        vec![(0..cylinders).collect()]
-    } else {
-        def.collectors
-            .iter()
-            .map(|g| g.iter().map(|c| c.saturating_sub(1)).collect())
-            .collect()
-    };
+    let groups = def.groups(cylinders);
     let path = def.path();
     let mut out = Vec::new();
     let mut branch_exit = Vec::with_capacity(groups.len());
@@ -1086,10 +1079,12 @@ fn segments_duct(
     let pipe = |len: f64, d: f64| shaped(plain(len, d), steep);
     let mut duct: Option<Duct> = None;
     let mut pending = Node::Plain;
+    let mut starts = Vec::with_capacity(path.len());
     let last_pipe = path
         .iter()
         .rposition(|s| !matches!(s, Segment::Resonator { .. }));
     for (i, seg) in path.iter().enumerate() {
+        starts.push(duct.as_ref().map_or(0, Duct::pipe_count));
         let piece =
             match *seg {
                 Segment::Pipe {
@@ -1181,7 +1176,9 @@ fn segments_duct(
             None => piece,
         });
     }
-    duct.unwrap_or_else(|| Duct::new(vec![pipe(fallback.0, fallback.1)]))
+    let mut duct = duct.unwrap_or_else(|| Duct::new(vec![pipe(fallback.0, fallback.1)]));
+    duct.segment_starts = starts;
+    duct
 }
 
 /// A pipe's gas as the 3D view shows it ([`ExhaustNet::probe`]).
@@ -1233,7 +1230,59 @@ pub struct ExhaustNet {
     shared: Option<Shared>,
     /// The gas's temperature along the pipes ([`ExhaustDef::gas_temperature`]).
     heat: Option<Heat>,
+    /// Flow noise at the exhaust's area expansions ([`ExhaustNet::set_duct_flow`]).
+    duct_flow: DuctFlow,
     pub dt: f64,
+}
+
+/// The exhaust's duct flow noise: one [`crate::jet_noise::DuctJet`] per [`ExpansionSite`], in
+/// [`expansion_sites`] order, at a mix `gain` (0: off, nothing computed).
+#[derive(Debug, Clone, Default)]
+struct DuctFlow {
+    gain: f64,
+    sites: Vec<SiteSource>,
+    /// Each site's mass flow handed in from outside ([`ExhaustNet::set_site_flows`]), kg/s;
+    /// empty: the net's own.
+    given: Vec<f64>,
+    /// Each branch's mass flow out of its collector this step, kg/s (for the merge's sites).
+    branch_flows: Vec<f64>,
+}
+
+#[derive(Debug, Clone)]
+struct SiteSource {
+    site: ExpansionSite,
+    jet: crate::jet_noise::DuctJet,
+}
+
+impl DuctFlow {
+    fn new(def: &ExhaustDef, cylinders: usize) -> Self {
+        let sites = expansion_sites(def, cylinders)
+            .into_iter()
+            .enumerate()
+            .map(|(i, site)| SiteSource {
+                site,
+                jet: crate::jet_noise::DuctJet::new(0xD0C7_F10E ^ (i as u64 + 1)),
+            })
+            .collect();
+        Self {
+            gain: 0.0,
+            sites,
+            given: Vec::new(),
+            branch_flows: vec![0.0; def.groups(cylinders).len()],
+        }
+    }
+
+    /// Site `i`'s noise this step as the plane-wave pressure for a 1 m² duct (scale by 1/√A),
+    /// its mass flow `own` (kg/s, + towards the tail) unless one was given, in gas of sound
+    /// speed `c` at an atmosphere.
+    fn pressure(&mut self, i: usize, own: f64, c: f64, dt: f64) -> f64 {
+        let m_dot = self.given.get(i).copied().unwrap_or(own);
+        let src = &mut self.sites[i];
+        let rho = crate::gas::GAMMA * crate::units::ATM_PA / (c * c);
+        let a_jet = 0.25 * std::f64::consts::PI * src.site.d_jet * src.site.d_jet;
+        let u = m_dot / (rho * a_jet);
+        self.gain * src.jet.step(u, rho, c, src.site.d_jet, src.site.d_down, dt)
+    }
 }
 
 /// The pipes' walls and their gas ([`crate::pipe_heat`]): one state per pipe, in the order
@@ -1628,6 +1677,7 @@ impl ExhaustNet {
             }),
             branches,
             heat: def.gas_temperature.then(Heat::default),
+            duct_flow: DuctFlow::new(def, cylinders),
             dt,
         }
         .with_room_for_cold_gas()
@@ -1941,6 +1991,30 @@ impl ExhaustNet {
     /// Advance one step. `flows[i]`: mass flow (kg/s) from cylinder `i` into its primary
     /// (negative = reversion). Valve end: p⁺ = p⁻ + c·ṁ/A. Returns the radiated pressure
     /// summed over the tail pipes.
+    /// The duct flow noise's mix: 1 = Davies' law at [`crate::jet_noise::DUCT_FLOW_K`], 0 = off
+    /// (the net exactly as without it).
+    pub fn set_duct_flow(&mut self, gain: f64) {
+        self.duct_flow.gain = gain.max(0.0);
+    }
+
+    /// Each expansion site's instantaneous mass flow, kg/s (+ towards the tail), in
+    /// [`expansion_sites`] order, from outside (an FV exhaust's cells) for the coming steps;
+    /// until then the net uses the flow its own waves carry.
+    pub fn set_site_flows(&mut self, flows: &[f64]) {
+        self.duct_flow.given.clear();
+        self.duct_flow.given.extend_from_slice(flows);
+    }
+
+    /// The duct flow noise's mix ([`ExhaustNet::set_duct_flow`]).
+    pub fn duct_flow_gain(&self) -> f64 {
+        self.duct_flow.gain
+    }
+
+    /// How many expansion sites make duct flow noise.
+    pub fn duct_sites(&self) -> usize {
+        self.duct_flow.sites.len()
+    }
+
     pub fn step(&mut self, flows: &[f64]) -> f64 {
         if let Some(h) = &mut self.heat {
             h.steps += 1;
@@ -1955,6 +2029,9 @@ impl ExhaustNet {
         from_far.clear();
         from_far.resize(n, 0.0);
         let mut radiated = 0.0;
+        let dt = self.dt;
+        let df = &mut self.duct_flow;
+        let noise = df.gain > 0.0;
         for (k, (b, tail_out)) in self
             .branches
             .iter_mut()
@@ -1977,10 +2054,34 @@ impl ExhaustNet {
                 primary_impedance(),
                 outgoing,
             );
+            // each primary's jet into the collector: its noise half back up the primary, half on
+            let mut collector_add = 0.0;
+            if noise {
+                for i in 0..df.sites.len() {
+                    let site = &df.sites[i].site;
+                    let (Some(bk), SiteAt::Collector { primary }) = (site.branch, site.at) else {
+                        continue;
+                    };
+                    let Some(j) = b.members.iter().position(|&m| m == primary) else {
+                        continue;
+                    };
+                    if bk != k {
+                        continue;
+                    }
+                    let own = areas[j] * (incoming[j] - outgoing[j]) / C_PRIMARY;
+                    let p = df.pressure(i, own, C_PRIMARY, dt);
+                    outgoing[j] += p / areas[j].sqrt();
+                    collector_add += p / b.collector.area_m2.sqrt();
+                }
+            }
             for (k, &m) in b.members.iter().enumerate() {
                 from_far[m] = clamp_wave(outgoing[k]);
             }
-            let collector_near = clamp_wave(outgoing[b.members.len()]);
+            let collector_near = if noise {
+                clamp_wave(outgoing[b.members.len()] + collector_add)
+            } else {
+                clamp_wave(outgoing[b.members.len()])
+            };
             let mut two = [0.0; 2];
             let areas = [b.collector.area_m2, b.tail.end_areas().0];
             let incoming = [b.collector.at_far(), b.tail.at_near()];
@@ -1990,15 +2091,54 @@ impl ExhaustNet {
                     junction(&areas, &incoming, &mut two);
                 }
             }
+            // the path's expansions and its exit, all on the flow leaving the collector (the
+            // path is short against the pulses' length)
+            let mut exit = 0.0;
+            if noise {
+                let own = areas[0] * (incoming[0] - two[0]) / C_COLLECTOR;
+                df.branch_flows[k] = own;
+                for i in 0..df.sites.len() {
+                    let site = &df.sites[i].site;
+                    if site.branch != Some(k) {
+                        continue;
+                    }
+                    let at = site.at;
+                    match at {
+                        SiteAt::Segment { index } => {
+                            let p = df.pressure(i, own, C_TAIL, dt);
+                            match b.tail.segment_node(index) {
+                                None => {
+                                    two[0] += p / areas[0].sqrt();
+                                    two[1] += p / areas[1].sqrt();
+                                }
+                                Some(node) => {
+                                    let (a1, a2) = b.tail.node_areas(node);
+                                    b.tail.inject(node, p / a1.sqrt(), p / a2.sqrt());
+                                }
+                            }
+                        }
+                        SiteAt::Exit => {
+                            exit = df.pressure(i, own, C_TAIL, dt) / b.tail.end_areas().1.sqrt();
+                        }
+                        _ => {}
+                    }
+                }
+            }
             b.collector.send(collector_near, clamp_wave(two[0]));
             match &mut self.shared {
                 // the tail's far end meets the shared duct below
                 Some(sh) => sh.near[k] = clamp_wave(two[1]),
                 None => {
-                    let (reflected, out) = b.end.process(b.tail.at_far());
+                    let arriving = if noise {
+                        b.tail.at_far() + exit
+                    } else {
+                        b.tail.at_far()
+                    };
+                    let (reflected, out) = b.end.process(arriving);
                     radiated += out;
                     *tail_out = out;
-                    b.tail.send(clamp_wave(two[1]), clamp_wave(reflected));
+                    let back = if noise { reflected + exit } else { reflected };
+                    b.tail.send(clamp_wave(two[1]), clamp_wave(back));
                 }
             }
         }
@@ -2014,15 +2154,44 @@ impl ExhaustNet {
             incoming.push(sh.duct.at_near());
             outgoing.resize(incoming.len(), 0.0);
             junction(areas, incoming, outgoing);
+            // the merge's sites: each branch's jet into the shared duct, then its expansions
+            // and its outlet on all the branches' flow
+            let mut exit = 0.0;
+            if noise {
+                let total: f64 = df.branch_flows.iter().sum();
+                let shared_index = self.branches.len();
+                for i in 0..df.sites.len() {
+                    let (branch, at) = (df.sites[i].site.branch, df.sites[i].site.at);
+                    match (branch, at) {
+                        (Some(bk), SiteAt::MergeJunction) => {
+                            let own = df.branch_flows.get(bk).copied().unwrap_or(0.0);
+                            let p = df.pressure(i, own, C_TAIL, dt);
+                            outgoing[bk] += p / areas[bk].sqrt();
+                            outgoing[shared_index] += p / areas[shared_index].sqrt();
+                        }
+                        (None, SiteAt::MergedSegment { index }) => {
+                            let p = df.pressure(i, total, C_TAIL, dt);
+                            if let Some(node) = sh.duct.segment_node(index) {
+                                let (a1, a2) = sh.duct.node_areas(node);
+                                sh.duct.inject(node, p / a1.sqrt(), p / a2.sqrt());
+                            }
+                        }
+                        (None, SiteAt::Exit) => {
+                            exit = df.pressure(i, total, C_TAIL, dt) / sh.duct.end_areas().1.sqrt();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            let arriving = if noise {
+                sh.duct.at_far() + exit
+            } else {
+                sh.duct.at_far()
+            };
             // the wave back into the shared duct's far end, and what the open end radiates
             let (reflected, out) = match &mut sh.valved {
-                None => sh.end.process(sh.duct.at_far()),
-                Some(v) => v.step(
-                    &mut sh.end,
-                    sh.duct.at_far(),
-                    sh.duct.end_areas().1,
-                    self.dt,
-                ),
+                None => sh.end.process(arriving),
+                Some(v) => v.step(&mut sh.end, arriving, sh.duct.end_areas().1, self.dt),
             };
             radiated += out;
             let share = out / self.branches.len().max(1) as f64;
@@ -2035,10 +2204,8 @@ impl ExhaustNet {
                 *tail_out = share;
                 b.tail.send(*near, clamp_wave(*back));
             }
-            sh.duct.send(
-                clamp_wave(outgoing[self.branches.len()]),
-                clamp_wave(reflected),
-            );
+            let back = if noise { reflected + exit } else { reflected };
+            sh.duct.send(clamp_wave(outgoing[self.branches.len()]), clamp_wave(back));
         }
         for i in 0..n {
             let a = self.primaries[i].area_m2;
@@ -2056,6 +2223,99 @@ mod tests {
 
     fn site(branch: Option<usize>, at: SiteAt, d_jet: f64, d_down: f64) -> ExpansionSite {
         ExpansionSite { branch, at, d_jet, d_down }
+    }
+
+    /// An inline-4 net driven 0.2 s by firing-like pulses (each primary 0.06 kg/s for a fifth of
+    /// its 20 ms cycle, staggered by 5 ms), its radiated samples.
+    fn pulsed_inline4(setup: impl Fn(&mut super::ExhaustNet)) -> Vec<f64> {
+        let dt = 1.0 / 48_000.0;
+        let def = crate::engine::EngineDef::inline4().exhaust;
+        let mut net = super::ExhaustNet::new(&def, 4, dt);
+        setup(&mut net);
+        (0..(0.2 / dt) as usize)
+            .map(|n| {
+                let t = n as f64 * dt;
+                let flows: Vec<f64> = (0..4)
+                    .map(|k| {
+                        let ph = ((t + 0.005 * k as f64) / 0.02).fract();
+                        if ph < 0.2 { 0.06 } else { 0.0 }
+                    })
+                    .collect();
+                net.step(&flows)
+            })
+            .collect()
+    }
+
+    fn bits_hash(v: &[f64]) -> u64 {
+        v.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, x| {
+            (h ^ x.to_bits()).wrapping_mul(0x0100_0000_01b3)
+        })
+    }
+
+    #[test]
+    fn duct_flow_off_is_the_old_net() {
+        // captured on the code before the duct flow noise (commit 2a93c48), with the noise off
+        let h = bits_hash(&pulsed_inline4(|n| n.set_duct_flow(0.0)));
+        assert_eq!(h, 0xa7d3_471f_94a2_0251, "hash {h:#x}");
+    }
+
+    /// Mean square of `x` between `lo` and `hi` Hz, from Goertzel bins every 50 Hz.
+    fn band_power(x: &[f64], dt: f64, lo: f64, hi: f64) -> f64 {
+        let mut f = lo;
+        let mut sum = 0.0;
+        while f < hi {
+            let w = 2.0 * std::f64::consts::PI * f * dt;
+            let (mut s1, mut s2) = (0.0, 0.0);
+            for &v in x {
+                let s0 = v + 2.0 * w.cos() * s1 - s2;
+                s2 = s1;
+                s1 = s0;
+            }
+            sum += s1 * s1 + s2 * s2 - 2.0 * w.cos() * s1 * s2;
+            f += 50.0;
+        }
+        sum / (x.len() * x.len()) as f64
+    }
+
+    fn steady_inline4(setup: impl Fn(&mut super::ExhaustNet), flow: f64) -> Vec<f64> {
+        let dt = 1.0 / 48_000.0;
+        let def = crate::engine::EngineDef::inline4().exhaust;
+        let mut net = super::ExhaustNet::new(&def, 4, dt);
+        setup(&mut net);
+        (0..(0.6 / dt) as usize).map(|_| net.step(&[flow; 4])).collect()
+    }
+
+    #[test]
+    fn an_expansion_with_flow_hisses() {
+        let dt = 1.0 / 48_000.0;
+        let off = steady_inline4(|n| n.set_duct_flow(0.0), 0.03);
+        let on = steady_inline4(|n| n.set_duct_flow(1.0), 0.03);
+        // the last 0.2 s: the pipes' ringing from the flow's start has died away
+        let (a, b) = (
+            band_power(&off[19_200..], dt, 1000.0, 5000.0),
+            band_power(&on[19_200..], dt, 1000.0, 5000.0),
+        );
+        assert!(b > 2.0 * a && b > 0.0, "on {b:.3e} off {a:.3e}");
+    }
+
+    #[test]
+    fn no_flow_no_hiss() {
+        let off = steady_inline4(|n| n.set_duct_flow(0.0), 0.0);
+        let on = steady_inline4(|n| n.set_duct_flow(1.0), 0.0);
+        assert_eq!(bits_hash(&on), bits_hash(&off));
+    }
+
+    #[test]
+    fn reversed_flow_is_silent_at_every_site() {
+        let off = steady_inline4(|n| n.set_duct_flow(0.0), 0.03);
+        let on = steady_inline4(
+            |n| {
+                n.set_duct_flow(1.0);
+                n.set_site_flows(&[-0.02; 6]);
+            },
+            0.03,
+        );
+        assert_eq!(bits_hash(&on), bits_hash(&off));
     }
 
     #[test]

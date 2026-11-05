@@ -2855,6 +2855,9 @@ impl Engine {
                         self.fidelity.lining_segment_m,
                         &mut self.eq_memo,
                     ));
+                    if let Some(n) = &mut self.net {
+                        n.set_duct_flow(self.def.sound.duct_flow);
+                    }
                 }
             }
             ExhaustModel::Fv => {
@@ -2880,6 +2883,9 @@ impl Engine {
                         self.fidelity.lining_segment_m,
                         &mut self.eq_memo,
                     ));
+                    if let Some(n) = &mut self.jet_net {
+                        n.set_duct_flow(self.def.sound.duct_flow);
+                    }
                     self.jet_flows = vec![0.0; self.cyl.len()];
                 }
             }
@@ -4756,6 +4762,7 @@ mod tests {
             intake: 0.0,
             combustion_jitter: 0.0,
             valve_jet: 0.0,
+            duct_flow: 0.0,
             mechanical,
             block,
             ..crate::sound::SoundDef::default()
@@ -8059,6 +8066,7 @@ mod tests {
             reverb: 0.0,
             leveling: 0.0,
             valve_jet: 0.0,
+            duct_flow: 0.0,
             ..crate::sound::SoundDef::default()
         };
         // the flow textures (the valvetrain's clicks do not depend on load)
@@ -8401,6 +8409,7 @@ mod tests {
             d.exhaust.model = model;
             let s = &mut d.sound;
             (s.flow_noise, s.block, s.mechanical, s.combustion_jitter) = (0.0, 0.0, 0.0, 0.0);
+            s.duct_flow = 0.0;
             s.valve_jet = jet;
             let rpm = 6000.0;
             let mut e = Engine::new(d, rpm, 1);
@@ -9315,6 +9324,53 @@ mod tests {
             r > 1e-3 && m.abs() < 0.05 * r,
             "valve jets: mean {m} rms {r} Pa"
         );
+    }
+
+    #[test]
+    fn a_turbo_engine_keeps_its_downstream_sites() {
+        // the K20C1's turbine sits between collector and tail: its path's sites still sound
+        let d = EngineDef::honda_k20c1();
+        let want = crate::exhaust::expansion_sites(&d.exhaust, 4).len();
+        let mut e = Engine::new(d, 3000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        let x = run(&mut e, 0.3, &c);
+        assert!(x.iter().all(|v| v.is_finite()));
+        let net = e.net.as_ref().or(e.jet_net.as_ref()).expect("a waveguide net");
+        assert_eq!(net.duct_sites(), want);
+        assert_eq!(net.duct_flow_gain(), 1.0);
+    }
+
+    #[test]
+    fn an_edited_exhaust_brings_its_own_sites() {
+        // an edit builds a new engine that takes the old one's exhaust only when it is the same:
+        // a silencer added, the new net has the new sites and the sound's mix
+        let c = Controls {
+            throttle: 0.5,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        let mut old = Engine::new(EngineDef::inline4(), 3000.0, 1);
+        run(&mut old, 0.05, &c);
+        let mut d = EngineDef::inline4();
+        d.sound.duct_flow = 0.5;
+        d.exhaust.after_collector.push(crate::exhaust::Segment::Muffler {
+            length_m: 0.3,
+            diameter_m: 0.15,
+            tube_diameter_m: 0.0,
+            packing_resistivity: 0.0,
+            packing_porosity: 1.0,
+        });
+        let want = crate::exhaust::expansion_sites(&d.exhaust, 4).len();
+        let mut e = Engine::new(d, 3000.0, 1);
+        assert!(!e.adopt_exhaust_from(&mut old));
+        run(&mut e, 0.05, &c);
+        let net = e.net.as_ref().expect("the inline-4's waveguide");
+        assert_eq!(net.duct_sites(), want);
+        assert_eq!(net.duct_flow_gain(), 0.5);
     }
 
     #[test]

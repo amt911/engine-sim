@@ -20,6 +20,11 @@ pub struct SoundDef {
     /// noise of each blowdown through the valve's curtain, sent down the pipes with the pulse.
     /// 1 = physical, 0 = off.
     pub valve_jet: f64,
+    /// Flow noise at the exhaust's abrupt area expansions ([`crate::jet_noise::DuctJet`]):
+    /// vortex shedding and shear-layer mixing where the flow separates, W = K·ρ·A·U⁴/c (Davies &
+    /// Holland 1999 §4) at each site's own instantaneous flow. 1 = that law at the one
+    /// calibrated K, 0 = off.
+    pub duct_flow: f64,
     /// The block's radiated combustion noise ([`crate::structure`]): the cylinder pressure
     /// through the measured structure response of engine blocks, 1 = physical, 0 = off.
     pub block: f64,
@@ -89,6 +94,7 @@ impl Default for SoundDef {
             flow_noise: 1.0,
             intake: 1.0,
             valve_jet: 1.0,
+            duct_flow: 1.0,
             block: 1.0,
             mechanical: 1.0,
             chamber_ring: 1.0,
@@ -167,6 +173,20 @@ mod tests {
         assert_eq!(old.valve_jet, 1.0);
         let s = SoundDef {
             valve_jet: 0.5,
+            ..SoundDef::default()
+        };
+        let json: SoundDef = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        let yaml: SoundDef =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&s).unwrap()).unwrap();
+        assert_eq!((json, yaml), (s.clone(), s));
+    }
+
+    #[test]
+    fn the_duct_flow_round_trips_and_old_files_hear_it() {
+        let old: SoundDef = serde_yaml_ng::from_str("reverb: 0.2\n").unwrap();
+        assert_eq!(old.duct_flow, 1.0);
+        let s = SoundDef {
+            duct_flow: 0.5,
             ..SoundDef::default()
         };
         let json: SoundDef = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();

@@ -724,6 +724,12 @@ pub struct Duct {
     mean_now: f64,
     /// What happens at each inner node, between pipe k and k + 1.
     nodes: Vec<Node>,
+    /// The first pipe of each segment it was built from, in segment order
+    /// ([`Duct::segment_node`]); empty for a duct not built from segments.
+    pub(crate) segment_starts: Vec<usize>,
+    /// Waves added at each inner node on the next [`Duct::send`] (back, onward), then cleared:
+    /// a source at the node ([`Duct::inject`]). Empty until the first injection.
+    injected: Vec<[f64; 2]>,
 }
 
 /// A wall that breathes at a node of a duct: the packing behind a perforate, a pocket of pore
@@ -943,6 +949,8 @@ impl Duct {
             mean_flow: 0.0,
             mean_now: 0.0,
             nodes: Vec::new(),
+            segment_starts: Vec::new(),
+            injected: Vec::new(),
         }
     }
     /// Pipes with what happens at each inner node (`nodes[k]` between pipe k and k + 1;
@@ -977,6 +985,38 @@ impl Duct {
         self.pipes.extend(next.pipes);
         self
     }
+    /// How many pipes it is made of.
+    pub fn pipe_count(&self) -> usize {
+        self.pipes.len()
+    }
+
+    /// The inner node in front of segment `index` (its first pipe's near end); None for the
+    /// first segment (the duct's own near end) or an unknown one.
+    pub fn segment_node(&self, index: usize) -> Option<usize> {
+        self.segment_starts
+            .get(index)
+            .and_then(|&start| start.checked_sub(1))
+            .filter(|&node| node + 1 < self.pipes.len())
+    }
+
+    /// The areas either side of inner `node`, m² (upstream, downstream).
+    pub fn node_areas(&self, node: usize) -> (f64, f64) {
+        (self.pipes[node].area_m2, self.pipes[node + 1].area_m2)
+    }
+
+    /// Add `back` to the wave inner `node` sends back up the duct and `onward` to the one it
+    /// sends on, at the next [`Duct::send`] only: a source at the node.
+    pub fn inject(&mut self, node: usize, back: f64, onward: f64) {
+        if node + 1 >= self.pipes.len() {
+            return;
+        }
+        if self.injected.len() != self.pipes.len() - 1 {
+            self.injected = vec![[0.0; 2]; self.pipes.len() - 1];
+        }
+        self.injected[node][0] += back;
+        self.injected[node][1] += onward;
+    }
+
     /// Area of the near (first) and far (last) pipe, m².
     pub fn end_areas(&self) -> (f64, f64) {
         (
@@ -1038,6 +1078,11 @@ impl Duct {
                     _ => {
                         junction(&areas, &incoming, &mut out);
                     }
+                }
+                if let Some(add) = self.injected.get_mut(k) {
+                    out[0] += add[0];
+                    out[1] += add[1];
+                    *add = [0.0; 2];
                 }
                 (out[0], out[1])
             } else {
