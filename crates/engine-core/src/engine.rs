@@ -1141,6 +1141,14 @@ impl EngineDef {
                 runner_length_m: 0.325,
                 runner_diameter_m: 0.045,
                 individual_throttles: true,
+                // and, like the surge tank, no rule-sized air cleaner: the approved fit
+                // (2026-10-31) and its guard against the real car (`engine-app` sim tests:
+                // RMS 9.9 dB bare, 13.9 with the rule's 19 L box) were made on the bare trumpets;
+                // the car's own intake comes in with its surge tanks (PR #33)
+                air_cleaner: crate::air_cleaner::AirCleanerDef {
+                    fitted: false,
+                    ..crate::air_cleaner::AirCleanerDef::default()
+                },
                 ..IntakeDef::default()
             },
             redline_rpm: 9000.0,
@@ -2270,6 +2278,13 @@ pub struct Engine {
     impact_count: (usize, f64, f64),
     /// The A-weighted energy at 1 m of one unit impact through the block, Pa²·s, for its step.
     impact_unit: Option<(f64, f64)>,
+    /// The impacts' own path through the block's response (one per bank), at its step.
+    impact_structure: Option<(f64, Vec<StructureResponse>)>,
+    /// The combustion's A-weighting at its step, its A-weighted power summed and counted since
+    /// the impacts' rate was last taken, and that last cycle's mean power, Pa² at 1 m: the
+    /// impacts make up the rest of the measured curve's ([`crate::mechanical`]).
+    combustion_weight: Option<(f64, crate::mechanical::AWeighting)>,
+    combustion_power: (f64, usize, f64),
     /// Impacts begun this step (for tests and probes).
     pub(crate) impacts_this_step: usize,
     /// What the structure radiated this step, Pa at 1 m, all banks (for tests and probes).
@@ -2555,6 +2570,9 @@ impl Engine {
             impact_forces: Vec::new(),
             impact_count: (0, 0.0, 0.0),
             impact_unit: None,
+            impact_structure: None,
+            combustion_weight: None,
+            combustion_power: (0.0, 0, 0.0),
             impacts_this_step: 0,
             structure_out: 0.0,
             bay: Vec::new(),
@@ -3827,19 +3845,25 @@ impl Engine {
                 self.impact_count.2 = self.impact_count.0 as f64 / self.impact_count.1;
                 self.impact_count.0 = 0;
                 self.impact_count.1 = 0.0;
+                let (sum, n, _) = self.combustion_power;
+                self.combustion_power = (0.0, 0, if n > 0 { sum / n as f64 } else { 0.0 });
             } else if !period.is_finite() {
                 self.impact_count = (0, 0.0, 0.0);
+                self.combustion_power = (0.0, 0, 0.0);
             }
             if self.impact_unit.is_none_or(|u| u.0 != dt) {
                 self.impact_unit = Some((dt, crate::mechanical::unit_impact_energy(dt)));
             }
             let unit = self.impact_unit.map_or(0.0, |u| u.1);
             let rate = self.impact_count.2;
-            let target = crate::mechanical::rms_pa_from_dba(
+            // the measured curve is the whole engine's: the impacts carry what the combustion
+            // (its last cycle) leaves of it, in power
+            let whole = crate::mechanical::rms_pa_from_dba(
                 crate::mechanical::mechanical_dba_at_1m(rpm_now),
             );
+            let target = (whole * whole - self.combustion_power.2).max(0.0);
             let amp = if rate > 0.0 && unit > 0.0 {
-                target / (rate * unit).sqrt()
+                (target / (rate * unit)).sqrt()
             } else {
                 0.0
             };
@@ -3880,6 +3904,20 @@ impl Engine {
         // what one bank fires and the other does not stays apart to be heard from either side).
         let n_banks = self.n_banks.clamp(1, 2);
         let mut block = [0.0; 2];
+        let mut combustion = 0.0;
+        if self
+            .impact_structure
+            .as_ref()
+            .is_none_or(|s| s.0 != dt || s.1.len() != n_banks)
+        {
+            self.impact_structure = Some((
+                dt,
+                (0..n_banks).map(|_| StructureResponse::new(dt)).collect(),
+            ));
+        }
+        if self.combustion_weight.as_ref().is_none_or(|w| w.0 != dt) {
+            self.combustion_weight = Some((dt, crate::mechanical::AWeighting::new(dt)));
+        }
         {
             if self
                 .structure
@@ -3938,10 +3976,22 @@ impl Engine {
                     };
                     let ticks = head[b].process(snd.mechanical * seats);
                     let ticks = self.bay.get_mut(b).map_or(ticks, |f| f.process(ticks));
-                    *out = comb[b].process(snd.block * p + impact[b]) + ticks;
+                    let burn = comb[b].process(snd.block * p);
+                    combustion += burn;
+                    let struck = self
+                        .impact_structure
+                        .as_mut()
+                        .and_then(|s| s.1.get_mut(b))
+                        .map_or(0.0, |r| r.process(impact[b]));
+                    *out = burn + struck + ticks;
                 }
             }
         };
+        if let Some((_, w)) = &mut self.combustion_weight {
+            let a = w.process(combustion);
+            self.combustion_power.0 += a * a;
+            self.combustion_power.1 += 1;
+        }
         self.structure_out = block.iter().sum();
         // the engine's own sources, heard from where it sits: each bank's side of the block, and
         // the intake mouth on the centre line. The mouth is the air box's inlet ducts if there
@@ -9547,6 +9597,38 @@ mod tests {
         let nb: f64 = b.iter().map(|p| p * p).sum::<f64>().sqrt();
         let corr = dot / (na * nb);
         assert!(corr.abs() < 0.5, "cycle-to-cycle correlation {corr:.2}");
+    }
+
+    #[test]
+    fn the_whole_structure_reads_the_measured_curve() {
+        // Lalor et al.'s curve is the engine's whole measured noise, combustion and mechanical
+        // together: with the block's combustion noise on, the impacts make up the rest, so the
+        // structure's total A-weighted level at 1 m is the curve's (±1 dB), not curve + block
+        for rpm in [3000.0, 6000.0] {
+            let mut d = EngineDef::inline4();
+            d.sound.mechanical = 0.0;
+            let mut e = Engine::new(d, rpm, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(rpm),
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &c);
+            let mut a = crate::mechanical::AWeighting::new(DT);
+            let n = (0.5 / DT) as usize;
+            let s: f64 = (0..n)
+                .map(|_| {
+                    e.step(DT, &c);
+                    a.process(e.structure_out).powi(2)
+                })
+                .sum();
+            let db = 10.0 * (s / n as f64 / 4e-10).log10();
+            let want = crate::mechanical::mechanical_dba_at_1m(rpm);
+            assert!(
+                (db - want).abs() < 1.0,
+                "{rpm}: {db:.1} dB(A) against {want:.1}"
+            );
+        }
     }
 
     #[test]
