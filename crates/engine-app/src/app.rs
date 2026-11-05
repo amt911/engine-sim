@@ -478,6 +478,56 @@ mod tests {
             let img = h.render().expect("render");
             img.save(out.join(format!("engine-3d-{}-close.png", preset.slug())))
                 .unwrap();
+            // the edit tint on the clicked piston (its bore edited), then the cam's phase arrow
+            // on an intake cam, at the realistic detail
+            if preset == Preset::Inline4 {
+                use crate::view3d::{handles::Field, scene::Part, ui::Tint};
+                drop(h);
+                state
+                    .view3d
+                    .governor
+                    .set_manual(Some(crate::view3d::detail::Detail::High));
+                state.view3d.tint = Some(Tint {
+                    field: Field::Bore,
+                    until: f64::MAX,
+                });
+                for (part, name) in [(Part::Piston, "tint"), (Part::IntakeCam, "cam")] {
+                    let target = state.view3d.shared.lock().ok().and_then(|sh| {
+                        sh.instances
+                            .iter()
+                            .position(|i| i.part == part)
+                            .map(|k| (k, sh.instances[k].model.w_axis.truncate()))
+                    });
+                    if let (Some(c), Some((k, p))) = (state.view3d.camera.as_mut(), target) {
+                        c.target = p;
+                        if part == Part::IntakeCam {
+                            c.distance *= 0.5;
+                        }
+                        state.view3d.selected = Some((k, egui::pos2(760.0, 420.0)));
+                    }
+                    if part == Part::IntakeCam {
+                        state.view3d.tint = Some(Tint {
+                            field: Field::IntakeOpens,
+                            until: f64::MAX,
+                        });
+                    }
+                    let rs = kw::create_render_state(
+                        kw::default_wgpu_setup(),
+                        eframe::egui_wgpu::RendererOptions::PREDICTABLE,
+                    );
+                    crate::view3d::render::install(&rs);
+                    let mut h = egui_kittest::Harness::builder()
+                        .with_size(egui::vec2(1400.0, 860.0))
+                        .renderer(kw::WgpuTestRenderer::from_render_state(rs))
+                        .build_ui(|ui| {
+                            layout(ui, &mut state, &snap, &Ok(48_000), false);
+                        });
+                    h.run();
+                    let img = h.render().expect("render");
+                    img.save(out.join(format!("engine-3d-{}-{name}.png", preset.slug())))
+                        .unwrap();
+                }
+            }
         }
     }
 
@@ -771,5 +821,207 @@ mod tests {
         assert!(now > duration, "{now} vs {duration}");
         assert!(h.state().engine_dirty);
         assert!(h.state().view3d.selected.is_some(), "the card stays open");
+    }
+
+    /// The harness for the GPU kittests: the 3D view of `state` at the realistic detail, drawn by
+    /// an off-screen renderer.
+    fn gpu_view<'a>(
+        mut state: UiState,
+        snap: &'a crate::sim::Snapshot,
+    ) -> egui_kittest::Harness<'a, UiState> {
+        use egui_kittest::wgpu as kw;
+        state.view3d.available = true;
+        state
+            .view3d
+            .governor
+            .set_manual(Some(crate::view3d::detail::Detail::High));
+        let rs = kw::create_render_state(
+            kw::default_wgpu_setup(),
+            eframe::egui_wgpu::RendererOptions::PREDICTABLE,
+        );
+        crate::view3d::render::install(&rs);
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1400.0, 860.0))
+            .renderer(kw::WgpuTestRenderer::from_render_state(rs))
+            .build_ui_state(
+                |ui, state: &mut UiState| {
+                    layout(ui, state, snap, &Ok(48_000), false);
+                },
+                state,
+            );
+        h.run();
+        h
+    }
+
+    fn press(h: &mut egui_kittest::Harness<'_, UiState>, at: egui::Pos2, pressed: bool) {
+        h.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+
+    /// While an arrow is held, and half a second after it is let go, the parts its measure
+    /// changes are tinted; then the engine is drawn plain again. Time is the harness's: a step is
+    /// a quarter of a second. Needs a GPU (or lavapipe):
+    /// `cargo test -p engine-app dragging_an_arrow_tints -- --ignored`.
+    #[test]
+    #[ignore]
+    fn dragging_an_arrow_tints_the_edited_part() {
+        use crate::view3d::{handles::Field, scene::Part};
+        let preset = Preset::Inline4;
+        let snap = Simulation::with_quality(
+            preset.def(),
+            preset.vehicle(),
+            48_000.0,
+            1,
+            crate::quality::Quality::Low,
+        )
+        .snapshot();
+        let state = UiState::with_engine(preset.def());
+        let bore = state.def.geometry.bore_m;
+        let mut h = gpu_view(state, &snap);
+        let piston = h.state().view3d.first(Part::Piston).unwrap();
+        let colour = |h: &egui_kittest::Harness<'_, UiState>, part| {
+            let sh = h.state().view3d.shared.lock().unwrap();
+            sh.instances.iter().find(|i| i.part == part).unwrap().color
+        };
+        h.state_mut().view3d.selected = Some((piston, egui::pos2(700.0, 300.0)));
+        h.run();
+        // (the clicked piston is the first one drawn: its plain colour is the brightened one)
+        let plain = colour(&h, Part::Piston);
+        let block = colour(&h, Part::Block);
+        assert_eq!(
+            h.state().view3d.tinted,
+            None,
+            "nothing edited: nothing tinted"
+        );
+        let (_, at) = *h
+            .state()
+            .view3d
+            .handle_spots
+            .iter()
+            .find(|(f, _)| *f == Field::Bore)
+            .expect("a bore handle on screen");
+        let mut done = false;
+        for dir in [
+            egui::vec2(40.0, 0.0),
+            egui::vec2(-40.0, 0.0),
+            egui::vec2(0.0, 40.0),
+            egui::vec2(0.0, -40.0),
+        ] {
+            h.hover_at(at);
+            h.run();
+            press(&mut h, at, true);
+            h.run();
+            for k in 1..=8 {
+                h.hover_at(at + dir * (k as f32 / 8.0));
+                h.run();
+            }
+            if h.state().def.geometry.bore_m != bore {
+                // held and changing: the piston is tinted, the block is not
+                assert_eq!(h.state().view3d.tinted, Some(Field::Bore));
+                let held = colour(&h, Part::Piston);
+                assert_ne!(held, plain, "the piston is tinted while the bore changes");
+                assert!(held[0] > held[2] + 0.2, "towards amber: {held:?}");
+                assert_eq!(colour(&h, Part::Block), block, "the block is not");
+                press(&mut h, at + dir, false);
+                h.step();
+                assert_eq!(
+                    h.state().view3d.tinted,
+                    Some(Field::Bore),
+                    "still tinted a quarter of a second after the last change"
+                );
+                h.step();
+                h.step();
+                h.step();
+                assert_eq!(h.state().view3d.tinted, None, "off after the timeout");
+                assert_eq!(colour(&h, Part::Piston), plain);
+                done = true;
+                break;
+            }
+            press(&mut h, at + dir, false);
+            h.run();
+            h.state_mut().view3d.selected = Some((piston, egui::pos2(700.0, 300.0)));
+            h.run();
+        }
+        assert!(done, "no pull changed the bore");
+    }
+
+    /// The cam has a phase arrow along the camshaft's turn: pulled the way it points on screen it
+    /// delays the intake valve's opening, the other way advances it, within the editor's range.
+    /// Needs a GPU (or lavapipe): `cargo test -p engine-app dragging_the_cam -- --ignored`.
+    #[test]
+    #[ignore]
+    fn dragging_the_cam_arrow_shifts_the_valve_timing() {
+        use crate::view3d::{handles::Field, scene::Part};
+        let preset = Preset::Inline4;
+        let snap = Simulation::with_quality(
+            preset.def(),
+            preset.vehicle(),
+            48_000.0,
+            1,
+            crate::quality::Quality::Low,
+        )
+        .snapshot();
+        let state = UiState::with_engine(preset.def());
+        let opens = state.def.intake_valve.open_deg;
+        let exhaust = state.def.exhaust_valve.open_deg;
+        let mut h = gpu_view(state, &snap);
+        let cam = h.state().view3d.first(Part::IntakeCam).unwrap();
+        // look at the cam: the camera on it, close
+        let target = h.state().view3d.shared.lock().unwrap().instances[cam]
+            .model
+            .w_axis
+            .truncate();
+        if let Some(c) = h.state_mut().view3d.camera.as_mut() {
+            c.target = target;
+            c.distance *= 0.4;
+        }
+        h.state_mut().view3d.selected = Some((cam, egui::pos2(700.0, 300.0)));
+        h.run();
+        let at_arrow = |h: &egui_kittest::Harness<'_, UiState>| {
+            h.state()
+                .view3d
+                .handle_spots
+                .iter()
+                .find(|(f, _)| *f == Field::IntakeOpens)
+                .map(|(_, p)| *p)
+        };
+        // pull 40 px along the arrow's screen direction (read from the drag's first move), and
+        // 40 px back past where it began, to the other side
+        let mut now = opens;
+        for sign in [1.0f32, -1.0] {
+            let at = at_arrow(&h).expect("an opening arrow on the cam");
+            h.hover_at(at);
+            h.run();
+            press(&mut h, at, true);
+            h.run();
+            h.hover_at(at + egui::vec2(6.0, 0.0));
+            h.run();
+            let dir = h.state().view3d.drag.expect("the arrow is held").dir;
+            for k in 1..=8 {
+                h.hover_at(at + sign * dir * (40.0 * k as f32 / 8.0));
+                h.run();
+            }
+            press(&mut h, at + sign * dir * 40.0, false);
+            h.run();
+            let next = h.state().def.intake_valve.open_deg;
+            if sign > 0.0 {
+                assert!(next > now, "along the arrow: {next} vs {now}");
+            } else {
+                assert!(next < now, "against the arrow: {next} vs {now}");
+            }
+            now = next;
+            assert!(h.state().engine_dirty, "the engine is rebuilt with it");
+            assert!((0.0..=719.0).contains(&next));
+            assert_eq!(
+                h.state().def.exhaust_valve.open_deg,
+                exhaust,
+                "only the intake"
+            );
+            assert_eq!(h.state().view3d.selected.map(|s| s.0), Some(cam));
+        }
     }
 }
