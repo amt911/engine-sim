@@ -3707,7 +3707,6 @@ impl Engine {
         // The intake mouth is a sink of the air it draws in: a monopole of volume flow
         // −ṁ/ρ₀ (1D: what the trumpets take in; 0D: the throttle's flow), heard from the
         // tails' mean distance — no gain chosen by ear. `sound.intake` scales it (1 = physical).
-        let snd = &self.def.sound;
         // `drawn`: the mouth's mass flow into the engine, kg/s (1D: held between FV steps). With
         // a turbo the air filter's flow is the compressor's: the throttle's swings reach it
         // through the charge air's low-pass (`TurboState::charge_tau_s`)
