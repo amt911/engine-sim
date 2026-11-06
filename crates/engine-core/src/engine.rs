@@ -9581,7 +9581,7 @@ mod tests {
             EngineDef::subaru_ej25(),
         ];
         for mut d in defs.clone() {
-            let branches = d.exhaust.groups(d.cylinders as usize).len().max(1);
+            let branches = d.exhaust.groups(d.cylinders).len().max(1);
             let swept = d.displacement_m3() / branches as f64;
             d.exhaust.after_collector =
                 crate::exhaust::road_exhaust(swept, d.exhaust.tail_diameter_m);
