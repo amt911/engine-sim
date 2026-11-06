@@ -522,6 +522,76 @@ impl EngineDef {
         d
     }
 
+    /// Mazda R26B, the four-rotor of the 787B that won Le Mans in 1991: four 13B rotors (e 15,
+    /// R 105, B 80 mm: 654 cm³ a chamber, 2616 cm³), CR 10.0, 700 PS (515 kW) at 9000 rpm and
+    /// 608 N·m at 6500 (Mazda R26B and Mazda 787B, Wikipedia), peripheral intake ports fed by
+    /// telescoping runners, one throttle per rotor, and an open racing exhaust. Its rotors
+    /// fire evenly, every 90° of shaft: 12 chambers 60° of chamber angle apart, rotors in the
+    /// order 1-3-2-4. ESTIMATES (not published): the port timings and areas, the runners, the
+    /// exhaust's lengths and diameters, the idle.
+    pub fn mazda_r26b_787b() -> Self {
+        let bp = Self::mazda_13b_bridgeport();
+        let mut d = Self {
+            name: "Mazda R26B 787B (four-rotor, peripheral port)".into(),
+            cylinders: 12,
+            // rotor A (chambers 1–3), C (7–9), B (4–6), D (10–12): each rotor's faces 240° of
+            // chamber angle apart, the next rotor 60° later
+            firing_order: vec![1, 7, 4, 10, 2, 8, 5, 11, 3, 9, 6, 12],
+            // peripheral ports, in chamber degrees (⅔ of the shaft's), typical of racing PP
+            // builds: intake 80° BTDC to 90° ABDC of shaft (53° / 60°), exhaust 80° BBDC to 50°
+            // ATDC (53° / 33°); a peripheral intake port opens nearly twice the RENESIS's area
+            intake_valve: ValveTiming {
+                open_deg: 307.0,
+                duration_deg: 293.0,
+                max_lift_m: bp.intake_valve.max_lift_m * (2.0f64 / 1.5).sqrt(),
+                diameter_m: bp.intake_valve.diameter_m * (2.0f64 / 1.5).sqrt(),
+                high: None,
+            },
+            exhaust_valve: ValveTiming {
+                open_deg: 127.0,
+                duration_deg: 266.0,
+                ..bp.exhaust_valve.clone()
+            },
+            redline_rpm: 9500.0,
+            idle_rpm: 1500.0,
+            // twice the 13B's chambers compressing at once: twice its starter (ESTIMATE)
+            starter_torque_nm: 2.0 * bp.starter_torque_nm,
+            intake: IntakeDef {
+                individual_throttles: true,
+                runner_length_m: 0.30,
+                runner_diameter_m: 0.055,
+                ..bp.intake.clone()
+            },
+            ..bp.clone()
+        };
+        // each rotor's chambers into its own 60 mm pipe, the four joined into one open 110 mm
+        // pipe (no catalyst, no silencer)
+        d.exhaust.collectors = vec![
+            vec![1, 2, 3],
+            vec![4, 5, 6],
+            vec![7, 8, 9],
+            vec![10, 11, 12],
+        ];
+        d.exhaust.collector_length_m = 0.45;
+        d.exhaust.collector_diameter_m = 0.06;
+        d.exhaust.muffler_volume_m3 = 0.0;
+        d.exhaust.after_collector = vec![crate::exhaust::Segment::Pipe {
+            length_m: 0.35,
+            diameter_m: 0.06,
+        }];
+        d.exhaust.merge = Some(crate::exhaust::Merge {
+            segments: vec![crate::exhaust::Segment::Pipe {
+                length_m: 0.9,
+                diameter_m: 0.11,
+            }],
+            outlet_diameter_m: 0.11,
+            bypass: None,
+        });
+        d.vehicle.name = "Mazda 787B".into();
+        d.vehicle.mass_kg = 845.0;
+        d
+    }
+
     /// Subaru EJ25 flat-four (EJ251, Impreza 2.5 RS 1999–2005): 99.5 × 79 mm, 2457 cc,
     /// CR 10.0, 165 hp at 5600 rpm, 225 N·m at 4000, SOHC with four valves per cylinder; firing
     /// 1-3-2-4, cylinders 1 and 3 on one bank, 2 and 4 on the other (Subaru EJ engine,
@@ -7810,6 +7880,41 @@ mod tests {
             "idles at {:.0}",
             e.rpm()
         );
+    }
+
+    #[test]
+    fn the_787b_runs_four_13b_rotors_on_peripheral_ports() {
+        // Mazda R26B (787B, Le Mans 1991): four 13B rotors — twice the RENESIS's two, the same
+        // e, R and B — fired evenly, 12 chambers 60° of chamber angle apart; peripheral intake
+        // and exhaust ports overlapping more than the bridge port's; an open racing exhaust.
+        let (r26b, renesis, bp) = (
+            EngineDef::mazda_r26b_787b(),
+            EngineDef::mazda_renesis(),
+            EngineDef::mazda_13b_bridgeport(),
+        );
+        assert_eq!(r26b.geometry, renesis.geometry);
+        assert_eq!(r26b.cylinders, 12);
+        assert_eq!(r26b.displacement_m3(), 2.0 * renesis.displacement_m3());
+        let mut order = r26b.firing_order.clone();
+        order.sort_unstable();
+        assert_eq!(order, (1..=12).collect::<Vec<_>>());
+        let overlap = |d: &EngineDef| {
+            d.exhaust_valve.open_deg + d.exhaust_valve.duration_deg - d.intake_valve.open_deg
+        };
+        assert!(overlap(&r26b) > overlap(&bp), "{}", overlap(&r26b));
+        assert!(
+            r26b.exhaust
+                .after_collector
+                .iter()
+                .chain(r26b.exhaust.merge.iter().flat_map(|m| m.segments.iter()))
+                .all(|x| matches!(x, crate::exhaust::Segment::Pipe { .. }))
+        );
+        assert_eq!(r26b.exhaust.muffler_volume_m3, 0.0);
+    }
+
+    #[test]
+    fn the_787b_starts_idles_and_survives_a_blip() {
+        starts_idles_and_survives_a_blip(EngineDef::mazda_r26b_787b());
     }
 
     #[test]
