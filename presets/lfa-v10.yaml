@@ -197,6 +197,7 @@ engine:
         baffle_open_area: 0.03
         open_rpm: 3000.0
         travel_s: 0.3
+        valve_clearance_m: 0.0005
         shell_thickness_m: 0.001
         shell_density_kg_m3: 4510.0
         shell_area_m2: 0.1382300767579509
