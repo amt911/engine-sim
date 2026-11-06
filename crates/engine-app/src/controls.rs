@@ -20,13 +20,14 @@ pub enum Preset {
     VwTdi,
     MazdaRenesis,
     Mazda13bBridgeport,
+    MazdaR26b787b,
     LfaV10,
     FlatplaneV8,
     CrossplaneV8,
 }
 
 impl Preset {
-    pub const ALL: [Preset; 13] = [
+    pub const ALL: [Preset; 14] = [
         Preset::Single,
         Preset::Inline4,
         Preset::HondaK20a,
@@ -37,6 +38,7 @@ impl Preset {
         Preset::VwTdi,
         Preset::MazdaRenesis,
         Preset::Mazda13bBridgeport,
+        Preset::MazdaR26b787b,
         Preset::LfaV10,
         Preset::FlatplaneV8,
         Preset::CrossplaneV8,
@@ -53,6 +55,7 @@ impl Preset {
             Preset::VwTdi => EngineDef::vw_tdi(),
             Preset::MazdaRenesis => EngineDef::mazda_renesis(),
             Preset::Mazda13bBridgeport => EngineDef::mazda_13b_bridgeport(),
+            Preset::MazdaR26b787b => EngineDef::mazda_r26b_787b(),
             Preset::LfaV10 => EngineDef::lfa_v10(),
             Preset::FlatplaneV8 => EngineDef::flatplane_v8(),
             Preset::CrossplaneV8 => EngineDef::crossplane_v8(),
@@ -75,6 +78,7 @@ impl Preset {
             Preset::VwTdi => "vw-tdi",
             Preset::MazdaRenesis => "mazda-renesis",
             Preset::Mazda13bBridgeport => "mazda-13b-bridgeport",
+            Preset::MazdaR26b787b => "mazda-787b",
             Preset::LfaV10 => "lfa-v10",
             Preset::FlatplaneV8 => "v8-flatplane",
             Preset::CrossplaneV8 => "v8-crossplane",
@@ -95,6 +99,7 @@ impl Preset {
             Preset::VwTdi => "VW 1.9 TDI (diesel turbo)",
             Preset::MazdaRenesis => "Mazda 13B RENESIS (rotary)",
             Preset::Mazda13bBridgeport => "Mazda 13B RX-7 bridge-port (tuned)",
+            Preset::MazdaR26b787b => "Mazda 787B R26B (four-rotor, Le Mans 1991)",
             Preset::LfaV10 => "Lexus LFA V10",
             Preset::FlatplaneV8 => "V8 4.5 flat-plane (European)",
             Preset::CrossplaneV8 => "V8 6.2 cross-plane (American)",

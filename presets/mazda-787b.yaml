@@ -1,0 +1,169 @@
+version: 3
+engine:
+  name: Mazda R26B 787B (four-rotor, peripheral port)
+  geometry:
+    bore_m: 0.1361052933804274
+    stroke_m: 0.045
+    rod_m: 0.0
+    compression_ratio: 10.0
+    rotor:
+      eccentricity_m: 0.015
+      generating_radius_m: 0.105
+      width_m: 0.08
+  cylinders: 12
+  firing_order:
+  - 1
+  - 7
+  - 4
+  - 10
+  - 2
+  - 8
+  - 5
+  - 11
+  - 3
+  - 9
+  - 6
+  - 12
+  layout:
+    bank_angle_deg: 0.0
+    banks: []
+  intake_valve:
+    open_deg: 307.0
+    duration_deg: 293.0
+    max_lift_m: 0.018950461735799472
+    diameter_m: 0.07566042558696058
+  exhaust_valve:
+    open_deg: 127.0
+    duration_deg: 266.0
+    max_lift_m: 0.012737346662472525
+    diameter_m: 0.0509493866498901
+  spark_advance_deg: 25.0
+  burn_duration_deg: 55.0
+  flywheel_inertia_kgm2: 0.12
+  plenum_volume_m3: 0.004
+  throttle_diameter_m: 0.065
+  idle_throttle: 0.018
+  idle_rpm: 1500.0
+  exhaust:
+    primary_length_m: 0.06
+    primary_diameter_m: 0.045
+    collectors:
+    - - 1
+      - 2
+      - 3
+    - - 4
+      - 5
+      - 6
+    - - 7
+      - 8
+      - 9
+    - - 10
+      - 11
+      - 12
+    collector_length_m: 0.45
+    collector_diameter_m: 0.06
+    collector_extra_length_m: []
+    primary_length_deviation_m: []
+    tail_length_m: 1.6
+    tail_diameter_m: 0.065
+    tail_outlets: 1
+    muffler_transmission: 1.0
+    model: waveguide
+    muffler_volume_m3: 0.0
+    muffler_packing:
+      thickness_m: 0.025
+      flow_resistivity: 16000.0
+      porosity: 0.95
+    tail_spacing_m: 0.9
+    after_collector:
+    - kind: pipe
+      length_m: 0.35
+      diameter_m: 0.06
+    merge:
+      segments:
+      - kind: pipe
+        length_m: 0.9
+        diameter_m: 0.11
+      outlet_diameter_m: 0.11
+      bypass: null
+    steepening: true
+    gas_temperature: false
+  intake:
+    model: fv
+    runner_length_m: 0.3
+    runner_diameter_m: 0.055
+    individual_throttles: true
+    trumpet_loss: 0.1
+    film_fraction: 0.18
+    film_tau_s: 1.0
+    airbox: null
+    air_cleaner:
+      fitted: true
+      volume_m3: 0.0
+      snorkel_length_m: 0.3
+      snorkel_diameter_m: 0.0
+      filter_resistance_pa_s_m3: 0.0
+  redline_rpm: 9500.0
+  shutoff_rpm: 0.0
+  starter_torque_nm: 120.0
+  friction:
+    valvetrain: dohc_direct_acting
+    roller_followers: false
+    valves_per_cylinder: 4
+    valve_density_kg_m3: 7850.0
+    rods_per_crankpin: 2
+    ring_tension_ratio: 1.0
+    liner_roughness: 1.0
+    oil_viscosity_ratio: 1.0
+  sound:
+    flow_noise: 1.0
+    intake: 1.0
+    valve_jet: 1.0
+    duct_flow: 1.0
+    main_bearings: 1.0
+    piston_slap: 1.0
+    block: 1.0
+    mechanical: 1.0
+    combustion_jitter: 1.0
+    chamber_ring: 1.0
+    block_modes: 0.0
+    blow_off: 1.0
+    compressor_whine: 1.0
+    reverb: 0.0
+    leveling: 0.0
+    listener_distance_m: 3.0
+    listener_angle_deg: 30.0
+    ground: true
+    tail_height_m: 0.3
+    listener_height_m: 1.6
+    street_width_m: 0.0
+    wall_reflection: 0.8
+  exhaust_reverse_cd_ratio: 0.75
+  overrun_fuel_cut_rpm: 1500.0
+  vehicle:
+    name: Mazda 787B
+    mass_kg: 845.0
+    wheel_radius_m: 0.316
+    drag_cd_a_m2: 0.64
+    rolling_coeff: 0.012
+    gear_ratios:
+    - 3.62
+    - 1.95
+    - 1.36
+    - 0.94
+    - 0.78
+    final_drive: 4.1
+    driveline_efficiency: 0.92
+    wheel_inertia_kgm2: 4.0
+    clutch_capacity_nm: 350.0
+    max_brake_decel_m_s2: 9.0
+    shift_time_s: 0.0
+    engine_ahead_m: 3.4
+    engine_bay:
+      open_fraction: 0.01
+      liner_thickness_m: 0.02
+      liner_resistivity: 16000.0
+      liner_coverage: 0.25
+    shuffle_hz: 3.5
+    shuffle_damping: 0.15
+  turbo: null

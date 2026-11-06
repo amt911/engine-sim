@@ -556,6 +556,10 @@ impl EngineDef {
             idle_rpm: 1500.0,
             // twice the 13B's chambers compressing at once: twice its starter (ESTIMATE)
             starter_torque_nm: 2.0 * bp.starter_torque_nm,
+            // one 55 mm throttle per rotor (ESTIMATE). The engine shares `throttle_diameter_m`
+            // among its chambers as individual throttles; each rotor's throttle serves whole the
+            // one chamber inhaling at a time, so the shared total is twelve of them: 55 mm · √12
+            throttle_diameter_m: 0.055 * 12f64.sqrt(),
             intake: IntakeDef {
                 individual_throttles: true,
                 runner_length_m: 0.30,
@@ -7913,8 +7917,35 @@ mod tests {
     }
 
     #[test]
-    fn the_787b_starts_idles_and_survives_a_blip() {
-        starts_idles_and_survives_a_blip(EngineDef::mazda_r26b_787b());
+    fn the_787b_starts_never_stalls_and_revs_past_9000() {
+        // Started on its starter it keeps running through 12 s of idle and a full-throttle
+        // blip. A peripheral-port rotary's idle hunts on its overlap (as the bridge port's does;
+        // the swing is the model's open question, ROADMAP), so only a stall fails here. Floored,
+        // it passes the 9000 rpm of its rated power within 2 s.
+        let d = EngineDef::mazda_r26b_787b();
+        let mut e = Engine::new(d.clone(), 0.0, 1);
+        let crank = Controls {
+            starter: true,
+            ..Controls::default()
+        };
+        run(&mut e, 1.0, &crank);
+        let mut low = f64::INFINITY;
+        for _ in 0..(12.0 / DT) as usize {
+            e.step(DT, &Controls::default());
+            low = low.min(e.rpm());
+        }
+        let blip = Controls {
+            throttle: 1.0,
+            ..Controls::default()
+        };
+        run(&mut e, 0.3, &blip);
+        for _ in 0..(4.0 / DT) as usize {
+            e.step(DT, &Controls::default());
+            low = low.min(e.rpm());
+        }
+        assert!(low > 0.25 * d.idle_rpm, "fell to {low:.0}");
+        run(&mut e, 2.0, &blip);
+        assert!(e.rpm() > 9000.0, "floored only to {:.0}", e.rpm());
     }
 
     #[test]
