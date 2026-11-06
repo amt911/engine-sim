@@ -391,8 +391,9 @@ impl ExhaustFv {
         let dt_target = 0.8 * CELL_M / 800.0;
         let substeps = ((dt_target / dt).floor() as usize).max(1);
         Self {
+            // each cylinder's own runner: the manifold's unequal lengths
             primaries: (0..cylinders)
-                .map(|_| pipe(def.primary_length_m, def.primary_diameter_m, init))
+                .map(|i| pipe(def.primary_length(i), def.primary_diameter_m, init))
                 .collect(),
             a_primary: area(def.primary_diameter_m),
             branches,
@@ -765,6 +766,25 @@ mod tests {
             model: ExhaustModel::Fv,
             ..ExhaustDef::default()
         }
+    }
+
+    #[test]
+    fn each_primary_is_as_long_as_its_cylinders_deviation_makes_it() {
+        // 0.60 m primaries, the second 0.12 m longer (a manifold's unequal runners): 0.60 and
+        // 0.72 m, to within half a 4 cm cell
+        let d = ExhaustDef {
+            primary_length_m: 0.60,
+            primary_length_deviation_m: vec![0.0, 0.12],
+            ..def()
+        };
+        let net = ExhaustFv::new(&d, 2, DT);
+        let len = |p: &Pipe1d| p.cells.len() as f64 * p.dx;
+        assert!((len(&net.primaries[0]) - 0.60).abs() < 0.02);
+        assert!(
+            (len(&net.primaries[1]) - 0.72).abs() < 0.02,
+            "{}",
+            len(&net.primaries[1])
+        );
     }
 
     #[test]
