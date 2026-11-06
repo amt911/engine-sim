@@ -234,9 +234,71 @@ pub fn combustion_drive(cylinders_pa: impl IntoIterator<Item = f64>, bore_m: f64
     sum / (n as f64).sqrt() * (bore_m / 0.1).powf(2.5)
 }
 
+/// A force striking the structure at a point (a valve on its seat, a journal in its bearing, a
+/// piston across its bore), heard as it radiates: unlike the cylinder pressure, which the crank
+/// takes back inside the engine (hence the measured response's steep rise, [`StructureResponse`]),
+/// a strike puts a net force into a wall. A plate driven at a point radiates
+/// W = ρ₀F²/(2πc₀m''²) below its coincidence frequency, no frequency in it (Heckl; Cremer &
+/// Heckl, *Structure-Borne Sound*, §6.6; Fahy, *Sound and Structural Vibration*, §3.11): flat in
+/// power above the block's first mode. Below that mode the structure is held by its stiffness, a
+/// second-order high-pass at [`MODE_FIRST_HZ`]. Unit gain: the level is set where it is used.
+#[derive(Debug, Clone)]
+pub struct PointForceRadiation {
+    stiffness: Section,
+}
+
+impl PointForceRadiation {
+    /// Stepped every `dt` seconds.
+    pub fn new(dt: f64) -> Self {
+        let w = 2.0 * PI * MODE_FIRST_HZ;
+        Self {
+            stiffness: Section::bilinear(
+                [0.0, 0.0, 1.0],
+                [w * w, std::f64::consts::SQRT_2 * w, 1.0],
+                dt,
+            ),
+        }
+    }
+
+    /// One step: the force (any unit) in, the radiated pressure in the same unit out.
+    pub fn process(&mut self, force: f64) -> f64 {
+        self.stiffness.process(force)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Gain, dB, of a point force's radiation for a unit sine of `f` Hz.
+    fn point_force_db(f: f64) -> f64 {
+        let dt = 1.0 / 48_000.0;
+        let mut r = PointForceRadiation::new(dt);
+        let n = 48_000;
+        let mut sum = 0.0;
+        for i in 0..n {
+            let y = r.process((2.0 * PI * f * i as f64 * dt).sin());
+            if i >= n / 2 {
+                sum += y * y;
+            }
+        }
+        10.0 * (sum / (n / 2) as f64 * 2.0).log10()
+    }
+
+    #[test]
+    fn a_point_force_radiates_the_same_power_at_every_frequency_above_the_first_mode() {
+        // Heckl (Cremer & Heckl, Structure-Borne Sound, §6.6): a plate driven at a point
+        // radiates W = ρ₀F²/(2πc₀m''²) below coincidence, no frequency in it. Below the first
+        // mode (300 Hz) the structure is held by its stiffness, a second-order high-pass:
+        // by hand (f/f₀)²/√(1 + (f/f₀)⁴) is −0.26 dB at 600 Hz, 0 above, −24.1 dB at 75 Hz.
+        let top = point_force_db(1000.0);
+        for f in [600.0, 2000.0, 4000.0, 8000.0] {
+            let d = point_force_db(f) - top;
+            assert!(d.abs() < 0.6, "{f} Hz is {d:.2} dB off 1 kHz");
+        }
+        let low = point_force_db(75.0) - top;
+        assert!((low + 24.1).abs() < 1.0, "75 Hz is {low:.1} dB");
+    }
 
     /// Mean output power of a unit sine of `f` Hz into cylinder `c` of 4, alone (undoing the mean).
     fn modal_power(f: f64, c: usize) -> f64 {
