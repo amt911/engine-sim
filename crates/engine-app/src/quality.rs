@@ -1,6 +1,6 @@
 //! Quality levels, as games have them: how much physics the machine can afford in real time.
 //! The engine definition is never changed; a level only decides how finely it is simulated and
-//! with which pipe models (Ultra and Reference: finite volumes; Low: 0D and waveguide).
+//! with which pipe models (Ultra: finite volumes; Low: 0D and waveguide; the rest the engine's).
 //! Measured on the scorecard (`sim.rs`, 2026-10-23): 3× oversampling sounds as 4×, 2× within
 //! a few percent; the 1D pipes are the dear part on a ten-cylinder engine.
 
@@ -21,7 +21,7 @@ pub enum Quality {
     /// 4× the audio rate (192 kHz at 48 kHz), finite-volume intake and exhaust whatever the
     /// engine asks: the best real time.
     Ultra,
-    /// 8× the audio rate, finite-volume pipes as Ultra, for offline renders only (never real time, never Auto's).
+    /// 8× the audio rate, the engine's own pipe models, for offline renders only (never real time, never Auto's).
     Reference,
 }
 
@@ -69,11 +69,14 @@ impl Quality {
                 d.exhaust.model = ExhaustModel::Waveguide;
             }
             // the most realistic: every engine on finite-volume pipes, intake and exhaust
-            Quality::Ultra | Quality::Reference => {
+            // Reference keeps the engine's own until the FV pipes hold the bridge-port 13B's
+            // idle at its 8× rate: there it sank to a stall (at Ultra's 4× it holds), the
+            // valves' per-step mass limit binding differently with the step
+            Quality::Ultra => {
                 d.intake.model = IntakeModel::Fv;
                 d.exhaust.model = ExhaustModel::Fv;
             }
-            Quality::Medium | Quality::High => {}
+            Quality::Medium | Quality::High | Quality::Reference => {}
         }
         d
     }
@@ -242,28 +245,28 @@ mod tests {
     }
 
     #[test]
-    fn ultra_and_reference_run_every_engine_on_its_finite_volume_pipes() {
-        // the most realistic model at the top for every engine, whatever its file says: the FV
-        // pipes hold every preset's idle now (K20A σ 29 rpm against the waveguide's 26,
-        // 2026-11-06), the reason Reference once kept the engine's own
+    fn ultra_runs_every_engine_on_its_finite_volume_pipes() {
+        // the most realistic model at the top real-time level for every engine, whatever its
+        // file says: every preset starts and holds its idle on the FV pipes at Ultra
+        // (`every_preset_starts_and_idles_on_its_own_at_ultra`)
         let mut def = EngineDef::honda_k20a();
         def.intake.model = IntakeModel::ZeroD;
         assert_eq!(def.exhaust.model, ExhaustModel::Waveguide);
-        for q in [Quality::Ultra, Quality::Reference] {
-            let d = q.apply(&def);
-            assert_eq!(
-                (d.intake.model, d.exhaust.model),
-                (IntakeModel::Fv, ExhaustModel::Fv),
-                "{q:?}"
-            );
-            // nothing else changes
-            let mut back = d.clone();
-            back.intake.model = IntakeModel::ZeroD;
-            back.exhaust.model = ExhaustModel::Waveguide;
-            assert_eq!(back, def, "{q:?}");
-        }
-        // High and Medium keep the engine's own
-        for q in [Quality::Medium, Quality::High] {
+        let q = Quality::Ultra;
+        let d = q.apply(&def);
+        assert_eq!(
+            (d.intake.model, d.exhaust.model),
+            (IntakeModel::Fv, ExhaustModel::Fv),
+            "{q:?}"
+        );
+        // nothing else changes
+        let mut back = d.clone();
+        back.intake.model = IntakeModel::ZeroD;
+        back.exhaust.model = ExhaustModel::Waveguide;
+        assert_eq!(back, def, "{q:?}");
+        // High, Medium and (until the bridge-port 13B holds its idle there) Reference keep
+        // the engine's own
+        for q in [Quality::Medium, Quality::High, Quality::Reference] {
             assert_eq!(q.apply(&def), def, "{q:?}");
         }
     }
