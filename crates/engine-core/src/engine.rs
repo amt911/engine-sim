@@ -1605,6 +1605,9 @@ const LIMITER_HYSTERESIS_RPM: f64 = 200.0;
 /// hunted 32 % about its idle for seconds; a sweep of 0.05/0.3/0.6/1.0 over eleven presets
 /// (2026-11-06) left 0.6 the smallest worst case of the piston engines (12 %).
 const IAC_KP: f64 = 0.6;
+/// The share of the target speed within which the proportional term acts (the idle's band: the
+/// hunting it damps swung 10–30 %). ESTIMATE.
+const IAC_P_BAND: f64 = 0.2;
 /// A diesel's idle governor on its fuel share: proportional per relative speed error, integral
 /// per second, and the most fuel it gives (my calls: an idle needs ~5–10 % of full fuel).
 const DIESEL_IDLE_KP: f64 = 1.5;
@@ -2753,7 +2756,11 @@ impl Engine {
         if err > 0.0 || rpm + self.iac_rate * IAC_LOOKAHEAD_S > target {
             self.iac_integral = (self.iac_integral + IAC_KI_PER_S * err * dt).clamp(lo, hi);
         }
-        self.iac = scale * (self.iac_integral + IAC_KP * err).clamp(lo, hi);
+        // the proportional term damps the loop about its target; far above it (a start flare,
+        // falling from a blip) shutting the air would starve the catch: there the dashpot
+        // and the spark path act, so it sees the error within the idle band only
+        let near = err.clamp(-IAC_P_BAND, IAC_P_BAND);
+        self.iac = scale * (self.iac_integral + IAC_KP * near).clamp(lo, hi);
         let r = IDLE_SPARK_RESERVE_DEG;
         let trim = IDLE_SPARK_KP_DEG * err - IDLE_SPARK_KD_DEG_S * self.iac_rate / target;
         self.idle_spark_deg = self.slew_spark(trim.clamp(-r, r) - r, dt);
@@ -7772,6 +7779,37 @@ mod tests {
                 .all(|x| matches!(x, crate::exhaust::Segment::Pipe { .. }))
         );
         assert_eq!(tuned.geometry, stock.geometry);
+    }
+
+    #[test]
+    fn the_renesis_catches_its_idle_after_the_start_flare_at_the_low_quality_step() {
+        // Low and Medium quality step the physics at twice the 48 kHz audio rate. Started there,
+        // the RENESIS flared to 2300 rpm, its injection cut on the way down (overrun), and the
+        // fuel came back at a fixed 1100 rpm while the rotor fell at ~2800 rpm/s: too late to
+        // catch it, it stalled. An ECU brings the fuel back earlier the faster the engine falls.
+        let dt = 1.0 / 96_000.0;
+        let d = EngineDef::mazda_renesis();
+        let mut e = Engine::new(d.clone(), 0.0, 1);
+        let crank = Controls {
+            starter: true,
+            ..Controls::default()
+        };
+        (0..(1.0 / dt) as usize).for_each(|_| {
+            e.step(dt, &crank);
+        });
+        let mut low = f64::INFINITY;
+        for k in 0..(5.0 / dt) as usize {
+            e.step(dt, &Controls::default());
+            if k as f64 * dt > 1.0 {
+                low = low.min(e.rpm());
+            }
+        }
+        assert!(low > 0.4 * d.idle_rpm, "fell to {low:.0} rpm");
+        assert!(
+            (e.rpm() / d.idle_rpm - 1.0).abs() < 0.25,
+            "idles at {:.0}",
+            e.rpm()
+        );
     }
 
     #[test]
