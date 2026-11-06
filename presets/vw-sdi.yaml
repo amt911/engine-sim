@@ -62,7 +62,7 @@ engine:
     after_collector:
     - kind: pipe
       length_m: 0.4
-      diameter_m: 0.045
+      diameter_m: 0.05
     - kind: catalyst
       length_m: 0.13
       diameter_m: 0.1363
@@ -70,25 +70,25 @@ engine:
       wall_m: 0.000165
     - kind: pipe
       length_m: 1.0
-      diameter_m: 0.045
+      diameter_m: 0.05
     - kind: muffler
       length_m: 0.35
       diameter_m: 0.1175
-      tube_diameter_m: 0.045
+      tube_diameter_m: 0.05
       packing_resistivity: 16000.0
       packing_porosity: 0.95
     - kind: pipe
       length_m: 0.8
-      diameter_m: 0.045
+      diameter_m: 0.05
     - kind: muffler
       length_m: 0.45
       diameter_m: 0.2072
-      tube_diameter_m: 0.045
+      tube_diameter_m: 0.05
       packing_resistivity: 16000.0
       packing_porosity: 0.95
     - kind: pipe
       length_m: 0.3
-      diameter_m: 0.045
+      diameter_m: 0.05
     merge: null
     steepening: true
     gas_temperature: false
