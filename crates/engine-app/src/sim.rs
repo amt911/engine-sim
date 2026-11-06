@@ -999,6 +999,39 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn every_preset_starts_and_idles_on_its_own_at_ultra() {
+        // Ultra runs every engine on finite-volume pipes: each must catch its idle after the
+        // start flare and hold it, pedal up (the flat-plane V8 sank from 1925 rpm to a stall
+        // when its idle air was a hand-set 0.3 % instead of the shared law)
+        use crate::controls::Preset;
+        for p in Preset::ALL {
+            let def = p.def();
+            let target = def.idle_rpm;
+            let mut sim = Simulation::with_quality(
+                def,
+                p.vehicle(),
+                48_000.0,
+                1,
+                crate::quality::Quality::Ultra,
+            );
+            let mut buf = vec![0.0f32; 12_000];
+            let (mut low, mut sum) = (f64::INFINITY, 0.0);
+            for k in 0..24 {
+                sim.render(&mut buf);
+                if k >= 8 {
+                    let rpm = sim.snapshot().rpm;
+                    low = low.min(rpm);
+                    sum += rpm / 16.0;
+                }
+            }
+            assert!(
+                low > 0.6 * target && (sum / target - 1.0).abs() < 0.25,
+                "{p:?}: low {low}, mean {sum}"
+            );
+        }
+    }
+
+    #[test]
     fn the_rotaries_idle_on_their_own_at_reference_quality() {
         // the offline scenes idle each engine before recording; a RENESIS that fell into a
         // stall after its start flare (a port coupling tried on it) rendered silence. Both

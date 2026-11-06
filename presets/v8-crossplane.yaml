@@ -42,7 +42,7 @@ engine:
   flywheel_inertia_kgm2: 0.25
   plenum_volume_m3: 0.006
   throttle_diameter_m: 0.09
-  idle_throttle: 0.0065
+  idle_throttle: 0.0
   idle_rpm: 700.0
   exhaust:
     primary_length_m: 0.75

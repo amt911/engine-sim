@@ -1,5 +1,6 @@
 //! Quality levels, as games have them: how much physics the machine can afford in real time.
-//! The engine definition is never changed; a level only decides how finely it is simulated.
+//! The engine definition is never changed; a level only decides how finely it is simulated and
+//! with which pipe models (Ultra: finite volumes; Low: 0D and waveguide; the rest the engine's).
 //! Measured on the scorecard (`sim.rs`, 2026-10-23): 3× oversampling sounds as 4×, 2× within
 //! a few percent; the 1D pipes are the dear part on a ten-cylinder engine.
 
@@ -17,9 +18,10 @@ pub enum Quality {
     Medium,
     /// 3× the audio rate.
     High,
-    /// 4× the audio rate (192 kHz at 48 kHz): the best real time.
+    /// 4× the audio rate (192 kHz at 48 kHz), finite-volume intake and exhaust whatever the
+    /// engine asks: the best real time.
     Ultra,
-    /// 8× the audio rate, for offline renders only (never real time, never Auto's).
+    /// 8× the audio rate, the engine's own pipe models, for offline renders only (never real time, never Auto's).
     Reference,
 }
 
@@ -61,9 +63,20 @@ impl Quality {
     /// The definition as this level simulates it.
     pub fn apply(self, def: &EngineDef) -> EngineDef {
         let mut d = def.clone();
-        if self == Quality::Low {
-            d.intake.model = IntakeModel::ZeroD;
-            d.exhaust.model = ExhaustModel::Waveguide;
+        match self {
+            Quality::Low => {
+                d.intake.model = IntakeModel::ZeroD;
+                d.exhaust.model = ExhaustModel::Waveguide;
+            }
+            // the most realistic: every engine on finite-volume pipes, intake and exhaust
+            // Reference keeps the engine's own until the FV pipes hold the bridge-port 13B's
+            // idle at its 8× rate: there it sank to a stall (at Ultra's 4× it holds), the
+            // valves' per-step mass limit binding differently with the step
+            Quality::Ultra => {
+                d.intake.model = IntakeModel::Fv;
+                d.exhaust.model = ExhaustModel::Fv;
+            }
+            Quality::Medium | Quality::High | Quality::Reference => {}
         }
         d
     }
@@ -227,19 +240,35 @@ mod tests {
         back.exhaust.model = ExhaustModel::Fv;
         assert_eq!(back, def);
         for q in [Quality::Medium, Quality::High, Quality::Ultra] {
-            assert_eq!(q.apply(&def), def, "{q:?}");
+            assert_eq!(q.apply(&def), def, "{q:?}: an FV engine stays FV");
         }
     }
 
     #[test]
-    fn reference_keeps_the_engines_own_exhaust() {
-        // Reference used to switch to the FV exhaust; with it the K20A's idle hunted 559–1118 rpm
-        // (σ 179 against the waveguide's 22: less idle torque, the idle air integral pinned at its
-        // floor), heard as stuttering. Until FV holds an idle, the level only steps finer
-        let mut def = EngineDef::lfa_v10();
-        assert_eq!(Quality::Reference.apply(&def), def);
-        def.exhaust.model = ExhaustModel::Fv;
-        assert_eq!(Quality::Reference.apply(&def), def, "an FV engine stays FV");
+    fn ultra_runs_every_engine_on_its_finite_volume_pipes() {
+        // the most realistic model at the top real-time level for every engine, whatever its
+        // file says: every preset starts and holds its idle on the FV pipes at Ultra
+        // (`every_preset_starts_and_idles_on_its_own_at_ultra`)
+        let mut def = EngineDef::honda_k20a();
+        def.intake.model = IntakeModel::ZeroD;
+        assert_eq!(def.exhaust.model, ExhaustModel::Waveguide);
+        let q = Quality::Ultra;
+        let d = q.apply(&def);
+        assert_eq!(
+            (d.intake.model, d.exhaust.model),
+            (IntakeModel::Fv, ExhaustModel::Fv),
+            "{q:?}"
+        );
+        // nothing else changes
+        let mut back = d.clone();
+        back.intake.model = IntakeModel::ZeroD;
+        back.exhaust.model = ExhaustModel::Waveguide;
+        assert_eq!(back, def, "{q:?}");
+        // High, Medium and (until the bridge-port 13B holds its idle there) Reference keep
+        // the engine's own
+        for q in [Quality::Medium, Quality::High, Quality::Reference] {
+            assert_eq!(q.apply(&def), def, "{q:?}");
+        }
     }
 
     #[test]

@@ -64,7 +64,8 @@ pub struct EngineDef {
     pub flywheel_inertia_kgm2: f64,
     pub plenum_volume_m3: f64,
     pub throttle_diameter_m: f64,
-    /// Fraction of throttle area open at zero pedal (idle air).
+    /// Fraction of throttle area open at zero pedal (idle air), set by hand: 0 for the law
+    /// every engine shares (the air it swallows at idle, `Engine::idle_base`).
     pub idle_throttle: f64,
     /// Idle speed the ECU's idle-speed control holds with the pedal released, rpm. Files
     /// written before it existed get a generic 900 rpm (not the default engine's).
@@ -205,7 +206,8 @@ impl EngineDef {
             flywheel_inertia_kgm2: 0.12,
             plenum_volume_m3: 1.5e-3,
             throttle_diameter_m: 0.040,
-            idle_throttle: 0.0015,
+            // the idle air every engine shares (`Engine::idle_base`)
+            idle_throttle: 0.0,
             // motorcycle singles idle at 1200–1500 rpm (estimate)
             idle_rpm: 1200.0,
             exhaust: ExhaustDef {
@@ -255,7 +257,8 @@ impl EngineDef {
             flywheel_inertia_kgm2: 0.15,
             plenum_volume_m3: 4.0e-3,
             throttle_diameter_m: 0.060,
-            idle_throttle: 0.0055,
+            // the idle air every engine shares (`Engine::idle_base`)
+            idle_throttle: 0.0,
             // a typical car idle (estimate)
             idle_rpm: 800.0,
             exhaust: ExhaustDef::default(),
@@ -431,7 +434,8 @@ impl EngineDef {
             flywheel_inertia_kgm2: 0.12,
             plenum_volume_m3: 4.0e-3,
             throttle_diameter_m: 0.065,
-            idle_throttle: 0.0055,
+            // the idle air every engine shares (`Engine::idle_base`)
+            idle_throttle: 0.0,
             idle_rpm: 800.0,
             // each rotor's three chambers share its exhaust port: their "primaries" are port
             // stubs joined at once; the rotor's own pipe is the collector (ESTIMATES)
@@ -560,7 +564,8 @@ impl EngineDef {
             flywheel_inertia_kgm2: 0.15,
             plenum_volume_m3: 4.0e-3,
             throttle_diameter_m: 0.065,
-            idle_throttle: 0.0055,
+            // the idle air every engine shares (`Engine::idle_base`)
+            idle_throttle: 0.0,
             // a typical car idle (estimate)
             idle_rpm: 700.0,
             // The stock headers: each bank's pipes run to one collector under the engine, the
@@ -722,7 +727,8 @@ impl EngineDef {
             flywheel_inertia_kgm2: 0.15,
             plenum_volume_m3: 4.0e-3,
             throttle_diameter_m: 0.062,
-            idle_throttle: 0.0055,
+            // the idle air every engine shares (`Engine::idle_base`)
+            idle_throttle: 0.0,
             // a typical car idle (estimate)
             idle_rpm: 800.0,
             // primaries timed to the blowdown's second return at the 8000 rpm power peak
@@ -941,9 +947,10 @@ impl EngineDef {
             flywheel_inertia_kgm2: 0.28,
             plenum_volume_m3: 8.0e-3,
             // Ten individual throttle bodies of the runner's 45 mm bore, as one total bore:
-            // √10 · 45 mm. Idle bypass: the same area as 0.3 % of a 120 mm throttle.
+            // √10 · 45 mm.
             throttle_diameter_m: 0.045 * std::f64::consts::SQRT_2 * 5f64.sqrt(),
-            idle_throttle: 0.003 * 0.120 * 0.120 / (0.045 * 0.045 * 10.0),
+            // the idle air every engine shares (`Engine::idle_base`)
+            idle_throttle: 0.0,
             // no published figure; a typical high-revving V10 idle (estimate)
             idle_rpm: 900.0,
             // Equal-length primaries, one 5-into-1 collector per bank and an equal-length dual
@@ -1223,7 +1230,8 @@ impl EngineDef {
             flywheel_inertia_kgm2: 0.2,
             plenum_volume_m3: 7.0e-3,
             throttle_diameter_m: 0.095,
-            idle_throttle: 0.003,
+            // the idle air every engine shares (`Engine::idle_base`)
+            idle_throttle: 0.0,
             // a flat-plane supercar idle (estimate)
             idle_rpm: 1000.0,
             // One 4-into-1 per bank, short primaries for the top end, two tails.
@@ -1310,7 +1318,8 @@ impl EngineDef {
             plenum_volume_m3: 6.0e-3,
             throttle_diameter_m: 0.090,
             // a 6.2 L on LS friction needs more bypass air (0.3 % stalls; 0.65 % idles ~1050)
-            idle_throttle: 0.0065,
+            // the idle air every engine shares (`Engine::idle_base`)
+            idle_throttle: 0.0,
             // a pushrod V8 idle (estimate)
             idle_rpm: 700.0,
             // One 4-into-1 per bank, dual exhaust.
@@ -1604,6 +1613,13 @@ const IAC_KI_PER_S: f64 = 0.5;
 /// plate's leakage), and an idle actuator passes a few percent of the bore at most.
 const IAC_MIN: f64 = -0.95;
 const IAC_MAX_AREA: f64 = 0.03;
+/// Share of [`Engine::idle_air_scale`] (the air at 30 kPa and a volumetric efficiency of 1)
+/// the idle bypass opens at its base. An engine swallows less at its idle — its manifold sits
+/// nearer 22 kPa and its volumetric efficiency near 0.6 (Heywood §7.6 for the part-load
+/// trend), 0.73 · 0.6 ≈ 0.45; eight presets idling on their trims took 0.37–0.51 (2026-11-06)
+/// — and the base sits a little over the most of them, as an idle screw is set, so the loop
+/// trims it down: ESTIMATE.
+const IDLE_AIR_SHARE: f64 = 0.55;
 /// Spark path: idle timing sits this far retarded from the engine's advance, and the loop
 /// moves it by up to the reserve each way, degrees. All the retard there is: multiplied by a
 /// further low-speed share of the advance as well, the burn ended so late (1400 K and 1.3 bar at
@@ -2723,8 +2739,9 @@ impl Engine {
         let err = (target - rpm) / target;
         // the bypass trim, in units of the air this engine swallows at its idle
         let scale = self.idle_air_scale();
-        let lo = IAC_MIN * self.def.idle_throttle / scale;
-        let hi = (IAC_MAX_AREA - self.def.idle_throttle).max(0.0) / scale;
+        let base = self.idle_base();
+        let lo = IAC_MIN * base / scale;
+        let hi = (IAC_MAX_AREA - base).max(0.0) / scale;
         // Integrate towards the target, except while the speed is already falling fast enough
         // to reach it within IAC_LOOKAHEAD_S: falling from a blip, the spark path catches the
         // engine and the integral does not wind down into a stall; a slow drift above the
@@ -2761,6 +2778,18 @@ impl Engine {
     /// ṁ = ρ·V_d·N/120 at a typical idle manifold (30 kPa, 300 K), through a choked orifice
     /// from the atmosphere. The idle loop's gains are per this, so they mean the same on a
     /// 500 cc single and a 6.2 L V8.
+    /// The idle bypass's base opening, a share of the full throttle area: the engine's own
+    /// `idle_throttle` when it has one set by hand (a tuned engine's opened idle screw),
+    /// else [`IDLE_AIR_SHARE`] of the air it swallows at its idle ([`Self::idle_air_scale`]),
+    /// one law for every engine; none on a diesel, which has no throttle to open.
+    fn idle_base(&self) -> f64 {
+        if self.def.idle_throttle > 0.0 || !self.def.combustion.is_spark() {
+            self.def.idle_throttle
+        } else {
+            IDLE_AIR_SHARE * self.idle_air_scale()
+        }
+    }
+
     fn idle_air_scale(&self) -> f64 {
         let rho = 30e3 / (crate::gas::R_AIR * 300.0);
         let mdot =
@@ -2841,7 +2870,7 @@ impl Engine {
         } else {
             1.0
         };
-        let idle = (self.def.idle_throttle + self.iac) * decel;
+        let idle = (self.idle_base() + self.iac) * decel;
         let open = idle + ((1.0 - idle) * pedal_opening(t)).max(self.dashpot);
         DISCHARGE_CD * PI * 0.25 * self.def.throttle_diameter_m.powi(2) * open
     }
@@ -6334,14 +6363,43 @@ mod tests {
     }
 
     /// An inline-4 at `rpm` with the idle loop's state set by hand, for one controller step.
+    /// The single with a hand-set 0.15 % idle screw: the throttle tests' round numbers.
+    fn single_with_screw() -> EngineDef {
+        EngineDef {
+            idle_throttle: 0.0015,
+            ..EngineDef::single()
+        }
+    }
+
     fn idling_at(rpm: f64, integral: f64, rate: f64, spark: f64) -> Engine {
-        let mut e = Engine::new(EngineDef::inline4(), rpm, 1);
+        // a hand-set idle screw of 0.55 % keeps the loop's numbers round
+        let d = EngineDef {
+            idle_throttle: 0.0055,
+            ..EngineDef::inline4()
+        };
+        let mut e = Engine::new(d, rpm, 1);
         e.omega = rpm_to_rad_s(rpm);
         e.iac_last_rpm = rpm;
         e.iac_integral = integral;
         e.iac_rate = rate;
         e.idle_spark_deg = spark;
         e
+    }
+
+    #[test]
+    fn without_its_own_idle_screw_the_bypass_opens_by_the_air_the_engine_swallows() {
+        // the inline-4's idle air scale is 0.0086787 (below); the base opens 0.55 of it:
+        // 0.55 · 0.0086787 = 0.0047733
+        let mut d = EngineDef::inline4();
+        d.idle_throttle = 0.0;
+        let e = Engine::new(d.clone(), 800.0, 1);
+        assert_relative_eq!(e.idle_base(), 0.004_773_3, max_relative = 1e-4);
+        // an idle screw set by hand stays
+        d.idle_throttle = 0.018;
+        assert_eq!(Engine::new(d, 800.0, 1).idle_base(), 0.018);
+        // a diesel has no throttle to open
+        let sdi = EngineDef::vw_sdi();
+        assert_eq!(Engine::new(sdi.clone(), sdi.idle_rpm, 1).idle_base(), 0.0);
     }
 
     #[test]
@@ -7233,7 +7291,7 @@ mod tests {
 
     #[test]
     fn throttle_area_spans_idle_to_full_bore() {
-        let e = Engine::new(EngineDef::single(), 900.0, 1);
+        let e = Engine::new(single_with_screw(), 900.0, 1);
         // full: 0.8 · π/4 · 0.04² = 1.00531e-3 m²; idle = 0.0015 of that
         assert_relative_eq!(e.throttle_area(1.0), 1.00531e-3, max_relative = 1e-5);
         assert_relative_eq!(
@@ -8846,9 +8904,9 @@ mod tests {
         // 0.0015 of the bore up to 1500 rpm; at 7000 rpm with injection cut,
         // 7000/1500 × 0.0015 = 0.007 (hand); fuelled, it stays the idle bypass
         let full = 1.00531e-3;
-        let e = Engine::new(EngineDef::single(), 900.0, 1);
+        let e = Engine::new(single_with_screw(), 900.0, 1);
         assert_relative_eq!(e.throttle_area(0.0), 0.0015 * full, max_relative = 1e-5);
-        let mut e = Engine::new(EngineDef::single(), 7000.0, 1);
+        let mut e = Engine::new(single_with_screw(), 7000.0, 1);
         assert_relative_eq!(e.throttle_area(0.0), 0.0015 * full, max_relative = 1e-5);
         e.overrun_cut = true;
         assert_relative_eq!(e.throttle_area(0.0), 0.007 * full, max_relative = 1e-5);
