@@ -82,7 +82,7 @@ engine:
     airbox: null
   redline_rpm: 6200.0
   shutoff_rpm: 0.0
-  starter_torque_nm: 60.0
+  starter_torque_nm: 84.0
   friction:
     valvetrain: sohc_rocker_arm
     roller_followers: false
