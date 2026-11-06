@@ -581,7 +581,10 @@ impl EngineDef {
                 ..IntakeDef::default()
             },
             redline_rpm: 6200.0,
-            starter_torque_nm: 60.0,
+            // ESTIMATE: the 2.0 L presets' 60 N·m scaled by starter power, a 2.5 L engine's
+            // gear-reduction starter of about 1.4 kW against the 2.0 L's 1.0 kW; with the 2.0 L's
+            // 60 N·m the 2.5 L's compression held it at 5–11 rpm on the starter
+            starter_torque_nm: 84.0,
             vehicle: crate::drivetrain::VehicleDef::inline4(),
             turbo: None,
             friction: crate::friction::FrictionDef {
@@ -6692,6 +6695,12 @@ mod tests {
     #[test]
     fn the_inline4_starts_idles_and_survives_a_blip() {
         starts_idles_and_survives_a_blip(EngineDef::inline4());
+    }
+
+    #[test]
+    fn the_ej25_starts_idles_and_survives_a_blip() {
+        // found 2026-11-05: on the starter it stalled to 0 rpm; started turning it idles
+        starts_idles_and_survives_a_blip(EngineDef::subaru_ej25());
     }
 
     #[test]
