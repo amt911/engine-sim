@@ -244,6 +244,7 @@ impl EngineDef {
             vehicle: crate::drivetrain::VehicleDef::single(),
             turbo: None,
         }
+        .with_road_exhaust()
     }
 
     /// 2.0 L inline four, firing order 1-3-4-2.
@@ -268,8 +269,7 @@ impl EngineDef {
             turbo: None,
             ..Self::single()
         }
-        .with_tail_pipe()
-        .with_catalyst()
+        .with_road_exhaust()
     }
 
     /// VW 1.9 SDI (AEY/ASY, Golf IV / Polo, 1997–2005): a direct-injection, naturally aspirated
@@ -357,8 +357,7 @@ impl EngineDef {
         // A road car's exhaust: catalyst, centre and rear silencers sized by the rule of thumb
         // ([`crate::exhaust::road_exhaust`], 45 mm pipes; ESTIMATE). An open pipe left the
         // exhaust 36–45 dB over the block below 250 Hz.
-        d.exhaust.after_collector = crate::exhaust::road_exhaust(d.displacement_m3(), 0.045);
-        d
+        d.with_road_exhaust()
     }
 
     /// VW 1.9 TDI (ALH, Golf IV, 1997–2006): the SDI's block and direct injection with a Garrett
@@ -372,7 +371,7 @@ impl EngineDef {
         // GC20334), so about 55 mm of pipe (ESTIMATE). At the SDI's 45 mm the tail's jet hissed
         // 11 dB over at full boost, 4–16 kHz.
         d.exhaust.tail_diameter_m = 0.055;
-        d.exhaust.after_collector = crate::exhaust::road_exhaust(d.displacement_m3(), 0.055);
+        d = d.with_road_exhaust();
         d.combustion = Combustion::Diesel(crate::combustion::DieselDef {
             // a turbo diesel runs richer than the NA's 1.4: ESTIMATE
             full_load_lambda: 1.25,
@@ -471,8 +470,7 @@ impl EngineDef {
             turbo: None,
             ..Self::single()
         }
-        .with_tail_pipe()
-        .with_catalyst()
+        .with_road_exhaust()
     }
 
     /// A tuned 13B as an RX-7 build (the user's wish, 2026-10-31: more revs and ported for a
@@ -598,8 +596,7 @@ impl EngineDef {
             },
             ..Self::single()
         }
-        .with_tail_pipe()
-        .with_catalyst()
+        .with_road_exhaust()
     }
 
     /// The K20A as tuners build it for the VTEC scream (the user's wish, 2026-10-31: not a real
@@ -656,11 +653,8 @@ impl EngineDef {
         // through (Honda's product planner, via Mod Bargains), 86 mm inside (Tomei). What bore
         // feeds them is not published, so ESTIMATE: two of the pipe's, the least they can be
         d.exhaust.tail_outlets = 2;
-        for s in &mut d.exhaust.after_collector {
-            if let crate::exhaust::Segment::Pipe { diameter_m, .. } = s {
-                *diameter_m = d.exhaust.tail_diameter_m;
-            }
-        }
+        // the road exhaust's rule on the FK8's own pipe
+        d = d.with_road_exhaust();
         let turbo = crate::turbo::TurboDef {
             // the gate holds 1.6 bar (23 psi, the FK8's commonly quoted peak boost, not a
             // factory figure); the turbine's and the gate's areas are ESTIMATES fitted to the
@@ -851,8 +845,7 @@ impl EngineDef {
             },
             ..Self::single()
         }
-        .with_tail_pipe()
-        .with_catalyst()
+        .with_road_exhaust()
     }
 
     /// Lexus LFA, Toyota 1LR-GUE: 4.8 L 72° V10, 88 × 79 mm, CR 12.0, even firing,
@@ -1276,8 +1269,7 @@ impl EngineDef {
             vehicle: crate::drivetrain::VehicleDef::flatplane_v8(),
             turbo: None,
         }
-        .with_tail_pipe()
-        .with_catalyst()
+        .with_road_exhaust()
     }
 
     /// Cross-plane V8 after the GM LS3 (C6 Corvette): 6,162 cc from 103.25 × 92 mm, 10.7:1,
@@ -1370,8 +1362,7 @@ impl EngineDef {
             vehicle: crate::drivetrain::VehicleDef::crossplane_v8(),
             turbo: None,
         }
-        .with_tail_pipe()
-        .with_catalyst()
+        .with_road_exhaust()
     }
 
     /// The ECU's spark advance (° BTDC) for a flame `flame_ratio` times as long in crank angle as
@@ -1395,15 +1386,27 @@ impl EngineDef {
             .clamp(-MAX_SPARK_ADVANCE_DEG, MAX_SPARK_ADVANCE_DEG)
     }
 
-    /// This engine with the exhaust its preset has data for after each collector: one pipe, the
-    /// tail's own length and bore. The road car's silencers of [`crate::exhaust::road_exhaust`]
-    /// are sized by a rule of thumb, not from a drawing: no preset carries them until one does
-    /// (they reshaped the whole spectrum — the V10's 500–1000 Hz band 23 dB over 250–500 Hz).
+    /// This engine with one pipe after each collector, the tail's own length and bore: for a
+    /// car whose silencer is drawn elsewhere (the LFA's valved one at the bank merge).
     fn with_tail_pipe(mut self) -> Self {
         self.exhaust.after_collector = vec![crate::exhaust::Segment::Pipe {
             length_m: self.exhaust.tail_length_m,
             diameter_m: self.exhaust.tail_diameter_m,
         }];
+        self
+    }
+
+    /// A road car's exhaust after each collector from one rule for every car
+    /// ([`crate::exhaust::road_exhaust`]): a close-coupled catalyst and silencers of ten times
+    /// the collector's swept volume, on the car's own pipe. With the finite-volume pipes and
+    /// the duct flow noise it reads Davies & Holland's production car (1999, Fig. 1(c)) at
+    /// 6000 rpm (`a_production_silenced_exhaust_reads_davies_at_6000`).
+    fn with_road_exhaust(mut self) -> Self {
+        let branches = self.exhaust.groups(self.cylinders).len().max(1);
+        self.exhaust.after_collector = crate::exhaust::road_exhaust(
+            self.displacement_m3() / branches as f64,
+            self.exhaust.tail_diameter_m,
+        );
         self
     }
 
@@ -4507,8 +4510,91 @@ impl Engine {
 }
 
 #[cfg(test)]
+impl EngineDef {
+    /// The inline-4 with its catalyst and one tail pipe after the collector, the path the
+    /// hand-worked exhaust tests were written for (the preset now carries silencers).
+    pub(crate) fn inline4_catalyst_only() -> EngineDef {
+        let mut d = EngineDef::inline4();
+        let branch = d.displacement_m3() / d.exhaust.collectors.len().max(1) as f64;
+        d.exhaust.after_collector = vec![
+            crate::exhaust::close_coupled_catalyst(branch, d.exhaust.tail_diameter_m),
+            crate::exhaust::Segment::Pipe {
+                length_m: d.exhaust.tail_length_m,
+                diameter_m: d.exhaust.tail_diameter_m,
+            },
+        ];
+        d
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_road_car_carries_a_catalyst_and_silencers_of_ten_swept_volumes() {
+        // a road car has a catalyst and silencers totalling ten times its swept volume per
+        // collector (US 3,318,412's rule of thumb, `road_exhaust`), whoever drew the car; the
+        // LFA keeps its drawn valved silencer and the bridge-port race engine its open pipe
+        use crate::exhaust::Segment;
+        let road = [
+            EngineDef::single(),
+            EngineDef::inline4(),
+            EngineDef::mazda_renesis(),
+            EngineDef::subaru_ej25(),
+            EngineDef::honda_k20a(),
+            EngineDef::honda_k20a_tuned(),
+            EngineDef::honda_k20c1(),
+            EngineDef::flatplane_v8(),
+            EngineDef::crossplane_v8(),
+            EngineDef::vw_sdi(),
+            EngineDef::vw_tdi(),
+        ];
+        for d in road {
+            let branches = d.exhaust.groups(d.cylinders).len().max(1) as f64;
+            let per_branch = d.displacement_m3() / branches;
+            let path = &d.exhaust.after_collector;
+            let cats = path
+                .iter()
+                .filter(|s| matches!(s, Segment::Catalyst { .. }))
+                .count();
+            let volume: f64 = path
+                .iter()
+                .map(|s| match s {
+                    Segment::Muffler {
+                        length_m,
+                        diameter_m,
+                        ..
+                    } => std::f64::consts::PI * 0.25 * diameter_m * diameter_m * length_m,
+                    _ => 0.0,
+                })
+                .sum();
+            assert_eq!(cats, 1, "{}: {cats} catalysts", d.name);
+            // the shells are rounded to the pipe's 1.5×: within 10 %
+            assert!(
+                (volume / (10.0 * per_branch) - 1.0).abs() < 0.1,
+                "{}: silencers {volume} m³ for {per_branch} m³ swept",
+                d.name
+            );
+            // their tubes are the car's own pipe
+            for s in path {
+                if let Segment::Muffler {
+                    tube_diameter_m, ..
+                } = s
+                {
+                    assert_eq!(*tube_diameter_m, d.exhaust.tail_diameter_m, "{}", d.name);
+                }
+            }
+        }
+        let silenced = |d: &EngineDef| {
+            d.exhaust
+                .after_collector
+                .iter()
+                .any(|s| matches!(s, Segment::Muffler { .. }))
+        };
+        assert!(!silenced(&EngineDef::lfa_v10()));
+        assert!(!silenced(&EngineDef::mazda_13b_bridgeport()));
+    }
 
     #[test]
     fn an_edit_to_the_exhaust_designs_only_the_silencers_it_changed() {
@@ -5525,7 +5611,10 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(pipes, vec![0.057]);
+        assert!(
+            !pipes.is_empty() && pipes.iter().all(|&d| d == 0.057),
+            "{pipes:?}"
+        );
     }
 
     #[test]
@@ -8668,9 +8757,13 @@ mod tests {
             EngineDef::flatplane_v8(),
             EngineDef::crossplane_v8(),
         ] {
+            // first after its downpipe
             assert!(
                 matches!(
-                    d.exhaust.after_collector.first(),
+                    d.exhaust
+                        .after_collector
+                        .iter()
+                        .find(|s| !matches!(s, crate::exhaust::Segment::Pipe { .. })),
                     Some(crate::exhaust::Segment::Catalyst { .. })
                 ),
                 "{}",
@@ -9185,7 +9278,7 @@ mod tests {
         // u = ū + (s − s̄)/ρc: over whole cycles the swing averages out (the mean exit velocity
         // is the continuity one, Mach ū/c), and it follows the outgoing wave s = ρc·u with slope
         // 1/ρc, ρc = 1.4·101325/500 = 283.71 kg/(m²·s) in the tail's reference gas
-        let mut e = Engine::new(EngineDef::inline4(), 5000.0, 1);
+        let mut e = Engine::new(EngineDef::inline4_catalyst_only(), 5000.0, 1);
         let c = Controls {
             throttle: 1.0,
             hold_rpm: Some(5000.0),
@@ -9227,7 +9320,7 @@ mod tests {
         // at a 0.2 bar manifold the overlap pulls gas back from the primary into the cylinder;
         // the gas the primary receives still comes from the cylinder at or after its exhaust
         // opening, which it leaves no hotter than the cylinder's gas then (it expands as it goes)
-        let mut def = EngineDef::inline4();
+        let mut def = EngineDef::inline4_catalyst_only();
         def.exhaust.gas_temperature = true;
         let mut e = Engine::new(def, 3000.0, 1);
         let c = Controls {
@@ -10062,7 +10155,7 @@ mod tests {
         // is a quarter of what the collector sends into the catalyst (mass conserved through
         // the junction, both read from FV cells); the exit, read from the designed path's waves
         // (their own reference gas), carries flow out
-        let mut d = EngineDef::inline4();
+        let mut d = EngineDef::inline4_catalyst_only();
         d.exhaust.model = ExhaustModel::Fv;
         let mut e = Engine::new(d.clone(), 3000.0, 1);
         let c = Controls {
@@ -10198,28 +10291,24 @@ mod tests {
 
     #[test]
     fn each_preset_carries_only_the_exhaust_it_has_data_for() {
-        // after each collector, the catalyst every road car carries (sized by its rule) and the
-        // tail pipe of the preset's own length and bore — no silencer sized by rule
-        for d in [
-            EngineDef::inline4(),
-            EngineDef::lfa_v10(),
-            EngineDef::flatplane_v8(),
-            EngineDef::crossplane_v8(),
-        ] {
-            let branch = d.displacement_m3() / d.exhaust.collectors.len().max(1) as f64;
-            assert_eq!(
-                d.exhaust.after_collector,
-                [
-                    crate::exhaust::close_coupled_catalyst(branch, d.exhaust.tail_diameter_m),
-                    crate::exhaust::Segment::Pipe {
-                        length_m: d.exhaust.tail_length_m,
-                        diameter_m: d.exhaust.tail_diameter_m,
-                    }
-                ],
-                "{}",
-                d.name
-            );
-        }
+        // the LFA, whose silencer is drawn at its bank merge: after each collector the
+        // catalyst every road car carries (sized by its rule) and the tail pipe of its own
+        // length and bore (the road cars without a drawn silencer carry the rule's,
+        // `every_road_car_carries_a_catalyst_and_silencers_of_ten_swept_volumes`)
+        let d = EngineDef::lfa_v10();
+        let branch = d.displacement_m3() / d.exhaust.collectors.len().max(1) as f64;
+        assert_eq!(
+            d.exhaust.after_collector,
+            [
+                crate::exhaust::close_coupled_catalyst(branch, d.exhaust.tail_diameter_m),
+                crate::exhaust::Segment::Pipe {
+                    length_m: d.exhaust.tail_length_m,
+                    diameter_m: d.exhaust.tail_diameter_m,
+                }
+            ],
+            "{}",
+            d.name
+        );
         assert_eq!(EngineDef::inline4().exhaust.tail_length_m, 1.5);
         // the LFA's bank line, catalyst to muffler: 0.50 + 0.38 (sub muffler) + 1.00 m
         assert_eq!(

@@ -48,7 +48,36 @@ engine:
       flow_resistivity: 16000.0
       porosity: 0.95
     tail_spacing_m: 0.9
-    after_collector: []
+    after_collector:
+    - kind: pipe
+      length_m: 0.4
+      diameter_m: 0.045
+    - kind: catalyst
+      length_m: 0.13
+      diameter_m: 0.0699
+      cells_per_in2: 400.0
+      wall_m: 0.000165
+    - kind: pipe
+      length_m: 1.0
+      diameter_m: 0.045
+    - kind: muffler
+      length_m: 0.35
+      diameter_m: 0.0675
+      tube_diameter_m: 0.045
+      packing_resistivity: 16000.0
+      packing_porosity: 0.95
+    - kind: pipe
+      length_m: 0.8
+      diameter_m: 0.045
+    - kind: muffler
+      length_m: 0.45
+      diameter_m: 0.1063
+      tube_diameter_m: 0.045
+      packing_resistivity: 16000.0
+      packing_porosity: 0.95
+    - kind: pipe
+      length_m: 0.3
+      diameter_m: 0.045
     merge: null
     steepening: true
     gas_temperature: false
