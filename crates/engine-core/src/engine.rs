@@ -1118,9 +1118,8 @@ impl EngineDef {
                         open_rpm: 3000.0,
                         // a vacuum diaphragm actuator: ESTIMATE
                         travel_s: 0.3,
-                        // ESTIMATE: ≈ 0.5 mm of radial clearance round the 85 mm disc for its
-                        // thermal growth, π·85·0.5 mm² of the bore's π·85²/4: 2.4 %
-                        valve_leak: 0.024,
+                        // a butterfly's running clearance round its 85 mm disc
+                        valve_clearance_m: crate::exhaust::BUTTERFLY_CLEARANCE_M,
                         // the titanium silencer's wall over its inlet chamber: 1 mm of
                         // titanium (4510 kg/m³; thickness ESTIMATE, a single-skin shell), the
                         // chamber's side π·0.22·0.20 m

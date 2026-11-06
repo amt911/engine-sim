@@ -28,6 +28,19 @@ pub(crate) fn tail_reference_density() -> f64 {
 /// *Fundamentals of Acoustics*, §9.4) gives 0.0295 Np/m in a 42 mm primary of 900 K gas (c 600
 /// m/s, ν 1e-4 m²/s) at 200 Hz, about the firing orders' band: 1 − e^(−0.0295) ≈ 0.03.
 pub const LOSS_PER_M: f64 = 0.03;
+/// Running radial clearance of a hot exhaust butterfly round its disc, m: ESTIMATE, a gap left
+/// for the disc's thermal growth (≈ 0.5 mm on 50–90 mm valves).
+pub const BUTTERFLY_CLEARANCE_M: f64 = 0.0005;
+
+/// Share of a butterfly's pipe a radial gap of `clearance_m` round its disc leaves open: the ring
+/// π·D·c over the bore π·D²/4, 4c/D (capped at the whole pipe; 0 with no gap or no pipe).
+pub fn valve_leak_share(clearance_m: f64, bore_m: f64) -> f64 {
+    if bore_m <= 0.0 || clearance_m <= 0.0 {
+        return 0.0;
+    }
+    (4.0 * clearance_m / bore_m).min(1.0)
+}
+
 /// Bore a path ends in, m (a silencer's tube if it has one, else its shell); 0 for none.
 fn exit_diameter(path: &[Segment]) -> f64 {
     match path.last() {
@@ -155,9 +168,10 @@ pub struct Bypass {
     pub open_rpm: f64,
     /// Valve travel, closed to open, s.
     pub travel_s: f64,
-    /// Share of the valve's pipe that stays open with the valve shut: a butterfly keeps radial
-    /// clearance round its disc for its thermal growth, so shut it still passes a jet (0: sealed).
-    pub valve_leak: f64,
+    /// Radial clearance round the valve's disc, m: a butterfly keeps a gap for its thermal
+    /// growth, so shut it still passes a jet through [`valve_leak_share`] of its pipe (0:
+    /// sealed). Default 0.5 mm: ESTIMATE, a hot exhaust butterfly's running clearance.
+    pub valve_clearance_m: f64,
     /// The silencer's outer wall over its inlet chamber (the first of `closed`): its thickness,
     /// m (0: no wall radiates), density, kg/m³, and area, m². The gas in the chamber shakes the
     /// wall, which radiates as well as the tips ("break-out" noise, Munjal, *Acoustics of Ducts
@@ -181,7 +195,7 @@ impl Default for Bypass {
             baffle_open_area: 1.0,
             open_rpm: 3000.0,
             travel_s: 0.3,
-            valve_leak: 0.0,
+            valve_clearance_m: BUTTERFLY_CLEARANCE_M,
             shell_thickness_m: 0.0,
             shell_density_kg_m3: 7850.0,
             shell_area_m2: 0.0,
@@ -1425,7 +1439,7 @@ impl Shared {
                     baffle: b.baffle_open_area,
                     open_rpm: b.open_rpm,
                     travel_s: b.travel_s,
-                    leak: b.valve_leak.clamp(0.0, 1.0),
+                    leak: valve_leak_share(b.valve_clearance_m, exit_diameter(&b.open)),
                     x: 0.0,
                     opening: false,
                     shell: Shell::new(
@@ -1521,7 +1535,7 @@ struct Valved {
     baffle: f64,
     open_rpm: f64,
     travel_s: f64,
-    /// [`Bypass::valve_leak`].
+    /// [`Bypass::valve_clearance_m`].
     leak: f64,
     /// Opening fraction, 0 shut … 1 open.
     x: f64,
@@ -2965,9 +2979,9 @@ mod tests {
     fn a_bypass_round_trips_and_merges_without_one_still_load() {
         let old: Merge = serde_yaml_ng::from_str("outlet_diameter_m: 0.07\n").unwrap();
         assert_eq!(old.bypass, None);
-        // a bypass written before the leak was a field is sealed
-        let sealed: Bypass = serde_yaml_ng::from_str("open_rpm: 3000.0\n").unwrap();
-        assert_eq!(sealed.valve_leak, 0.0);
+        // a bypass written before the clearance was a field gets a butterfly's 0.5 mm
+        let old: Bypass = serde_yaml_ng::from_str("open_rpm: 3000.0\n").unwrap();
+        assert_eq!(old.valve_clearance_m, 0.0005);
         let mut d = valved_banks();
         d.merge
             .as_mut()
@@ -2975,7 +2989,7 @@ mod tests {
             .bypass
             .as_mut()
             .unwrap()
-            .valve_leak = 0.02;
+            .valve_clearance_m = 0.001;
         let json: ExhaustDef = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
         let yaml: ExhaustDef =
             serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&d).unwrap()).unwrap();
@@ -3047,13 +3061,25 @@ mod tests {
     }
 
     #[test]
+    fn a_butterflys_leak_is_its_clearance_round_its_disc() {
+        // the gap is a ring π·D·c of the bore's π·D²/4: 4c/D. By hand: 0.5 mm round an 85 mm
+        // disc is 2/85 = 0.023529; round a 50 mm one 0.04; no gap or no pipe, nothing leaks
+        assert!((valve_leak_share(0.0005, 0.085) - 0.023529).abs() < 1e-6);
+        assert!((valve_leak_share(0.0005, 0.05) - 0.04).abs() < 1e-12);
+        assert_eq!(valve_leak_share(0.0, 0.085), 0.0);
+        assert_eq!(valve_leak_share(0.0005, 0.0), 0.0);
+        // a gap as wide as the disc is no valve: all open
+        assert_eq!(valve_leak_share(0.05, 0.085), 1.0);
+    }
+
+    #[test]
     fn a_shut_valve_leaks_round_its_disc() {
         // a butterfly keeps radial clearance for its thermal growth: shut, a pulse still takes
         // the short way through the gap, 172.8 steps (1.8 ms at 96 kHz) before the chamber path
         // (`shut_the_sound_goes_round_the_chambers_open_it_takes_the_short_way`). Sealed, nothing
         // arrives that early
         let dt = 1.0 / 96_000.0;
-        let heard = |leak: f64| {
+        let heard = |clearance_m: f64| {
             let mut d = valved_banks();
             d.merge
                 .as_mut()
@@ -3061,7 +3087,7 @@ mod tests {
                 .bypass
                 .as_mut()
                 .unwrap()
-                .valve_leak = leak;
+                .valve_clearance_m = clearance_m;
             let mut net = ExhaustNet::new(&d, 2, dt);
             net.set_engine_speed(1000.0);
             for _ in 0..(0.4 / dt) as usize {
@@ -3075,7 +3101,7 @@ mod tests {
             let peak = out.iter().fold(0.0f64, |m, v| m.max(v.abs()));
             out.iter().position(|v| v.abs() > 0.05 * peak).unwrap()
         };
-        let (sealed, leaking) = (heard(0.0), heard(0.024));
+        let (sealed, leaking) = (heard(0.0), heard(0.0005));
         let early = first(&sealed) as f64 - first(&leaking) as f64;
         assert!(
             (early - 172.8).abs() < 4.0,
