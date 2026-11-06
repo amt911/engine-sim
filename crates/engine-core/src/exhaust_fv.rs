@@ -66,6 +66,9 @@ pub struct ExhaustFv {
     shared: Option<crate::exhaust::Shared>,
     /// The merge junction's scratch (areas, incoming, outgoing): no allocation per step.
     merge_scratch: [Vec<f64>; 3],
+    /// The exhaust's area expansions ([`crate::exhaust::expansion_sites`]), for
+    /// [`ExhaustFv::site_flows`].
+    sites: Vec<crate::exhaust::ExpansionSite>,
 }
 
 /// The node at a collector's far end between the FV collector (its last cell `inner`, area
@@ -403,8 +406,47 @@ impl ExhaustFv {
             acc_t: vec![0.0; cylinders],
             tails: vec![0.0; def.groups(cylinders).len()],
             vented: 0.0,
+            sites: crate::exhaust::expansion_sites(def, cylinders),
             shared,
             merge_scratch: Default::default(),
+        }
+    }
+
+    /// The mass flow out of each branch's open end at the last step, kg/s (the designed path's
+    /// reference gas).
+    pub fn exit_flows(&self, out: &mut Vec<f64>) {
+        out.clear();
+        out.extend(self.branches.iter().map(|b| b.duct.far_flow()));
+    }
+
+    /// Each expansion site's mass flow this instant, kg/s (+ towards the tail), in
+    /// [`crate::exhaust::expansion_sites`] order: a primary's jet from its last cell, the
+    /// path's first step from the collector's last cell, its inner steps and its exit from the
+    /// designed path's waves there, a merge's from all the paths' ends.
+    pub fn site_flows(&self, out: &mut Vec<f64>) {
+        let outflow = |pipe: &Pipe1d| match (pipe.cells.last(), pipe.area.last()) {
+            (Some(c), Some(&a)) => {
+                let w = c.to_prim();
+                w.rho * w.u * a
+            }
+            _ => 0.0,
+        };
+        out.clear();
+        for site in &self.sites {
+            use crate::exhaust::SiteAt;
+            out.push(match (site.at, site.branch) {
+                (SiteAt::Collector { primary }, _) => {
+                    self.primaries.get(primary).map_or(0.0, outflow)
+                }
+                (SiteAt::Segment { index }, Some(b)) => self.branches.get(b).map_or(0.0, |br| {
+                    // inside the designed path: the flow through that node of its duct
+                    br.duct
+                        .segment_node(index)
+                        .map_or_else(|| outflow(&br.out), |node| br.duct.node_flow(node))
+                }),
+                (_, Some(b)) => self.branches.get(b).map_or(0.0, |br| br.duct.far_flow()),
+                (_, None) => self.branches.iter().map(|br| br.duct.far_flow()).sum(),
+            });
         }
     }
 

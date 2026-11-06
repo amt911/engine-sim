@@ -1517,3 +1517,21 @@ source is not identified. Phone and YouTube recordings cannot judge below about 
   orders at 8600 rpm sit 4–5 dB under the firing ones; the real LFA's 14–17 dB, papers/recordings
   README) — an octave correction climbs while odd multiples sit 3 dB under the even ones; use held
   renders (known rpm) for our side.
+
+## Duct flow noise: K from Davies' production exhaust, not from the modulation (2026-11-06)
+
+- The treble's firing-rhythm modulation cannot set K: the U⁴ noise follows the pulses it rides
+  on (FV, all presets: median ≥ 36 % at any gain). In the recordings the modulation depends on the
+  microphone: at the pipe 25–78 % (Harley "Exhaust Pipe Mic", Softail "EXHAUST – Back", Anarchy
+  "pipeside"), at the engine or a few metres away 7–12 %; ours (35–70 %) reads like a pipe mic.
+  Measured outdoor IRs (EchoThief, local diagnosis only — no licence stated) take it to 33–40 %
+  in open spaces, 19–23 % in a stone courtyard.
+- Absolute anchor instead: Davies & Holland 1999 Fig. 1(c), production 4-cylinder at 0.25 m,
+  80 / 88 / 107 dB(A) at 1000 / 3000 / 6000. Bare presets sit 7–23 dB over Davies' 104–110 dB
+  Lin; with the rule-sized road silencers the pulses fall 15–20 dB from 3000 to 6000 (both
+  models; not the mean-flow area-change loss, friction, steepening or gas temperature) while
+  Davies' exhaust rises 19 dB(A): the flow noise carries 6000. K = 2.5·10⁻⁵ fits inline-4, K20A,
+  EJ25 (6000 mean −1.2 dB; 3000 +8 dB from the pulses themselves, open). At 6000 the silenced
+  exhaust's treble modulation is 7 % (real 9.6 %).
+- On the FV exhaust the LFA's closed-valve path reads 75 dB Lin at 0.25 m at 3000 (Davies 104–110):
+  its estimated chambers take too much (also its quiet idle).

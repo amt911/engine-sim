@@ -724,6 +724,16 @@ pub struct Duct {
     mean_now: f64,
     /// What happens at each inner node, between pipe k and k + 1.
     nodes: Vec<Node>,
+    /// The first pipe of each segment it was built from, in segment order
+    /// ([`Duct::segment_node`]); empty for a duct not built from segments.
+    pub(crate) segment_starts: Vec<usize>,
+    /// Waves added at each inner node on the next [`Duct::send`] (back, onward), then cleared:
+    /// a source at the node ([`Duct::inject`]). Empty until the first injection.
+    injected: Vec<[f64; 2]>,
+    /// The mass flow through each inner node and out of the far end at the last
+    /// [`Duct::send`], kg/s of the waves' reference gas (ṁ = A·(p⁺ − p⁻)/c, + onward).
+    node_flows: Vec<f64>,
+    far_flow: f64,
 }
 
 /// A wall that breathes at a node of a duct: the packing behind a perforate, a pocket of pore
@@ -943,6 +953,10 @@ impl Duct {
             mean_flow: 0.0,
             mean_now: 0.0,
             nodes: Vec::new(),
+            segment_starts: Vec::new(),
+            injected: Vec::new(),
+            node_flows: Vec::new(),
+            far_flow: 0.0,
         }
     }
     /// Pipes with what happens at each inner node (`nodes[k]` between pipe k and k + 1;
@@ -977,6 +991,49 @@ impl Duct {
         self.pipes.extend(next.pipes);
         self
     }
+    /// How many pipes it is made of.
+    pub fn pipe_count(&self) -> usize {
+        self.pipes.len()
+    }
+
+    /// The inner node in front of segment `index` (its first pipe's near end); None for the
+    /// first segment (the duct's own near end) or an unknown one.
+    pub fn segment_node(&self, index: usize) -> Option<usize> {
+        self.segment_starts
+            .get(index)
+            .and_then(|&start| start.checked_sub(1))
+            .filter(|&node| node + 1 < self.pipes.len())
+    }
+
+    /// The mass flow through inner `node` at the last [`Duct::send`], kg/s (+ onward); 0 for an
+    /// unknown node.
+    pub fn node_flow(&self, node: usize) -> f64 {
+        self.node_flows.get(node).copied().unwrap_or(0.0)
+    }
+
+    /// The mass flow out of the far end at the last [`Duct::send`], kg/s.
+    pub fn far_flow(&self) -> f64 {
+        self.far_flow
+    }
+
+    /// The areas either side of inner `node`, m² (upstream, downstream).
+    pub fn node_areas(&self, node: usize) -> (f64, f64) {
+        (self.pipes[node].area_m2, self.pipes[node + 1].area_m2)
+    }
+
+    /// Add `back` to the wave inner `node` sends back up the duct and `onward` to the one it
+    /// sends on, at the next [`Duct::send`] only: a source at the node.
+    pub fn inject(&mut self, node: usize, back: f64, onward: f64) {
+        if node + 1 >= self.pipes.len() {
+            return;
+        }
+        if self.injected.len() != self.pipes.len() - 1 {
+            self.injected = vec![[0.0; 2]; self.pipes.len() - 1];
+        }
+        self.injected[node][0] += back;
+        self.injected[node][1] += onward;
+    }
+
     /// Area of the near (first) and far (last) pipe, m².
     pub fn end_areas(&self) -> (f64, f64) {
         (
@@ -1039,8 +1096,19 @@ impl Duct {
                         junction(&areas, &incoming, &mut out);
                     }
                 }
+                if self.node_flows.len() != n - 1 {
+                    self.node_flows = vec![0.0; n - 1];
+                }
+                self.node_flows[k] = areas[0] * (incoming[0] - out[0]) / self.pipes[k].sound_speed;
+                if let Some(add) = self.injected.get_mut(k) {
+                    out[0] += add[0];
+                    out[1] += add[1];
+                    *add = [0.0; 2];
+                }
                 (out[0], out[1])
             } else {
+                let last = &self.pipes[k];
+                self.far_flow = last.area_m2 * (last.at_far() - from_far) / last.sound_speed;
                 (from_far, 0.0)
             };
             self.pipes[k].send(into_near, back);
@@ -1230,6 +1298,30 @@ impl OpenEnd {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_duct_reads_the_flow_through_its_node_and_out_of_its_end() {
+        // A steady 100 Pa wave into a lossless 1e-3 m² pipe, then a 3e-3 m² one, open far end
+        // anechoic: at the step the pressure junction sends back r·p, r = (A₁ − A₂)/(A₁ + A₂)
+        // = −½, so the flow there is A₁(p − r·p)/c = 1e-3·150/500 = 3e-4 kg/s; on goes
+        // 2A₁p/(A₁ + A₂) = 50 Pa, out of the end A₂·50/c = 3e-4 kg/s (mass kept).
+        let dt = 1.0 / 48_000.0;
+        let d = |a: f64| (4.0 * a / std::f64::consts::PI).sqrt();
+        let mut duct = Duct::new(vec![
+            Pipe::new(0.1, d(1e-3), 500.0, dt, 0.0),
+            Pipe::new(0.1, d(3e-3), 500.0, dt, 0.0),
+        ]);
+        for _ in 0..2000 {
+            duct.send(100.0, 0.0);
+        }
+        assert!(
+            (duct.node_flow(0) - 3e-4).abs() < 3e-6,
+            "{}",
+            duct.node_flow(0)
+        );
+        assert!((duct.far_flow() - 3e-4).abs() < 3e-6, "{}", duct.far_flow());
+        assert_eq!(duct.node_flow(7), 0.0);
+    }
+
     use super::*;
 
     #[test]

@@ -84,6 +84,12 @@ engine:
     film_fraction: 0.18
     film_tau_s: 1.0
     airbox: null
+    air_cleaner:
+      fitted: true
+      volume_m3: 0.0
+      snorkel_length_m: 0.3
+      snorkel_diameter_m: 0.0
+      filter_resistance_pa_s_m3: 0.0
   redline_rpm: 9000.0
   shutoff_rpm: 0.0
   starter_torque_nm: 60.0
@@ -100,6 +106,9 @@ engine:
     flow_noise: 1.0
     intake: 1.0
     valve_jet: 1.0
+    duct_flow: 1.0
+    main_bearings: 1.0
+    piston_slap: 1.0
     block: 1.0
     mechanical: 1.0
     combustion_jitter: 1.0
@@ -142,4 +151,6 @@ engine:
       liner_thickness_m: 0.02
       liner_resistivity: 16000.0
       liner_coverage: 0.25
+    shuffle_hz: 3.5
+    shuffle_damping: 0.15
   turbo: null

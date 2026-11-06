@@ -2251,6 +2251,8 @@ pub struct Engine {
     /// carry it), and what its tails radiate adds to the FV tails'. Its sources, per cylinder.
     jet_net: Option<ExhaustNet>,
     jet_flows: Vec<f64>,
+    /// The FV exhaust's expansion sites' mass flows, handed to `jet_net` each step (scratch).
+    site_flows: Vec<f64>,
     /// Non-linear finite-volume exhaust, when `exhaust.model` is `fv`.
     fv: Option<ExhaustFv>,
     /// The silencers' designed equalizers, kept across rebuilds ([`Engine::adopt_exhaust_from`]).
@@ -2566,6 +2568,7 @@ impl Engine {
             net: None,
             jet_net: None,
             jet_flows: Vec::new(),
+            site_flows: Vec::new(),
             fv: None,
             eq_memo: crate::silencer2d::EqMemo::default(),
             intake_net: None,
@@ -2922,6 +2925,9 @@ impl Engine {
                         self.fidelity.lining_segment_m,
                         &mut self.eq_memo,
                     ));
+                    if let Some(n) = &mut self.net {
+                        n.set_duct_flow(self.def.sound.duct_flow);
+                    }
                 }
             }
             ExhaustModel::Fv => {
@@ -2937,7 +2943,7 @@ impl Engine {
                         .with_scheme(self.fidelity.pipe_scheme),
                     );
                 }
-                if self.def.sound.valve_jet <= 0.0 {
+                if self.def.sound.valve_jet <= 0.0 && self.def.sound.duct_flow <= 0.0 {
                     self.jet_net = None;
                 } else if self.jet_net.as_ref().is_none_or(|n| n.dt != dt) {
                     self.jet_net = Some(ExhaustNet::with_memo(
@@ -2947,6 +2953,9 @@ impl Engine {
                         self.fidelity.lining_segment_m,
                         &mut self.eq_memo,
                     ));
+                    if let Some(n) = &mut self.jet_net {
+                        n.set_duct_flow(self.def.sound.duct_flow);
+                    }
                     self.jet_flows = vec![0.0; self.cyl.len()];
                 }
             }
@@ -3566,6 +3575,9 @@ impl Engine {
                 fv.step();
                 if let Some(j) = &mut self.jet_net {
                     j.prepare(&self.tail_mach, None);
+                    // the duct flow noise rides the jet net on the FV gas's own flow
+                    fv.site_flows(&mut self.site_flows);
+                    j.set_site_flows(&self.site_flows);
                     j.step(&self.jet_flows);
                     self.jet_flows.iter_mut().for_each(|f| *f = 0.0);
                 }
@@ -4364,6 +4376,16 @@ impl Engine {
         &self.tail_u
     }
 
+    /// The mass flow out of each open end of the exhaust at the last step, kg/s (the linear
+    /// path's reference gas); empty when the exhaust runs on its own thread.
+    pub fn exit_flows(&self, out: &mut Vec<f64>) {
+        match (&self.net, &self.fv) {
+            (Some(n), _) => n.exit_flows(out),
+            (None, Some(fv)) => fv.exit_flows(out),
+            _ => out.clear(),
+        }
+    }
+
     /// How many cylinders the engine runs.
     pub fn cylinders(&self) -> usize {
         self.cyl.len()
@@ -4988,6 +5010,7 @@ mod tests {
             intake: 0.0,
             combustion_jitter: 0.0,
             valve_jet: 0.0,
+            duct_flow: 0.0,
             mechanical,
             block,
             // the seats and the combustion alone: the piston and journal impacts off
@@ -8304,6 +8327,7 @@ mod tests {
             reverb: 0.0,
             leveling: 0.0,
             valve_jet: 0.0,
+            duct_flow: 0.0,
             ..crate::sound::SoundDef::default()
         };
         // the flow textures (the valvetrain's clicks do not depend on load)
@@ -8646,6 +8670,7 @@ mod tests {
             d.exhaust.model = model;
             let s = &mut d.sound;
             (s.flow_noise, s.block, s.mechanical, s.combustion_jitter) = (0.0, 0.0, 0.0, 0.0);
+            s.duct_flow = 0.0;
             (s.main_bearings, s.piston_slap) = (0.0, 0.0);
             s.valve_jet = jet;
             let rpm = 6000.0;
@@ -8696,8 +8721,8 @@ mod tests {
             let s = &mut d.sound;
             (s.flow_noise, s.block, s.mechanical, s.intake) = (0.0, 0.0, 0.0, 0.0);
             (s.valve_jet, s.combustion_jitter) = (0.0, 0.0);
-            // the impacts strike random points: a random source too
-            (s.piston_slap, s.main_bearings) = (0.0, 0.0);
+            // the impacts strike random points and the duct noise is noise: random sources too
+            (s.piston_slap, s.main_bearings, s.duct_flow) = (0.0, 0.0, 0.0);
             let rpm = 0.85 * d.redline_rpm;
             let mut e = Engine::new(d, rpm, 1);
             let c = Controls {
@@ -9543,6 +9568,45 @@ mod tests {
     }
 
     #[test]
+    fn a_production_silenced_exhaust_reads_davies_at_6000() {
+        // Davies & Holland, JSV 223(3), 1999, Fig. 1(c): a production 4-cylinder exhaust at
+        // 0.25 m, 45°, full load: ≈ 107 dB(A) at 6000 rpm, where the flow noise of its expansions
+        // carries the highs (§1, §4). Three 4-cylinders on the FV exhaust with the rule-sized road
+        // silencers (`road_exhaust`), the exhaust's sources alone, at the listener's 3 m brought
+        // to 0.25 m by spherical spreading (+21.6 dB): their mean within 3 dB of it
+        let mut sum = 0.0;
+        let defs = [
+            EngineDef::inline4(),
+            EngineDef::honda_k20a(),
+            EngineDef::subaru_ej25(),
+        ];
+        for mut d in defs.clone() {
+            let branches = d.exhaust.groups(d.cylinders).len().max(1);
+            let swept = d.displacement_m3() / branches as f64;
+            d.exhaust.after_collector =
+                crate::exhaust::road_exhaust(swept, d.exhaust.tail_diameter_m);
+            d.exhaust.model = ExhaustModel::Fv;
+            let s = &mut d.sound;
+            (s.intake, s.block, s.mechanical) = (0.0, 0.0, 0.0);
+            (s.piston_slap, s.main_bearings) = (0.0, 0.0);
+            let rpm = 6000.0;
+            let mut e = Engine::new(d, rpm, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(rpm),
+                ..Controls::default()
+            };
+            run(&mut e, 0.5, &c);
+            let mut a = crate::mechanical::AWeighting::new(DT);
+            let x = run(&mut e, 0.5, &c);
+            let p2 = x.iter().map(|v| a.process(*v).powi(2)).sum::<f64>() / x.len() as f64;
+            sum += 10.0 * (p2 / 4e-10).log10() + 20.0 * (3.0f64 / 0.25).log10();
+        }
+        let mean = sum / defs.len() as f64;
+        assert!((mean - 107.0).abs() < 3.0, "{mean:.1} dB(A) at 0.25 m");
+    }
+
+    #[test]
     fn the_fv_exhaust_merges_its_banks_into_the_valved_silencer() {
         // after the collectors both models run the same linear path: the LFA's banks merge into
         // its valved silencer. Measured on the FV with its own per-bank tails: +14.5 dB over the
@@ -9875,6 +9939,125 @@ mod tests {
             mouth_power(bare, 3000.0),
         );
         assert!(fitted.is_finite() && fitted < bare, "{fitted} vs {bare}");
+    }
+
+    #[test]
+    fn a_turbo_engine_keeps_its_downstream_sites() {
+        // the K20C1's turbine sits between collector and tail: its path's sites still sound
+        let d = EngineDef::honda_k20c1();
+        let want = crate::exhaust::expansion_sites(&d.exhaust, 4).len();
+        let mut e = Engine::new(d, 3000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        let x = run(&mut e, 0.3, &c);
+        assert!(x.iter().all(|v| v.is_finite()));
+        let net = e
+            .net
+            .as_ref()
+            .or(e.jet_net.as_ref())
+            .expect("a waveguide net");
+        assert_eq!(net.duct_sites(), want);
+        assert_eq!(net.duct_flow_gain(), 1.0);
+    }
+
+    #[test]
+    fn an_edited_exhaust_brings_its_own_sites() {
+        // an edit builds a new engine that takes the old one's exhaust only when it is the same:
+        // a silencer added, the new net has the new sites and the sound's mix
+        let c = Controls {
+            throttle: 0.5,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        let mut old = Engine::new(EngineDef::inline4(), 3000.0, 1);
+        run(&mut old, 0.05, &c);
+        let mut d = EngineDef::inline4();
+        d.sound.duct_flow = 0.5;
+        d.exhaust
+            .after_collector
+            .push(crate::exhaust::Segment::Muffler {
+                length_m: 0.3,
+                diameter_m: 0.15,
+                tube_diameter_m: 0.0,
+                packing_resistivity: 0.0,
+                packing_porosity: 1.0,
+            });
+        let want = crate::exhaust::expansion_sites(&d.exhaust, 4).len();
+        let mut e = Engine::new(d, 3000.0, 1);
+        assert!(!e.adopt_exhaust_from(&mut old));
+        run(&mut e, 0.05, &c);
+        let net = e.net.as_ref().expect("the inline-4's waveguide");
+        assert_eq!(net.duct_sites(), want);
+        assert_eq!(net.duct_flow_gain(), 0.5);
+    }
+
+    #[test]
+    fn the_fv_site_flows_follow_the_cells() {
+        // FV inline-4 at 3000 WOT: over whole cycles what each primary jets into the collector
+        // is a quarter of what the collector sends into the catalyst (mass conserved through
+        // the junction, both read from FV cells); the exit, read from the designed path's waves
+        // (their own reference gas), carries flow out
+        let mut d = EngineDef::inline4();
+        d.exhaust.model = ExhaustModel::Fv;
+        let mut e = Engine::new(d.clone(), 3000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.3, &c);
+        let sites = crate::exhaust::expansion_sites(&d.exhaust, 4);
+        let mut sum = vec![0.0; sites.len()];
+        let mut flows = Vec::new();
+        let steps = (0.2 / DT).round() as usize; // five cycles at 3000 rpm
+        for _ in 0..steps {
+            e.step(DT, &c);
+            e.fv.as_ref().expect("FV").site_flows(&mut flows);
+            assert_eq!(flows.len(), sites.len());
+            for (s, f) in sum.iter_mut().zip(&flows) {
+                *s += f / steps as f64;
+            }
+        }
+        let at = |want: crate::exhaust::SiteAt| {
+            sites.iter().position(|s| s.at == want).expect("the site")
+        };
+        let exit = at(crate::exhaust::SiteAt::Exit);
+        let into_catalyst = at(crate::exhaust::SiteAt::Segment { index: 0 });
+        assert!(sum[exit] > 0.0, "exit {}", sum[exit]);
+        for (s, m) in sites.iter().zip(&sum) {
+            if matches!(s.at, crate::exhaust::SiteAt::Collector { .. }) {
+                let r: f64 = m / (sum[into_catalyst] / 4.0);
+                assert!(
+                    (r - 1.0).abs() < 0.15,
+                    "collector site {s:?}: {r:.3} of a quarter"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_fv_engines_hiss_at_their_expansions_too() {
+        let heard = |gain: f64| {
+            let mut d = EngineDef::inline4();
+            d.exhaust.model = ExhaustModel::Fv;
+            d.sound.duct_flow = gain;
+            let mut e = Engine::new(d, 3000.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(3000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &c);
+            run(&mut e, 0.2, &c)
+        };
+        let (m, r) = mean_rms_of_difference(&heard(1.0), &heard(0.0));
+        assert!(
+            r > 1e-3 && m.abs() < 0.05 * r,
+            "duct flow on FV: mean {m} rms {r} Pa"
+        );
     }
 
     #[test]
