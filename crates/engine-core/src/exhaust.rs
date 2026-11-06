@@ -2333,7 +2333,7 @@ mod tests {
     /// its 20 ms cycle, staggered by 5 ms), its radiated samples.
     fn pulsed_inline4(setup: impl Fn(&mut super::ExhaustNet)) -> Vec<f64> {
         let dt = 1.0 / 48_000.0;
-        let def = crate::engine::EngineDef::inline4().exhaust;
+        let def = crate::engine::EngineDef::inline4_catalyst_only().exhaust;
         let mut net = super::ExhaustNet::new(&def, 4, dt);
         setup(&mut net);
         (0..(0.2 / dt) as usize)
@@ -2446,7 +2446,7 @@ mod tests {
         // presets/inline4.yaml: 4 primaries of 40 mm into one 55 mm collector ((55/40)² = 1.89
         // ≥ 1.5: each primary's jet expands), the collector into a 139.9 mm catalyst (6.5×),
         // the catalyst into the 50 mm tail (a contraction: none), the tail's exit
-        let ex = crate::engine::EngineDef::inline4().exhaust;
+        let ex = crate::engine::EngineDef::inline4_catalyst_only().exhaust;
         let want = vec![
             site(Some(0), SiteAt::Collector { primary: 0 }, 0.04, 0.055),
             site(Some(0), SiteAt::Collector { primary: 1 }, 0.04, 0.055),

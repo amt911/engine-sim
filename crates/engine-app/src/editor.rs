@@ -1085,7 +1085,9 @@ mod tests {
         assert_eq!(h.state().def.exhaust.after_collector.len(), n);
         assert!(h.state().engine_dirty);
         // an engine without a path starts one from its can and tail
-        let mut h = harness(EngineDef::single());
+        let mut bare = EngineDef::single();
+        bare.exhaust.after_collector.clear();
+        let mut h = harness(bare);
         assert!(h.state().def.exhaust.after_collector.is_empty());
         press(&mut h, "Design the path");
         let x = &h.state().def.exhaust;

@@ -4510,6 +4510,24 @@ impl Engine {
 }
 
 #[cfg(test)]
+impl EngineDef {
+    /// The inline-4 with its catalyst and one tail pipe after the collector, the path the
+    /// hand-worked exhaust tests were written for (the preset now carries silencers).
+    pub(crate) fn inline4_catalyst_only() -> EngineDef {
+        let mut d = EngineDef::inline4();
+        let branch = d.displacement_m3() / d.exhaust.collectors.len().max(1) as f64;
+        d.exhaust.after_collector = vec![
+            crate::exhaust::close_coupled_catalyst(branch, d.exhaust.tail_diameter_m),
+            crate::exhaust::Segment::Pipe {
+                length_m: d.exhaust.tail_length_m,
+                diameter_m: d.exhaust.tail_diameter_m,
+            },
+        ];
+        d
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -5593,7 +5611,10 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(pipes, vec![0.057]);
+        assert!(
+            !pipes.is_empty() && pipes.iter().all(|&d| d == 0.057),
+            "{pipes:?}"
+        );
     }
 
     #[test]
@@ -8736,9 +8757,13 @@ mod tests {
             EngineDef::flatplane_v8(),
             EngineDef::crossplane_v8(),
         ] {
+            // first after its downpipe
             assert!(
                 matches!(
-                    d.exhaust.after_collector.first(),
+                    d.exhaust
+                        .after_collector
+                        .iter()
+                        .find(|s| !matches!(s, crate::exhaust::Segment::Pipe { .. })),
                     Some(crate::exhaust::Segment::Catalyst { .. })
                 ),
                 "{}",
@@ -9253,7 +9278,7 @@ mod tests {
         // u = ū + (s − s̄)/ρc: over whole cycles the swing averages out (the mean exit velocity
         // is the continuity one, Mach ū/c), and it follows the outgoing wave s = ρc·u with slope
         // 1/ρc, ρc = 1.4·101325/500 = 283.71 kg/(m²·s) in the tail's reference gas
-        let mut e = Engine::new(EngineDef::inline4(), 5000.0, 1);
+        let mut e = Engine::new(EngineDef::inline4_catalyst_only(), 5000.0, 1);
         let c = Controls {
             throttle: 1.0,
             hold_rpm: Some(5000.0),
@@ -9295,7 +9320,7 @@ mod tests {
         // at a 0.2 bar manifold the overlap pulls gas back from the primary into the cylinder;
         // the gas the primary receives still comes from the cylinder at or after its exhaust
         // opening, which it leaves no hotter than the cylinder's gas then (it expands as it goes)
-        let mut def = EngineDef::inline4();
+        let mut def = EngineDef::inline4_catalyst_only();
         def.exhaust.gas_temperature = true;
         let mut e = Engine::new(def, 3000.0, 1);
         let c = Controls {
@@ -10130,7 +10155,7 @@ mod tests {
         // is a quarter of what the collector sends into the catalyst (mass conserved through
         // the junction, both read from FV cells); the exit, read from the designed path's waves
         // (their own reference gas), carries flow out
-        let mut d = EngineDef::inline4();
+        let mut d = EngineDef::inline4_catalyst_only();
         d.exhaust.model = ExhaustModel::Fv;
         let mut e = Engine::new(d.clone(), 3000.0, 1);
         let c = Controls {
@@ -10266,28 +10291,24 @@ mod tests {
 
     #[test]
     fn each_preset_carries_only_the_exhaust_it_has_data_for() {
-        // after each collector, the catalyst every road car carries (sized by its rule) and the
-        // tail pipe of the preset's own length and bore — no silencer sized by rule
-        for d in [
-            EngineDef::inline4(),
-            EngineDef::lfa_v10(),
-            EngineDef::flatplane_v8(),
-            EngineDef::crossplane_v8(),
-        ] {
-            let branch = d.displacement_m3() / d.exhaust.collectors.len().max(1) as f64;
-            assert_eq!(
-                d.exhaust.after_collector,
-                [
-                    crate::exhaust::close_coupled_catalyst(branch, d.exhaust.tail_diameter_m),
-                    crate::exhaust::Segment::Pipe {
-                        length_m: d.exhaust.tail_length_m,
-                        diameter_m: d.exhaust.tail_diameter_m,
-                    }
-                ],
-                "{}",
-                d.name
-            );
-        }
+        // the LFA, whose silencer is drawn at its bank merge: after each collector the
+        // catalyst every road car carries (sized by its rule) and the tail pipe of its own
+        // length and bore (the road cars without a drawn silencer carry the rule's,
+        // `every_road_car_carries_a_catalyst_and_silencers_of_ten_swept_volumes`)
+        let d = EngineDef::lfa_v10();
+        let branch = d.displacement_m3() / d.exhaust.collectors.len().max(1) as f64;
+        assert_eq!(
+            d.exhaust.after_collector,
+            [
+                crate::exhaust::close_coupled_catalyst(branch, d.exhaust.tail_diameter_m),
+                crate::exhaust::Segment::Pipe {
+                    length_m: d.exhaust.tail_length_m,
+                    diameter_m: d.exhaust.tail_diameter_m,
+                }
+            ],
+            "{}",
+            d.name
+        );
         assert_eq!(EngineDef::inline4().exhaust.tail_length_m, 1.5);
         // the LFA's bank line, catalyst to muffler: 0.50 + 0.38 (sub muffler) + 1.00 m
         assert_eq!(
