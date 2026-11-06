@@ -1600,7 +1600,14 @@ const LIMITER_HYSTERESIS_RPM: f64 = 200.0;
 /// journey (smallest worst-case dip, then idle accuracy).
 ///
 /// Air path: trim of the bypass, per unit of the air the engine swallows at idle.
-const IAC_KP: f64 = 0.05;
+/// Proportional term: 0.6 damps the integral working through the crank's inertia (a PI on an
+/// integrating plant takes its damping from P). At 0.05 a flat-plane V8 released from a blip
+/// hunted 32 % about its idle for seconds; a sweep of 0.05/0.3/0.6/1.0 over eleven presets
+/// (2026-11-06) left 0.6 the smallest worst case of the piston engines (12 %).
+const IAC_KP: f64 = 0.6;
+/// The share of the target speed within which the proportional term acts (the idle's band: the
+/// hunting it damps swung 10–30 %). ESTIMATE.
+const IAC_P_BAND: f64 = 0.2;
 /// A diesel's idle governor on its fuel share: proportional per relative speed error, integral
 /// per second, and the most fuel it gives (my calls: an idle needs ~5–10 % of full fuel).
 const DIESEL_IDLE_KP: f64 = 1.5;
@@ -2749,7 +2756,11 @@ impl Engine {
         if err > 0.0 || rpm + self.iac_rate * IAC_LOOKAHEAD_S > target {
             self.iac_integral = (self.iac_integral + IAC_KI_PER_S * err * dt).clamp(lo, hi);
         }
-        self.iac = scale * (self.iac_integral + IAC_KP * err).clamp(lo, hi);
+        // the proportional term damps the loop about its target; far above it (a start flare,
+        // falling from a blip) shutting the air would starve the catch: there the dashpot
+        // and the spark path act, so it sees the error within the idle band only
+        let near = err.clamp(-IAC_P_BAND, IAC_P_BAND);
+        self.iac = scale * (self.iac_integral + IAC_KP * near).clamp(lo, hi);
         let r = IDLE_SPARK_RESERVE_DEG;
         let trim = IDLE_SPARK_KP_DEG * err - IDLE_SPARK_KD_DEG_S * self.iac_rate / target;
         self.idle_spark_deg = self.slew_spark(trim.clamp(-r, r) - r, dt);
@@ -6434,6 +6445,42 @@ mod tests {
     }
 
     #[test]
+    fn after_a_blip_the_idle_settles_instead_of_hunting() {
+        // Released from a 0.3 s full-throttle blip, an ECU brings the idle back and holds it:
+        // from 2 s on within 15 % of the target (a driveability bound, ESTIMATE: the engines
+        // that hunted measured 16–32 % over these 4 s with the air path's proportional term at
+        // 0.05, the flat-plane V8 worst)
+        for d in [
+            EngineDef::flatplane_v8(),
+            EngineDef::lfa_v10(),
+            EngineDef::honda_k20a(),
+            EngineDef::subaru_ej25(),
+        ] {
+            let target = d.idle_rpm;
+            let mut e = Engine::new(d.clone(), target, 1);
+            run(&mut e, 6.0, &Controls::default());
+            let blip = Controls {
+                throttle: 1.0,
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &blip);
+            run(&mut e, 2.0, &Controls::default());
+            let worst = (0..(4.0 / DT) as usize)
+                .map(|_| {
+                    e.step(DT, &Controls::default());
+                    (e.rpm() / target - 1.0).abs()
+                })
+                .fold(0.0f64, f64::max);
+            assert!(
+                worst < 0.15,
+                "{}: {:.0} % off its idle",
+                d.name,
+                100.0 * worst
+            );
+        }
+    }
+
+    #[test]
     fn one_idle_control_step_by_hand() {
         let dt = 1e-3;
         let scale = 0.008_678_7;
@@ -6442,9 +6489,9 @@ mod tests {
         let mut e = idling_at(780.0, 0.0, -400.0, -8.0);
         e.idle_control(dt, &Controls::default());
         assert_relative_eq!(e.iac_rate, -397.333, max_relative = 1e-5);
-        // integral 0.5 · 0.025 · 1e-3 = 1.25e-5; air = scale · (1.25e-5 + 0.05 · 0.025)
+        // integral 0.5 · 0.025 · 1e-3 = 1.25e-5; air = scale · (1.25e-5 + 0.6 · 0.025)
         assert_relative_eq!(e.iac_integral, 1.25e-5, max_relative = 1e-9);
-        assert_relative_eq!(e.iac, scale * 1.2625e-3, max_relative = 1e-4);
+        assert_relative_eq!(e.iac, scale * 1.50125e-2, max_relative = 1e-4);
         // spark: 80 · 0.025 + 10 · 397.33/800 = 6.9667 from the −15° reserve → −8.0333°
         assert_relative_eq!(e.idle_spark_deg, -8.0333, max_relative = 1e-4);
         // a new speed reading: 700 → 720 rpm in 1 ms is 20 000 rpm/s, filtered by 1/150
@@ -7732,6 +7779,37 @@ mod tests {
                 .all(|x| matches!(x, crate::exhaust::Segment::Pipe { .. }))
         );
         assert_eq!(tuned.geometry, stock.geometry);
+    }
+
+    #[test]
+    fn the_renesis_catches_its_idle_after_the_start_flare_at_the_low_quality_step() {
+        // Low and Medium quality step the physics at twice the 48 kHz audio rate. Started there,
+        // the RENESIS flared to 2300 rpm, its injection cut on the way down (overrun), and the
+        // fuel came back at a fixed 1100 rpm while the rotor fell at ~2800 rpm/s: too late to
+        // catch it, it stalled. An ECU brings the fuel back earlier the faster the engine falls.
+        let dt = 1.0 / 96_000.0;
+        let d = EngineDef::mazda_renesis();
+        let mut e = Engine::new(d.clone(), 0.0, 1);
+        let crank = Controls {
+            starter: true,
+            ..Controls::default()
+        };
+        (0..(1.0 / dt) as usize).for_each(|_| {
+            e.step(dt, &crank);
+        });
+        let mut low = f64::INFINITY;
+        for k in 0..(5.0 / dt) as usize {
+            e.step(dt, &Controls::default());
+            if k as f64 * dt > 1.0 {
+                low = low.min(e.rpm());
+            }
+        }
+        assert!(low > 0.4 * d.idle_rpm, "fell to {low:.0} rpm");
+        assert!(
+            (e.rpm() / d.idle_rpm - 1.0).abs() < 0.25,
+            "idles at {:.0}",
+            e.rpm()
+        );
     }
 
     #[test]
