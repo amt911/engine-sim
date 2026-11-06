@@ -2835,6 +2835,8 @@ mod tests {
             baffle_open_area: 1.0,
             open_rpm: 3000.0,
             travel_s: 0.3,
+            // sealed: the paths heard one at a time (the leak has its own test)
+            valve_clearance_m: 0.0,
             ..Bypass::default()
         });
         d
