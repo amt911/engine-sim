@@ -2426,14 +2426,29 @@ fn port_gas_temperature(
     t_wall + (mixed - t_wall) * (-dt / tau).exp()
 }
 
-/// The waveguide exhaust's source for a valve mass flow `dm_dt` (kg/s) carrying specific total
+/// A valve mass flow `dm_dt` (kg/s) carrying specific total
 /// enthalpy `h`: the mass of reference gas with the same volume. An open end radiates volume
 /// velocity (monopole, p = ρ₀/4πr · dQ/dt; Kinsler et al., *Fundamentals of Acoustics*, §7.4),
 /// and the linear pipes model gas at `C_PRIMARY`; at the pipe's pressure the volume of a flow
-/// scales with its temperature, so a flow at T counts T/T_ref of its mass.
+/// scales with its temperature, so a flow at T counts T/T_ref of its mass. An open valve on the
+/// waveguide takes [`boundary_source_flow`] instead: this counts the gas at an atmosphere and its
+/// stagnation temperature, about twice the volume a blowdown has at the valve.
 fn exhaust_source_flow(dm_dt: f64, h: f64) -> f64 {
     let t_ref = crate::exhaust::C_PRIMARY.powi(2) / (crate::gas::GAMMA * crate::gas::R_AIR);
     dm_dt * (h / crate::gas::CP).max(1.0) / t_ref
+}
+
+/// The waveguide exhaust's source for an open valve whose boundary (solved by characteristics,
+/// [`crate::valve_boundary`]) moves its gas at `u` m/s into a primary of `pipe_area` whose gas
+/// rests at `p0` (the atmosphere plus the mean backpressure): the volume flow u·A, which the
+/// contact surface between the blowdown gas and the gas it pushes passes on unchanged, in the
+/// net's units (reference gas at `C_PRIMARY` and p0: ρ₀·u·A, the wave p⁺ − p⁻ = ρ₀c·u). Taking
+/// the valve's mass flow at its stagnation temperature and an atmosphere instead
+/// ([`exhaust_source_flow`]) counted the compressed blowdown gas at twice its volume: a K20A's
+/// full-load blowdown stood at 4.1 bar at the valve, where Heywood measures 1.8 atm (Fig. 6.10).
+fn boundary_source_flow(u: f64, p0: f64, pipe_area: f64) -> f64 {
+    let c = crate::exhaust::C_PRIMARY;
+    crate::gas::GAMMA * p0 / (c * c) * u * pipe_area
 }
 
 /// Where an engine's fuel went, kg.
@@ -3199,6 +3214,12 @@ impl Engine {
                 cylinder_flow(cs, &th, f, port);
                 exhaust_source_flow(f.dm / dt, f.h)
             });
+            // the waveguide's primary takes the volume flow the boundary solved for
+            if self.fv.is_none()
+                && let Some((_, b)) = fb_ex
+            {
+                self.flows[i] = boundary_source_flow(b.u, ATM_PA + back_at_port, pipe_area);
+            }
             // The valve's jet: its mixing noise, generated in the port, rides down the primary
             // with the pulse — a pressure added to the wave the valve sends. With the FV exhaust
             // it rides the jet net (`jet_net`): a small perturbation, linear on the gas dynamics.
@@ -5626,6 +5647,43 @@ mod tests {
             !pipes.is_empty() && pipes.iter().all(|&d| d == 0.057),
             "{pipes:?}"
         );
+    }
+
+    #[test]
+    fn a_full_load_blowdown_raises_its_primary_as_much_as_a_measured_one() {
+        // Heywood, *Internal Combustion Engine Fundamentals* (2nd ed., 2018), Fig. 6.10: a 2.0 L
+        // four (84 × 89 mm) at wide-open throttle and 4800 rpm, its exhaust runner 200 mm from
+        // the valve swings between 1.05 and 1.8 atm — a blowdown peak of 0.8 atm ≈ 81 kPa gauge.
+        // The K20A (86 × 86 mm, 2.0 L) there. Taken as a linear port, the waveguide's blowdown
+        // stood at +316 kPa (4.1 bar) at the valve end; solved by characteristics (the finite
+        // volumes' primary, the same boundary) it stands at +92 kPa.
+        let mut e = Engine::new(EngineDef::honda_k20a(), 4800.0, 1);
+        let dt = 1.0 / 48_000.0;
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(4800.0),
+            ..Controls::default()
+        };
+        (0..(1.0 / dt) as usize).for_each(|_| {
+            e.step(dt, &c);
+        });
+        let mut peak: f64 = 0.0;
+        (0..(0.2 / dt) as usize).for_each(|_| {
+            e.step(dt, &c);
+            peak = peak.max(e.exhaust_port_gauge(0));
+        });
+        assert!((40e3..150e3).contains(&peak), "{peak}");
+    }
+
+    #[test]
+    fn a_valve_sends_its_boundary_volume_flow() {
+        // ρ₀ = γp/c² = 1.4 × 101 325 / 600² = 0.394 042 kg/m³; 100 m/s through 10 cm²: 0.1 m³/s,
+        // 0.039 404 kg/s of reference gas — a wave of ρ₀c·u = 23 642 Pa (C_PRIMARY = 600).
+        let q = boundary_source_flow(100.0, ATM_PA, 0.001);
+        assert_relative_eq!(q, 0.039_404, max_relative = 1e-4);
+        // behind a turbine the gas it pushes is denser: at 2.5 bar, 2.5/1.013 25 as much
+        let q = boundary_source_flow(100.0, 2.5e5, 0.001);
+        assert_relative_eq!(q, 0.097_222, max_relative = 1e-4);
     }
 
     #[test]

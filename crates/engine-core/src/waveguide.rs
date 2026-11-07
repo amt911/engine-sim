@@ -2128,7 +2128,10 @@ mod tests {
         }
         let s0 = 5000.0 * 2.0 * std::f64::consts::PI * 500.0 * dt;
         let ratio = steepest(&far, 3840) / s0;
-        assert!((ratio - 2.0).abs() < 0.3, "slope grew {ratio:.2}×, Burgers 2×");
+        assert!(
+            (ratio - 2.0).abs() < 0.3,
+            "slope grew {ratio:.2}×, Burgers 2×"
+        );
     }
 
     #[test]
@@ -2298,7 +2301,11 @@ mod tests {
             (refl, out) = e.process(-10_000.0);
         }
         assert!((out + 15_980.0).abs() < 30.0, "inflow {out}");
-        assert!((-10_000.0 + refl + 4_019.7).abs() < 15.0, "end pressure {}", -10_000.0 + refl);
+        assert!(
+            (-10_000.0 + refl + 4_019.7).abs() < 15.0,
+            "end pressure {}",
+            -10_000.0 + refl
+        );
         // outflow leaves as a jet at the outside pressure: as the linear end
         let mut e = OpenEnd::new(0.05, 1.0 / 192_000.0);
         for _ in 0..4000 {

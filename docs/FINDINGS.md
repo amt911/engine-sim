@@ -1584,3 +1584,27 @@ source is not identified. Phone and YouTube recordings cannot judge below about 
   exhaust's treble modulation is 7 % (real 9.6 %).
 - On the FV exhaust the LFA's closed-valve path reads 75 dB Lin at 0.25 m at 3000 (Davies 104–110):
   its estimated chambers take too much (also its quiet idle).
+
+## Straight pipes too bright: the waveguide's valve source, not its steepening (2026-11-07)
+
+- The waveguide's steepening is right: one closed pipe driven by blowdown-sized pulses, the
+  non-linear lines match finite volumes converged at 2.5 mm cells within 1 dB in every octave to
+  16 kHz. FV at 2–4 cm cells (the engine's) loses 10–25 dB at 4–16 kHz to numerical diffusion — it
+  only *looked* like the real straight-pipe Harley. 2 cm and 4 cm agreeing is not convergence there.
+- Real straight pipes do shock: Jones & Brown (NASA TM-84061, 1981, Fig. 10) measure a weak shock
+  forming 1.12 m down a TS125's pipe from a +15 kPa pulse; inviscid MOC predicts it.
+- The fault was the amplitude: the waveguide's valve source was its mass flow at the blowdown
+  gas's stagnation temperature and an atmosphere (`exhaust_source_flow`), twice the volume the
+  compressed gas has at the valve; the characteristic boundary only set the mass flow. K20A at
+  4800 WOT stood at +316 kPa at the valve end; Heywood Fig. 6.10 (2.0 L four, WOT 4800, 200 mm
+  from the valve) measures 1.8 atm; the FV primary (same boundary) +92 kPa. The source is now
+  the boundary's volume flow u·A (u passes the contact surface unchanged): +122 kPa; overrun
+  against full power −5.8 dB radiated (FV −5.4; old −7.3). A source that stood the wave at the
+  boundary's *pressure* instead matched the peak too (+109 kPa) but carried 29 % less mean flow
+  and left overrun only 2 dB under full power.
+- Tried and reverted: friction on the pulse swing instead of the mean (≈ 1 dB, and
+  `ArrivalProbe` clones the primaries without `send`, so it broke the threaded exhaust's
+  determinism). The cross-family term ((3−γ)/4)·R⁻ of the characteristic speed is not missing in
+  effect: the closed-pipe comparison above has strong waves both ways.
+- Borda inflow (K = 1) at the open end: −9 dB HF on the straight V-twin; no effect where the tail
+  never draws in (LFA straight at 8500: mean outflow).
