@@ -4,7 +4,7 @@ The user's priority order, kept current: **every session reads it when it starts
 when a milestone lands** (with the CHANGELOG row and the tag). Everything is physics, with every
 constant cited; nothing is set by ear. Each item has its design in `docs/superpowers/specs/` and,
 once planned, its plan in `docs/superpowers/plans/`; verified facts live in `docs/FACTS.md`.
-Last updated: 2026-11-04.
+Last updated: 2026-11-07.
 
 ## Done (details in `CHANGELOG.md`)
 
@@ -50,6 +50,17 @@ Last updated: 2026-11-04.
    or the physics: measure edited engines against real ones of the same sizes. If the model
    is wrong, fix it; if the engine really is badly sized, the editor says so and the catalogue
    offers the real parts.
+
+## Open from the night of 2026-11-06/07 (agent)
+
+- **Rotary port exchange at any step** (FINDINGS 2026-11-07): the intake port as a characteristic
+  boundary of its runner. Unblocks the RENESIS at Low/Medium quality and the parked **Mazda 787B
+  R26B** preset (branch `feat/mazda-787b-r26b`: stalls at Ultra, idle hunts, 6500 rpm torque hole).
+- **Intake vs exhaust at high speed** (FINDINGS 2026-11-07): the road LFA's intake masks its
+  limiter cut. Needs measured data before touching the approved LFA.
+- **Alternator load at idle** (local branch `fix/idle-holds-accessory-load`, WIP): 300 W of
+  electrics through a 55 % alternator; K20/EJ25 idle fill into the real range. Waits for the
+  user's ear.
 
 ## Next: transmissions and hybrid
 
