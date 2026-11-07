@@ -120,7 +120,10 @@ lines below bind even if you never open the document; open it before working on 
   Look at waveform + spectrogram beside the reference before any theory; a metric counts only once
   it separates the user's past ear verdicts; compare at matched rpm, load, exhaust and microphone;
   Ange's new simulator's audio is a measurable target; one validated metric, then physics — no clip
-  per guess.
+  per guess. **Never hand the user A/B clips to choose between your hypotheses** (user,
+  2026-11-07): settle it yourself against papers, spectrograms and charts of matched real
+  recordings (fetch them if the repo lacks one, kept local), and send clips only once the
+  measurements say it is fixed.
 - **Agentic PR verification (mandatory)** → [docs/agents/pr-verification.md](docs/agents/pr-verification.md).
   Every PR gets a verdict from a pass that runs the real app (headless render + GUI launch), as a PR
   comment.

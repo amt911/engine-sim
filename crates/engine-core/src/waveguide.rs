@@ -1255,6 +1255,12 @@ pub fn lossy_junction(
     pj
 }
 
+/// Inlet loss coefficient of a thin-walled pipe end drawing air in (Borda mouthpiece: the vena
+/// contracta's area ratio ½ loses the whole head once more; Idelchik, diagram 3-1, δ/D → 0).
+const INFLOW_LOSS_K: f64 = 1.0;
+/// Density of the outside air an open end draws in, kg/m³ (20 °C, 1 atm).
+const RHO_OUTSIDE: f64 = 1.204;
+
 /// Open pipe end radiating into air: reflection −r·LP(p) with a one-pole low-pass at the
 /// frequency where ka = 1 (|R| ≈ 1 below it, falling above; Levine & Schwinger 1948).
 #[derive(Debug, Clone)]
@@ -1289,10 +1295,28 @@ impl OpenEnd {
     }
     /// Given the arriving wave, returns (reflected wave, outflow volume velocity × ρc =
     /// p − reflected). The far-field sound is the time derivative of the latter (monopole).
+    ///
+    /// Outflow leaves as a jet at the outside pressure (the linear end). Inflow is drawn from
+    /// the still air through the edge's vena contracta and loses its head:
+    /// p = −(1 + K)·½ρ_air·u², K = 1 for a thin-walled end (Borda; Idelchik, *Handbook of
+    /// Hydraulic Resistance*, diagram 3-1) — the quasi-steady limit of the vortex shedding that
+    /// takes a loud standing wave's energy at the end (Disselhorst & van Wijngaarden, JFM 99,
+    /// 1980), and the inflow law of the engine codes' open-end boundary (Benson, *The
+    /// Thermodynamics and Gas Dynamics of Internal-Combustion Engines*, vol. 1, ch. 7). Faint
+    /// waves are untouched (the loss goes as u²); a straight pipe's ±300 m/s swings are not.
     pub fn process(&mut self, arriving: f64) -> (f64, f64) {
         self.lp += self.k * (arriving - self.lp);
         let reflected = -self.r * self.jet * self.lp;
-        (reflected, arriving - reflected)
+        let v = arriving - reflected;
+        if v >= 0.0 {
+            return (reflected, v);
+        }
+        // the end's pressure drops by β·w², w the inflow (× ρc) it lets through:
+        // β·w² − w + v = 0, the root that meets v as β → 0
+        let z = crate::exhaust::tail_impedance();
+        let beta = (1.0 + INFLOW_LOSS_K) * 0.5 * RHO_OUTSIDE / (z * z);
+        let w = (1.0 - (1.0 - 4.0 * beta * v).sqrt()) / (2.0 * beta);
+        (reflected + (v - w), w)
     }
 }
 
@@ -2077,6 +2101,36 @@ mod tests {
         assert!((143..=145).contains(&n), "peak at {n}");
     }
 
+    /// Steepest slope (per step) of the far end's signal over its last `n` values.
+    fn steepest(v: &[f64], n: usize) -> f64 {
+        v[v.len() - n..]
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0, f64::max)
+    }
+
+    #[test]
+    fn a_sine_steepens_at_the_rate_burgers_gives_before_it_shocks() {
+        // A plane sine of amplitude p_a at ω in gas at an atmosphere forms a shock at
+        // x̄ = γP·c/(β·ω·p_a) (Hamilton & Blackstock, *Nonlinear Acoustics*, ch. 4, eq. 4.24;
+        // Alfredson & Davies, JSV 13, 1970, eq. 1 gives the same within 7 %); until then its
+        // steepest slope grows as 1/(1 − x/x̄) (Earnshaw's simple wave). 5 kPa at 500 Hz in gas at
+        // 600 m/s: x̄ = 1.4·101 325·600/(1.2·3141.59·5000) = 4.5153 m. Half of it (2.2577 m) on a
+        // lossless pipe doubles the slope.
+        let dt = 1.0 / 192_000.0;
+        let x_bar = 1.4 * 101_325.0 * 600.0 / (1.2 * 2.0 * std::f64::consts::PI * 500.0 * 5000.0);
+        let mut p = Pipe::new(0.5 * x_bar, 0.05, 600.0, dt, 0.0).steepening();
+        let sine = |n: usize| 5000.0 * (2.0 * std::f64::consts::PI * 500.0 * n as f64 * dt).sin();
+        let mut far = Vec::new();
+        for n in 0..9600 {
+            far.push(p.at_far());
+            p.send(sine(n), 0.0);
+        }
+        let s0 = 5000.0 * 2.0 * std::f64::consts::PI * 500.0 * dt;
+        let ratio = steepest(&far, 3840) / s0;
+        assert!((ratio - 2.0).abs() < 0.3, "slope grew {ratio:.2}×, Burgers 2×");
+    }
+
     #[test]
     fn a_pipe_under_pressure_steepens_its_waves_as_much_less() {
         // A wave steepens at k·x = (γ+1)/(2γp)·x (Msallam et al. 2000, eqs. 1–2): in gas at 3
@@ -2226,6 +2280,31 @@ mod tests {
         junction(&[1.0, 1.0, 1.0], &[1.0, 0.0, 0.0], &mut out);
         assert_relative_eq!(out[0], -1.0 / 3.0);
         assert_relative_eq!(out[1], 2.0 / 3.0);
+    }
+
+    #[test]
+    fn an_open_end_draws_air_in_through_a_borda_loss() {
+        // Inflow enters a thin-walled pipe end from rest through a vena contracta: p = −(1+K)·½ρu²
+        // with K = 1 (Borda mouthpiece; Idelchik, *Handbook of Hydraulic Resistance*, diagram
+        // 3-1), quasi-steady at low Strouhal number (Disselhorst & van Wijngaarden, JFM 99,
+        // 1980). Signals are p and ρc·u of the tail gas, ρc = 283.71 Pa·s/m (500 m/s at an
+        // atmosphere), the air drawn in 1.204 kg/m³: p = −β·v², β = 1.204/283.71² = 1.4958e-5.
+        // A settled −10 kPa wave: the linear end gives v = 1.98·a = −19 800; with the loss,
+        // β·v² − v − 19 800 = 0 → v = −15 980 (u = −56.3 m/s); the end's pressure is the linear
+        // end's own (1 − 0.98)·a = −200 Pa less β·v² = 3 819.7 Pa: −4 019.7 Pa.
+        let mut e = OpenEnd::new(0.05, 1.0 / 192_000.0);
+        let (mut refl, mut out) = (0.0, 0.0);
+        for _ in 0..4000 {
+            (refl, out) = e.process(-10_000.0);
+        }
+        assert!((out + 15_980.0).abs() < 30.0, "inflow {out}");
+        assert!((-10_000.0 + refl + 4_019.7).abs() < 15.0, "end pressure {}", -10_000.0 + refl);
+        // outflow leaves as a jet at the outside pressure: as the linear end
+        let mut e = OpenEnd::new(0.05, 1.0 / 192_000.0);
+        for _ in 0..4000 {
+            out = e.process(10_000.0).1;
+        }
+        assert!((out - 19_800.0).abs() < 1.0, "outflow {out}");
     }
 
     #[test]
