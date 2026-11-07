@@ -395,3 +395,21 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   now fitted once per pipe; silencer equalizers are memoized (`silencer2d::EqMemo`, carried across
   rebuilds). First block after an exhaust edit, release, loaded machine: K20A 178 → 26 ms,
   LFA ~1100 → 100 ms; whole K20A net 194 → 23 ms.
+- **LFA treble after the waveguide valve-source fix (2026-11-07, PR #127)**, held 8500 rpm WOT,
+  octaves 4 k / 8 k re the firing line: waveguide −18 / −22, FV (Ultra) −16 / −23, the old
+  (over-stated) source −10 / −14. Real: dyno clip WJ_K9UCj1Ko (8300–8600 rpm) −4…−9 / −9…−15;
+  Yamaha's recording BWrmXO4GjSY (7100–7700 rpm) −22…−32 / −30…−43. The references span
+  ~25 dB with microphone and setting, so the treble level alone cannot be fitted to; the
+  render sits between them. All of them, ours too, put orders 1–4 15 dB under the dyno clip's
+  (the cylinder-to-cylinder spread is missing) and ours puts order 10 at −5 dB (FV −12, real −13…−15).
+- **The valve jets are ~30 dB under the pulses' own treble on the LFA** (instrumented: 230 Pa rms
+  in the primary while open, u ≈ 530 m/s; `sound.valve_jet` × 30 adds 1 dB at 8 k). They
+  stopped mattering at commit 3273b22 (2026-10-29, the LFA's own bank lines, geometry only;
+  bisected): on 2201fac they were −6.2 dB at 5–10 kHz. Linear pipes leave them as inaudible,
+  so it is not the steepening.
+- **A non-linear waveguide line erases white noise riding on blowdowns** (2 m pipe probe): noise
+  flat to the step's Nyquist (190 kHz) makes adjacent samples cross and merge, and the merged
+  clusters average the audible band away; the same noise band-limited to 15 kHz rides through
+  intact, as through converged FV. Sources fed into steepening lines must not carry ultrasonic
+  power; Tam's shape capped at 0.05/dt does (its low-pass sits near 0.34/dt), but on the LFA
+  capping it at 12–20 kHz changed nothing (the jets are inaudible there anyway).
