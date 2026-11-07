@@ -37,6 +37,55 @@ Found: <YYYY-MM-DD> · <area: build | tests | db | ci | deploy | env>
 
 ## Findings
 
+### An empty `after_collector` is not a straight pipe: it adds a packed can
+
+**Symptom.** A "straight pipe" preset (PowerFist 212 bench) had a 300–1250 Hz hole and no pipe ring.
+**Cause.** `ExhaustDef::path()`: with `after_collector` empty, the older fields build a can of
+`muffler_volume_m3` lined with `muffler_packing`, then the tail. Inherited 0.003 m³: a packed silencer.
+**Fix / workaround.** A straight pipe sets `muffler_volume_m3: 0.0` (or one `kind: pipe` segment).
+With it, our PowerFist at 3600 rpm loaded, 2 m, sits within 3–6 dB of Ange's sim in every third-octave.
+**Why it isn't obvious.** The YAML reads "no segments"; the legacy fallback is only in `path()`'s doc.
+
+Found: 2026-11-06 · sound
+
+### The rotaries' port exchange depends on the step: the RENESIS stalls at 96 kHz
+
+**Symptom.** Low/Medium quality (physics at 96 kHz): the RENESIS idles high and stalls after a
+blip; at 192 kHz it is fine. The 13B bridge port and the R26B idle hunt ±40–50 %.
+**Cause.** `plan_exchange` caps a valve's mass per step at `VALVE_RELAX` (0.5) of the mass that
+would equalise the two volumes. A rotor's huge port against the intake runner's small last cell
+hits that cap (≈2.4× at 96 kHz): a per-step cap is a per-second cap ∝ 1/dt. With the cap at 1.0
+the RENESIS runs at 96 kHz but the bridge port (big overlap, two open ports on a small chamber)
+stalls: the cap is what keeps the explicit coupling stable.
+**Fix / workaround.** Open: the intake port as a boundary of its runner solved by characteristics,
+as the exhaust valve already is (`valve_boundary`, Benson), with no per-step cap.
+**Why it isn't obvious.** Every test steps at 192 kHz (`DT`), where it passes.
+
+Found: 2026-11-07 · physics
+
+### A road LFA's limiter cut is masked by its intake
+
+**Symptom.** Floored in neutral the LFA bounces off its 9500 rpm fuel cut (5 cycles cut, 3 fired,
+~10 Hz, 9260–9600 rpm), but the road preset's level ripples only ~3 dB; straight-piped, ~10 dB.
+**Cause.** At 9000 rpm WOT the intake mouth reads ~20 dB over the silenced exhaust in the 1 kHz
+octave, and it keeps breathing through a fuel cut. With the intake 10 dB lower the ripple is 6 dB.
+**Fix / workaround.** None yet: the intake/exhaust balance at high speed needs data (a drive-by
+study has a sports car's intake dominating early in the zone, the exhaust late). The user rejected
+a progressive limiter: the cut must be heard.
+**Why it isn't obvious.** The limiter works; the rpm trace shows it, the sound hides it.
+
+Found: 2026-11-07 · sound
+
+### Normalizing clips by RMS clips straight pipes
+
+**Symptom.** "Sounds like clipping" on straight-pipe clips.
+**Cause.** Straight pipes' crest factor is 15–20 dB (a real straight-piped PowerFist: 18.8 dB); a
+gain set by RMS pushed peaks to 1.6 and the export clipped them. The renders themselves are only
+scaled down (`offline::normalize`), never limited.
+**Fix / workaround.** Gain = min(RMS target, 0.89 / peak).
+
+Found: 2026-11-07 · tooling
+
 ### The V10's "mosquito": its two banks were heard from one point, so their orders cancelled
 
 **Symptom.** The LFA at full load sounds like a pure tone on the firing order (user: "muy agudo y
