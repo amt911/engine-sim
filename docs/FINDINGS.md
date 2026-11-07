@@ -1608,3 +1608,14 @@ source is not identified. Phone and YouTube recordings cannot judge below about 
   effect: the closed-pipe comparison above has strong waves both ways.
 - Borda inflow (K = 1) at the open end: −9 dB HF on the straight V-twin; no effect where the tail
   never draws in (LFA straight at 8500: mean outflow).
+
+## The sin² cam is not what starves the top end (2026-11-07)
+
+- FINDINGS 2026-10-27 proposed a measured cam profile for the K20A/LFA's missing power at speed.
+  Blair's profile fitted to measured SI cams (*Design and Simulation of Four-Stroke Engines*, 1999,
+  §1.5.5–1.5.6: cubic ramps over 40° to 20 % of the lift, cubic main lift) has the same time-area
+  as the sin² over the same seat-to-seat duration: mean lift 0.497 / 0.518 / 0.541 of the peak at
+  240° / 265° / 300°, sin² 0.500. A profile swap cannot buy 12 %.
+- Its lift above 10 % of the peak lasts 204° of a 265° duration (sin² 211°): a duration published
+  at 1 mm (Honda's habit) taken as seat-to-seat would make a cam ~40° short. Heywood's timings
+  (and so the LFA's) are at 0.15 mm lift (§6.3, Fig. 6.16): seat-to-seat, no such error there.
