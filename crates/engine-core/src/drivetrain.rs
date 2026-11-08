@@ -194,7 +194,12 @@ impl VehicleDef {
             shift_time_s: 0.2,
             // front-mid engine ~0.35 m behind the front axle: 0.96 m rear overhang + 2.605 m wheelbase − 0.35 m (Lexus GB, 2009-10-21; the 0.35 m an ESTIMATE)
             engine_ahead_m: 3.2,
-            engine_bay: Some(crate::engine_bay::EngineBay::default()),
+            // a flat underbody to its carbon diffuser (Lexus, launch release 2009-10-21, as
+            // reported by autotrader.co.nz "Lexus supercar unveiled"): the bay closed below
+            engine_bay: Some(crate::engine_bay::EngineBay {
+                closed_underside: true,
+                ..crate::engine_bay::EngineBay::default()
+            }),
             shuffle_hz: 3.5,
             shuffle_damping: 0.15,
         }
