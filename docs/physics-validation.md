@@ -141,7 +141,7 @@ sound-critical models have only qualitative tests (list in *Gaps, ranked*).
 | Wall transmission (limp mass law, stiff panel) | `exhaust.rs` | `exhaust.rs:2536`, `:2559` | v = 7.0658e-5 m/s; 8.864e-8 m³/s (Kinsler §6.4, §1.7) `[closed]` | ✅ |
 | Exit losses, tail exit orifice (choked/subsonic inversion) | `exhaust.rs`, `engine.rs::tail_exit` | `exhaust.rs:3194`; `engine.rs:10316`, `:10344` | 0.96711 kg/s → 2 atm back-pressure, jet 456.435 m/s; 0.209798 kg/s subsonic `[hand]` | ✅ |
 | Open end reflection, convective loss (1−M)/(1+M) (Munt 1977; Peters et al. JFM 256) | `waveguide.rs::OpenEnd` | `waveguide.rs:1759`; `exhaust_fv.rs:826` | 0.98·0.83/1.17 = 0.6952; 1/3 at M = 0.5 `[closed]` | ✅ |
-| Open end reflection vs ka (Levine & Schwinger 1948) | `waveguide.rs::OpenEnd` (one-pole at ka = 1, r = 0.98) | `waveguide.rs:2232` (DC inversion); `:2305`, `:2311`, `:2317` (|R| at ka = 1, ½, ¼ vs Silva et al. 2009 fit of Levine–Schwinger, 2 %) ✅; `:2324` (ka = 2) and `:2331` (end correction) **findings** (`#[ignore]`) | |R|(1) = 0.6944 `[fit]`; code 0.696. ka = 2: expected 0.346, code **0.447 (+29 %)**. End correction: expected l = 0.6133 a, code **0.419 a (−32 %)** | ✅ for ka ≤ 1; ❌ above (finding) |
+| Open end reflection vs ka (Levine & Schwinger 1948) | `waveguide.rs::OpenEnd` (two-pole H(s) = 1/(1 + 1.2266τs + 0.2523τ²s²), τ = a/c; no extra loss factor) | `open_end_inverts_low_frequencies` (|R| = 1 at DC); |R| at ka = 1, ½, ¼ vs Silva et al. 2009 fit of Levine–Schwinger, 2 % ✅; end correction 0.6133 a, 2 % ✅ (fixed 2026-11-08, was 0.419 a); ka = 2 **finding** (`#[ignore]`) | ka = 2: expected 0.346, code **0.392 (+13 %; was 0.447)** | ✅ for ka ≤ 1 and the end correction; ka = 2 open |
 | Exhaust gas viscosity (Sutherland) | `exhaust.rs` | `exhaust.rs:3294` | 3.0164e-5 Pa·s at 600 K (White's table 3.06e-5) `[table]` | ✅ |
 | Gas cooling along pipes, Dittus–Boelter | `pipe_heat.rs` | `pipe_heat.rs:158`, `:168`, `:175`, `:246` | Nu = 0.023 Re^0.8 Pr^0.3: h = 61.49 W/m²K; laminar Nu = 3.66; exp(−NTU) `[hand][closed]` | ✅ |
 | Wall thermal model (steel pipe, radiation) | `pipe_heat.rs` | `pipe_heat.rs:194`, `:205` | ≈ 40 s time constant ("≈", approximate) | 🟡 |
@@ -313,10 +313,12 @@ reachable with the existing public API (no new production code).
    (arXiv:0811.3625) Eq. 21, Table 1: |R| = (1 + 0.800 x)/(1 + 1.300 x + 0.266 x² + 0.0263 x³),
    x = (ka)², error < 2 % for ka < 3 vs Levine–Schwinger; l/a → 0.6133. Measured (steady sine,
    48 kHz, a = 21 mm): ka = 0.25, 0.5, 1 within 2 % (the code's one-pole matches 1 − (ka)²/2
-   at low ka; margins at ka = 0.25 and 0.5 are ≈ 0.1 % and 0.2 %), **ka = 2: 0.447 vs 0.346**; end
-   correction **0.419 a vs 0.6133 a** (the one-pole's group delay, 1/ω_c minus half a sample at
-   48 kHz, is a/2 − Δ; no end-correction is added elsewhere on this path — not checked how the
-   pipe length compensates). Mach-number dependence is covered by the existing (1−M)/(1+M) tests.
+   at low ka), ka = 2: 0.447 vs 0.346; end correction 0.419 a vs 0.6133 a. **Fixed 2026-11-08**
+   (`fix/open-end-levine-schwinger`): a two-pole end whose low-ka delay is the end correction and
+   whose |H|² = 1 − (ka)² at low ka, with no extra 0.98 factor (unsourced since the first
+   waveguide commit): |R| within 0.3 % of the fit to ka = 1 and l = 0.6133 a; ka = 2 is 0.392
+   (+13 %). No simple stable rational filter met both the delay and the modulus over ka 0–3
+   (fits of orders 2–4 searched). Mach-number dependence is covered by the existing (1−M)/(1+M) tests.
 6. **Expansion chamber TL with mean flow (❌).** The waveguide pipes do not convect (they apply
    loss only), so the Mach-number shift of chamber resonances and the extra damping are missing,
    and the FV net handles convection implicitly with numerical damping. Benchmark: Munjal ch. 3

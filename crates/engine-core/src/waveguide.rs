@@ -1255,26 +1255,43 @@ pub fn lossy_junction(
     pj
 }
 
-/// Open pipe end radiating into air: reflection −r·LP(p) with a one-pole low-pass at the
-/// frequency where ka = 1 (|R| ≈ 1 below it, falling above; Levine & Schwinger 1948).
+/// Open pipe end radiating into air (Levine & Schwinger, Phys. Rev. 73, 1948): reflection
+/// R = −H(p), H(s) = 1/(1 + a₁τs + a₂τ²s²), τ = a/c, a the pipe's radius. The two
+/// coefficients carry what the exact solution says at low ka: the phase lag 2kl of the end
+/// correction l = 0.6133a (a₁ = 2·0.6133) and |R| = 1 − (ka)²/2 (|H|² = 1 − (ka)², so
+/// a₁² − 2a₂ = 1). |R| then stays within 0.3 % of Levine & Schwinger up to ka = 1 (Silva,
+/// Guillemain, Kergomard, Mallaroni & Norris, J. Sound Vib. 322, 2009, eq. 21) and is 13 % high
+/// at ka = 2, where the end already passes 85 % of the power out (0.2 dB from exact). Discretised
+/// by the bilinear transform, which keeps the low-frequency delay.
 #[derive(Debug, Clone)]
 pub struct OpenEnd {
-    r: f64,
-    k: f64,
-    lp: f64,
+    /// The biquad's coefficients (b₀, b₁, b₂, a₁, a₂, normalised) and its two states.
+    b: [f64; 3],
+    a: [f64; 2],
+    s: [f64; 2],
     /// Reflection factor of the outflow's jet, (1 − M)/(1 + M).
     jet: f64,
 }
+
+/// The end correction of an unflanged pipe over its radius at low ka (Levine & Schwinger 1948).
+const END_CORRECTION: f64 = 0.6133;
 
 impl OpenEnd {
     pub fn new(diameter_m: f64, dt: f64) -> Self {
         /// Speed of sound in the ambient air the pipe radiates into, m/s.
         const C_AIR: f64 = 343.0;
-        let fc = C_AIR / (std::f64::consts::PI * diameter_m); // ka = 1, a = d/2
+        let tau = 0.5 * diameter_m / C_AIR;
+        let a1 = 2.0 * END_CORRECTION;
+        let a2 = 0.5 * (a1 * a1 - 1.0);
+        // 1 + A·s + B·s², s = K(1 − z⁻¹)/(1 + z⁻¹), over the numerator (1 + z⁻¹)²
+        let (big_a, big_b, k) = (a1 * tau, a2 * tau * tau, 2.0 / dt);
+        let d0 = 1.0 + big_a * k + big_b * k * k;
+        let d1 = 2.0 - 2.0 * big_b * k * k;
+        let d2 = 1.0 - big_a * k + big_b * k * k;
         Self {
-            r: 0.98,
-            k: 1.0 - (-2.0 * std::f64::consts::PI * fc * dt).exp(),
-            lp: 0.0,
+            b: [1.0 / d0, 2.0 / d0, 1.0 / d0],
+            a: [d1 / d0, d2 / d0],
+            s: [0.0; 2],
             jet: 1.0,
         }
     }
@@ -1290,8 +1307,11 @@ impl OpenEnd {
     /// Given the arriving wave, returns (reflected wave, outflow volume velocity × ρc =
     /// p − reflected). The far-field sound is the time derivative of the latter (monopole).
     pub fn process(&mut self, arriving: f64) -> (f64, f64) {
-        self.lp += self.k * (arriving - self.lp);
-        let reflected = -self.r * self.jet * self.lp;
+        // transposed direct form II
+        let y = self.b[0] * arriving + self.s[0];
+        self.s[0] = self.b[1] * arriving - self.a[0] * y + self.s[1];
+        self.s[1] = self.b[2] * arriving - self.a[1] * y;
+        let reflected = -self.jet * y;
         (reflected, arriving - reflected)
     }
 }
@@ -1758,9 +1778,10 @@ mod tests {
     #[test]
     fn an_outflow_takes_sound_energy_out_of_the_open_end() {
         // A slow wave (far below ka = 1) meets the open end: without flow it comes back
-        // inverted at r = 0.98; with outflow at Mach M the jet carries off the convected energy,
-        // the reflection falling by (1 − M)/(1 + M) at low Strouhal number (Munt 1977; measured
-        // by Peters, Hirschberg et al., JFM 256, 1993): M = 0.17 → 0.98·0.83/1.17 = 0.6952.
+        // fully inverted (|R| → 1 as ka → 0, Levine & Schwinger 1948); with outflow at Mach M the
+        // jet carries off the convected energy, the reflection falling by (1 − M)/(1 + M) at low
+        // Strouhal number (Munt 1977; measured by Peters, Hirschberg et al., JFM 256, 1993):
+        // M = 0.17 → 0.83/1.17 = 0.709402.
         let dt = 1.0 / 192_000.0;
         let settle = |m: f64| {
             let mut end = OpenEnd::new(0.05, dt);
@@ -1771,10 +1792,10 @@ mod tests {
             }
             r
         };
-        assert!((settle(0.0) + 0.98).abs() < 1e-9);
-        assert!((settle(0.17) + 0.695_2).abs() < 1e-4, "{}", settle(0.17));
+        assert!((settle(0.0) + 1.0).abs() < 1e-9);
+        assert!((settle(0.17) + 0.709_402).abs() < 1e-5, "{}", settle(0.17));
         // inflow (a reversing pulse) gets no such sink here
-        assert!((settle(-0.2) + 0.98).abs() < 1e-9);
+        assert!((settle(-0.2) + 1.0).abs() < 1e-9);
     }
 
     #[test]
@@ -2235,11 +2256,12 @@ mod tests {
         for _ in 0..2000 {
             refl = e.process(1.0).0; // DC: fully reflected, inverted
         }
-        assert!(refl < -0.95 && refl > -1.0, "{refl}");
+        // |R| → 1 as ka → 0 (Levine & Schwinger 1948): no loss but the radiation's, none at DC
+        assert!((refl + 1.0).abs() < 1e-9, "{refl}");
         // The source handed to the radiation stage is the outflow volume velocity (× ρc),
-        // p⁺ − p_reflected: (1 + r)·p at DC. A far-field monopole is d/dt of it (voice).
+        // p⁺ − p_reflected: 2p at DC. A far-field monopole is d/dt of it (voice).
         let out = e.process(1.0).1;
-        assert!((1.95..=2.0).contains(&out), "{out}");
+        assert!((out - 2.0).abs() < 1e-9, "{out}");
     }
 
     #[test]
@@ -2323,18 +2345,17 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "finding: one-pole open end gives |R| = 0.447 at ka = 2, Levine-Schwinger 0.346 (+29 %), see docs/physics-validation.md"]
+    #[ignore = "finding: the two-pole open end gives |R| = 0.392 at ka = 2, Levine-Schwinger 0.346 (+13 %; it was +29 %), see docs/physics-validation.md"]
     fn open_end_modulus_matches_levine_schwinger_at_ka_2() {
         // f = 5198 Hz -> ka = 2.0; fit: 4.2/12.139 = 0.3460.
         open_end_modulus_at(5198.0);
     }
 
     #[test]
-    #[ignore = "finding: open end lags as l = 0.419 a at ka = 0.06, Levine-Schwinger 0.6133 a, see docs/physics-validation.md"]
     fn open_end_end_correction_is_0_6133_a_at_low_ka() {
         // R = -|R| e^{-2ikl}: at ka << 1 the reflected wave lags by 2kl, l = 0.6133 a (Levine &
         // Schwinger 1948; Silva et al. 2009 §3.1, η = 0.6133; their fit gives l/a = 0.6122 at ka = 0.1).
-        // f = 160 Hz -> ka = 0.0616. The code's reflection is -r·LP(p): R = -0.98·H, so 2kl = -arg H.
+        // f = 160 Hz -> ka = 0.0616. The code's reflection is -H(p), so 2kl = -arg H.
         // Tolerance 2 %, the fit's own error bound.
         let a = 0.021;
         let f = 160.0;
