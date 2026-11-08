@@ -332,6 +332,9 @@ mod tests {
             (Preset::CrossplaneV8, 0.3),
             (Preset::MazdaRenesis, 0.0),
             (Preset::Mazda13bBridgeport, 0.3),
+            // the turbo panel: a wastegate turbo and a variable-vane one
+            (Preset::HondaK20c1, 1.0),
+            (Preset::VwTdi, 1.0),
         ] {
             let mut sim = Simulation::with_quality(
                 preset.def(),

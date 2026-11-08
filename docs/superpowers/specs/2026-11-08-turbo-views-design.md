@@ -1,6 +1,6 @@
 # The turbo, seen working, in the 2D and 3D views
 
-Status: draft, waiting for the user's approval (2026-11-08).
+Status: approved by the user (2026-11-08).
 
 ## Why
 
@@ -59,10 +59,11 @@ carry it.
   ESTIMATE in the script, as the current scrolls' 2.5 wheel diameters already are.
 - **Placement.** The turbo sits where it sits now (at the collectors' end, compressor on the same
   shaft ahead of the turbine, charge pipe to the throttle). Only its look and motion change.
-- **New state the views need.** `TurboState` gains `wastegate_open` (0–1, the gate's fraction
-  the sim already computes) and `vanes_open` (0–1, for variable geometry). `Snapshot` gains
-  `turbo: Option<TurboState>`, and the gas temperature at the turbine inlet comes from the
-  existing exhaust pipe probe.
+- **New state the views need.** `TurboState` gains three fields: `wastegate_open` (0–1, the
+  gate's fraction the sim already computes), `vanes_open` (0–1, for variable geometry) and
+  `turbine_inlet_t_k` (the exhaust temperature the turbine is stepped with). `Snapshot` gains
+  `turbo: Option<TurboState>`. The exhaust pipe probe was tried for the turbine's gas and dropped:
+  at Ultra its collectors' mean read as cold as the charge air.
 
 ## Pieces and order: two PRs, each from `main`
 

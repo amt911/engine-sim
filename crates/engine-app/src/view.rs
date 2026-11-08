@@ -13,7 +13,7 @@ const INTAKE: Color32 = Color32::from_rgb(80, 150, 255);
 const EXHAUST: Color32 = Color32::from_rgb(255, 110, 80);
 
 /// Gas colour from temperature: cool blue → hot orange → white-yellow.
-fn gas_color(t_k: f64, burning: bool) -> Color32 {
+pub(crate) fn gas_color(t_k: f64, burning: bool) -> Color32 {
     if burning {
         return Color32::from_rgb(255, 190, 60);
     }
@@ -61,9 +61,29 @@ impl Frame {
 }
 
 pub fn engine(ui: &mut egui::Ui, s: &Snapshot) {
-    let (rect, _) = ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
-    let p = ui.painter_at(rect);
-    p.rect_filled(rect, 0.0, Color32::from_rgb(24, 26, 30));
+    let (full, _) = ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
+    let p = ui.painter_at(full);
+    p.rect_filled(full, 0.0, Color32::from_rgb(24, 26, 30));
+    // a turbo engine gives the right quarter to its turbo
+    let rect = if s.def.turbo.is_some() && s.turbo.is_some() {
+        let split = full.left() + 0.75 * full.width();
+        let panel = egui::Rect::from_min_max(
+            pos2(split + 6.0, full.top() + 6.0),
+            full.right_bottom() - vec2(6.0, 6.0),
+        );
+        let id = ui.scope_id().with("turbo-wheel");
+        let now = ui.input(|i| i.time);
+        let (then, angle) = ui
+            .data(|d| d.get_temp::<(f64, f64)>(id))
+            .unwrap_or((now, 0.0));
+        let shaft = s.turbo.map_or(0.0, |t| t.shaft_rpm);
+        let angle = crate::turbo_view::advance_wheel(angle, shaft, now - then);
+        ui.data_mut(|d| d.insert_temp(id, (now, angle)));
+        crate::turbo_view::panel(&p, panel, s, angle);
+        egui::Rect::from_min_max(full.min, pos2(split, full.bottom()))
+    } else {
+        full
+    };
     let g = s.def.geometry;
     if let Some(rotor) = g.rotor {
         rotary(&p, rect, s, &rotor);

@@ -35,6 +35,8 @@ pub struct Snapshot {
     pub quality: Quality,
     /// Samples the audio device found missing so far: the simulation fell behind real time.
     pub dropouts: u64,
+    /// The turbo's state as the engine sees it (None: aspirated), for the 2D and 3D views.
+    pub turbo: Option<engine_core::turbo::TurboState>,
 }
 
 /// The driver's pedals and lever, set from the UI.
@@ -332,6 +334,7 @@ impl Simulation {
             speed_m_s: self.vehicle.speed_m_s(),
             gear: self.vehicle.gear(),
             clutch: self.vehicle.clutch(),
+            turbo: e.turbo(),
         }
     }
 }
@@ -923,6 +926,25 @@ pub(crate) mod tests {
             "compression visible in trace"
         );
         assert!(s.rpm > 0.0);
+        assert_eq!(s.turbo, None, "an aspirated engine has no turbo to show");
+    }
+
+    #[test]
+    fn the_snapshot_carries_the_turbo_the_views_draw() {
+        let mut sim = Simulation::new(EngineDef::honda_k20c1(), FS, 1);
+        sim.controls = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(5000.0),
+            ..Controls::default()
+        };
+        render_secs(&mut sim, 1.0);
+        let s = sim.snapshot();
+        let t = s.turbo.expect("the K20C1's turbo");
+        // the turbine's gas, as the panel colours it, is the hot exhaust (over 700 K floored)
+        assert!(t.turbine_inlet_t_k > 700.0, "{}", t.turbine_inlet_t_k);
+        // floored at 5000 rpm the shaft spins (tens of thousands of rpm) and the boost is up
+        assert!(t.shaft_rpm > 10_000.0, "{}", t.shaft_rpm);
+        assert!(t.boost_pa > 1.2e5, "{}", t.boost_pa);
     }
 
     #[test]

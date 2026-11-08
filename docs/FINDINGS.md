@@ -554,6 +554,13 @@ a build that cargo finds fresh does not re-uplift, so both "builds" can hand you
 **Fix.** A/B binaries get their own target dir (`target/tgt-<name>`); check `md5sum` before
 rendering comparisons.
 
+**Libraries too, not only the binary (2026-11-08).** The workspace crates' dep-info lists their
+sources by *relative* path (`crates/engine-core/src/lib.rs`) and their metadata hash does not
+depend on the worktree, so worktree A's `libengine_core-<hash>.rlib` is "Fresh" for worktree B.
+Symptom: a field just added to `engine-core` is "no field" in `engine-app`, while
+`cargo check` passes and `touch` does not help. A branch that changes `engine-core`'s API needs its
+own `CARGO_TARGET_DIR=target/tgt-<branch>`; so does any gate whose verdict counts.
+
 ## A worktree's `../../scripts/...` is the main checkout's script (2026-10-26)
 
 Worktrees live under `target/wt-*`, so from one of them `../../scripts/mutants.sh` resolves to the

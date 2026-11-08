@@ -5214,8 +5214,11 @@ mod tests {
             boost_pa: 2e5,
             boost_t_k: 300.0,
             turbine_inlet_pa: ATM_PA,
+            turbine_inlet_t_k: 300.0,
             shaft_rpm: 0.0,
             bov_m_dot: 0.02,
+            wastegate_open: 0.0,
+            vanes_open: 0.0,
             turbine_dp_dm: 0.0,
             charge_tau_s: 0.05,
         };
@@ -5334,8 +5337,11 @@ mod tests {
                 boost_pa: ATM_PA,
                 boost_t_k: crate::intake_fv::AMBIENT_T_K,
                 turbine_inlet_pa: inlet_pa,
+                turbine_inlet_t_k: 300.0,
                 shaft_rpm: 0.0,
                 bov_m_dot: 0.0,
+                wastegate_open: 0.0,
+                vanes_open: 0.0,
                 turbine_dp_dm: 0.0,
                 charge_tau_s: 0.05,
             };

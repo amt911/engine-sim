@@ -9,6 +9,7 @@ mod offline;
 mod quality;
 mod runner;
 mod sim;
+mod turbo_view;
 mod view;
 mod view3d;
 
