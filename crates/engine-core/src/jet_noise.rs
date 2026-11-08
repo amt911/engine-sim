@@ -13,8 +13,10 @@
 //! ±3 dB.
 //!
 //! Spectrum: broadband around a Strouhal number f·D/V ≈ 0.2 (the peak of subsonic jet noise at
-//! 90°), here a second-order band-pass (±6 dB/octave skirts), a stand-in for the measured
-//! one-third-octave shape until the ARP876 table is in hand (PAPERS.md).
+//! 90°), shaped by the fine-scale turbulence similarity spectrum of Tam, Golebiowski & Seiner
+//! (1996, eq. 6; [`FineScale`]), the measured shape at sideline angles: about −6 dB a decade
+//! under the peak and −12 dB a decade over it. (A ±6 dB/octave band-pass stood in for it until
+//! 2026-11-08 and took 5–10 dB of the 2–8 kHz rasp away from the LFA at full load.)
 
 use std::f64::consts::PI;
 
@@ -25,8 +27,6 @@ const RHO_AMBIENT: f64 = 1.204;
 const P_REF: f64 = 20e-6;
 /// Strouhal number of the spectrum's peak, f·D/V.
 const PEAK_STROUHAL: f64 = 0.2;
-/// Quality factor of the band-pass: about two octaves between its −3 dB points.
-const BAND_Q: f64 = 0.7;
 
 /// Overall sound pressure level of a round jet of exit velocity `v` (m/s, outflow > 0), exit
 /// diameter `d` (m) and density `rho_jet` (kg/m³), heard at `r` metres (dB re 20 µPa).
@@ -65,21 +65,39 @@ fn jet_p_rms(v: f64, d: f64, rho_jet: f64, r: f64) -> f64 {
 }
 
 /// The jet noise of one tail pipe as a pressure signal at the listener: seeded white noise
-/// through a band-pass that follows the exit velocity, scaled to the correlation's level.
+/// through the fine-scale similarity spectrum ([`FineScale`]) peaking at the Strouhal frequency
+/// of the exit velocity, scaled to the correlation's level.
 #[derive(Debug, Clone)]
 pub struct JetNoise {
     rng: u64,
-    // band-pass state (the SVF's two integrators)
-    s1: f64,
-    s2: f64,
+    shape: FineScale,
+}
+
+/// Variance [`FineScale`] keeps of unit white noise against f_F·dt, every 0.005 from 0 to 0.2:
+/// (1/π)∫₀^π |H(e^{jω})|² dω of its digital filter (pre-warped bilinear, corners held under
+/// 0.45/dt), integrated numerically (4·10⁶ trapezoids). Linear between points: within 2.3 %.
+/// While f_F ≪ fs it is 2·4.052·f_F·dt, the analog shape's ∫|H|² d(f/f_F) = 4.052.
+const FINE_SCALE_VARIANCE: [f64; 41] = [
+    0.0, 0.040302, 0.079789, 0.11855, 0.15705, 0.19594, 0.23599, 0.2781, 0.3234, 0.37335,
+    0.42993, 0.49604, 0.57604, 0.67707, 0.70681, 0.70479, 0.70277, 0.70077, 0.69877, 0.69679,
+    0.69481, 0.69284, 0.69088, 0.68892, 0.68698, 0.68504, 0.68312, 0.6812, 0.67929, 0.67738,
+    0.67549, 0.6736, 0.67172, 0.66985, 0.66799, 0.66613, 0.66429, 0.66245, 0.66061, 0.65879,
+    0.65697,
+];
+
+/// [`FINE_SCALE_VARIANCE`] at `r` = f_F·dt (0 < r ≤ 0.2), linearly interpolated.
+fn fine_scale_variance(r: f64) -> f64 {
+    let x = (r / 0.005).clamp(0.0, 40.0);
+    let i = (x as usize).min(39);
+    let t = x - i as f64;
+    FINE_SCALE_VARIANCE[i] * (1.0 - t) + FINE_SCALE_VARIANCE[i + 1] * t
 }
 
 impl JetNoise {
     pub fn new(seed: u64) -> Self {
         Self {
             rng: seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1,
-            s1: 0.0,
-            s2: 0.0,
+            shape: FineScale::new(),
         }
     }
 
@@ -92,43 +110,16 @@ impl JetNoise {
     pub fn step(&mut self, v: f64, d: f64, rho_jet: f64, r: f64, dt: f64) -> f64 {
         let n = self.white();
         let p_rms = jet_p_rms(v, d, rho_jet, r);
+        let fs = 1.0 / dt;
         if p_rms == 0.0 {
-            // nothing blows out: no jet, no sound. The band-pass runs down on silence, so the
+            // nothing blows out: no jet, no sound. The filter runs down on silence, so the
             // next outflow starts from rest (its state is unit noise, not pascals)
-            self.band(0.0, 20.0, dt);
+            self.shape.process(0.0, 20.0_f64.min(0.2 * fs), dt);
             return 0.0;
         }
-        let fs = 1.0 / dt;
-        let fc = (PEAK_STROUHAL * v / d).clamp(20.0, 0.2 * fs);
-        // white noise through the peak-gain-1 band-pass keeps α/(1 + α) of its variance (the
-        // sum of its squared impulse response, exact; π·fc/(Q·fs) only while fc ≪ fs)
-        let alpha = band_alpha(fc, dt);
-        let norm = ((1.0 + alpha) / alpha).sqrt();
-        p_rms * norm * self.band(n, fc, dt)
+        let fc = (PEAK_STROUHAL * v / d).clamp(20.0_f64.min(0.2 * fs), 0.2 * fs);
+        p_rms / fine_scale_variance(fc * dt).sqrt() * self.shape.process(n, fc, dt)
     }
-
-    /// Band-pass (0 dB peak) at `fc`, Q = BAND_Q: the trapezoidal state-variable filter of
-    /// A. Simper ("Linear trapezoidal integrated SVF", Cytomic, 2013). As a fixed filter it is
-    /// the same prewarped bilinear transform as the RBJ cookbook's band-pass (so the variance
-    /// kept, α/(1 + α), is unchanged); unlike a direct-form biquad its state stays bounded while
-    /// `fc` jumps every sample, as it does when the exit flow keeps reversing.
-    fn band(&mut self, x: f64, fc: f64, dt: f64) -> f64 {
-        let g = (PI * fc * dt).tan();
-        let k = 1.0 / BAND_Q;
-        let a1 = 1.0 / (1.0 + g * (g + k));
-        let (a2, a3) = (g * a1, g * g * a1);
-        let v3 = x - self.s2;
-        let v1 = a1 * self.s1 + a2 * v3;
-        let v2 = self.s2 + a2 * self.s1 + a3 * v3;
-        self.s1 = 2.0 * v1 - self.s1;
-        self.s2 = 2.0 * v2 - self.s2;
-        k * v1
-    }
-}
-
-/// The RBJ band-pass's α = sin(ω₀)/(2Q) (Bristow-Johnson, "Audio EQ Cookbook").
-fn band_alpha(fc: f64, dt: f64) -> f64 {
-    (2.0 * PI * fc * dt).sin() / (2.0 * BAND_Q)
 }
 
 /// The fine-scale turbulence similarity spectrum of jet mixing noise, G(f/f_F) of Tam,
@@ -547,23 +538,6 @@ mod tests {
     }
 
     #[test]
-    fn the_band_peaks_at_its_strouhal_frequency_two_octaves_wide() {
-        // fc = 400 Hz ≪ fs = 192 kHz, so the analog band-pass H = (jω/Qω₀)/(1 − ω²/ω₀² + jω/Qω₀):
-        // 1 at ω₀, and an octave either side (2/0.7)/√((1 − 4)² + (2/0.7)²) = 0.6897
-        let dt = 1.0 / 192_000.0;
-        let gain = |f: f64| {
-            let mut j = JetNoise::new(1);
-            let y: Vec<f64> = (0..192_000)
-                .map(|n| j.band((2.0 * PI * f * n as f64 * dt).sin(), 400.0, dt))
-                .collect();
-            y[96_000..].iter().fold(0.0f64, |m, v| m.max(v.abs()))
-        };
-        assert_relative_eq!(gain(400.0), 1.0, max_relative = 2e-3);
-        assert_relative_eq!(gain(800.0), 0.6897, max_relative = 2e-3);
-        assert_relative_eq!(gain(200.0), 0.6897, max_relative = 2e-3);
-    }
-
-    #[test]
     fn the_noise_is_vignas_xorshift64_star() {
         // the first draws for seed 7, from the published algorithm (Vigna 2016, "An experimental
         // exploration of Marsaglia's xorshift generators, scrambled", xorshift64*: shifts 12, 25,
@@ -622,6 +596,50 @@ mod tests {
             inside > 3.0 * outside,
             "inside {inside:.3e} outside {outside:.3e}"
         );
+    }
+
+    #[test]
+    fn a_tail_jets_spectrum_is_tams_fine_scale_shape() {
+        // Tam, Golebiowski & Seiner (AIAA 96-1716, 1996) eq. 6 integrated by hand (trapezoids,
+        // linear frequency, outside this code): the octave centred on 10·f_F holds −2.08 dB of
+        // the octave centred on f_F, the octave centred on 0.1·f_F −15.21 dB. (The Q 0.7
+        // band-pass it replaces: −6.58 and −25.91.) Steady 100 m/s through 50 mm: f_F = 400 Hz.
+        let dt = 1.0 / 96_000.0;
+        let mut j = JetNoise::new(11);
+        let xs: Vec<f64> = (0..960_000)
+            .map(|_| j.step(100.0, 0.05, 1.204, 7.5, dt))
+            .skip(9_600)
+            .collect();
+        // Welch: 1 s Hann segments, half overlap; band energy from 40 of its 1 Hz bins, evenly
+        // spread, scaled up to the band's width
+        let seg = 96_000;
+        let band = |lo: f64, hi: f64| -> f64 {
+            let step = (hi - lo) / 40.0;
+            let bins: Vec<usize> = (0..40)
+                .map(|i| (lo + step * (i as f64 + 0.5)).round() as usize)
+                .collect();
+            let mut e = 0.0;
+            let mut s = 0;
+            while s + seg <= xs.len() {
+                for &k in &bins {
+                    let w = 2.0 * PI * k as f64 / seg as f64;
+                    let (mut re, mut im) = (0.0, 0.0);
+                    for n in 0..seg {
+                        let h = 0.5 - 0.5 * (2.0 * PI * n as f64 / seg as f64).cos();
+                        re += h * xs[s + n] * (w * n as f64).cos();
+                        im += h * xs[s + n] * (w * n as f64).sin();
+                    }
+                    e += re * re + im * im;
+                }
+                s += seg / 2;
+            }
+            e * step
+        };
+        let at_peak = band(400.0 / 2f64.sqrt(), 400.0 * 2f64.sqrt());
+        let up = 10.0 * (band(4000.0 / 2f64.sqrt(), 4000.0 * 2f64.sqrt()) / at_peak).log10();
+        let down = 10.0 * (band(40.0 / 2f64.sqrt(), 40.0 * 2f64.sqrt()) / at_peak).log10();
+        assert!((up - -2.08).abs() < 1.5, "octave at 10 f_F: {up:.2} dB");
+        assert!((down - -15.21).abs() < 1.5, "octave at 0.1 f_F: {down:.2} dB");
     }
 
     // --- duct flow noise (Davies & Holland 1999, §4) ---
