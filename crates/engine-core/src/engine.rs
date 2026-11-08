@@ -4031,12 +4031,10 @@ impl Engine {
             // The seats tick in the head, under the valve cover, and the pistons and journals
             // knock in the bores and the crankcase: what they shake radiates into the bay and
             // leaves through it (`vehicle.engine_bay`; heard without it, a LFA idle's 2–4 kHz sat
-            // 12–20 dB over recorded ones, docs/FINDINGS.md 2026-11-05). The combustion shakes the
-            // same block inside the same bay and leaves through it too (Vér & Beranek ch. 12:
-            // an enclosure's insertion loss holds for every source inside it). Heard without the
-            // bay it stood 20 dB over the LFA's exhaust at 7000 rpm full load, where the dyno
-            // recording is the exhaust's (docs/FINDINGS.md 2026-11-07); the 3–4 kHz orders it
-            // once stood in for are the exhaust's.
+            // 12–20 dB over recorded ones, docs/FINDINGS.md 2026-11-05). The combustion shakes the whole block, whose skirt and sump radiate into the open
+            // underside: it is heard without the bay (ESTIMATE: the bay taken as closed above
+            // the head only; with the whole block behind it the LFA at 6700 rpm full load loses
+            // the 3–4 kHz orders the dyno recording has, docs/FINDINGS.md 2026-11-01).
             if let Some((_, s)) = &mut self.structure {
                 let (comb, head) = s.split_at_mut(n_banks);
                 for (b, out) in block.iter_mut().enumerate().take(n_banks) {
@@ -4081,10 +4079,11 @@ impl Engine {
                         .as_mut()
                         .and_then(|s| s.1.get_mut(b))
                         .map_or(0.0, |r| r.process(impact[b]));
+                    let inside = ticks + struck;
+                    let inside = self.bay.get_mut(b).map_or(inside, |f| f.process(inside));
                     let burn = comb[b].process(snd.block * p);
                     combustion += burn;
-                    let inside = ticks + struck + burn;
-                    *out = self.bay.get_mut(b).map_or(inside, |f| f.process(inside));
+                    *out = burn + inside;
                 }
             }
         };
@@ -5901,10 +5900,11 @@ mod tests {
         let rms = |x: &[f64]| (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
         let loss = 20.0 * (rms(&ticks(&open)) / rms(&ticks(&closed))).log10();
         assert!((8.0..14.2).contains(&loss), "{loss:.1} dB");
-        // the combustion shakes the same block inside the same bay and goes through it too
-        // (`the_engine_bay_muffles_the_combustion_noise_too`)
-        let burn = |d: EngineDef| rms(&seats_only(d, 0.0, 1.0));
-        assert!(burn(closed) < burn(open));
+        // the combustion's path, the block's skirt into the open underside, does not go through it
+        assert_eq!(
+            seats_only(open.clone(), 0.0, 1.0),
+            seats_only(closed, 0.0, 1.0)
+        );
     }
 
     #[test]
@@ -10117,47 +10117,6 @@ mod tests {
         assert!(
             open - shut > 8.0 && open - shut < 15.0,
             "bay took {:.1} dB(A) off the impacts",
-            open - shut
-        );
-    }
-
-    #[test]
-    fn the_engine_bay_muffles_the_combustion_noise_too() {
-        // the combustion shakes the same block whose walls radiate the impacts, inside the same
-        // bay: its noise leaves through the bay as theirs does (Vér & Beranek, *Noise and
-        // Vibration Control Engineering*, 2nd ed., ch. 12: an enclosure's insertion loss holds
-        // for every source inside it). The default bay takes 4.0 dB at 63 Hz and 14.2 dB at
-        // 4 kHz (`engine_bay`'s tests); the combustion noise's A-weighted level, mostly 1–3 kHz
-        // (Anderton, SAE 790270), loses about as much as the impacts' (8–15 dB). Heard without
-        // the bay, the LFA's combustion stood 20 dB over its exhaust at the tails at 7000 rpm
-        // full load, where the dyno recording is the exhaust's (docs/FINDINGS.md, 2026-11-07).
-        let rpm = 6000.0;
-        let combustion_only = |bay: Option<crate::engine_bay::EngineBay>| {
-            let mut d = EngineDef::inline4();
-            d.vehicle.engine_bay = bay;
-            d.sound.mechanical = 0.0;
-            let mut e = Engine::new(d, rpm, 1);
-            let c = Controls {
-                throttle: 1.0,
-                hold_rpm: Some(rpm),
-                ..Controls::default()
-            };
-            run(&mut e, 0.3, &c);
-            let mut a = crate::mechanical::AWeighting::new(DT);
-            let n = (0.5 / DT) as usize;
-            let mut sum = 0.0;
-            for _ in 0..n {
-                e.step(DT, &c);
-                let y = a.process(e.structure_out);
-                sum += y * y;
-            }
-            10.0 * (sum / n as f64 / 4e-10).log10()
-        };
-        let open = combustion_only(None);
-        let shut = combustion_only(Some(crate::engine_bay::EngineBay::default()));
-        assert!(
-            open - shut > 8.0 && open - shut < 15.0,
-            "bay took {:.1} dB(A) off the block's whole noise",
             open - shut
         );
     }
