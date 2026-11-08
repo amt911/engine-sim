@@ -742,4 +742,44 @@ mod tests {
             }
         }
     }
+
+    /// Steady-state gain of `f` Hz through `step` at FS: RMS of 2 s after 1 s of settling,
+    /// over a unit-amplitude sine (integer cycles for the integer-Hz tones used), ×√2.
+    fn steady_gain(mut step: impl FnMut(f64) -> f64, f: f64) -> f64 {
+        let w = 2.0 * PI * f / FS;
+        let mut acc = 0.0;
+        for n in 0..(3 * 48_000) {
+            let y = step((w * n as f64).sin());
+            if n >= 48_000 {
+                acc += y * y;
+            }
+        }
+        (acc / 96_000.0).sqrt() * 2f64.sqrt()
+    }
+
+    #[test]
+    fn the_dc_blocker_is_3_db_down_at_its_corner() {
+        // A first-order high-pass H = s/(s + ωc) has |H(jωc)| = 1/√2 = 0.70711 by definition of its
+        // corner (J. O. Smith, *Introduction to Digital Filters*, "DC Blocker"; the −3 dB point).
+        // The digital pole R = 1 − ωc/fs places it within O(ωc/fs); tolerance 1 % covers that for
+        // fc = 3 Hz (ω = 3.9e-4 rad) and 100 Hz (ω = 0.013 rad).
+        for fc in [3.0, 100.0] {
+            let mut dc = DcBlocker::new(fc, FS);
+            let g = steady_gain(|x| dc.process(x), fc);
+            assert_relative_eq!(g, std::f64::consts::FRAC_1_SQRT_2, max_relative = 0.01);
+        }
+    }
+
+    #[test]
+    fn the_biquad_low_pass_gain_at_its_cutoff_is_q() {
+        // RBJ cookbook low-pass (R. Bristow-Johnson, *Audio EQ Cookbook*) is the analog
+        // H(s) = 1/(s² + s/Q + 1) at s = jω/ω0, whose gain at ω = ω0 is |1/(j/Q)| = Q exactly (the
+        // bilinear transform in the cookbook is pre-warped at ω0, so the digital gain there is Q too).
+        // Q = 1/√2: −3.01 dB (0.7071); Q = 2: +6.02 dB (2.0). Tolerance 0.5 % (the RMS read).
+        for (q, expected) in [(std::f64::consts::FRAC_1_SQRT_2, 0.70711), (2.0, 2.0)] {
+            let mut lp = LowPass::new(1000.0, q, FS);
+            let g = steady_gain(|x| lp.process(x), 1000.0);
+            assert_relative_eq!(g, expected, max_relative = 0.005);
+        }
+    }
 }
