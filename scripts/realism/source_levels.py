@@ -26,6 +26,8 @@ SOURCES = ["flow_noise", "intake", "valve_jet", "duct_flow", "block", "mechanica
            "chamber_ring", "main_bearings", "piston_slap"]
 ALONE = {
     "exhaust": ["flow_noise", "valve_jet", "chamber_ring"],
+    # the exhaust with its expansions' flow noise: what Davies & Holland's orifice mic hears
+    "exh+duct": ["flow_noise", "valve_jet", "chamber_ring", "duct_flow"],
     "intake": ["intake"],
     "block": ["block"],
     "mechanical": ["mechanical", "main_bearings", "piston_slap"],
