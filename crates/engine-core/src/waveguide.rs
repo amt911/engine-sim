@@ -2252,4 +2252,94 @@ mod tests {
         }
         assert_relative_eq!(got, 0.98, max_relative = 1e-9);
     }
+
+    /// Steady-sine reflection of an [`OpenEnd`]: a unit sine of `f` Hz at fs = 48 kHz (integer Hz and
+    /// a 1 s window, so the projection has no leakage) through `process`. Returns the complex
+    /// R = reflected / arriving at the end's face (`re`, `im`), after a 0.1 s settling time.
+    fn open_end_response(a_m: f64, f: f64) -> (f64, f64) {
+        let fs = 48_000.0;
+        let mut e = OpenEnd::new(2.0 * a_m, 1.0 / fs);
+        let w = 2.0 * std::f64::consts::PI * f / fs;
+        let (mut ci, mut cq, mut ri, mut rq) = (0.0, 0.0, 0.0, 0.0);
+        for n in 0..(4_800 + 48_000) {
+            let x = (w * n as f64).sin();
+            let (refl, _) = e.process(x);
+            if n >= 4_800 {
+                let m = (n - 4_800) as f64;
+                let (s, c) = (w * (m + 4_800.0)).sin_cos();
+                ci += x * s;
+                cq += x * c;
+                ri += refl * s;
+                rq += refl * c;
+            }
+        }
+        // complex amplitudes A = (Σ x sin + i Σ x cos): R = Ref / A
+        let (a_re, a_im) = (ci, cq);
+        let (b_re, b_im) = (ri, rq);
+        let d = a_re * a_re + a_im * a_im;
+        ((b_re * a_re + b_im * a_im) / d, (b_im * a_re - b_re * a_im) / d)
+    }
+
+    /// |R| of an unflanged pipe, Silva, Guillemain, Kergomard, Mallaroni & Norris, "Approximation
+    /// formulae for the acoustic radiation impedance of a cylindrical pipe", J. Sound Vib. 322 (2009)
+    /// 255-263 (arXiv:0811.3625), Eq. (21) with Table 1: |R| = (1 + a1 x)/(1 + (β + a1) x + a2 x² +
+    /// a3 x³), x = (ka)², β = 1/2, a1 = 0.800, a2 = 0.266, a3 = 0.0263. It is a fit to the Levine &
+    /// Schwinger (1948) exact values, error < 2 % for ka < 3 (the paper's statement). Coefficients
+    /// read from the paper's HTML version (ar5iv) via a summarizing fetch, not from the PDF.
+    fn levine_schwinger_modulus(ka: f64) -> f64 {
+        let x = ka * ka;
+        (1.0 + 0.800 * x) / (1.0 + 1.300 * x + 0.266 * x * x + 0.0263 * x * x * x)
+    }
+
+    /// Open-end |R| at ka = 2π f a / c (c = 343 m/s, a = 21 mm) against Levine-Schwinger. Tolerance
+    /// 2 %: the reference fit's own error bound (a smaller one would test the fit, not the code).
+    fn open_end_modulus_at(f_hz: f64) {
+        let a = 0.021;
+        let ka = 2.0 * std::f64::consts::PI * f_hz * a / 343.0;
+        let (re, im) = open_end_response(a, f_hz);
+        let got = (re * re + im * im).sqrt();
+        assert_relative_eq!(got, levine_schwinger_modulus(ka), max_relative = 0.02);
+    }
+
+    #[test]
+    fn open_end_modulus_matches_levine_schwinger_at_ka_1() {
+        // f = 2599 Hz -> ka = 0.99995; hand value of the fit at ka = 1: 1.8/2.5923 = 0.6944.
+        open_end_modulus_at(2599.0);
+    }
+
+    #[test]
+    fn open_end_modulus_matches_levine_schwinger_at_ka_half() {
+        // f = 1300 Hz -> ka = 0.5001; fit: 1.2/1.34204 = 0.8942 (and 1 - ka²/2 = 0.875 at 2nd order).
+        open_end_modulus_at(1300.0);
+    }
+
+    #[test]
+    fn open_end_modulus_matches_levine_schwinger_at_ka_quarter() {
+        // f = 650 Hz -> ka = 0.250; fit: 1.05/1.08230 = 0.9702.
+        open_end_modulus_at(650.0);
+    }
+
+    #[test]
+    #[ignore = "finding: one-pole open end gives |R| = 0.447 at ka = 2, Levine-Schwinger 0.346 (+29 %), see docs/physics-validation.md"]
+    fn open_end_modulus_matches_levine_schwinger_at_ka_2() {
+        // f = 5198 Hz -> ka = 2.0; fit: 4.2/12.139 = 0.3460.
+        open_end_modulus_at(5198.0);
+    }
+
+    #[test]
+    #[ignore = "finding: open end lags as l = 0.419 a at ka = 0.06, Levine-Schwinger 0.6133 a, see docs/physics-validation.md"]
+    fn open_end_end_correction_is_0_6133_a_at_low_ka() {
+        // R = -|R| e^{-2ikl}: at ka << 1 the reflected wave lags by 2kl, l = 0.6133 a (Levine &
+        // Schwinger 1948; Silva et al. 2009 §3.1, η = 0.6133; their fit gives l/a = 0.6122 at ka = 0.1).
+        // f = 160 Hz -> ka = 0.0616. The code's reflection is -r·LP(p): R = -0.98·H, so 2kl = -arg H.
+        // Tolerance 2 %, the fit's own error bound.
+        let a = 0.021;
+        let f = 160.0;
+        let k = 2.0 * std::f64::consts::PI * f / 343.0;
+        let (re, im) = open_end_response(a, f);
+        // R / (-1) = |R| e^{-2ikl}  ->  phase = atan2(-im, -re) = -2kl
+        let phase = (-im).atan2(-re);
+        let l = -phase / (2.0 * k);
+        assert_relative_eq!(l / a, 0.6133, max_relative = 0.02);
+    }
 }
