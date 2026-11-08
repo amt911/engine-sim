@@ -2390,4 +2390,32 @@ mod tests {
     fn viscothermal_pipe_follows_the_square_root_law_at_1_khz() {
         wall_extra_loss_at(1000.0, 0.09559);
     }
+
+    #[test]
+    fn a_junction_splits_a_small_wave_by_the_area_rule() {
+        // Plane waves at a junction of ducts of areas A_i (continuity of pressure and of volume
+        // velocity; Kinsler, Frey, Coppens & Sanders, *Fundamentals of Acoustics*, 4th ed., the
+        // area-change and branch-junction pressure coefficients, and Munjal, *Acoustics of Ducts
+        // and Mufflers*, ch. 1): wave p in duct 1 → p_J = 2A₁p/ΣA, reflected R = p_J/p − 1.
+        // Worked by hand: T-junction of three equal ducts: R = 2/3 − 1 = −1/3, T = +2/3 in each
+        // branch. Area step A₂ = 3A₁: p_J = 2/4 = ½, R = −½, T = ½. Large side branch
+        // (A₂ = 99A₁): R = 2/100 − 1 = −0.98. Contraction A₂ = A₁/3: p_J = 2/(4/3) = 1.5, R = +½.
+        // Exact arithmetic: tolerance 1e-12.
+        let cases: [(&[f64], f64, f64); 4] = [
+            (&[1.0, 1.0, 1.0], -1.0 / 3.0, 2.0 / 3.0),
+            (&[1.0, 3.0], -0.5, 0.5),
+            (&[1.0, 99.0], -0.98, 0.02),
+            (&[3.0, 1.0], 0.5, 1.5),
+        ];
+        for (areas, r, t) in cases {
+            let mut incoming = vec![0.0; areas.len()];
+            incoming[0] = 1.0;
+            let mut out = vec![0.0; areas.len()];
+            junction(areas, &incoming, &mut out);
+            assert_relative_eq!(out[0], r, epsilon = 1e-12);
+            for o in &out[1..] {
+                assert_relative_eq!(*o, t, epsilon = 1e-12);
+            }
+        }
+    }
 }
