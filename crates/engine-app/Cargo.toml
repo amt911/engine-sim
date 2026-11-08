@@ -20,6 +20,7 @@ rfd.workspace = true
 glam.workspace = true
 bytemuck.workspace = true
 gltf.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 approx.workspace = true

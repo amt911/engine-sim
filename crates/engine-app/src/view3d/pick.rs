@@ -16,7 +16,35 @@ pub fn local_bounds(kind: MeshKind) -> (Vec3, Vec3) {
         | MeshKind::WristPin
         | MeshKind::RodEye
         | MeshKind::ValveStem
-        | MeshKind::Plug => (Vec3::new(-1.0, 0.0, -1.0), Vec3::new(1.0, 1.0, 1.0)),
+        | MeshKind::Plug
+        | MeshKind::TurboDrum => (Vec3::new(-1.0, 0.0, -1.0), Vec3::new(1.0, 1.0, 1.0)),
+        // the realistic turbo, in metres at its 56 mm reference (scripts/turbo.py), measured
+        // off the assets and padded 1 mm: the housings about the shaft's middle, the wheels
+        // about their back faces, the flap about its hinge
+        MeshKind::TurbineHousing => (
+            Vec3::new(0.021, -0.061, -0.073),
+            Vec3::new(0.091, 0.050, 0.055),
+        ),
+        MeshKind::CompressorHousing => (
+            Vec3::new(-0.099, -0.065, -0.060),
+            Vec3::new(-0.023, 0.055, 0.072),
+        ),
+        MeshKind::CentreHousing => (
+            Vec3::new(-0.047, -0.041, -0.041),
+            Vec3::new(0.040, 0.041, 0.041),
+        ),
+        MeshKind::CompressorWheel => (
+            Vec3::new(-0.029, -0.029, -0.029),
+            Vec3::new(0.005, 0.029, 0.029),
+        ),
+        MeshKind::TurbineWheel => (
+            Vec3::new(-0.004, -0.028, -0.028),
+            Vec3::new(0.025, 0.028, 0.028),
+        ),
+        MeshKind::WastegateFlap => (
+            Vec3::new(-0.005, -0.020, -0.011),
+            Vec3::new(0.005, 0.004, 0.011),
+        ),
         // the realistic eccentric shaft: its shaft runs past the lobe's ends
         MeshKind::Eccentric => (Vec3::new(-1.05, -0.25, -1.05), Vec3::new(1.05, 1.1, 1.05)),
         MeshKind::Cuboid | MeshKind::ApexSeal => (Vec3::splat(-0.5), Vec3::splat(0.5)),
@@ -158,5 +186,37 @@ mod tests {
         let (o, d) = ray(cam.view_proj(1.5), (0.0, 0.0)).unwrap();
         let to_target = (cam.target - o).normalize();
         assert!((d - to_target).length() < 1e-4, "{d} vs {to_target}");
+    }
+
+    #[test]
+    fn the_turbos_parts_fit_their_click_boxes() {
+        use crate::view3d::parts::{self, TurboHousing};
+        for (kind, mesh) in [
+            (
+                MeshKind::TurbineHousing,
+                parts::turbo_housing(TurboHousing::Turbine),
+            ),
+            (
+                MeshKind::CompressorHousing,
+                parts::turbo_housing(TurboHousing::Compressor),
+            ),
+            (
+                MeshKind::CentreHousing,
+                parts::turbo_housing(TurboHousing::Centre),
+            ),
+            (MeshKind::CompressorWheel, parts::compressor_wheel()),
+            (MeshKind::TurbineWheel, parts::turbine_wheel()),
+            (MeshKind::WastegateFlap, parts::wastegate_flap()),
+        ] {
+            let (lo, hi) = local_bounds(kind);
+            let m = mesh.expect("the turbo's assets");
+            for v in &m.vertices {
+                let p = Vec3::from(v.pos);
+                assert!(
+                    p.cmpge(lo - 1e-4).all() && p.cmple(hi + 1e-4).all(),
+                    "{kind:?}: {p} outside {lo}..{hi}"
+                );
+            }
+        }
     }
 }
