@@ -9,7 +9,10 @@ Four distances, each in dB (lower is closer):
 - treble: the 2-16 kHz octaves' mean signed error, as a magnitude: the bands' average lets a
   better bass hide a treble deficit the ear hears at once (user, 2026-11-08: "le faltan agudos");
 - random: share of the energy that is not repeated from one engine cycle to the next, per band
-  (scripts/authenticity.py), real steady-rpm stretches vs held renders. Too low reads as a
+  (scripts/authenticity.py), median over 0.6 s windows of the real WOT pulls against the build's
+  own full-throttle pulls through its gears (`--render gears`): the crank runs free in both. A
+  held render pins the crank and drops the random walk each cycle's work spread gives it (about
+  10 dB of the 250 Hz-1 kHz randomness, docs/FACTS.md), so it is not compared. Too low reads as a
   synthetic, canned sound: every cycle a copy of the last.
 
 The renders are what the build plays (its own listener, ground reflection included).
@@ -21,7 +24,8 @@ its total is lower than the baseline's and no distance is worse by more than 0.5
 
 REFS.json (local, the recordings are never committed):
   {"pulls": {"wav": "a.wav", "trk": "a.trk", "spans": [[3.25, 4.75]], "rpms": [7500, 8000]},
-   "steady": [{"wav": "b.wav", "t0": 60.5, "dur": 2.0, "rpm": 5880}]}
+   "firing_order": 5}
+  firing_order: the engine order of the firing (cylinders / 2), to follow a gears render's rpm.
   .trk lines: "<t>s <rpm>rpm ..." (the tracker in scripts/realism); WAVs at 48 kHz mono or stereo.
 """
 import hashlib
@@ -100,6 +104,70 @@ def render(binary, engine, rpm, seconds=3):
     return fs, x[int(0.8 * fs):]
 
 
+WIN = 0.6  # s, the randomness windows
+
+
+def median_shares(x, fs, spans):
+    """Median per-band random share over WIN windows every WIN/2 of `spans`: (t0, t1, rpm at t0,
+    rpm at t1) with the rpm linear in between."""
+    got = []
+    for t0, t1, r0, r1 in spans:
+        for t in np.arange(t0, t1 - WIN, WIN / 2):
+            rpm = r0 + (r1 - r0) * (t + WIN / 2 - t0) / (t1 - t0)
+            try:
+                got.append(auth.measure(x[int(t * fs):int((t + WIN) * fs)], fs, rpm, width=0.06)["shares"])
+            except Exception:  # a window the tracker cannot follow is left out
+                pass
+    return np.median(got, axis=0) if got else None
+
+
+def real_pull_spans(ref):
+    rows = [line.split() for line in open(ref["trk"]) if line.strip()]
+    T = np.array([float(r[0].rstrip("s")) for r in rows])
+    R = np.array([float(r[1].rstrip("rpm")) for r in rows])
+    spans = []
+    for a, b in ref["spans"]:
+        k = (T >= a) & (T <= b)
+        c = np.polyfit(T[k] + 0.125, R[k], 1)
+        spans.append((a, b + 0.25, np.polyval(c, a), np.polyval(c, b + 0.25)))
+    return spans
+
+
+def gear_pull_spans(x, fs, order, lo, hi):
+    """Stretches of a gears render rising through lo..hi rpm: its firing line followed every
+    0.1 s (the strongest peak within 40 % of the last), cut at each shift."""
+    hop, n = 0.1, int(0.25 * fs)
+    t, rpm = [], []
+    for i in range(0, len(x) - n, int(hop * fs)):
+        X = np.abs(np.fft.rfft(x[i:i + n] * np.hanning(n)))
+        f = np.fft.rfftfreq(n, 1 / fs)
+        k = (f > lo / 60 * order * 0.6) & (f < hi / 60 * order * 1.3)
+        t.append(i / fs + 0.125)
+        rpm.append(f[k][np.argmax(X[k])] * 60 / order)
+    spans, start = [], None
+    for j in range(1, len(t)):
+        rising = lo <= rpm[j] <= hi and 0 <= rpm[j] - rpm[j - 1] < 300
+        if rising and start is None:
+            start = j - 1
+        if (not rising or j == len(t) - 1) and start is not None:
+            if t[j - 1] - t[start] >= WIN:
+                spans.append((t[start], t[j - 1], rpm[start], rpm[j - 1]))
+            start = None
+    return spans
+
+
+def render_gears(binary, engine):
+    os.makedirs(CACHE, exist_ok=True)
+    h = hashlib.sha1()
+    h.update(open(binary, "rb").read(1 << 20) + str(os.path.getmtime(binary)).encode())
+    h.update(open(engine, "rb").read() + b"gears")
+    out = os.path.join(CACHE, h.hexdigest()[:16] + ".wav")
+    if not os.path.exists(out):
+        subprocess.run(["nice", "-n19", binary, "--engine", engine, "--render", "gears",
+                        "--out", out], check=True, capture_output=True)
+    return auth.load(out)
+
+
 def score(binary, engine, pulls, steady):
     orders, bands, treble, rand = [], [], [], []
     for rpm, (ro, rb) in sorted(pulls.items()):
@@ -109,10 +177,12 @@ def score(binary, engine, pulls, steady):
         orders.append(np.mean(np.clip(np.abs(mo - ro), 0, 20)))
         bands.append(np.mean(np.abs(mb - rb)))
         treble.append(abs(np.mean((mb - rb)[OCT.index(2000):])))
-    for s in steady:
-        fs, x = render(binary, engine, s["rpm"])
-        m = auth.measure(x[:int(2 * fs)], fs, s["rpm"], width=0.01)
-        rand.append(np.mean(np.abs(np.array(m["shares"]) - np.array(s["shares"]))))
+    if steady is not None:
+        fs, x = render_gears(binary, engine)
+        lo, hi = min(pulls) - 250, max(pulls) + 250
+        m = median_shares(x, fs, gear_pull_spans(x, fs, steady["order"], lo, hi))
+        if m is not None:
+            rand.append(np.mean(np.abs(m - steady["shares"])))
     return dict(orders=float(np.mean(orders)), bands=float(np.mean(bands)),
                 treble=float(np.mean(treble)),
                 random=float(np.mean(rand)) if rand else 0.0)
@@ -121,14 +191,15 @@ def score(binary, engine, pulls, steady):
 def main(argv):
     refs = json.load(open(argv[0]))
     pulls = real_pulls(refs["pulls"]) if "pulls" in refs else {}
-    steady = []
-    for s in refs.get("steady", []):
-        fs, x = auth.load(s["wav"])
+    steady = None
+    if "firing_order" in refs and "pulls" in refs:
+        fs, x = auth.load(refs["pulls"]["wav"])
         if x.ndim > 1:
             x = x.mean(axis=1)
-        seg = x[int(s["t0"] * fs):int((s["t0"] + s["dur"]) * fs)]
-        steady.append(dict(s, shares=auth.measure(seg, fs, s["rpm"], width=0.05)["shares"]))
-    print(f"refs: pulls at {sorted(pulls)} rpm, {len(steady)} steady stretch(es)")
+        steady = dict(order=refs["firing_order"],
+                      shares=median_shares(x, fs, real_pull_spans(refs["pulls"])))
+    print(f"refs: pulls at {sorted(pulls)} rpm; randomness "
+          + ("from the pulls" if steady is not None else "not scored"))
     rows = []
     for arg in argv[1:]:
         label, rest = arg.split("=", 1)
