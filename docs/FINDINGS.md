@@ -1619,3 +1619,25 @@ source is not identified. Phone and YouTube recordings cannot judge below about 
 - Its lift above 10 % of the peak lasts 204° of a 265° duration (sin² 211°): a duration published
   at 1 mm (Honda's habit) taken as seat-to-seat would make a cam ~40° short. Heywood's timings
   (and so the LFA's) are at 0.15 mm lift (§6.3, Fig. 6.16): seat-to-seat, no such error there.
+
+## The LFA's coast rings its final chamber (2026-11-08)
+
+- With the refit preset (final chamber a lossless 1D cylinder 0.30 × 0.245 m standing in for the
+  patent's 0.30 m sphere, JP 2008-169751 A Fig. 1), coasting held at 7700 rpm reads 108.6 dB at
+  the listener against 90.0 at WOT; the coast peak is 5.2× the WOT peak. Not a runaway and not a
+  noise source: all `sound.*` off gives the same peak; FV, waveguide and linear exhausts all do it.
+- The excitation is sane: the exhaust port's 1.2–1.45 kHz band is only 4.7 dB over WOT (plenum
+  0.22 bar, cylinder minimum 0.17 bar). The transmission port → listener in that band is 21.5 dB
+  higher at coast (−51.2 against −72.7 dB). The coasting gas is ≈ 550 K in the tail against
+  1000 K at WOT and the tips carry 13 m/s against 174: the chamber-and-tips resonance drops onto
+  firing order 2 (1283 Hz at 7700) with no flow loss to damp it. A broadband +10…+25 dB
+  (400 Hz–8 kHz) coast-minus-WOT follows; the approved main (patent TL as `Segment::Measured`)
+  has −1…−23 dB there.
+- The real car does not: the dyno clip WJ_K9UCj1Ko's lift-off (16.75–20.5 s, 8600 → 5700 rpm)
+  has its total level and its 1.25 kHz third octave as at WOT (−9.6 / −13 dB against −9.3 /
+  −14 dB). Free revs (zICdHbITxbE): falling only 1.1 dB under rising.
+- Tried: tips 0.20 m (−4.5 dB at coast), chamber 0.40 m long at the same volume (−2.2 dB), a
+  sphere-equivalent area profile (coast 3.1× WOT, but `realgate` orders 7.70 against 5.50: FAIL).
+  Open item: what damps a real spherical chamber (3D modes, the packed lower tip, the shell) and
+  how to carry it in 1D. `coasting_down_from_the_redline_stays_a_sound` bounds the peak at 10×
+  WOT (user's call, 2026-11-08), still three orders under the runaway it was written for.

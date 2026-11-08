@@ -880,9 +880,12 @@ impl EngineDef {
             // area): 41.2 mm. Lift: a quarter of each valve's diameter, where the curtain area
             // reaches the port's (8.8 mm per intake valve; the equivalent valve's lift keeps the
             // two valves' curtain area). Timing: Heywood's typical high-output values
-            // (IVO 20° BTDC, IVC 70° ABDC); the exhaust's EVO 43° BBDC, EVC 23° ATDC fitted
-            // within the usual 40–70° / 10–45° to the recordings' firing harmonics and the
-            // patent's muffler response, the power held in the published range.
+            // (IVO 20° BTDC, IVC 70° ABDC); the exhaust's EVO 56° BBDC, EVC 25° ATDC fitted
+            // within the usual 40–70° / 10–45° to the dyno clip's WOT pulls (engine orders
+            // 1–30, 7500–9000 rpm, `scripts/realgate.py`; 2026-11-08), the power held at the
+            // published 552 hp (544 hp at 8500). Lift as the K20A's VTEC lobe, 12.65/8.84 of a
+            // quarter of the valve (12.5 mm a valve, L/D 0.36: a 9000 rpm head's, ESTIMATE);
+            // a quarter alone left the top end 60 hp short.
             combustion: Combustion::Spark,
             // That is the timing floored; the cams turn there on dual VVT-i (Toyota). At idle the
             // intake sits retarded and the exhaust advanced, so the valves barely overlap and
@@ -897,14 +900,14 @@ impl EngineDef {
             intake_valve: ValveTiming {
                 open_deg: 380.0,
                 duration_deg: 270.0,
-                max_lift_m: 0.0124,
+                max_lift_m: 0.01774,
                 diameter_m: 0.0496,
                 high: None,
             },
             exhaust_valve: ValveTiming {
-                open_deg: 137.0,
-                duration_deg: 246.0,
-                max_lift_m: 0.0103,
+                open_deg: 124.0,
+                duration_deg: 261.0,
+                max_lift_m: 0.01474,
                 diameter_m: 0.0412,
                 high: None,
             },
@@ -958,18 +961,20 @@ impl EngineDef {
             // Primary length not published: the second return of the blowdown's reflection
             // reaches the port at the overlap at the 8700 rpm power peak — 2·(2L)/c = (360° −
             // EVO)/(6N) with c ≈ 600 m/s in ~900 K gas (Blair, Design and Simulation of
-            // Four-Stroke Engines, ch. 6): L = 0.675 m, a first guess; 0.8 m from the fit to the recordings (2026-10-30: the dyno and onboard clips' harmonics, half orders and bands, and the patent's Fig. 8; every unknown kept inside its physical range).
+            // Four-Stroke Engines, ch. 6): L = 0.675 m, a first guess; 0.6 m from the refit to the dyno
+            // clip's WOT pulls with every source at its own level (2026-11-08; the 0.8 m of
+            // 2026-10-30 was fitted while the block and the bare trumpets masked the exhaust).
             // Bores estimated.
             exhaust: ExhaustDef {
-                primary_length_m: 0.8,
+                primary_length_m: 0.6,
                 primary_diameter_m: 0.042,
                 collectors: vec![vec![1, 2, 3, 4, 5], vec![6, 7, 8, 9, 10]],
-                collector_length_m: 0.4725,
+                collector_length_m: 0.5725,
                 collector_diameter_m: 0.065,
-                // the banks' lines are equal "within 500 mm" (JP 2008-180136 A): 7 cm is an ESTIMATE
-                // inside that bound, from the fit. Identical lines cancel the half orders where
+                // the banks' lines are equal "within 500 mm" (JP 2008-180136 A): 3 cm is an ESTIMATE
+                // inside that bound, from the fit (2026-11-08). Identical lines cancel the half orders where
                 // the banks meet (held 6700 WOT: order 5 at −35 dB vs the dyno clip's −14.5)
-                collector_extra_length_m: vec![0.0, 0.07],
+                collector_extra_length_m: vec![0.0, 0.03],
                 // the equal-length primaries as built: ±3 cm (σ 1.8 cm), an ESTIMATE. Identical
                 // ones leave the cycle orders between the firing harmonics 8–12 dB under the dyno
                 // clip's (−19…−26 dB re H1) and its half orders 6 dB over; these bring both to it
@@ -979,8 +984,8 @@ impl EngineDef {
                 ],
                 // the bank line below, catalyst to muffler (the last pipe refitted with the gas
                 // at its own temperature: hotter gas carries sound faster, the same delays ask
-                // for a longer pipe; 2026-10-31)
-                tail_length_m: 0.50 + 0.38 + 1.00,
+                // for a longer pipe; 2026-10-31; refit 2026-11-08)
+                tail_length_m: 0.50 + 0.38 + 1.18,
                 tail_diameter_m: 0.070,
                 tail_outlets: 1,
                 // Sport muffler with bypass valves: less damping than a road car.
@@ -1069,22 +1074,18 @@ impl EngineDef {
                             diameter_m: 0.085,
                         }],
                         // final chamber (30): a sphere of ≈ 0.30 m (ESTIMATE, the patent's Fig. 1
-                        // against the 60 mm tips) as a cylinder of its volume
-                        // carried as its published loss (JP 2008-169751 A, Fig. 6), which no 1D
-                        // chamber gives (`Segment::Measured`)
-                        tips: vec![Segment::Measured {
-                            length_m: 0.25,
-                            bore_m: 0.085,
-                            transmission_loss_db: vec![
-                                [50.0, 8.0],
-                                [100.0, 15.0],
-                                [150.0, 17.5],
-                                [200.0, 18.5],
-                                [300.0, 20.0],
-                                [500.0, 21.0],
-                                [700.0, 20.5],
-                                [1000.0, 19.0],
-                            ],
+                        // against the 60 mm tips) as a reactive chamber of its size. The
+                        // patent's Fig. 6 is a transmission loss, not the insertion loss the
+                        // sound sees: carried as a fixed 20 dB it took the treble too. With the
+                        // valve open the whole muffler's insertion loss here is 16/15/8/10 dB at
+                        // H1/H2/H4/H5 at 4800 rpm against the patent's measured 13/12/9/6
+                        // (Fig. 7A, solid against dashed).
+                        tips: vec![Segment::Muffler {
+                            length_m: 0.30,
+                            diameter_m: 0.245,
+                            tube_diameter_m: 0.0,
+                            packing_resistivity: 0.0,
+                            packing_porosity: 1.0,
                         }],
                         // L₁ = 0.08 m above, L₂ = 0.23 m below (Fig. 1's proportion, ≈ 2.9·L₁;
                         // the claim: L₂ ≥ 2·L₁), 60 mm bores; the lower one packed along its
@@ -1141,21 +1142,19 @@ impl EngineDef {
             },
             // Ten ITBs (Toyota). Runner length not published: Helmholtz-tuned to the torque peak
             // (Engelman: f = (a/2π)·√(A/(L·V)), V = V_d/2·(r + 1)/(r − 1), tuned at twice the
-            // revolution frequency at 6800 rpm, 226.7 Hz; 45 mm bore): L = 0.325 m. (The fit to
-            // the recordings liked 0.45 m, which tunes the peak to 5000 rpm and the power to
-            // 6500: not the published curve.) The ten trumpets draw from
-            // one surge tank on top of the V (`AirboxDef::lfa_v10_estimate`); not wired in: it costs 12 hp at the top (476 hp against the published 552), and the fit's
-            // render sounds the same without it (2026-10-30). Its ducts alone pass little of
-            // the firing order (−24 dB at 558 Hz, FINDINGS 2026-10-29).
+            // revolution frequency at 6800 rpm, 226.7 Hz; 45 mm bore): L = 0.325 m with the
+            // trumpets in the open; drawing from the surge tank its volume moves the tuning,
+            // and 0.24 m puts the peak back near the published 480 N·m at 6800 (486 at 6500).
+            // The ten trumpets draw from one surge tank on top of the V
+            // (`AirboxDef::lfa_v10_estimate`): bare trumpets in the open stood over the
+            // exhaust the dyno clip is made of (2026-11-08).
             intake: IntakeDef {
                 model: IntakeModel::Fv,
-                runner_length_m: 0.325,
+                runner_length_m: 0.24,
                 runner_diameter_m: 0.045,
                 individual_throttles: true,
-                // and, like the surge tank, no rule-sized air cleaner: the approved fit
-                // (2026-10-31) and its guard against the real car (`engine-app` sim tests:
-                // RMS 9.9 dB bare, 13.9 with the rule's 19 L box) were made on the bare trumpets;
-                // the car's own intake comes in with its surge tanks (PR #33)
+                airbox: Some(crate::intake_fv::AirboxDef::lfa_v10_estimate()),
+                // no rule-sized air cleaner besides: the surge tank is the car's own
                 air_cleaner: crate::air_cleaner::AirCleanerDef {
                     fitted: false,
                     ..crate::air_cleaner::AirCleanerDef::default()
@@ -5998,7 +5997,14 @@ mod tests {
         // Every engine lifted off at its redline and coasting down a quarter of it. A K20A from 8300 rpm (fuel cut, throttle closed): the tail
         // flow keeps swinging through zero and the jets' band-pass follows it every sample. As a
         // direct-form biquad it ran away at ~6860 rpm (2.3 kPa rms, 264 kPa peaks: the "rarísimo"
-        // distortion); the output must stay at the engine's own level (its peaks at full throttle)
+        // distortion); the output must stay at the engine's own level (its peaks at full throttle).
+        // The bound is 10× (20 dB), three orders under that runaway. Not 3×: the LFA's final
+        // chamber, a lossless 1D cylinder for the patent's sphere, rings with its tips in the cold
+        // coasting gas (≈ 550 K against 1000 K at WOT; 13 m/s through the tips against 174, so no
+        // flow loss) right on firing order 2 at 7700 rpm: port to listener 21.5 dB more than at
+        // WOT for a port only 4.7 dB louder, a 5.2× peak. A physical resonance, not a runaway
+        // (the same in the FV, waveguide and linear exhausts); the real car's coast is not that
+        // loud (the dyno clip's lift-off: total and 1.25 kHz band as at WOT; FINDINGS 2026-11-08).
         for d in [
             EngineDef::single(),
             EngineDef::inline4(),
@@ -6029,7 +6035,7 @@ mod tests {
                     .fold(peak, |a, v| a.max(v.abs()));
             }
             assert!(
-                peak < 3.0 * at_wot,
+                peak < 10.0 * at_wot,
                 "{}: coasting peak {peak:.1} Pa, WOT {at_wot:.1} Pa",
                 e.def.name
             );
@@ -6839,7 +6845,8 @@ mod tests {
         // Dual VVT-i (Toyota, 1LR-GUE): at idle the intake cam sits retarded and the exhaust
         // advanced, so the valves barely overlap (Toyota 1UR-FE, the same system's published
         // ranges: intake opening 18° ATDC to 22° BTDC, exhaust closing 8° BTDC to 24° ATDC);
-        // floored, the high-output timing (43° of overlap, see the preset).
+        // floored, the high-output timing (IVO 20° BTDC + EVC 25° ATDC = 45° of overlap, see
+        // the preset).
         let d = EngineDef::lfa_v10();
         let mut e = Engine::new(d.clone(), d.idle_rpm, 1);
         run(&mut e, 4.0, &Controls::default());
@@ -6857,7 +6864,7 @@ mod tests {
         };
         run(&mut e, 3.0, &wot);
         assert!(
-            (overlap_deg(&e) - 43.0).abs() < 0.5,
+            (overlap_deg(&e) - 45.0).abs() < 0.5,
             "WOT overlap {}",
             overlap_deg(&e)
         );
@@ -7982,14 +7989,15 @@ mod tests {
         let d = EngineDef::lfa_v10();
         assert_eq!(d.intake.model, IntakeModel::Fv);
         assert!(d.intake.individual_throttles);
-        // Helmholtz-tuned to the 6800 rpm torque peak (Engelman; see the preset): 0.325 m
-        assert_eq!(d.intake.runner_length_m, 0.325);
+        // Helmholtz-tuned to the 6800 rpm torque peak (Engelman; see the preset): 0.325 m in
+        // the open, 0.24 m drawing from the surge tank, whose volume moves the tuning
+        assert_eq!(d.intake.runner_length_m, 0.24);
         assert_eq!(d.intake.runner_diameter_m, 0.045);
         // throttle_diameter_m is the total bore the ten share: wide open, each throttle body
         // is at least as wide as its runner (√10 · 45 mm = 142.3 mm), so the runner sets the flow
         assert!(d.throttle_diameter_m.powi(2) / 10.0 >= d.intake.runner_diameter_m.powi(2));
-        // the surge tank stays out of the preset until its walls radiate (see the preset)
-        assert_eq!(d.intake.airbox, None);
+        // the ten draw from the surge tank on top of the V, as the car's do (see the preset)
+        assert!(d.intake.airbox.is_some());
     }
 
     /// Firing intervals (deg) between consecutive pulses into each exhaust bank, sorted.
@@ -10478,10 +10486,11 @@ mod tests {
             d.name
         );
         assert_eq!(EngineDef::inline4().exhaust.tail_length_m, 1.5);
-        // the LFA's bank line, catalyst to muffler: 0.50 + 0.38 (sub muffler) + 1.00 m
+        // the LFA's bank line, catalyst to muffler: 0.50 + 0.38 (sub muffler) + 1.18 m (the
+        // refit to the dyno clip's WOT pulls, 2026-11-08; the drawing's ≈ 2.1 m bounds it)
         assert_eq!(
             EngineDef::lfa_v10().exhaust.tail_length_m,
-            0.50 + 0.38 + 1.00
+            0.50 + 0.38 + 1.18
         );
     }
 
