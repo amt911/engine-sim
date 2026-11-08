@@ -820,7 +820,13 @@ mod tests {
         // Tolerance 3 %: reference has 6 digits, the scheme's smearing of a Mach-200 shock dominates.
         // Plateaus (hand-estimated from the exact waves, t = 0.012): left star 0.333..0.735, right star
         // 0.735..0.782 (contact 0.5 + 19.6 t, shock ≈ 23.5 t).
-        let p = toro(prim(1.0, 0.0, 1000.0), prim(1.0, 0.0, 0.01), 0.5, 0.012, 1000);
+        let p = toro(
+            prim(1.0, 0.0, 1000.0),
+            prim(1.0, 0.0, 0.01),
+            0.5,
+            0.012,
+            1000,
+        );
         for x in [0.6, 0.758] {
             let s = at(&p, x);
             assert_relative_eq!(s.p, 460.894, max_relative = 0.03);

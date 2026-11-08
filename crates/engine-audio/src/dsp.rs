@@ -776,7 +776,13 @@ mod tests {
         // H(s) = 1/(s² + s/Q + 1) at s = jω/ω0, whose gain at ω = ω0 is |1/(j/Q)| = Q exactly (the
         // bilinear transform in the cookbook is pre-warped at ω0, so the digital gain there is Q too).
         // Q = 1/√2: −3.01 dB (0.7071); Q = 2: +6.02 dB (2.0). Tolerance 0.5 % (the RMS read).
-        for (q, expected) in [(std::f64::consts::FRAC_1_SQRT_2, 0.70711), (2.0, 2.0)] {
+        for (q, expected) in [
+            (
+                std::f64::consts::FRAC_1_SQRT_2,
+                std::f64::consts::FRAC_1_SQRT_2,
+            ),
+            (2.0, 2.0),
+        ] {
             let mut lp = LowPass::new(1000.0, q, FS);
             let g = steady_gain(|x| lp.process(x), 1000.0);
             assert_relative_eq!(g, expected, max_relative = 0.005);

@@ -2277,7 +2277,10 @@ mod tests {
         let (a_re, a_im) = (ci, cq);
         let (b_re, b_im) = (ri, rq);
         let d = a_re * a_re + a_im * a_im;
-        ((b_re * a_re + b_im * a_im) / d, (b_im * a_re - b_re * a_im) / d)
+        (
+            (b_re * a_re + b_im * a_im) / d,
+            (b_im * a_re - b_re * a_im) / d,
+        )
     }
 
     /// |R| of an unflanged pipe, Silva, Guillemain, Kergomard, Mallaroni & Norris, "Approximation

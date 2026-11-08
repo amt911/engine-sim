@@ -47,7 +47,7 @@ sound-critical models have only qualitative tests (list in *Gaps, ranked*).
 | Orifice mass flow, choked and subsonic (Heywood App. C, eq. C.8–C.9) | `gas.rs::orifice_mass_flow` | `gas.rs:217`, `gas.rs:224`; continuity at the switch `gas.rs:237` | 0.046671 kg/s choked, 0.038215 kg/s at p-ratio 0.8 `[hand]` | ✅ |
 | 0D volume exchange, reservoirs, enthalpy carry, half-mass cap | `gas.rs` | `gas.rs:245`, `:260`, `:269`, `:286`, `:309`, `:330`, `:352`, proptest `:371` | conservation, no crossing, no negative mass | 🟡 |
 | Ideal-gas state round trip | `gas.rs::GasVolume` | `gas.rs:208` | m = pV/RT = 1.99104e-3 kg `[hand]` | ✅ |
-| HLLC Riemann flux (Toro, *Riemann Solvers*, ch. 10) | `fv.rs::hllc` | Sod: `fv.rs:752`; sonic point of a transonic rarefaction `fv.rs:1443`; moving contact `fv.rs:1486`; consistency `fv.rs:737` | Sod/Toro Test 1: p* = 0.30313, u* = 0.92745, ρ*L = 0.42632, ρ*R = 0.26557 (2–5 % tol., N = 400) `[table]`; sonic flux 171.3 kg/(m²s) from Toro eq. 4.56/4.63 `[closed]`; contact exact (Toro §10.4) | ✅ (Test 1 only; Tests 2–5 ❌, see gaps) |
+| HLLC Riemann flux (Toro, *Riemann Solvers*, ch. 10) | `fv.rs::hllc` | Sod: `fv.rs:752`; sonic point of a transonic rarefaction `fv.rs:1443`; moving contact `fv.rs:1486`; consistency `fv.rs:737` | Sod/Toro Test 1: p* = 0.30313, u* = 0.92745, ρ*L = 0.42632, ρ*R = 0.26557 (2–5 % tol., N = 400) `[table]`; sonic flux 171.3 kg/(m²s) from Toro eq. 4.56/4.63 `[closed]`; contact exact (Toro §10.4) | ✅ Tests 1, 3, 4, 5 (`fv.rs:818`, `:833`, `:855`, 3 % tol., N = 1000, ends pinned to the initial states); Test 2 (123, near-vacuum) is a **finding**: `fv.rs:801` (`#[ignore]`) |
 | HLLC symmetry / near-vacuum robustness | `fv.rs` | `fv.rs:1471`, `:1293`, `:1503` | symmetry, stays physical | 🟡 |
 | WENO5-Z reconstruction (Borges et al. 2008) | `fv.rs` | `fv.rs:1154` exact for quadratics, `:1178` order at a crest, `:1203`, `:1215` acoustic pulse, `:1372` advected bump, `:1383` cheap scheme 2nd order | exactness for quadratics `[closed]`; measured orders (3.55 for acoustic pulse with RK3 time error, not the nominal 5; stated in the test comment) | ✅ (order verification; self-convergence) |
 | SSP-RK3 time stepping (Shu & Osher 1988) | `fv.rs` | only through the combined convergence tests above | none stand-alone | 🟡 |
@@ -77,6 +77,7 @@ sound-critical models have only qualitative tests (list in *Gaps, ranked*).
 | Inflow root (Benson 6.35–6.37) | `valve_boundary.rs` | `valve_boundary.rs:487`, `:828` | A = 1.075171, U = 0.124145, A⁵U/φ = 0.892 (bisection by hand) `[hand]` | ✅ |
 | Weak outflow = acoustic impedance ρ·a | `valve_boundary.rs` | `valve_boundary.rs:919` | δp = ρ·a·u (Kinsler §9.2) `[closed]` | ✅ |
 | Finite-ψ outflow, Jenny constant-pressure model (Benson eq. 6.43–6.62) | `valve_boundary.rs` | `valve_boundary.rs:471`, `:516`, `:549`, `:570`, `:809`, `:851`, `:883`, proptest `:938` | energy continuity, continuity through the sonic point, solver converges | 🟡 (no published Benson/Jenny worked example) |
+| Fully open valve (ψ ≥ 1) = isentropic pipe flow from the cylinder | `valve_boundary.rs` | `valve_boundary.rs:960` | π = 0.95: p/p_c = 0.698337, u/a_c = 0.698212 (energy + isentropy by hand) `[closed]` | ✅ |
 | Newton/Illinois/secant root finders | `valve_boundary.rs`, `exhaust_fv.rs` | `valve_boundary.rs:590`, `:610`, `:785`; `exhaust_fv.rs:1307`, `:1376` | x³−2x−5 root 2.0945514815 (Newton's own); ∛2 `[closed]` | ✅ |
 | 0D junction (Benson constant-pressure) ghost states | `exhaust_fv.rs` | `exhaust_fv.rs:1177`, `:1203`, `:1237`, `:1457`, `:1656`; throttled end `:1393` | critical ratio 0.5283 (Anderson eq. 5.21) `[closed]`; stagnation-state entropy/enthalpy by definition; orifice equality | ✅ for the choked ratio, 🟡 for the rest |
 | One-to-one junction transparent | `exhaust_fv.rs` | `exhaust_fv.rs:1082` | equals the same pipe without a junction `[closed limit]` | ✅ |
@@ -118,7 +119,7 @@ sound-critical models have only qualitative tests (list in *Gaps, ranked*).
 
 | Model | Source in code | Test (file:line) | Reference value | Status |
 | --- | --- | --- | --- | --- |
-| Area step / Kelly–Lochbaum junction | `waveguide.rs::junction` | `waveguide.rs:2216`, `:1302`; collector `exhaust.rs:3921`, `exhaust.rs:2796` | r = (A1−A2)/(A1+A2) = −½; 2A1/ΣA; out = −1/3, 2/3 `[closed]` | ✅ |
+| Area step / Kelly–Lochbaum junction | `waveguide.rs::junction` | `waveguide.rs:2216`, `:1302`; collector `exhaust.rs:3921`, `exhaust.rs:2796` | r = (A1−A2)/(A1+A2) = −½; 2A1/ΣA; out = −1/3, 2/3 `[closed]`; `waveguide.rs:2395` adds T-junction −⅓/⅔, A₂ = 3A₁ −½/½, A₂ = 99A₁ −0.98/0.02, contraction +½/1.5 (exact) | ✅ |
 | Borda–Carnot expansion and sudden-contraction loss at junctions (White §6.9; K = 0.42(1−σ)) | `waveguide.rs::lossy_junction` | `waveguide.rs:1328`; `exhaust.rs:3892` | p_J = 3904.71 Pa, reflection −5618.83 Pa `[hand]` | ✅ (impl; K = 0.42 is a White correlation, not re-checked) |
 | Area change in flow as a resistance (Ronneberger 1967; Davies 1988; Munjal §2.13) | `waveguide.rs::area_change_resistance` | `waveguide.rs:1546`, `:1560`, `:1727` | R = 7031.3 Pa·s/m³; transmission 0.38475 `[hand]` | ✅ (impl) |
 | Expansion chamber transmission loss, no flow | `waveguide.rs`, `silencer2d.rs` | `waveguide.rs:1977`; `silencer2d.rs:699` | TL = 10log[1 + ¼(m−1/m)² sin²kL]: 9.42 / 12.17 / 0 dB (m = 8); 15.0 dB at kL = π/2 (m = 11.257) (Munjal ch. 3) `[closed]` | ✅ |
@@ -126,13 +127,13 @@ sound-critical models have only qualitative tests (list in *Gaps, ranked*).
 | Series resistance / series and shunt networks TL | `waveguide.rs` | `waveguide.rs:1781`, `:1803`, `:1831`, `:2155` | 20log(1 + RS/2ρc) = 3.522 dB; 3.979, 6.021 dB (Kinsler ch. 10) `[closed]` | ✅ |
 | Side Helmholtz resonator TL | `waveguide.rs::helmholtz` | `waveguide.rs:1858`, `:1883` | f0 = 172.75 Hz; TL 3.468 / 13.315 dB; resistive 3.522 / 3.493 dB (Kinsler ch. 10) `[closed]` | ✅ |
 | Pipe friction damping α = f·M/(2D) | `waveguide.rs`, `exhaust_fv::PIPE_FRICTION` | `waveguide.rs:1612`, `:1670`, `:1930`, `:2114` | e^(−0.05) = 0.951229 `[hand]`; **the factor f = 0.025 is a constant** | ✅ (impl) / ❌ for f(Re, roughness) vs Moody/Colebrook |
-| Pipe viscothermal loss | `waveguide.rs`, `narrow_tube.rs` | `waveguide.rs:2246` (loss scaling `1−0.02` per m) | by construction | 🟡 |
+| Pipe viscothermal loss | `waveguide.rs`, `narrow_tube.rs` | `waveguide.rs:2246` (loss scaling `1−0.02` per m); Kirchhoff α(1 kHz, 600 K air, a = 21 mm) = 0.0576 Np/m `waveguide.rs:2347` ✅ (2 %); wall filter vs √f law over 3 m: 4 kHz `:2384` ✅ (10 %), 1 kHz `:2390` **finding** (0.0851 vs 0.0956 Np, −11 %) | Kirchhoff via Tiikoja et al. SAE 2016-01-1816 Eq. 6 `[closed]`; air properties Çengel & Ghajar Table A-15 interpolated `[table]` | ✅ α; ✅ at 4 kHz; 🟡 at 1 kHz |
 | Lined duct (locally reacting liner, Munjal ch. 6) | `lining.rs`, `waveguide.rs` | `lining.rs:327`, `:145`, `:243`; `waveguide.rs:1591` | Re γ = 0.6488 / 2.4839 / 8.4981 Np/m at 1/2/4 kHz; 2.25 / 8.63 / 29.5 dB over 0.4 m `[hand]` | ✅ |
 | Packed perforated dissipative silencer (2D mode matching, Selamet et al.) | `silencer2d.rs` | `silencer2d.rs:715`; `exhaust.rs:3551` | JSV 262 Fig. 7: 21, 29, 36, 30, 22, 18 dB at 0.5–3 kHz `[fig]`; 16.48 dB per 0.4 m at 1 kHz from an independent scipy prototype `[ind]` | ✅ |
 | Silencer TL → cascade of peaking biquads (Välimäki & Liski) | `silencer2d.rs` | `silencer2d.rs:735`, `:758`, `:782`; `exhaust.rs:3364` | within 1.5 dB at fitted points; |H| ≤ 1; RBJ gain at centre `[closed]` | ✅ (fit quality) |
 | Measured chamber TL imposed (LFA final chamber, JP 2008-169751 A Fig. 6) | `exhaust.rs` | `exhaust.rs:3364` | 15 dB at 100 Hz, ≈ 20 dB flat 200 Hz–1 kHz `[meas]` (input, so it tests the mechanism) | ✅ (mechanism) |
 | Catalyst: laminar channel resistance (Poiseuille/hydraulic) | `exhaust.rs` | `exhaust.rs:3183`; `narrow_tube.rs:118` | 12 699.6 Pa·s/m³; 8μ/(a²A) = 87 272.7 `[hand][closed]` | ✅ |
-| Catalyst viscothermal channels (Zwikker & Kosten, Stinson, Dokumaci) | `narrow_tube.rs` | `narrow_tube.rs:126` | Foster fit within 1.5 % of F(z) = 2J1(z)/(zJ0(z)) **evaluated by the crate's own `f_zk`**; F is not checked against J0/J1 table values | 🟡 |
+| Catalyst viscothermal channels (Zwikker & Kosten, Stinson, Dokumaci) | `narrow_tube.rs` | `narrow_tube.rs:126` | Foster fit within 1.5 % of F(z) = 2J1(z)/(zJ0(z)) **evaluated by the test-local `f_zk`**; `f_zk` itself now checked at real z = 1, 2 against J0/J1 tables (`narrow_tube.rs:152`, 0.5 %); no complex-argument table found | 🟡 (real axis ✅) |
 | Catalyst measured TL (Elnemr, KTH 2011, Fig. 100) | `exhaust.rs` | `exhaust.rs:2610` | 1.3 dB at 50 Hz, 5.0 at 260, 5.5 at 600, 8.0 at 1000, 9.5 at 1200; model within 5 dB and never above `[meas]` | ✅ (loose: 5 dB window) |
 | Orifice/butterfly head loss ½ρ(1/Cc − 1)² and leak ring 4c/D | `exhaust.rs` | `exhaust.rs:2930`, `:3002`, `:3066`, `:3078` | 236.95·½ρ; 0.4087, 5.1924 of ½ρ; 0.023529 `[hand]` | ✅ (impl; Cc = 0.61 orifice value) |
 | Perforated baffle damping a Herschel–Quincke path | `exhaust.rs` | `exhaust.rs:2938`, `:3040` | "cancels less" (qualitative); arrival 172.8 steps `[hand]` | 🟡 / ✅ for timing |
@@ -140,7 +141,7 @@ sound-critical models have only qualitative tests (list in *Gaps, ranked*).
 | Wall transmission (limp mass law, stiff panel) | `exhaust.rs` | `exhaust.rs:2536`, `:2559` | v = 7.0658e-5 m/s; 8.864e-8 m³/s (Kinsler §6.4, §1.7) `[closed]` | ✅ |
 | Exit losses, tail exit orifice (choked/subsonic inversion) | `exhaust.rs`, `engine.rs::tail_exit` | `exhaust.rs:3194`; `engine.rs:10316`, `:10344` | 0.96711 kg/s → 2 atm back-pressure, jet 456.435 m/s; 0.209798 kg/s subsonic `[hand]` | ✅ |
 | Open end reflection, convective loss (1−M)/(1+M) (Munt 1977; Peters et al. JFM 256) | `waveguide.rs::OpenEnd` | `waveguide.rs:1759`; `exhaust_fv.rs:826` | 0.98·0.83/1.17 = 0.6952; 1/3 at M = 0.5 `[closed]` | ✅ |
-| Open end reflection vs ka (Levine & Schwinger 1948) | `waveguide.rs::OpenEnd` (one-pole at ka = 1, r = 0.98) | `waveguide.rs:2232` only checks DC inversion (r < −0.95) | no |R|(ka) or end-correction value tested | ❌ for the curve; ✅ trivially at DC |
+| Open end reflection vs ka (Levine & Schwinger 1948) | `waveguide.rs::OpenEnd` (one-pole at ka = 1, r = 0.98) | `waveguide.rs:2232` (DC inversion); `:2305`, `:2311`, `:2317` (|R| at ka = 1, ½, ¼ vs Silva et al. 2009 fit of Levine–Schwinger, 2 %) ✅; `:2324` (ka = 2) and `:2331` (end correction) **findings** (`#[ignore]`) | |R|(1) = 0.6944 `[fit]`; code 0.696. ka = 2: expected 0.346, code **0.447 (+29 %)**. End correction: expected l = 0.6133 a, code **0.419 a (−32 %)** | ✅ for ka ≤ 1; ❌ above (finding) |
 | Exhaust gas viscosity (Sutherland) | `exhaust.rs` | `exhaust.rs:3294` | 3.0164e-5 Pa·s at 600 K (White's table 3.06e-5) `[table]` | ✅ |
 | Gas cooling along pipes, Dittus–Boelter | `pipe_heat.rs` | `pipe_heat.rs:158`, `:168`, `:175`, `:246` | Nu = 0.023 Re^0.8 Pr^0.3: h = 61.49 W/m²K; laminar Nu = 3.66; exp(−NTU) `[hand][closed]` | ✅ |
 | Wall thermal model (steel pipe, radiation) | `pipe_heat.rs` | `pipe_heat.rs:194`, `:205` | ≈ 40 s time constant ("≈", approximate) | 🟡 |
@@ -217,7 +218,7 @@ sound-critical models have only qualitative tests (list in *Gaps, ranked*).
 | Open-pipe radiation filter above ka = 2 | `listener.rs` | `listener.rs:673`, `:699` | ratio 4.32 computed from the same H(s) = s/(1+s/ω_c), ω_c = 2c/a that the code implements; the model (Levine–Schwinger |R|, flanged/unflanged directivity) is not checked | 🟡 |
 | Tail directivity | `listener.rs` | none (all tails are omnidirectional monopoles) | e.g. unflanged-pipe directivity (Levine & Schwinger) | ❌ |
 | Low-pass and Butterworth | `audio:dsp.rs` | `audio:dsp.rs:491`, `:511` | −3 dB at cutoff; |H(40 kHz)| ≥ 0.0624 (analog 4th-order Butterworth) `[closed]` | ✅ |
-| DC blocker | `audio:dsp.rs` | `audio:dsp.rs:479` | residual < 1e-3; > 0.98 at 50 Hz (bounds, not the −3 dB corner) | 🟡 |
+| DC blocker | `audio:dsp.rs` | `audio:dsp.rs:479` | residual < 1e-3; > 0.98 at 50 Hz; −3 dB corner `audio:dsp.rs:761` (1/√2 within 1 %, fc = 3 and 100 Hz) ✅; RBJ low-pass gain at cutoff = Q `audio:dsp.rs:774` ✅ | ✅ corners; reverb RT60 and leveler timing still 🟡 |
 | Voice calibration 0 dBFS = 120 dB SPL | `audio:dsp.rs` | `audio:dsp.rs:615`, `:642` | 2 Pa → 0.1 of full scale `[hand]` | ✅ |
 | Reverb RT60 | `audio:dsp.rs` | `audio:dsp.rs:535`, `:554` | energy ratio < 1e-4 (generous; −60 dB after 0.3 s would be 1e-6) | 🟡 |
 | Look-ahead limiter, leveler | `audio:dsp.rs` | `audio:dsp.rs:669`, `:682`, `:709`, `:726`; `:430`, `:455`, `:470` | THD < −60 dB; ratio in dB halves with amount (design properties) | 🟡 |
@@ -257,7 +258,7 @@ Tests whose expected value is not derived from outside the code:
 6. `combustion.rs:249` and `engine.rs:9953`/`:9999`/`:10032` — the "tenth of the premixed step"
    factor and the impact trains compare the code with its own input curve (consistency, not
    validation).
-7. `narrow_tube.rs:126` — "exact" F(z) is the crate's own `f_zk`, so a mistake in F would pass.
+7. `narrow_tube.rs:126` — "exact" F(z) is the test module's own `f_zk` (not production). Now checked at real z = 1, 2 against Bessel tables (`narrow_tube.rs:152`); the complex arguments the test uses are still unchecked.
 8. Loose bands that act as plausibility only: `engine.rs:6974` (8–26 bar), `engine.rs:6993`
    (15–80 N·m), `engine.rs:7162` (35–40 %), `engine.rs:6364` (15–35 %), `engine.rs:10153` (5–15 dB(A)),
    `audio:dsp.rs:535` (1e-4).
@@ -287,27 +288,35 @@ reachable with the existing public API (no new production code).
    coefficients of Blair's maps for reverse flow. Benchmark: tabulate C_D·A_curtain at 5–6 values
    of L/D from the figure and test `flow_area`; add the reverse-flow ratio from Blair's
    *Design and Simulation of Four-Stroke Engines* (ch. 6). API: `ValveTiming::flow_area`.
-3. **Benson/Jenny valve boundary at finite ψ (🟡).** The most sound-critical boundary. Benson
-   vol. 1, ch. 4 and the worked pulse in Benson's *Thermodynamics and Gas Dynamics of Internal
-   Combustion Engines* (the "exhaust blowdown into a pipe" examples), or Blair's pressure-ratio
-   worked examples, give the reflected wave amplitude for a given ψ = A_valve/A_pipe. Benchmark: a
-   linear-limit check the other direction (valve ψ = 1 → pipe open to the cylinder state, plain
-   Bernoulli), plus reflection coefficient vs ψ in the small-amplitude limit: R = (1−ψ)/(1+ψ)
-   (Kinsler/Munjal, area step with a closed side). API: `valve_boundary` pure function.
-4. **Toro's Riemann tests 2–5 (❌).** Test 2 (123 problem, near-vacuum), Test 3 (strong shock, left
-   half p = 1000), Test 4 (collision of two shocks), Test 5 (two shocks, slow contact). Exact star
-   states: Test 2 p* = 0.00189, u* = 0; Test 3 p* = 460.894, u* = 19.5975; Test 4 p* = 1691.64,
-   u* = 8.68975; Test 5 p* = 46.0950, u* = 8.68975 (Toro, *Riemann Solvers*, Table 4.1 and 4.2, 3rd
-   ed.; values quoted from memory, **verify before use**). These stress the strong-wave
-   regime that a blowdown exhaust lives in. API: `fv::Pipe1d` (the `sod()` helper in `fv.rs` tests
-   shows the pattern).
-5. **Open-end reflection vs ka (Levine & Schwinger) (❌).** The tail's spectrum above ~1 kHz.
-   Benchmark: |R|(ka) of an unflanged pipe, closed-form fit of Norris & Sheng (1989):
-   |R| ≈ (1 + 0.2 ka − 0.084 (ka)²)/(1 + 0.2 ka + 0.416 (ka)²), end correction ℓ/a → 0.6133 as
-   ka → 0 (**fit from memory, verify**), or Levine & Schwinger's tabulated |R|: 1 at ka → 0, ≈ 0.7
-   at ka = 1, → 0 near ka ≈ 2.5–3 (and the Mach-number dependence from Peters/Hirschberg). API:
-   `waveguide::OpenEnd::process` with a swept sine; extract |R| = |reflected/incident| from the
-   `.0` output.
+3. **Benson/Jenny valve boundary at finite ψ (🟡, partly done).** ψ ≥ 1 limit is now tested
+   (`valve_boundary.rs:960`, closed form). **Correction to the earlier text:** R = (1−ψ)/(1+ψ) does
+   *not* apply: a valve orifice at zero mean flow has no linear limit (u = √(2Δp/ρ), a square
+   root), so the small-amplitude reflection depends on amplitude; the area-step rule is covered
+   by the junction test (`waveguide.rs:2395`). Remaining: reflected amplitude at finite ψ < 1 and
+   finite pulse from Benson vol. 1 ch. 4 or Blair worked examples (a published pulse figure).
+4. **Toro's Riemann tests 2–5 (✅ 3, 4, 5; Test 2 finding).** Done: `fv.rs:801`–`:855`. Initial data
+   confirmed against Tasker et al. 2008 (arXiv:0711.4141 §2.1–2.5) and Cholla's Test 4 page; star
+   values: Test 3 (460.894, 19.5975) against Toro et al. (arXiv:2412.03522 Table 1), Tests 2–5
+   reproduced by an independent bisection solver. **Corrections to the earlier text:** the inventory
+   had Test 5 as p* = 46.0950, u* = 8.68975; the right values are p* = 460.894, u* ≈ 0 (Test 5 is Test 3
+   with a −19.59745 background velocity, so its contact stays at x0 = 0.8). Test 4 (collision) has
+   p* = 1691.64, u* = 8.68975; its initial data (5.99924, 19.5975, 460.894 | 5.99242, −6.19633,
+   46.0950) are the earlier "Test 5 p*" numbers. The Table 4.2 values of Tests 2 and 4 were not found in a
+   source text, only reproduced by the independent solver. **Finding:** Test 2 (123 problem): star
+   pressure at x = 0.5 is 0.002190 vs exact 0.00189 (+16 %; 0.0022–0.0024 across the whole
+   plateau, +18 to +27 %), N = 1000 — outside the 10 % set beforehand; the scheme overestimates the
+   near-vacuum pressure. Test boundary note: walls at the ends are wrong for Tests 4–5 (gas moves
+   away from them and a vacuum forms); the helper pins both ends to the initial states.
+5. **Open-end reflection vs ka (Levine & Schwinger) (✅ ka ≤ 1; findings above).** Reference
+   corrected: the Norris–Sheng coefficients in the earlier text were wrong (from memory). Used instead:
+   Silva, Guillemain, Kergomard, Mallaroni & Norris, J. Sound Vib. 322 (2009) 255–263
+   (arXiv:0811.3625) Eq. 21, Table 1: |R| = (1 + 0.800 x)/(1 + 1.300 x + 0.266 x² + 0.0263 x³),
+   x = (ka)², error < 2 % for ka < 3 vs Levine–Schwinger; l/a → 0.6133. Measured (steady sine,
+   48 kHz, a = 21 mm): ka = 0.25, 0.5, 1 within 2 % (the code's one-pole matches 1 − (ka)²/2
+   at low ka; margins at ka = 0.25 and 0.5 are ≈ 0.1 % and 0.2 %), **ka = 2: 0.447 vs 0.346**; end
+   correction **0.419 a vs 0.6133 a** (the one-pole's group delay, 1/ω_c minus half a sample at
+   48 kHz, is a/2 − Δ; no end-correction is added elsewhere on this path — not checked how the
+   pipe length compensates). Mach-number dependence is covered by the existing (1−M)/(1+M) tests.
 6. **Expansion chamber TL with mean flow (❌).** The waveguide pipes do not convect (they apply
    loss only), so the Mach-number shift of chamber resonances and the extra damping are missing,
    and the FV net handles convection implicitly with numerical damping. Benchmark: Munjal ch. 3
@@ -323,8 +332,8 @@ reachable with the existing public API (no new production code).
    (closed form). API: `waveguide::junction` / `lossy_junction`.
 8. **Friction factor and viscothermal loss values (❌/🟡).** Pipe loss uses f = 0.025 and α given in
    Np/m, never checked against the Kirchhoff (1868) wall attenuation α = (1/(r c))·√(ωμ/2ρ)·(1 +
-   (γ−1)/√Pr) (Kinsler §8.9) nor against Moody/Colebrook f(Re, ε/D) or Blasius 0.316 Re^−¼.
-   Benchmark: α at 1 kHz for a 42 mm pipe in 600 K gas; f at Re 1.5e4 (Blasius 0.0285). API:
+   (γ−1)/√Pr) (Kinsler, section unconfirmed; code cites §9.9) nor against Moody/Colebrook f(Re, ε/D) or Blasius 0.316 Re^−¼.
+   Benchmark: α at 1 kHz for a 21 mm-radius pipe in 600 K gas (**done**, `waveguide.rs:2347`: 0.0576 Np/m, code within 2 %); the section in Kinsler is not confirmed (the code comment says §9.9, this file said §8.9; the formula is confirmed from Tiikoja et al. SAE 2016-01-1816 Eq. 6); f at Re 1.5e4 (Blasius 0.0285) still open. API:
    `Pipe::new(.., loss_per_m)`, `Pipe::viscothermal`, constants in `exhaust_fv`.
 9. **Cylinder heat transfer vs measurement (🟡).** Woschni is checked formula-to-hand only; the
    port wall HTC (200 W/m²K) has no test. Benchmarks: Woschni's own motored-engine heat flux at
@@ -342,14 +351,14 @@ reachable with the existing public API (no new production code).
 12. **Cycle-to-cycle and texture noise statistics (🟡).** Heywood Fig. 9-35 spreads are within loose
     bands; benchmark with the COV_imep ≈ 2–5 % at part load, < 2 % at WOT (Heywood §9.4.2), as a
     two-sided test on the ensemble. API: `Engine` runs.
-13. **Zwikker–Kosten function F(z) (🟡).** Test F(z) = 2J1(z)/(z J0(z)) at z = 1+i, 5+5i, 10 with
+13. **Zwikker–Kosten function F(z) (🟡, real axis done).** Real-axis checks at z = 1, 2 done (`narrow_tube.rs:152`, tables from Schaum's Appendix B Table B-1 / A&S 9.1 at 3 decimals; J1(5) not confirmed so z = 5 dropped). Still open: complex z. Test F(z) = 2J1(z)/(z J0(z)) at z = 1+i, 5+5i, 10 with
     scipy values (e.g. the real-argument check F(1) = 2·0.44005/(1·0.76520) = 1.1501), so the
     Foster-fit test is no longer against an unverified in-crate Bessel. API: `narrow_tube::f_zk`
     (private? check `pub(crate)`).
 14. **Air absorption curve and ground effect (🟡).** Full ISO 9613-1 α(f, T, RH) table (Table 1 of
     the standard) rather than one point; ISO 9613-2 ground attenuation is replaced by a rigid
     image — not tested vs. a soft ground (acceptable for asphalt).
-15. **DSP corner frequencies (🟡).** DC blocker −3 dB corner, reverb RT60 within ±10 % (Schroeder
+15. **DSP corner frequencies (🟡, corners done).** DC blocker −3 dB corner and RBJ low-pass gain at cutoff done (`audio:dsp.rs:761`, `:774`). Open: reverb RT60 within ±10 % (Schroeder
     1962: RT60 = 0.161 V/A, or the comb-feedback formula g = 10^(−3·T_loop/RT60) used to size it),
     leveler/limiter timing constants (design values; exact attack/release −1/e points). API:
     `audio:dsp.rs` public blocks.
@@ -364,9 +373,13 @@ temperature accessor and a heat-loss switch were not checked).
 
 ### Notes on what I could not verify
 
-- Toro table values and the Norris–Sheng fit above are from memory: confirm against the book/paper
-  before putting them in a test (the project rule is to cite and to have the number come from the
-  reference, not from memory).
+- Toro Table 4.2 values for Tests 2 and 4 were not found in a readable source (the book was not
+  reachable); they are reproduced by an independent exact solver and agree with the recalled values.
+  Tests 3 and 5 are corroborated by arXiv:2412.03522 Table 1 (mirrored) and the Galilean shift.
+- Kinsler's section for Kirchhoff attenuation (the code says §9.9) and the book's own Kirchhoff
+  coefficient were not read; the formula was confirmed from Tiikoja et al. (SAE 2016-01-1816).
+- Silva et al. coefficients were read from the arXiv HTML (ar5iv) via a summarizing fetch; the
+  low-ka limits |R| ≈ 1 − (ka)²/2 and η = 0.6133 are consistent with the classical Levine–Schwinger results.
 - I did not read all ~150 scenario tests of `engine.rs`; none of them is a physics benchmark by
   name, but a few (e.g. `engine.rs:7109` `combustion_peaks_after_tdc_and_is_visible`, `:7201`
   VTEC overlap, `:9769` FV vs waveguide torque) may carry an external number I did not see.
