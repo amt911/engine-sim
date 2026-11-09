@@ -206,6 +206,7 @@ engine:
       liner_resistivity: 16000.0
       liner_coverage: 0.25
       closed_underside: false
+      intake_inside: true
     body_height_m: 1.434
     shuffle_hz: 3.5
     shuffle_damping: 0.15

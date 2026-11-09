@@ -41,6 +41,10 @@ pub struct EngineBay {
     /// default), they radiate straight out of the underside and only the head's ticking is
     /// muffled.
     pub closed_underside: bool,
+    /// The intake's mouth draws inside the bay (an air box under the bonnet, the usual road
+    /// car): its sound leaves through the bay's openings with the bay's loss, as the block's
+    /// does. False: a mouth out in the open air (a snorkel through the bonnet or the grille).
+    pub intake_inside: bool,
 }
 
 impl Default for EngineBay {
@@ -54,6 +58,7 @@ impl Default for EngineBay {
             liner_resistivity: crate::lining::Packing::default().flow_resistivity,
             liner_coverage: 0.25,
             closed_underside: false,
+            intake_inside: true,
         }
     }
 }

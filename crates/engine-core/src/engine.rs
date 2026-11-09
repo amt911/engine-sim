@@ -2353,6 +2353,8 @@ pub struct Engine {
     /// has one, and the volume velocity it pushed into the air this step, m³/s.
     airbox_shell: Option<crate::exhaust::Shell>,
     airbox_shell_flow: f64,
+    /// The intake's sound at the listener's side of the bay this step, Pa (before its delay).
+    intake_heard: f64,
     /// The turbulent jet at each tail pipe.
     jets: Vec<JetNoise>,
     /// Each exhaust valve's jet ([`crate::jet_noise::ValveJet`]).
@@ -2654,6 +2656,7 @@ impl Engine {
             texture_signal: 0.0,
             airbox_shell: None,
             airbox_shell_flow: 0.0,
+            intake_heard: 0.0,
             jets: Vec::new(),
             valve_jets: Vec::new(),
             tail_groups: Vec::new(),
@@ -3753,8 +3756,10 @@ impl Engine {
                 .map(|p| p.0)
                 .collect();
             self.n_banks = self.bank_of.iter().max().map_or(1, |b| b + 1);
+            // one filter per bank's side of the block, and one more for the intake's mouth when
+            // it draws inside the bay
             self.bay = match &self.def.vehicle.engine_bay {
-                Some(b) => (0..self.n_banks)
+                Some(b) => (0..self.n_banks + usize::from(b.intake_inside))
                     .map(|_| crate::engine_bay::BayFilter::new(b, dt))
                     .collect(),
                 None => Vec::new(),
@@ -4178,6 +4183,12 @@ impl Engine {
                     rest += l.from_engine_at(b, l.spread_from_1m_at(b, p));
                 }
                 let at_mouth = l.radiate_mouth_at(n_banks, intake_flow, mouth_area);
+                // a mouth in the bay is heard through its openings ([`EngineBay::intake_inside`])
+                let at_mouth = match self.bay.get_mut(n_banks) {
+                    Some(f) => f.process(at_mouth),
+                    None => at_mouth,
+                };
+                self.intake_heard = at_mouth;
                 // a turbo's blow-off valve venting to the air on a lift-off (a recirculating one
                 // vents into the intake, unheard): the jet of what it lets out,
                 // through its own bore at the delivered air's density (the turbulent mixing
@@ -10858,6 +10869,44 @@ mod probe {
             .map(|(a, b)| format!("{:6.1}", 10.0 * (a / b).log10()))
             .collect();
         println!("  tails/flows  {}", tf.join(" "));
+    }
+
+    #[test]
+    fn an_intake_mouth_in_the_bay_is_heard_through_the_bays_loss() {
+        // A road car's air box sits in the engine bay: its mouth's sound leaves through the
+        // bay's openings as the block's does, so at the firing tone (an inline four at 4000
+        // rpm: 133.3 Hz) it is heard the bay's insertion loss there quieter than an open mouth.
+        let heard = |inside: bool| {
+            let mut d = EngineDef::inline4();
+            d.vehicle.engine_bay.as_mut().unwrap().intake_inside = inside;
+            let (rpm, dt) = (4000.0, 1.0 / 48_000.0);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(rpm),
+                ..Controls::default()
+            };
+            let mut e = Engine::new(d, rpm, 1);
+            for _ in 0..(1.0 / dt) as usize {
+                e.step(dt, &c);
+            }
+            let w = 2.0 * PI * rpm / 30.0;
+            let (mut re, mut im) = (0.0f64, 0.0f64);
+            for j in 0..(0.6 / dt) as usize {
+                e.step(dt, &c);
+                let t = j as f64 * dt;
+                (re, im) = (
+                    re + e.intake_heard * (w * t).cos(),
+                    im + e.intake_heard * (w * t).sin(),
+                );
+            }
+            re.hypot(im)
+        };
+        let loss = 20.0 * (heard(false) / heard(true)).log10();
+        let want = crate::engine_bay::EngineBay::default().insertion_loss_db(4000.0 / 30.0);
+        assert!(
+            (loss - want).abs() < 1.5,
+            "{loss:.2} dB against the bay's {want:.2} dB"
+        );
     }
 
     #[test]
