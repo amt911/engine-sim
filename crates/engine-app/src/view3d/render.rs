@@ -399,6 +399,7 @@ impl Resources {
 /// The unit mesh of each kind at the key's detail (an exhaustive match: a new kind cannot be
 /// left without its mesh, as the pipes' ball joints once were).
 pub fn unit_mesh(kind: MeshKind, key: MeshKey) -> Mesh {
+    use super::parts::TurboHousing;
     let s = key.segments;
     match kind {
         MeshKind::Cylinder => mesh::cylinder(s),
@@ -480,6 +481,31 @@ pub fn unit_mesh(kind: MeshKind, key: MeshKey) -> Mesh {
             Some(_) if key.realistic => Mesh::nothing(),
             _ => mesh::cylinder(s),
         },
+        // the turbo: plain drums at Low, the realistic housings and moving parts otherwise
+        MeshKind::TurboDrum => match super::parts::turbo_housing(TurboHousing::Turbine) {
+            Some(_) if key.realistic => Mesh::nothing(),
+            _ => mesh::cylinder(s),
+        },
+        MeshKind::TurbineHousing => {
+            realistic_only(key, super::parts::turbo_housing(TurboHousing::Turbine))
+        }
+        MeshKind::CompressorHousing => {
+            realistic_only(key, super::parts::turbo_housing(TurboHousing::Compressor))
+        }
+        MeshKind::CentreHousing => {
+            realistic_only(key, super::parts::turbo_housing(TurboHousing::Centre))
+        }
+        MeshKind::CompressorWheel => realistic_only(key, super::parts::compressor_wheel()),
+        MeshKind::TurbineWheel => realistic_only(key, super::parts::turbine_wheel()),
+        MeshKind::WastegateFlap => realistic_only(key, super::parts::wastegate_flap()),
+    }
+}
+
+/// A part drawn at the realistic detail only (nothing at Low, or without its asset).
+fn realistic_only(key: MeshKey, mesh: Option<Mesh>) -> Mesh {
+    match mesh {
+        Some(m) if key.realistic => m,
+        _ => Mesh::nothing(),
     }
 }
 

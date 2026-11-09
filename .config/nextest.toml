@@ -9,3 +9,45 @@ slow-timeout = { period = "60s", terminate-after = 5 }
 [[profile.default.overrides]]
 filter = "test(=sim::tests::the_rotaries_idle_on_their_own_at_reference_quality)"
 slow-timeout = { period = "60s", terminate-after = 15 }
+
+# Coverage run (scripts/coverage.sh). Instrumented builds run the whole-engine simulations ~15×
+# slower: under plain `cargo test` the coverage gate took 3-4 h (2026-11-09), most of it in the
+# tests below — each ≥ 35 s in a normal run (nextest timings, 2026-11-09), each simulating seconds
+# of a whole engine. They still run in every `cargo test --workspace`; coverage skips them. The
+# shorter whole-engine tests (dyno sweeps, the exhaust thread, idles) stay in: without them
+# dyno.rs fell to 37 % and engine.rs under the 90 % physics floor. A new test over 35 s joins
+# this list once the coverage of the files it walks through stays put without it.
+[profile.coverage]
+slow-timeout = { period = "120s", terminate-after = 10 }
+default-filter = """
+not (
+  test(=sim::tests::every_preset_starts_and_idles_on_its_own_at_ultra) |
+  test(=sim::tests::the_rotaries_idle_on_their_own_at_reference_quality) |
+  test(=engine::tests::after_a_blip_the_idle_settles_instead_of_hunting) |
+  test(=sim::tests::a_crossplane_v8_burbles_and_a_flatplane_does_not) |
+  test(=offline::tests::the_gears_scene_drives_the_car_through_its_gears) |
+  test(=dyno::tests::the_lfa_breathes_as_lexus_published) |
+  test(=engine::tests::the_lfa_starts_idles_and_survives_a_blip) |
+  test(=dyno::tests::the_k20c1_boosts_near_what_honda_published) |
+  test(=engine::tests::coasting_down_from_the_redline_stays_a_sound) |
+  test(=dyno::tests::the_vw_tdi_boosts_near_what_vw_published) |
+  test(=engine::tests::the_flatplane_starts_idles_and_survives_a_blip) |
+  test(=engine::tests::the_crossplane_starts_idles_and_survives_a_blip) |
+  test(=engine::tests::released_from_high_revs_the_lfa_settles_at_its_idle) |
+  test(=dyno::tests::the_renesis_breathes_near_what_mazda_published) |
+  test(=engine::tests::the_lfa_restarts_from_stall_position_0) |
+  test(=offline::tests::a_drive_starts_on_an_engine_already_idling) |
+  test(=engine::tests::the_lfa_closes_its_overlap_at_idle_and_opens_it_under_load) |
+  test(=engine::tests::the_ej25_starts_idles_and_survives_a_blip) |
+  test(=engine::tests::released_from_high_revs_the_flatplane_settles_at_its_idle) |
+  test(=engine::tests::released_from_high_revs_the_crossplane_settles_at_its_idle) |
+  test(=engine::tests::the_inline4_starts_idles_and_survives_a_blip) |
+  test(=sim::tests::the_lfa_at_full_throttle_keeps_the_real_cars_orders) |
+  test(=dyno::tests::the_k20a_breathes_near_what_honda_published) |
+  test(=engine::tests::a_torque_cut_closes_the_throttle_and_retards_the_spark) |
+  test(=engine::tests::fv_exhaust_engine_idles_and_makes_comparable_torque) |
+  test(=exhaust_fv::tests::in_the_linear_regime_the_fv_net_sounds_like_the_waveguide) |
+  test(=engine::tests::every_kilogram_of_fuel_is_accounted_for) |
+  test(=sim::tests::a_screaming_lfa_is_engine_orders_not_air)
+)
+"""

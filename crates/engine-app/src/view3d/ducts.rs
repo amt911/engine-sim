@@ -388,11 +388,23 @@ pub fn intake(def: &EngineDef, out: &mut Vec<Instance>) -> Option<Vec3> {
 const TURBINE: [f32; 4] = [0.45, 0.30, 0.25, 1.0];
 const COMPRESSOR: [f32; 4] = [0.80, 0.81, 0.84, 1.0];
 
-/// A turbo at the collectors' end `at`: the turbine's scroll there, the compressor's on the same
-/// shaft (along x, ahead of it), the inducer facing the air, and the charge pipe (through an
-/// intercooler when it has one) to `charge_to`. Scrolls drawn 2.5 wheel diameters across
-/// (ESTIMATE: the file gives the compressor wheel only; the turbine wheel taken 1.1 of it).
-/// Returns the turbine's outlet, where the exhaust goes on.
+/// The turbo housing's ports when its asset cannot be read (the values `scripts/turbo.py` writes
+/// into it at the 56 mm reference, README): the primitives then stand where the housing would.
+const PORTS_WITHOUT_ASSET: super::parts::TurboPorts = super::parts::TurboPorts {
+    inlet: Vec3::new(0.04536, 0.0224, -0.04816),
+    outlet: Vec3::new(0.0896, 0.0, 0.0),
+    charge: Vec3::new(-0.04424, 0.028, 0.0504),
+    eye: Vec3::new(-0.098, 0.0, 0.0),
+    hinge: Vec3::new(0.0896, -0.02576, 0.0),
+    wheel_x: 0.042,
+};
+const CENTRE: [f32; 4] = [0.32, 0.32, 0.34, 1.0];
+
+/// A turbo at the collectors' end `at`: the realistic housing (`assets/3d-parts`, scaled by the
+/// compressor wheel's tip diameter) with its turbine inlet there, the compressor on the same shaft
+/// along -x, and the charge pipe from its outlet (through an intercooler when it has one) to
+/// `charge_to`. At the Low detail plain drums stand on the wheels instead. Returns the turbine's
+/// outlet face, where the exhaust goes on.
 fn turbo(
     t: &engine_core::turbo::TurboDef,
     at: Vec3,
@@ -400,40 +412,51 @@ fn turbo(
     out: &mut Vec<Instance>,
 ) -> Vec3 {
     let tip = t.compressor_tip_diameter_m as f32;
-    let (rt, rc) = (1.25 * 1.1 * tip, 1.25 * tip);
-    let turbine = at + Vec3::new(0.0, -rt, 0.0);
-    let compressor = turbine - Vec3::new(1.8 * tip + 0.8 * tip, 0.0, 0.0);
-    let half = Vec3::new(0.4 * tip, 0.0, 0.0);
+    let ports = super::parts::turbo_ports().unwrap_or(PORTS_WITHOUT_ASSET);
+    let s = tip / super::parts::TURBO_REF_TIP;
+    let mid = at - ports.inlet * s;
+    let frame = Mat4::from_scale_rotation_translation(Vec3::splat(s), glam::Quat::IDENTITY, mid);
+    for (part, color) in [
+        (Part::TurbineHousing, TURBINE),
+        (Part::CompressorHousing, COMPRESSOR),
+        (Part::CentreHousing, CENTRE),
+    ] {
+        out.push(Instance {
+            part,
+            model: frame,
+            color,
+        });
+    }
+    // the Low detail's drums: each 2.4 wheels across and 0.6 deep on its wheel, the bearing
+    // housing between them and the compressor's inlet ahead
+    let wx = ports.wheel_x * s;
+    let x = |dx: f32| mid + Vec3::new(dx, 0.0, 0.0);
+    let r = 1.2 * tip;
     out.push(Instance {
         part: Part::Turbine,
-        model: rod_between(turbine - half, turbine + half, rt),
+        model: rod_between(x(wx - 0.1 * tip), x(wx + 0.5 * tip), r),
         color: TURBINE,
     });
     out.push(Instance {
         part: Part::Compressor,
-        model: rod_between(compressor - half, compressor + half, rc),
+        model: rod_between(x(-wx - 0.5 * tip), x(-wx + 0.1 * tip), r),
         color: COMPRESSOR,
     });
-    // the shaft's bearing housing between them, and the compressor's inducer facing ahead
     out.push(Instance {
         part: Part::Compressor,
-        model: rod_between(compressor + half, turbine - half, 0.35 * tip),
+        model: rod_between(x(-wx + 0.1 * tip), x(wx - 0.1 * tip), 0.35 * tip),
         color: COMPRESSOR,
     });
     let d_in = t.inducer_diameter_m as f32;
     out.push(Instance {
         part: Part::Compressor,
-        model: rod_between(
-            compressor - half,
-            compressor - half - Vec3::new(tip, 0.0, 0.0),
-            0.5 * d_in + 0.004,
-        ),
+        model: rod_between(x(-wx - 0.5 * tip), mid + ports.eye * s, 0.5 * d_in + 0.004),
         color: COMPRESSOR,
     });
     if let Some(to) = charge_to {
         // up from the compressor's outlet, along to the throttle's inlet height, then in
         let d = 0.9 * tip;
-        let a = compressor + Vec3::new(0.0, rc, 0.0);
+        let a = mid + ports.charge * s;
         let b = Vec3::new(a.x, to.y, a.z);
         let c = Vec3::new(to.x, to.y, a.z);
         let mut runs = Vec::new();
@@ -452,7 +475,7 @@ fn turbo(
             });
         }
     }
-    turbine + Vec3::new(0.0, -rt, 0.0)
+    mid + ports.outlet * s
 }
 
 #[cfg(test)]
@@ -702,27 +725,67 @@ mod tests {
         let t = d.turbo.clone().unwrap();
         let mut out = Vec::new();
         let inlet = intake(&d, &mut out).unwrap();
-        exhaust(&d, Some(inlet), &mut out, &mut Vec::new());
-        let at = |p: Part| {
+        // the collector's end, as the turbo is handed it (the exhaust without its turbo)
+        let mut bare = d.clone();
+        bare.turbo = None;
+        let mut paths = Vec::new();
+        exhaust(&bare, None, &mut Vec::new(), &mut paths);
+        let collector_end = paths.last().unwrap().runs.last().unwrap().to;
+        let mut paths = Vec::new();
+        exhaust(&d, Some(inlet), &mut out, &mut paths);
+        // the realistic housing, scaled by the compressor wheel (56 mm reference): its turbine
+        // inlet on the collector's end
+        let ports = super::super::parts::turbo_ports().unwrap();
+        let h = out
+            .iter()
+            .find(|i| i.part == Part::TurbineHousing)
+            .unwrap()
+            .model;
+        let s = t.compressor_tip_diameter_m as f32 / super::super::parts::TURBO_REF_TIP;
+        assert!(
+            (h.x_axis.truncate().length() - s).abs() < 1e-5,
+            "scale {}",
+            h.x_axis
+        );
+        assert!((h.transform_point3(ports.inlet) - collector_end).length() < 1e-5);
+        // the charge pipe leaves the compressor's outlet and ends at the throttle's inlet
+        let charge = tubes(&out, Part::Runner);
+        assert!(
+            charge
+                .iter()
+                .any(|(a, _)| (*a - h.transform_point3(ports.charge)).length() < 1e-5)
+        );
+        assert!(charge.iter().any(|(_, b)| (*b - inlet).length() < 1e-5));
+        // the exhaust goes on from the turbine's outlet face
+        let outlet = h.transform_point3(ports.outlet);
+        assert!(
+            out.iter().any(
+                |i| matches!(i.part, Part::Pipe | Part::Catalyst | Part::Silencer)
+                    && (i.model.transform_point3(Vec3::ZERO) - outlet).length() < 1e-5
+            ),
+            "nothing leaves the outlet {outlet}"
+        );
+        // the plain drums (the Low detail's) on their wheels: the turbine's on +x, the compressor's on -x
+        let mid = h.transform_point3(Vec3::ZERO);
+        let centre = |p: Part| {
             out.iter()
                 .find(|i| i.part == p)
                 .map(|i| i.model.transform_point3(Vec3::new(0.0, 0.5, 0.0)))
                 .unwrap()
         };
-        let (turbine, compressor) = (at(Part::Turbine), at(Part::Compressor));
-        // on one shaft along x: same height and depth, the compressor 2.6 wheels ahead
-        let tip = t.compressor_tip_diameter_m as f32;
-        assert!((turbine.y - compressor.y).abs() < 1e-6 && (turbine.z - compressor.z).abs() < 1e-6);
-        assert!((turbine.x - compressor.x - 2.6 * tip).abs() < 1e-5);
-        // the charge pipe ends at the throttle's inlet
-        assert!(
-            tubes(&out, Part::Runner)
-                .iter()
-                .any(|(_, b)| (*b - inlet).length() < 1e-5)
-        );
+        assert!(centre(Part::Turbine).x > mid.x && centre(Part::Compressor).x < mid.x);
         assert_eq!(
             out.iter().filter(|i| i.part == Part::Intercooler).count(),
             usize::from(t.intercooler_effectiveness > 0.0)
+        );
+    }
+
+    #[test]
+    fn the_ports_without_the_asset_are_the_assets() {
+        // the fallback must not drift from what scripts/turbo.py writes
+        assert_eq!(
+            super::super::parts::turbo_ports(),
+            Some(PORTS_WITHOUT_ASSET)
         );
     }
 

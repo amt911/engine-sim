@@ -171,5 +171,31 @@ for f in sorted(os.listdir(OUT)):
             base = d["pos"][:, 1].min()
             check(abs(-base - rb) < 0.15e-3, f"base circle untouched by the morph ({1e3*-base:.2f} mm)")
 
+    if f == "turbo_compressor_wheel.glb":
+        D = 0.056
+        p = meshes["compressor_wheel"][0]["pos"]
+        r = np.hypot(p[:, 1], p[:, 2]).max()
+        check(abs(r - D / 2) < 0.2e-3, f"compressor tip radius {1e3*r:.2f} mm = D/2 (the scale's reference)")
+        check(p[:, 0].min() < -0.4 * D and p[:, 0].max() < 0.1 * D, "inducer towards -X, back face at the origin")
+    if f == "turbo_turbine_wheel.glb":
+        D = 0.056
+        p = meshes["turbine_wheel"][0]["pos"]
+        r = np.hypot(p[:, 1], p[:, 2]).max()
+        check(abs(r - 0.95 * D / 2) < 0.2e-3, f"turbine tip radius {1e3*r:.2f} mm = 0.95 D/2")
+        check(p[:, 0].max() > 0.35 * D and p[:, 0].min() > -0.1 * D, "exducer towards +X, back face at the origin")
+    if f == "turbo_housing.glb":
+        import json as _j
+        ex = _j.loads(meshes["turbine_housing"][0]["extras"]["engine_sim"])
+        for k in ("inlet", "outlet", "charge", "eye", "hinge", "wheel_x"):
+            check(k in ex, f"housing extras carry `{k}`")
+        if all(k in ex for k in ("inlet", "outlet", "charge", "eye", "wheel_x")):
+            check(ex["inlet"][1] > 0 and ex["inlet"][0] > 0, f"turbine inlet above the turbine side {ex['inlet']}")
+            check(ex["charge"][1] > 0 and ex["charge"][0] < 0, f"charge outlet above the compressor side {ex['charge']}")
+            check(ex["outlet"][0] > ex["wheel_x"], f"turbine outlet beyond its wheel {ex['outlet']}")
+            check(ex["eye"][0] < -ex["wheel_x"], f"compressor eye beyond its wheel {ex['eye']}")
+    if f == "turbo_wastegate_flap.glb":
+        p = meshes["wastegate_flap"][0]["pos"]
+        check(np.abs(p).max() < 0.03, "flap modelled round its hinge (origin on the hinge axis)")
+
 print("\nFAILURES:" if fails else "\nall checks passed", *fails, sep="\n  ")
 sys.exit(1 if fails else 0)

@@ -15,6 +15,8 @@ scripts/piston.py    piston + 3 rings (oil ring = 2 rails + expander) + wrist pi
 scripts/conrod.py    rod body (I-beam) + split cap + bolts + big-end shells + small-end bush
 scripts/crankshaft.py  one throw module (repeat per cylinder) + nose (timing sprocket) + flange
 scripts/valvetrain.py  valve + keepers + retainer, valve spring, cam lobe (flat follower), rocker arm
+scripts/turbo.py     turbocharger: housings (compressor, centre, turbine + wastegate port), compressor
+                     wheel (blades + splitters), turbine wheel, wastegate flap
 scripts/wankel.py    rotor (true flank), rotor housing + plugs, side plate + stationary gear,
                      eccentric shaft; `-- --e 0.015 --R 0.105 --w 0.08` for other rotors
 scripts/run.sh       ./run.sh piston [--render] | ./run.sh all --render
@@ -54,6 +56,9 @@ build output.
 | `cam_lobe.glb` | camshaft +X, nose +Y at cam angle 0 | bucket (flat-follower) cam: envelope of the tappet face, convex (min radius of curvature 8.4 mm checked at build). Lift: **morph target 0**, weight = lift/(s·0.00946) − 1, exact (the profile is linear in the lift). Camshaft centre fixed at the closed valve tip + base radius; it turns at half crank speed |
 | `rocker_arm.glb` | rocker-shaft axis (+X); the valve end and its adjusting screw at glTF −Z (Blender +Y) | rigid, uniform `s` (only for rocker-type heads, refs/2.png) |
 | `wankel_*.glb` | shaft axis, same frame as `view3d::mesh::rotor` (rotor plane = glTF x–z = the 2D view's x–y, shaft +Y, apex 0 on +x), **real size and centred in y** | same e/R: scale (R/R_ref, w/w_ref, R/R_ref); other e/R: regenerate (the flank shape depends on it). Pose the rotor as `view::rotor_pose` (centre e·(cos 3θ, sin 3θ), turned θ), the eccentric lobe turns 3θ. Plugs at the waist (+z here = 2D +y) at x = ±0.18 R as the scene; rotor gear and stationary gear on the −y side, where the scene draws the side plate |
+| `turbo_housing.glb` | shaft axis midway between the wheels; shaft +X, turbine +X, compressor −X | uniform `s = compressor_tip_diameter_m / 0.056`. The turbine housing's extras carry the ports in this frame: `inlet` (turbine inlet flange, opening up +Y), `outlet` (turbine outlet face, +X), `charge` (compressor outlet, up +Y), `eye` (compressor inlet face, −X), `hinge` (the wastegate flap's hinge) and `wheel_x` (each wheel's back face at ±`wheel_x`) |
+| `turbo_compressor_wheel.glb`, `turbo_turbine_wheel.glb` | on the axis at the wheel's back face (inducer −X, exducer +X) | uniform `s`; placed at ∓`s·wheel_x`, turned about X by the wheel's angle (both on one shaft) |
+| `turbo_wastegate_flap.glb` | on its hinge axis (+Z) | uniform `s`; placed at `s·hinge`, turned about +Z by the flap angle (positive opens it out of the outlet face) |
 
 Counterweight radius is 0.74 bore: it clears the skirt at BDC with the reference rod; for a
 short rod / long stroke check `s·0.0636 < rod_m − stroke_m/2 − 0.30·bore` and shrink it if not.
