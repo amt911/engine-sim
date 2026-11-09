@@ -138,6 +138,52 @@ struct EngineSource {
     pos: usize,
     flow_last: f64,
     mouth_radiated: f64,
+    /// Where it sits: across the car's axis and ahead of the tails, m.
+    at: (f64, f64),
+    /// The car's body between it and the ear, if it screens it ([`Listener::with_body`]).
+    barrier: Option<Barrier>,
+}
+
+/// A screen's diffraction loss (Maekawa 1968; ISO 9613-2:1996, eq. 14, C₂ = 20):
+/// D = 10·log10(3 + 20N), N = 2δ/λ for a path δ longer over the edge than straight through.
+/// |H|² = 1/(3·(1 + f/f_c)), f_c = 3c/(40δ): flat 4.8 dB, then 3 dB per octave, built as
+/// first-order shelves two octaves apart (each down 6 dB over one octave), within 1.2 dB of the
+/// curve above f_c/5.
+#[derive(Debug, Clone)]
+struct Barrier {
+    /// Per shelf: (b0, b1, a1) and its last input and output.
+    shelves: Vec<([f64; 3], f64, f64)>,
+}
+
+impl Barrier {
+    fn new(delta_m: f64, dt: f64) -> Self {
+        let fc = 3.0 * C_AMBIENT / (40.0 * delta_m.max(1e-6));
+        let k = 2.0 / dt;
+        let nyquist = 0.5 / dt;
+        let mut shelves = Vec::new();
+        let mut p = 1.1 * fc;
+        while p < nyquist {
+            let (wp, wz) = (
+                2.0 * std::f64::consts::PI * p,
+                2.0 * std::f64::consts::PI * 2.0 * p,
+            );
+            // H(s) = (1 + s/ωz)/(1 + s/ωp), bilinear
+            let (n0, n1, d0, d1) = (1.0 + k / wz, 1.0 - k / wz, 1.0 + k / wp, 1.0 - k / wp);
+            shelves.push(([n0 / d0, n1 / d0, d1 / d0], 0.0, 0.0));
+            p *= 4.0;
+        }
+        Self { shelves }
+    }
+
+    fn process(&mut self, x: f64) -> f64 {
+        let mut y = x / 3f64.sqrt();
+        for (c, xl, yl) in self.shelves.iter_mut() {
+            let out = c[0] * y + c[1] * *xl - c[2] * *yl;
+            (*xl, *yl) = (y, out);
+            y = out;
+        }
+        y
+    }
 }
 
 impl EngineSource {
@@ -148,6 +194,8 @@ impl EngineSource {
             pos: 0,
             flow_last: 0.0,
             mouth_radiated: 0.0,
+            at: (0.0, 0.0),
+            barrier: None,
         }
     }
 }
@@ -306,9 +354,54 @@ impl Listener {
             .map(|&x| {
                 let r = ((lx - x).powi(2) + (ly - ahead_m).powi(2) + rise * rise).sqrt();
                 let steps = ((r - r_min) / C_AMBIENT / self.dt).round().max(0.0) as usize;
-                EngineSource::at(r, steps)
+                EngineSource {
+                    at: (x, ahead_m),
+                    ..EngineSource::at(r, steps)
+                }
             })
             .collect();
+        self
+    }
+
+    /// The car's body as a screen between the engine's sources and the ear: a roof
+    /// `body_height_m` high ending at the tails, the sources `source_height_m` and the ear
+    /// `ear_height_m` above the ground. A source whose straight line to the ear passes under
+    /// the roof's rear edge is heard over that edge with [`Barrier`]'s loss; an ear ahead of the
+    /// tails or above the shadow hears it unscreened. Only the path over the roof is taken
+    /// (the sides' diffraction, which a listener far off the axis would also get, is left out).
+    pub fn with_body(
+        mut self,
+        body_height_m: f64,
+        source_height_m: f64,
+        ear_height_m: f64,
+    ) -> Self {
+        let (lx, ly, _, _) = self.ear;
+        let dt = self.dt;
+        for s in self.engine.iter_mut() {
+            let (x, a) = s.at;
+            s.barrier = None;
+            if ly >= 0.0 || a <= 0.0 {
+                continue;
+            }
+            let t = a / (a - ly);
+            let (cx, cz) = (
+                x + t * (lx - x),
+                source_height_m + t * (ear_height_m - source_height_m),
+            );
+            if cz >= body_height_m {
+                continue;
+            }
+            let d = |p: (f64, f64, f64), q: (f64, f64, f64)| {
+                ((p.0 - q.0).powi(2) + (p.1 - q.1).powi(2) + (p.2 - q.2).powi(2)).sqrt()
+            };
+            let (src, ear, edge) = (
+                (x, a, source_height_m),
+                (lx, ly, ear_height_m),
+                (cx, 0.0, body_height_m),
+            );
+            let delta = d(src, edge) + d(edge, ear) - d(src, ear);
+            s.barrier = Some(Barrier::new(delta, dt));
+        }
         self
     }
 
@@ -328,7 +421,11 @@ impl Listener {
         let n = s.line.len();
         s.line[s.pos] = p;
         s.pos = (s.pos + 1) % n;
-        s.line[s.pos]
+        let heard = s.line[s.pos];
+        match &mut s.barrier {
+            Some(b) => b.process(heard),
+            None => heard,
+        }
     }
 
     /// Distance from each tail pipe to the listener, m.
@@ -428,6 +525,48 @@ impl Listener {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_car_body_between_the_engine_and_the_ear_takes_maekawa_s_loss() {
+        // Engine 3 m ahead of the tails at 0.6 m, ear 3 m behind them at 1.6 m, roof 1.2 m: the
+        // straight line crosses the tails' plane at 1.1 m, under the roof. Over its edge:
+        // δ = √(3² + 0.6²) + √(3² + 0.4²) − √(6² + 1²) = 3.059 412 + 3.026 549 − 6.082 763
+        // = 0.003 198 m. Maekawa (ISO 9613-2, eq. 14 with C₂ = 20): D = 10·log10(3 + 20N),
+        // N = 2δf/c: at 500 Hz N = 0.009 32, D = 5.04 dB; at 8 kHz N = 0.149, D = 7.75 dB.
+        let dt = 1.0 / 96_000.0;
+        let mut l = Listener::new(1, 0.0, 3.0, 0.0, 1e-3, dt, None)
+            .with_engine_ahead(3.0)
+            .with_body(1.2, 0.6, 1.6);
+        let mut free = Listener::new(1, 0.0, 3.0, 0.0, 1e-3, dt, None).with_engine_ahead(3.0);
+        for (f, want) in [(500.0, 5.04), (8000.0, 7.75)] {
+            let (mut a, mut b) = (0.0f64, 0.0f64);
+            let n = (0.5 / dt) as usize;
+            for j in 0..n {
+                let x = (2.0 * std::f64::consts::PI * f * j as f64 * dt).sin();
+                let (ya, yb) = (l.from_engine(x), free.from_engine(x));
+                if j > n / 2 {
+                    (a, b) = (a + ya * ya, b + yb * yb);
+                }
+            }
+            let loss = 10.0 * (b / a).log10();
+            assert!(
+                (loss - want).abs() < 1.2,
+                "{f} Hz: {loss:.2} dB, Maekawa {want} dB"
+            );
+        }
+        // an ear ahead of the car's rear end, or over the roof's shadow, hears it unscreened
+        let mut over = Listener::new(1, 0.0, 3.0, 0.0, 1e-3, dt, None)
+            .with_engine_ahead(3.0)
+            .with_body(1.2, 0.6, 4.0);
+        assert_eq!(over.from_engine(1.0), free_first(dt));
+    }
+
+    fn free_first(dt: f64) -> f64 {
+        Listener::new(1, 0.0, 3.0, 0.0, 1e-3, dt, None)
+            .with_engine_ahead(3.0)
+            .from_engine(1.0)
+    }
+
     use super::*;
 
     #[test]

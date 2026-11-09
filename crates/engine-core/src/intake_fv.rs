@@ -117,7 +117,7 @@ impl AirboxDef {
             ducts: 2,
             duct_length_m: 0.40,
             duct_diameter_m: 0.09,
-            shell_thickness_m: 0.003,
+            shell_thickness_m: 0.0,
             shell_density_kg_m3: 1360.0,
             shell_area_m2: 0.5 * 0.35,
             shell_resonance_hz: 730.0,

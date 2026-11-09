@@ -3732,6 +3732,18 @@ impl Engine {
                 self.def.vehicle.engine_ahead_m,
                 &self.engine_sources_across(),
             );
+            // a bay in a car's body screens the engine from an ear behind it; the engine's
+            // sources at half the roof's height (ESTIMATE: the bay's middle)
+            let v = &self.def.vehicle;
+            let l = if v.engine_bay.is_some() && v.body_height_m > 0.0 {
+                l.with_body(
+                    v.body_height_m,
+                    0.5 * v.body_height_m,
+                    snd.listener_height_m,
+                )
+            } else {
+                l
+            };
             self.listener = Some((dt, l));
             self.bank_of = self
                 .def

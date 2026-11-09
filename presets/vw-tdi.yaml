@@ -109,6 +109,10 @@ engine:
       ducts: 1
       duct_length_m: 0.5
       duct_diameter_m: 0.065
+      shell_thickness_m: 0.0
+      shell_density_kg_m3: 1360.0
+      shell_area_m2: 0.0
+      shell_resonance_hz: 0.0
     air_cleaner:
       fitted: true
       volume_m3: 0.0
@@ -176,6 +180,8 @@ engine:
       liner_thickness_m: 0.02
       liner_resistivity: 16000.0
       liner_coverage: 0.25
+      closed_underside: false
+    body_height_m: 1.45
     shuffle_hz: 3.5
     shuffle_damping: 0.15
   turbo:
