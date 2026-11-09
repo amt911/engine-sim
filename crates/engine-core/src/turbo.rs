@@ -194,9 +194,16 @@ pub struct TurboState {
     pub boost_t_k: f64,
     /// Turbine inlet pressure, Pa: the exhaust ports' mean back pressure.
     pub turbine_inlet_pa: f64,
+    /// The gas the turbine takes, K: the exhaust's temperature at its inlet.
+    pub turbine_inlet_t_k: f64,
     pub shaft_rpm: f64,
     /// Air the blow-off valve vents, kg/s.
     pub bov_m_dot: f64,
+    /// How far the wastegate is open, 0 (shut) to 1 (fully open); 0 with no gate.
+    pub wastegate_open: f64,
+    /// How far a variable-geometry turbine's vanes are open, 0 (the small nozzle) to 1 (their
+    /// open area); 0 on a fixed turbine.
+    pub vanes_open: f64,
     /// How the turbine inlet's pressure follows the exhaust flow, dp₀₃/dṁ, Pa per kg/s: what a
     /// pulse meets there ([`crate::waveguide::TurbineJunction`]); 0 with no flow.
     pub turbine_dp_dm: f64,
@@ -412,8 +419,11 @@ impl Turbo {
             boost_pa: self.boost_pa.max(0.1 * ATM_PA),
             boost_t_k: t_b,
             turbine_inlet_pa: p03,
+            turbine_inlet_t_k: t03,
             shaft_rpm: omega * 60.0 / (2.0 * std::f64::consts::PI),
             bov_m_dot: vented,
+            wastegate_open: if d.wastegate_area_m2 > 0.0 { gate } else { 0.0 },
+            vanes_open: if d.vnt_open_area_m2 > 0.0 { gate } else { 0.0 },
             turbine_dp_dm,
             charge_tau_s,
         }
@@ -570,6 +580,46 @@ mod tests {
             s.iter()
                 .all(|x| x.boost_pa.is_finite() && x.shaft_rpm.is_finite())
         );
+    }
+
+    #[test]
+    fn the_state_tells_how_far_the_wastegate_and_the_vanes_are_open() {
+        // what the views draw: at rest both shut; holding the boost inside its band the gate is
+        // part open (neither shut nor at its full-open boost); a turbo with no gate never opens
+        // one, and its vanes open at high flow and stay shut at low flow
+        let def = TurboDef::default();
+        let mut t = Turbo::new(&def);
+        let rest = run(&mut t, 0.2, 0.0, 293.0, 0.0, false);
+        assert_eq!(rest.last().unwrap().wastegate_open, 0.0);
+        assert_eq!(rest.last().unwrap().vanes_open, 0.0);
+        let held = run(&mut t, 5.0, 0.12, 1100.0, 0.11, false);
+        let g = held.last().unwrap().wastegate_open;
+        assert!(g > 0.0 && g < 1.0, "{g}");
+        assert_eq!(
+            held.last().unwrap().vanes_open,
+            0.0,
+            "no vanes on a fixed turbine"
+        );
+        let vnt = TurboDef {
+            turbine_area_m2: 2e-4,
+            vnt_open_area_m2: 8e-4,
+            wastegate_area_m2: 0.0,
+            ..TurboDef::default()
+        };
+        let state = |m: f64| {
+            let mut t = Turbo::new(&vnt);
+            *run(&mut t, 5.0, m, 900.0, m, false).last().unwrap()
+        };
+        let (low, high) = (state(0.03), state(0.11));
+        assert_eq!(high.wastegate_open, 0.0, "no gate to open");
+        // the gas the turbine takes: the exhaust temperature it was stepped with
+        assert_eq!(high.turbine_inlet_t_k, 900.0);
+        assert!(
+            high.vanes_open > 0.0 && high.vanes_open <= 1.0,
+            "{}",
+            high.vanes_open
+        );
+        assert!(low.vanes_open < high.vanes_open);
     }
 
     #[test]

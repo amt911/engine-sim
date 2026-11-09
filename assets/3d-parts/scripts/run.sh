@@ -3,7 +3,7 @@
 # Blender runs headless inside a 6 GB memory cgroup at the lowest CPU priority.
 set -euo pipefail
 cd "$(dirname "$0")"
-parts=("$1"); [[ "$1" == all ]] && parts=(piston conrod crankshaft valvetrain wankel)
+parts=("$1"); [[ "$1" == all ]] && parts=(piston conrod crankshaft valvetrain wankel turbo)
 extra=(); [[ "${2:-}" == --render ]] && extra=(-- --render 1)
 for p in "${parts[@]}"; do
   nice -n 19 systemd-run --user --scope --quiet -p MemoryHigh=5G -p MemoryMax=6G -p MemorySwapMax=0 -- \

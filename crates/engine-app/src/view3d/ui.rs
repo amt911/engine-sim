@@ -115,6 +115,9 @@ pub struct View3dState {
     pub selected: Option<(usize, egui::Pos2)>,
     /// How far round its pipe each pipe's flow marks have run (0..1).
     phases: Vec<f32>,
+    /// The turbo's wheels' angle, rad (turning at [`crate::turbo_view::SHOWN_FRACTION`] of the
+    /// shaft, as in the 2D view).
+    turbo_wheel: f64,
     pub layers: Layers,
     pub mode: ViewMode,
     /// Whether the renderer is installed (a wgpu device exists); without it the view is 2D.
@@ -138,6 +141,7 @@ impl Default for View3dState {
             drag: None,
             selected: None,
             phases: Vec::new(),
+            turbo_wheel: 0.0,
             layers: Layers::default(),
             mode: ViewMode::ThreeD,
             available: false,
@@ -231,6 +235,23 @@ impl View3dState {
         if !self.governor.detail.realistic() {
             self.moving.retain(|i| !i.part.is_valve_train());
         }
+        // the turbo's wheels and wastegate flap (the realistic detail draws them)
+        let housing = s
+            .static_parts
+            .iter()
+            .find(|i| i.part == scene::Part::TurbineHousing)
+            .map(|i| i.model);
+        if let (true, Some(h), Some(ports), Some(t)) = (
+            self.governor.detail.realistic(),
+            housing,
+            super::parts::turbo_ports(),
+            snap.turbo,
+        ) {
+            self.turbo_wheel =
+                crate::turbo_view::advance_wheel(self.turbo_wheel, t.shaft_rpm, f64::from(dt));
+            let flap = crate::turbo_view::flap_angle_rad(t.wastegate_open) as f32;
+            scene::turbo_moving(h, &ports, self.turbo_wheel as f32, flap, &mut self.moving);
+        }
         self.phases.resize(s.pipes.len(), 0.0);
         let n_marks = if self.layers.flow && !snap.pipes.is_empty() {
             marks(self.governor.detail)
@@ -248,6 +269,20 @@ impl View3dState {
                         for i in &mut sh.instances[p.instances.clone()] {
                             i.color = c;
                         }
+                    }
+                }
+            }
+            // the turbo's sides in their gas: the turbine's exhaust, the compressor's charge
+            if let (true, Some(t)) = (self.layers.temperature, snap.turbo) {
+                for i in &mut sh.instances {
+                    match i.part {
+                        scene::Part::TurbineHousing | scene::Part::Turbine => {
+                            i.color = super::colormap::temperature(t.turbine_inlet_t_k);
+                        }
+                        scene::Part::CompressorHousing | scene::Part::Compressor => {
+                            i.color = super::colormap::temperature(t.boost_t_k);
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -928,6 +963,57 @@ mod tests {
         };
         st.fill(&snap, 1.5, 0.0);
         assert_eq!(count(&st), (0, Some((glam::Vec3::Z, 0.0))));
+    }
+
+    #[test]
+    fn the_turbo_spins_opens_its_gate_and_takes_its_gas_temperature() {
+        let def = EngineDef::honda_k20c1();
+        let mut st = View3dState::default();
+        st.governor.set_manual(Some(Detail::Medium));
+        st.sync(&def);
+        let mut sim = crate::sim::Simulation::new(def, 48_000.0, 1);
+        crate::sim::tests::render_secs(&mut sim, 0.05);
+        let mut snap = sim.snapshot();
+        let mut t = snap
+            .turbo
+            .expect("a turbo engine's snapshot carries its turbo");
+        (
+            t.shaft_rpm,
+            t.wastegate_open,
+            t.turbine_inlet_t_k,
+            t.boost_t_k,
+        ) = (120_000.0, 0.5, 1100.0, 330.0);
+        snap.turbo = Some(t);
+        st.layers.temperature = true;
+        let model = |st: &View3dState, p: scene::Part| {
+            let sh = st.shared.lock().unwrap();
+            sh.instances
+                .iter()
+                .find(|i| i.part == p)
+                .map(|i| (i.model, i.color))
+        };
+        st.fill(&snap, 1.5, 0.05);
+        let (w0, _) = model(&st, scene::Part::CompressorWheel).expect("the wheel at Medium");
+        st.fill(&snap, 1.5, 0.05);
+        let (w1, _) = model(&st, scene::Part::CompressorWheel).unwrap();
+        // 120 krpm shows as 120 rpm: 2 turns a second, 0.2π in 0.05 s
+        let turned = (w0.inverse() * w1)
+            .transform_vector3(glam::Vec3::Y)
+            .angle_between(glam::Vec3::Y);
+        assert!(
+            (turned - 0.2 * std::f32::consts::PI).abs() < 1e-3,
+            "{turned}"
+        );
+        assert!(model(&st, scene::Part::WastegateFlap).is_some());
+        // the turbine side in its exhaust's colour, the compressor's in its charge's
+        let (_, hot) = model(&st, scene::Part::TurbineHousing).unwrap();
+        let (_, cool) = model(&st, scene::Part::CompressorHousing).unwrap();
+        assert_eq!(hot, super::super::colormap::temperature(1100.0));
+        assert_eq!(cool, super::super::colormap::temperature(330.0));
+        // Low draws none of the moving parts
+        st.governor.set_manual(Some(Detail::Low));
+        st.fill(&snap, 1.5, 0.05);
+        assert!(model(&st, scene::Part::CompressorWheel).is_none());
     }
 
     #[test]

@@ -89,6 +89,11 @@ impl std::fmt::Display for PartError {
 
 /// Read a `.glb`: every mesh of its default scene merged.
 pub fn load(bytes: &[u8]) -> Result<GlbPart, PartError> {
+    load_nodes(bytes, |_| true)
+}
+
+/// Read the meshes of the nodes whose name `keep` accepts, merged.
+fn load_nodes(bytes: &[u8], keep: impl Fn(&str) -> bool) -> Result<GlbPart, PartError> {
     let file = gltf::Gltf::from_slice(bytes).map_err(PartError::Gltf)?;
     let blob = file.blob.as_deref().ok_or(PartError::NoBinary)?;
     let scene = file
@@ -102,6 +107,9 @@ pub fn load(bytes: &[u8]) -> Result<GlbPart, PartError> {
         let at = parent * Mat4::from_cols_array_2d(&node.transform().matrix());
         stack.extend(node.children().map(|c| (c, at)));
         let Some(mesh) = node.mesh() else { continue };
+        if !keep(node.name().unwrap_or("")) {
+            continue;
+        }
         // a skinned mesh ignores its node's transform (glTF 2.0 §3.7.3.3): its vertices are in
         // the model's frame at rest; its `stretch` joint carries the part's stretch weights
         let (to_model, stretch) = match node.skin() {
@@ -524,6 +532,119 @@ pub fn eccentric(e_over_r: f32) -> Option<Mesh> {
     )
 }
 
+/// The turbocharger's parts (README, `scripts/turbo.py`): drawn at `compressor_tip_diameter_m /
+/// TURBO_REF_TIP` of their size, in metres about their own origins.
+pub const TURBO_REF_TIP: f32 = 0.056;
+const TURBO_HOUSING_GLB: &[u8] =
+    include_bytes!("../../../../assets/3d-parts/out/turbo_housing.glb");
+const TURBO_CWHEEL_GLB: &[u8] =
+    include_bytes!("../../../../assets/3d-parts/out/turbo_compressor_wheel.glb");
+const TURBO_TWHEEL_GLB: &[u8] =
+    include_bytes!("../../../../assets/3d-parts/out/turbo_turbine_wheel.glb");
+const TURBO_FLAP_GLB: &[u8] =
+    include_bytes!("../../../../assets/3d-parts/out/turbo_wastegate_flap.glb");
+
+/// Where the turbo's housing meets the rest, in its frame at the reference size (glTF axes, the
+/// shaft midway between the wheels at the origin, the turbine at +X): the turbine's inlet flange
+/// (opening up), its outlet face (+X), the compressor's charge outlet (up) and its eye (-X), the
+/// wastegate flap's hinge, and each wheel's back face at ±`wheel_x`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TurboPorts {
+    pub inlet: Vec3,
+    pub outlet: Vec3,
+    pub charge: Vec3,
+    pub eye: Vec3,
+    pub hinge: Vec3,
+    pub wheel_x: f32,
+}
+
+/// The ports a `.glb` carries in a node's `engine_sim` extras (none: not a turbo housing).
+fn read_ports(bytes: &[u8]) -> Option<TurboPorts> {
+    let file = gltf::Gltf::from_slice(bytes).ok()?;
+    file.document.nodes().find_map(|n| {
+        let raw: serde_json::Value = serde_json::from_str(n.extras().as_ref()?.get()).ok()?;
+        let ex: serde_json::Value = serde_json::from_str(raw.get("engine_sim")?.as_str()?).ok()?;
+        let v = |k: &str| -> Option<Vec3> {
+            let a = ex.get(k)?.as_array()?;
+            Some(Vec3::new(
+                a.first()?.as_f64()? as f32,
+                a.get(1)?.as_f64()? as f32,
+                a.get(2)?.as_f64()? as f32,
+            ))
+        };
+        Some(TurboPorts {
+            inlet: v("inlet")?,
+            outlet: v("outlet")?,
+            charge: v("charge")?,
+            eye: v("eye")?,
+            hinge: v("hinge")?,
+            wheel_x: ex.get("wheel_x")?.as_f64()? as f32,
+        })
+    })
+}
+
+/// The turbo housing's ports, read once (none if the asset lacks them: the primitives stay).
+pub fn turbo_ports() -> Option<TurboPorts> {
+    static PORTS: std::sync::OnceLock<Option<TurboPorts>> = std::sync::OnceLock::new();
+    *PORTS.get_or_init(|| read_ports(TURBO_HOUSING_GLB))
+}
+
+/// A turbo part read once (its nodes named `node`, or all), in metres at the reference size
+/// about its own origin.
+fn turbo_part(
+    cell: &'static std::sync::OnceLock<Option<Mesh>>,
+    name: &str,
+    bytes: &[u8],
+    node: Option<&str>,
+) -> Option<Mesh> {
+    cell.get_or_init(|| {
+        let part = load_nodes(bytes, |n| node.is_none_or(|want| n == want))
+            .inspect_err(|e| eprintln!("3D view: {name} unreadable ({e}), drawing the primitive"))
+            .ok()?;
+        Some(to_unit(&part, 1.0, Vec3::ZERO, Vec3::ONE))
+    })
+    .clone()
+}
+
+/// One of the turbo's housings about the shaft's middle: the compressor's, the centre (bearing)
+/// one or the turbine's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurboHousing {
+    Compressor,
+    Centre,
+    Turbine,
+}
+
+pub fn turbo_housing(which: TurboHousing) -> Option<Mesh> {
+    static C: std::sync::OnceLock<Option<Mesh>> = std::sync::OnceLock::new();
+    static M: std::sync::OnceLock<Option<Mesh>> = std::sync::OnceLock::new();
+    static T: std::sync::OnceLock<Option<Mesh>> = std::sync::OnceLock::new();
+    let (cell, node) = match which {
+        TurboHousing::Compressor => (&C, "compressor_housing"),
+        TurboHousing::Centre => (&M, "centre_housing"),
+        TurboHousing::Turbine => (&T, "turbine_housing"),
+    };
+    turbo_part(cell, "turbo_housing.glb", TURBO_HOUSING_GLB, Some(node))
+}
+
+/// The compressor wheel about its back face's centre, the inducer towards -X.
+pub fn compressor_wheel() -> Option<Mesh> {
+    static MESH: std::sync::OnceLock<Option<Mesh>> = std::sync::OnceLock::new();
+    turbo_part(&MESH, "turbo_compressor_wheel.glb", TURBO_CWHEEL_GLB, None)
+}
+
+/// The turbine wheel about its back face's centre, the exducer towards +X.
+pub fn turbine_wheel() -> Option<Mesh> {
+    static MESH: std::sync::OnceLock<Option<Mesh>> = std::sync::OnceLock::new();
+    turbo_part(&MESH, "turbo_turbine_wheel.glb", TURBO_TWHEEL_GLB, None)
+}
+
+/// The wastegate's flap about its hinge axis (+Z).
+pub fn wastegate_flap() -> Option<Mesh> {
+    static MESH: std::sync::OnceLock<Option<Mesh>> = std::sync::OnceLock::new();
+    turbo_part(&MESH, "turbo_wastegate_flap.glb", TURBO_FLAP_GLB, None)
+}
+
 /// Into a unit frame: `p ↦ (p·k + offset) / scale`, normals `n ↦ n·scale` (normalised).
 fn to_unit(part: &GlbPart, k: f32, offset: Vec3, scale: Vec3) -> Mesh {
     Mesh {
@@ -852,6 +973,71 @@ mod tests {
         );
         // another e/R: none of them
         assert!(housing(0.16).is_none() && side_plate(0.16).is_none() && eccentric(0.16).is_none());
+    }
+
+    #[test]
+    fn the_turbo_parts_load_at_their_reference_size() {
+        // scripts/turbo.py: compressor wheel tip D = 56 mm, turbine wheel 0.95 D, each wheel's back
+        // face at the origin (inducer -X, exducer +X)
+        let radial = |m: &Mesh| {
+            m.vertices
+                .iter()
+                .map(|v| Vec3::from(v.pos))
+                .fold(0.0f32, |r, p| r.max(p.y.hypot(p.z)))
+        };
+        let c = compressor_wheel().expect("turbo_compressor_wheel.glb");
+        assert!(
+            (radial(&c) - 0.5 * TURBO_REF_TIP).abs() < 0.2e-3,
+            "{}",
+            radial(&c)
+        );
+        let t = turbine_wheel().expect("turbo_turbine_wheel.glb");
+        assert!(
+            (radial(&t) - 0.475 * TURBO_REF_TIP).abs() < 0.2e-3,
+            "{}",
+            radial(&t)
+        );
+        assert!(wastegate_flap().is_some());
+        // each housing on its own, the turbine's beyond +wheel_x, the compressor's beyond -wheel_x
+        let span_x = |m: Mesh| {
+            m.vertices.iter().fold((f32::MAX, f32::MIN), |(lo, hi), v| {
+                (lo.min(v.pos[0]), hi.max(v.pos[0]))
+            })
+        };
+        let (_, c_hi) = span_x(turbo_housing(TurboHousing::Compressor).unwrap());
+        let (t_lo, _) = span_x(turbo_housing(TurboHousing::Turbine).unwrap());
+        assert!(c_hi < 0.0 && t_lo > 0.0, "{c_hi} {t_lo}");
+        assert!(turbo_housing(TurboHousing::Centre).is_some());
+    }
+
+    #[test]
+    fn the_turbo_housing_carries_its_ports() {
+        // the extras of scripts/turbo.py, glTF axes, at the 56 mm reference: the turbine inlet and
+        // the compressor's charge outlet open upwards on their sides, the turbine outlet beyond
+        // its wheel along +X and the compressor's eye beyond its wheel along -X; the wheels' backs
+        // at ±0.75 D
+        let p = turbo_ports().expect("the housing's extras");
+        let d = TURBO_REF_TIP;
+        assert!((p.wheel_x - 0.75 * d).abs() < 1e-5, "{}", p.wheel_x);
+        assert!(p.inlet.x > 0.0 && p.inlet.y > 0.0, "{}", p.inlet);
+        assert!(p.charge.x < 0.0 && p.charge.y > 0.0, "{}", p.charge);
+        assert!(
+            (p.outlet - Vec3::new(1.6 * d, 0.0, 0.0)).length() < 1e-5,
+            "{}",
+            p.outlet
+        );
+        assert!(
+            (p.eye - Vec3::new(-1.75 * d, 0.0, 0.0)).length() < 1e-5,
+            "{}",
+            p.eye
+        );
+        assert!(
+            p.hinge.x > p.wheel_x,
+            "the flap on the turbine's outlet face: {}",
+            p.hinge
+        );
+        // an asset without them gives none, not a panic
+        assert_eq!(read_ports(PISTON_GLB), None);
     }
 
     #[test]

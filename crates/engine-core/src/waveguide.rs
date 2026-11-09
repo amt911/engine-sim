@@ -1261,26 +1261,43 @@ const INFLOW_LOSS_K: f64 = 1.0;
 /// Density of the outside air an open end draws in, kg/m³ (20 °C, 1 atm).
 const RHO_OUTSIDE: f64 = 1.204;
 
-/// Open pipe end radiating into air: reflection −r·LP(p) with a one-pole low-pass at the
-/// frequency where ka = 1 (|R| ≈ 1 below it, falling above; Levine & Schwinger 1948).
+/// Open pipe end radiating into air (Levine & Schwinger, Phys. Rev. 73, 1948): reflection
+/// R = −H(p), H(s) = 1/(1 + a₁τs + a₂τ²s²), τ = a/c, a the pipe's radius. The two
+/// coefficients carry what the exact solution says at low ka: the phase lag 2kl of the end
+/// correction l = 0.6133a (a₁ = 2·0.6133) and |R| = 1 − (ka)²/2 (|H|² = 1 − (ka)², so
+/// a₁² − 2a₂ = 1). |R| then stays within 0.3 % of Levine & Schwinger up to ka = 1 (Silva,
+/// Guillemain, Kergomard, Mallaroni & Norris, J. Sound Vib. 322, 2009, eq. 21) and is 13 % high
+/// at ka = 2, where the end already passes 85 % of the power out (0.2 dB from exact). Discretised
+/// by the bilinear transform, which keeps the low-frequency delay.
 #[derive(Debug, Clone)]
 pub struct OpenEnd {
-    r: f64,
-    k: f64,
-    lp: f64,
+    /// The biquad's coefficients (b₀, b₁, b₂, a₁, a₂, normalised) and its two states.
+    b: [f64; 3],
+    a: [f64; 2],
+    s: [f64; 2],
     /// Reflection factor of the outflow's jet, (1 − M)/(1 + M).
     jet: f64,
 }
+
+/// The end correction of an unflanged pipe over its radius at low ka (Levine & Schwinger 1948).
+const END_CORRECTION: f64 = 0.6133;
 
 impl OpenEnd {
     pub fn new(diameter_m: f64, dt: f64) -> Self {
         /// Speed of sound in the ambient air the pipe radiates into, m/s.
         const C_AIR: f64 = 343.0;
-        let fc = C_AIR / (std::f64::consts::PI * diameter_m); // ka = 1, a = d/2
+        let tau = 0.5 * diameter_m / C_AIR;
+        let a1 = 2.0 * END_CORRECTION;
+        let a2 = 0.5 * (a1 * a1 - 1.0);
+        // 1 + A·s + B·s², s = K(1 − z⁻¹)/(1 + z⁻¹), over the numerator (1 + z⁻¹)²
+        let (big_a, big_b, k) = (a1 * tau, a2 * tau * tau, 2.0 / dt);
+        let d0 = 1.0 + big_a * k + big_b * k * k;
+        let d1 = 2.0 - 2.0 * big_b * k * k;
+        let d2 = 1.0 - big_a * k + big_b * k * k;
         Self {
-            r: 0.98,
-            k: 1.0 - (-2.0 * std::f64::consts::PI * fc * dt).exp(),
-            lp: 0.0,
+            b: [1.0 / d0, 2.0 / d0, 1.0 / d0],
+            a: [d1 / d0, d2 / d0],
+            s: [0.0; 2],
             jet: 1.0,
         }
     }
@@ -1305,8 +1322,11 @@ impl OpenEnd {
     /// Thermodynamics and Gas Dynamics of Internal-Combustion Engines*, vol. 1, ch. 7). Faint
     /// waves are untouched (the loss goes as u²); a straight pipe's ±300 m/s swings are not.
     pub fn process(&mut self, arriving: f64) -> (f64, f64) {
-        self.lp += self.k * (arriving - self.lp);
-        let reflected = -self.r * self.jet * self.lp;
+        // transposed direct form II
+        let y = self.b[0] * arriving + self.s[0];
+        self.s[0] = self.b[1] * arriving - self.a[0] * y + self.s[1];
+        self.s[1] = self.b[2] * arriving - self.a[1] * y;
+        let reflected = -self.jet * y;
         let v = arriving - reflected;
         if v >= 0.0 {
             return (reflected, v);
@@ -1782,9 +1802,10 @@ mod tests {
     #[test]
     fn an_outflow_takes_sound_energy_out_of_the_open_end() {
         // A slow wave (far below ka = 1) meets the open end: without flow it comes back
-        // inverted at r = 0.98; with outflow at Mach M the jet carries off the convected energy,
-        // the reflection falling by (1 − M)/(1 + M) at low Strouhal number (Munt 1977; measured
-        // by Peters, Hirschberg et al., JFM 256, 1993): M = 0.17 → 0.98·0.83/1.17 = 0.6952.
+        // fully inverted (|R| → 1 as ka → 0, Levine & Schwinger 1948); with outflow at Mach M the
+        // jet carries off the convected energy, the reflection falling by (1 − M)/(1 + M) at low
+        // Strouhal number (Munt 1977; measured by Peters, Hirschberg et al., JFM 256, 1993):
+        // M = 0.17 → 0.83/1.17 = 0.709402.
         let dt = 1.0 / 192_000.0;
         let settle = |m: f64| {
             let mut end = OpenEnd::new(0.05, dt);
@@ -1795,10 +1816,10 @@ mod tests {
             }
             r
         };
-        assert!((settle(0.0) + 0.98).abs() < 1e-9);
-        assert!((settle(0.17) + 0.695_2).abs() < 1e-4, "{}", settle(0.17));
+        assert!((settle(0.0) + 1.0).abs() < 1e-9);
+        assert!((settle(0.17) + 0.709_402).abs() < 1e-5, "{}", settle(0.17));
         // inflow (a reversing pulse) gets no such sink here
-        assert!((settle(-0.2) + 0.98).abs() < 1e-9);
+        assert!((settle(-0.2) + 1.0).abs() < 1e-9);
     }
 
     #[test]
@@ -2292,17 +2313,17 @@ mod tests {
         // 3-1), quasi-steady at low Strouhal number (Disselhorst & van Wijngaarden, JFM 99,
         // 1980). Signals are p and ρc·u of the tail gas, ρc = 283.71 Pa·s/m (500 m/s at an
         // atmosphere), the air drawn in 1.204 kg/m³: p = −β·v², β = 1.204/283.71² = 1.4958e-5.
-        // A settled −10 kPa wave: the linear end gives v = 1.98·a = −19 800; with the loss,
-        // β·v² − v − 19 800 = 0 → v = −15 980 (u = −56.3 m/s); the end's pressure is the linear
-        // end's own (1 − 0.98)·a = −200 Pa less β·v² = 3 819.7 Pa: −4 019.7 Pa.
+        // A settled −10 kPa wave: the linear end (|R| = 1 at DC) gives v = 2·a = −20 000; with
+        // the loss, β·v² − v − 20 000 = 0 → v = −16 115 (u = −56.8 m/s); the end's pressure is
+        // the linear end's own 0 Pa less β·v² = 3 884.7 Pa: −3 884.7 Pa.
         let mut e = OpenEnd::new(0.05, 1.0 / 192_000.0);
         let (mut refl, mut out) = (0.0, 0.0);
         for _ in 0..4000 {
             (refl, out) = e.process(-10_000.0);
         }
-        assert!((out + 15_980.0).abs() < 30.0, "inflow {out}");
+        assert!((out + 16_115.3).abs() < 30.0, "inflow {out}");
         assert!(
-            (-10_000.0 + refl + 4_019.7).abs() < 15.0,
+            (-10_000.0 + refl + 3_884.7).abs() < 15.0,
             "end pressure {}",
             -10_000.0 + refl
         );
@@ -2311,7 +2332,7 @@ mod tests {
         for _ in 0..4000 {
             out = e.process(10_000.0).1;
         }
-        assert!((out - 19_800.0).abs() < 1.0, "outflow {out}");
+        assert!((out - 20_000.0).abs() < 1.0, "outflow {out}");
     }
 
     #[test]
@@ -2321,11 +2342,12 @@ mod tests {
         for _ in 0..2000 {
             refl = e.process(1.0).0; // DC: fully reflected, inverted
         }
-        assert!(refl < -0.95 && refl > -1.0, "{refl}");
+        // |R| → 1 as ka → 0 (Levine & Schwinger 1948): no loss but the radiation's, none at DC
+        assert!((refl + 1.0).abs() < 1e-9, "{refl}");
         // The source handed to the radiation stage is the outflow volume velocity (× ρc),
-        // p⁺ − p_reflected: (1 + r)·p at DC. A far-field monopole is d/dt of it (voice).
+        // p⁺ − p_reflected: 2p at DC. A far-field monopole is d/dt of it (voice).
         let out = e.process(1.0).1;
-        assert!((1.95..=2.0).contains(&out), "{out}");
+        assert!((out - 2.0).abs() < 1e-9, "{out}");
     }
 
     #[test]
@@ -2337,5 +2359,173 @@ mod tests {
             p.send(if n == 0 { 1.0 } else { 0.0 }, 0.0);
         }
         assert_relative_eq!(got, 0.98, max_relative = 1e-9);
+    }
+
+    /// Steady-sine reflection of an [`OpenEnd`]: a unit sine of `f` Hz at fs = 48 kHz (integer Hz and
+    /// a 1 s window, so the projection has no leakage) through `process`. Returns the complex
+    /// R = reflected / arriving at the end's face (`re`, `im`), after a 0.1 s settling time.
+    fn open_end_response(a_m: f64, f: f64) -> (f64, f64) {
+        let fs = 48_000.0;
+        let mut e = OpenEnd::new(2.0 * a_m, 1.0 / fs);
+        let w = 2.0 * std::f64::consts::PI * f / fs;
+        let (mut ci, mut cq, mut ri, mut rq) = (0.0, 0.0, 0.0, 0.0);
+        for n in 0..(4_800 + 48_000) {
+            let x = (w * n as f64).sin();
+            let (refl, _) = e.process(x);
+            if n >= 4_800 {
+                let m = (n - 4_800) as f64;
+                let (s, c) = (w * (m + 4_800.0)).sin_cos();
+                ci += x * s;
+                cq += x * c;
+                ri += refl * s;
+                rq += refl * c;
+            }
+        }
+        // complex amplitudes A = (Σ x sin + i Σ x cos): R = Ref / A
+        let (a_re, a_im) = (ci, cq);
+        let (b_re, b_im) = (ri, rq);
+        let d = a_re * a_re + a_im * a_im;
+        (
+            (b_re * a_re + b_im * a_im) / d,
+            (b_im * a_re - b_re * a_im) / d,
+        )
+    }
+
+    /// |R| of an unflanged pipe, Silva, Guillemain, Kergomard, Mallaroni & Norris, "Approximation
+    /// formulae for the acoustic radiation impedance of a cylindrical pipe", J. Sound Vib. 322 (2009)
+    /// 255-263 (arXiv:0811.3625), Eq. (21) with Table 1: |R| = (1 + a1 x)/(1 + (β + a1) x + a2 x² +
+    /// a3 x³), x = (ka)², β = 1/2, a1 = 0.800, a2 = 0.266, a3 = 0.0263. It is a fit to the Levine &
+    /// Schwinger (1948) exact values, error < 2 % for ka < 3 (the paper's statement). Coefficients
+    /// read from the paper's HTML version (ar5iv) via a summarizing fetch, not from the PDF.
+    fn levine_schwinger_modulus(ka: f64) -> f64 {
+        let x = ka * ka;
+        (1.0 + 0.800 * x) / (1.0 + 1.300 * x + 0.266 * x * x + 0.0263 * x * x * x)
+    }
+
+    /// Open-end |R| at ka = 2π f a / c (c = 343 m/s, a = 21 mm) against Levine-Schwinger. Tolerance
+    /// 2 %: the reference fit's own error bound (a smaller one would test the fit, not the code).
+    fn open_end_modulus_at(f_hz: f64) {
+        let a = 0.021;
+        let ka = 2.0 * std::f64::consts::PI * f_hz * a / 343.0;
+        let (re, im) = open_end_response(a, f_hz);
+        let got = (re * re + im * im).sqrt();
+        assert_relative_eq!(got, levine_schwinger_modulus(ka), max_relative = 0.02);
+    }
+
+    #[test]
+    fn open_end_modulus_matches_levine_schwinger_at_ka_1() {
+        // f = 2599 Hz -> ka = 0.99995; hand value of the fit at ka = 1: 1.8/2.5923 = 0.6944.
+        open_end_modulus_at(2599.0);
+    }
+
+    #[test]
+    fn open_end_modulus_matches_levine_schwinger_at_ka_half() {
+        // f = 1300 Hz -> ka = 0.5001; fit: 1.2/1.34204 = 0.8942 (and 1 - ka²/2 = 0.875 at 2nd order).
+        open_end_modulus_at(1300.0);
+    }
+
+    #[test]
+    fn open_end_modulus_matches_levine_schwinger_at_ka_quarter() {
+        // f = 650 Hz -> ka = 0.250; fit: 1.05/1.08230 = 0.9702.
+        open_end_modulus_at(650.0);
+    }
+
+    #[test]
+    #[ignore = "finding: the two-pole open end gives |R| = 0.392 at ka = 2, Levine-Schwinger 0.346 (+13 %; it was +29 %), see docs/physics-validation.md"]
+    fn open_end_modulus_matches_levine_schwinger_at_ka_2() {
+        // f = 5198 Hz -> ka = 2.0; fit: 4.2/12.139 = 0.3460.
+        open_end_modulus_at(5198.0);
+    }
+
+    #[test]
+    fn open_end_end_correction_is_0_6133_a_at_low_ka() {
+        // R = -|R| e^{-2ikl}: at ka << 1 the reflected wave lags by 2kl, l = 0.6133 a (Levine &
+        // Schwinger 1948; Silva et al. 2009 §3.1, η = 0.6133; their fit gives l/a = 0.6122 at ka = 0.1).
+        // f = 160 Hz -> ka = 0.0616. The code's reflection is -H(p), so 2kl = -arg H.
+        // Tolerance 2 %, the fit's own error bound.
+        let a = 0.021;
+        let f = 160.0;
+        let k = 2.0 * std::f64::consts::PI * f / 343.0;
+        let (re, im) = open_end_response(a, f);
+        // R / (-1) = |R| e^{-2ikl}  ->  phase = atan2(-im, -re) = -2kl
+        let phase = (-im).atan2(-re);
+        let l = -phase / (2.0 * k);
+        assert_relative_eq!(l / a, 0.6133, max_relative = 0.02);
+    }
+
+    #[test]
+    fn kirchhoff_wall_attenuation_at_1_khz_in_600_k_air() {
+        // Kirchhoff's plane-wave wavenumber in a duct, Tiikoja, Auriemma & Lavrentjev, SAE 2016-01-1816
+        // (preprint arXiv:1812.11063) Eq. (6): k = ω/c0·[1 + (1−i)/(√2 s)·(1 + (γ−1)/√Pr) ...], shear
+        // wavenumber s = a√(ρ0 ω/μ), α = −Im k. Hand evaluation (the closed form worked on paper, the
+        // number below is literal): Im k·c0/ω = 1/(√2 s) (1 + (γ−1)/√Pr), so
+        //   α = √(ω ν/2)/(a c0) · (1 + (γ−1)/√Pr).
+        // Air at 1 atm, 600 K = 326.85 °C, linear interpolation of Çengel & Ghajar, *Heat and Mass
+        // Transfer*, Table A-15 (rows 300 and 350 °C; the PDF of the appendix at
+        // me.psu.edu/cimbala/me405/Links/Table_A_9_CC_Properties_of_Air.pdf): μ = 3.0237e-5 Pa·s,
+        // ρ = 0.58927 kg/m³ (ν = μ/ρ = 5.1312e-5 m²/s), Pr = 0.6936; γ = 1.4, c0 = √(1.4·287·600) =
+        // 491.00 m/s, a = 21 mm, f = 1 kHz:
+        //   ω ν/2 = π·1000·5.1312e-5 = 0.161200, √ = 0.401497; 1 + 0.4/√0.6936 = 1.48029;
+        //   α = 0.401497·1.48029/(0.021·491.00) = 0.0576 Np/m (0.057641).
+        // Tolerance 2 %: table interpolation (~1 % in ν, α ∝ √ν) and Sutherland-vs-table viscosity;
+        // the code's Pr = 0.71 differs by 0.4 % in the thermal factor.
+        let c = (1.4_f64 * 287.0 * 600.0).sqrt();
+        let alpha = kirchhoff_alpha(1000.0, 0.021, c);
+        assert_relative_eq!(alpha, 0.057641, max_relative = 0.02);
+    }
+
+    fn wall_extra_loss_at(f: f64, expected: f64) {
+        // The same Kirchhoff α, scaled: α ∝ √f (closed form), α(1 kHz) = 0.057641 Np/m (hand value above),
+        // so α(200 Hz) = 0.057641·√0.2 = 0.025778 and α(4 kHz) = 0.115282. The pipe's flat loss stands for
+        // 200 Hz, the wall filter adds the rest: over L = 3 m the extra one-way attenuation is
+        //   1 kHz: 3·(0.057641 − 0.025778) = 0.09559 Np;  4 kHz: 3·(0.115282 − 0.025778) = 0.26851 Np.
+        // (Two tests, 1 kHz and 4 kHz, share this body.) Measured as −ln of the far-end peak of a steady sine (c = 491 m/s, d = 42 mm, 192 kHz so the
+        // peak read is within 0.2 %) relative to 100 Hz (below the filter). Tolerance 10 % of the extra
+        // loss: the filter is a four-shelf fit of the √f curve, with no stated residual to cite.
+        let dt = 1.0 / 192_000.0;
+        let make = || Duct::new(vec![Pipe::new(3.0, 0.042, 491.0, dt, 0.0).viscothermal()]);
+        let t_ref = transmission(make(), 100.0, dt);
+        assert!((t_ref - 1.0).abs() < 0.01, "100 Hz reference {t_ref}");
+        let extra = -(transmission(make(), f, dt) / t_ref).ln();
+        assert_relative_eq!(extra, expected, max_relative = 0.10);
+    }
+
+    #[test]
+    fn viscothermal_pipe_follows_the_square_root_law_at_4_khz() {
+        wall_extra_loss_at(4000.0, 0.26851);
+    }
+
+    #[test]
+    #[ignore = "finding: the wall filter's extra loss at 1 kHz is 11 % below Kirchhoff (0.0851 vs 0.0956 Np over 3 m), see docs/physics-validation.md"]
+    fn viscothermal_pipe_follows_the_square_root_law_at_1_khz() {
+        wall_extra_loss_at(1000.0, 0.09559);
+    }
+
+    #[test]
+    fn a_junction_splits_a_small_wave_by_the_area_rule() {
+        // Plane waves at a junction of ducts of areas A_i (continuity of pressure and of volume
+        // velocity; Kinsler, Frey, Coppens & Sanders, *Fundamentals of Acoustics*, 4th ed., the
+        // area-change and branch-junction pressure coefficients, and Munjal, *Acoustics of Ducts
+        // and Mufflers*, ch. 1): wave p in duct 1 → p_J = 2A₁p/ΣA, reflected R = p_J/p − 1.
+        // Worked by hand: T-junction of three equal ducts: R = 2/3 − 1 = −1/3, T = +2/3 in each
+        // branch. Area step A₂ = 3A₁: p_J = 2/4 = ½, R = −½, T = ½. Large side branch
+        // (A₂ = 99A₁): R = 2/100 − 1 = −0.98. Contraction A₂ = A₁/3: p_J = 2/(4/3) = 1.5, R = +½.
+        // Exact arithmetic: tolerance 1e-12.
+        let cases: [(&[f64], f64, f64); 4] = [
+            (&[1.0, 1.0, 1.0], -1.0 / 3.0, 2.0 / 3.0),
+            (&[1.0, 3.0], -0.5, 0.5),
+            (&[1.0, 99.0], -0.98, 0.02),
+            (&[3.0, 1.0], 0.5, 1.5),
+        ];
+        for (areas, r, t) in cases {
+            let mut incoming = vec![0.0; areas.len()];
+            incoming[0] = 1.0;
+            let mut out = vec![0.0; areas.len()];
+            junction(areas, &incoming, &mut out);
+            assert_relative_eq!(out[0], r, epsilon = 1e-12);
+            for o in &out[1..] {
+                assert_relative_eq!(*o, t, epsilon = 1e-12);
+            }
+        }
     }
 }

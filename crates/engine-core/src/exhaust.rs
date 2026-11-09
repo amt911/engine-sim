@@ -2360,9 +2360,10 @@ mod tests {
     fn duct_flow_off_is_the_old_net() {
         // captured on the code before the duct flow noise (commit 2a93c48), with the noise off;
         // re-captured when the open end began drawing air in through a Borda loss (its pulses
-        // stop for 4/5 of each cycle and the tail breathes in): the duct noise still adds nothing
+        // stop for 4/5 of each cycle and the tail breathes in) and took Levine & Schwinger's end
+        // correction (2026-11-08): the duct noise still adds nothing
         let h = bits_hash(&pulsed_inline4(|n| n.set_duct_flow(0.0)));
-        assert_eq!(h, 0x1ec6_e706_ec56_b867, "hash {h:#x}");
+        assert_eq!(h, 0xe303_a51b_71df_aec2, "hash {h:#x}");
     }
 
     /// Mean square of `x` between `lo` and `hi` Hz, from Goertzel bins every 50 Hz.

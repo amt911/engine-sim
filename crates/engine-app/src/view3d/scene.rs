@@ -56,6 +56,15 @@ pub enum Part {
     Compressor,
     Intercooler,
     Charge,
+    /// The realistic turbo (`assets/3d-parts/scripts/turbo.py`): its housings, drawn at the
+    /// realistic detail instead of the plain drums of [`Part::Turbine`] and [`Part::Compressor`],
+    /// and its moving parts, posed each frame ([`turbo_moving`]).
+    TurbineHousing,
+    CompressorHousing,
+    CentreHousing,
+    CompressorWheel,
+    TurbineWheel,
+    WastegateFlap,
 }
 
 impl Part {
@@ -102,6 +111,13 @@ impl Part {
             Part::IntakeCam => MeshKind::IntakeCam,
             Part::ExhaustCam => MeshKind::ExhaustCam,
             Part::RodEye => MeshKind::RodEye,
+            Part::Turbine | Part::Compressor => MeshKind::TurboDrum,
+            Part::TurbineHousing => MeshKind::TurbineHousing,
+            Part::CompressorHousing => MeshKind::CompressorHousing,
+            Part::CentreHousing => MeshKind::CentreHousing,
+            Part::CompressorWheel => MeshKind::CompressorWheel,
+            Part::TurbineWheel => MeshKind::TurbineWheel,
+            Part::WastegateFlap => MeshKind::WastegateFlap,
             _ => MeshKind::Cylinder,
         }
     }
@@ -131,10 +147,17 @@ pub enum MeshKind {
     ApexSeal,
     Eccentric,
     Plug,
+    TurboDrum,
+    TurbineHousing,
+    CompressorHousing,
+    CentreHousing,
+    CompressorWheel,
+    TurbineWheel,
+    WastegateFlap,
 }
 
 impl MeshKind {
-    pub const ALL: [MeshKind; 22] = [
+    pub const ALL: [MeshKind; 29] = [
         MeshKind::Cylinder,
         MeshKind::Cuboid,
         MeshKind::Housing,
@@ -157,6 +180,13 @@ impl MeshKind {
         MeshKind::ApexSeal,
         MeshKind::Eccentric,
         MeshKind::Plug,
+        MeshKind::TurboDrum,
+        MeshKind::TurbineHousing,
+        MeshKind::CompressorHousing,
+        MeshKind::CentreHousing,
+        MeshKind::CompressorWheel,
+        MeshKind::TurbineWheel,
+        MeshKind::WastegateFlap,
     ];
 }
 
@@ -465,6 +495,35 @@ fn enclosing(parts: &[Instance]) -> (Vec3, f32) {
 
 /// The moving parts for the cylinders' current state, written into `out` (cleared first; it
 /// keeps its capacity, so a steady frame allocates nothing).
+/// The turbo's moving parts for its housing placed at `housing` (`ducts::turbo`): both wheels on
+/// the shaft turned `wheel_angle` rad about +x, and the wastegate flap opened `flap_rad` about its
+/// hinge (+z), out of the turbine's outlet face. Drawn at the realistic detail only.
+pub fn turbo_moving(
+    housing: Mat4,
+    ports: &super::parts::TurboPorts,
+    wheel_angle: f32,
+    flap_rad: f32,
+    out: &mut Vec<Instance>,
+) {
+    let spin = Mat4::from_rotation_x(wheel_angle);
+    let at = |p: Vec3| housing * Mat4::from_translation(p);
+    out.push(Instance {
+        part: Part::CompressorWheel,
+        model: at(Vec3::new(-ports.wheel_x, 0.0, 0.0)) * spin,
+        color: [0.80, 0.81, 0.84, 1.0],
+    });
+    out.push(Instance {
+        part: Part::TurbineWheel,
+        model: at(Vec3::new(ports.wheel_x, 0.0, 0.0)) * spin,
+        color: [0.55, 0.50, 0.45, 1.0],
+    });
+    out.push(Instance {
+        part: Part::WastegateFlap,
+        model: at(ports.hinge) * Mat4::from_rotation_z(flap_rad),
+        color: [0.40, 0.40, 0.42, 1.0],
+    });
+}
+
 pub fn moving(def: &EngineDef, cylinders: &[CylinderView], out: &mut Vec<Instance>) {
     out.clear();
     let g = def.geometry;
@@ -960,6 +1019,36 @@ mod tests {
             let c = of(&out, Part::Rotor)[0].w_axis;
             assert!((c.y.hypot(c.z) - e).abs() < 1e-6, "{deg}: {c}");
         }
+    }
+
+    #[test]
+    fn the_turbos_wheels_turn_on_its_shaft_and_its_flap_swings_out() {
+        // a housing placed at t, at twice its size; the wheels a quarter turn round, the flap 0.3
+        // rad open
+        let ports = super::super::parts::turbo_ports().unwrap();
+        let t = Vec3::new(1.0, 2.0, 3.0);
+        let housing = Mat4::from_scale_rotation_translation(Vec3::splat(2.0), Quat::IDENTITY, t);
+        let mut out = Vec::new();
+        turbo_moving(housing, &ports, std::f32::consts::FRAC_PI_2, 0.3, &mut out);
+        let model = |p: Part| out.iter().find(|i| i.part == p).unwrap().model;
+        // a quarter turn about +x takes a blade tip at +y to +z, on each wheel's back face
+        let tip = Vec3::new(0.0, 0.028, 0.0);
+        let want = |x: f32| t + 2.0 * Vec3::new(x, 0.0, 0.028);
+        assert!(
+            (model(Part::CompressorWheel).transform_point3(tip) - want(-ports.wheel_x)).length()
+                < 1e-5
+        );
+        assert!(
+            (model(Part::TurbineWheel).transform_point3(tip) - want(ports.wheel_x)).length() < 1e-5
+        );
+        // the flap hangs from its hinge (its disc 0.0092 m under it at the reference): opened
+        // about +z by 0.3 rad it comes out along +x by 0.0092·sin 0.3
+        let disc = Vec3::new(0.0, -0.0092, 0.0);
+        let at = model(Part::WastegateFlap).transform_point3(disc);
+        let hinge = t + 2.0 * ports.hinge;
+        let expect = hinge + 2.0 * Vec3::new(0.0092 * 0.3f32.sin(), -0.0092 * 0.3f32.cos(), 0.0);
+        assert!((at - expect).length() < 1e-5, "{at} vs {expect}");
+        assert_eq!(out.len(), 3);
     }
 
     #[test]

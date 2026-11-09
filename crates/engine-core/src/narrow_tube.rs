@@ -147,4 +147,19 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn the_test_bessel_ratio_matches_tabulated_values() {
+        // The exact F(z) = 2J₁(z)/(zJ₀(z)) used above, at real z against Bessel tables: Schaum's
+        // Outline of Analog and Digital Communications, Appendix B, Table B-1 (3 decimals; the
+        // same values as Abramowitz & Stegun Table 9.1): J₀(1) = 0.765, J₁(1) = 0.440,
+        // J₀(2) = 0.224, J₁(2) = 0.577. Hand: F(1) = 2·0.440/(1·0.765) = 1.150, F(2) =
+        // 2·0.577/(2·0.224) = 2.576. Tolerance 0.5 %: three-decimal rounding of both Bessel values
+        // is ±0.0005/0.22 = 0.23 % each at worst. (Real arguments only: no complex table found.)
+        let f1 = f_zk((1.0, 0.0));
+        let f2 = f_zk((2.0, 0.0));
+        assert!(f1.1.abs() < 1e-12 && f2.1.abs() < 1e-12);
+        assert!((f1.0 / 1.150 - 1.0).abs() < 0.005, "F(1) = {}", f1.0);
+        assert!((f2.0 / 2.576 - 1.0).abs() < 0.005, "F(2) = {}", f2.0);
+    }
 }

@@ -18,6 +18,11 @@
   `engine-audio/src/device.rs` (needs a real sound card; covered by the smoke),
   `engine-app/src/view3d/render.rs` (wgpu pipelines and passes: need a GPU device; checked by
   the `render_3d_screens` off-screen renders, the `bench_3d_frame` bench and the smoke).
+  **Run under nextest's `coverage` profile** (`.config/nextest.toml`): it skips the 28
+  whole-engine simulations that take ≥ 35 s in a normal run, ~15× more instrumented. With them
+  the gate took 3–4 h; without them 10 min, 92.6 % lines against 94.4 % (2026-11-09) — the drop
+  sits in `engine-app` (`dyno.rs`, `sim.rs`, `offline.rs`); every `engine-core` file stays
+  ≥ 90 %. Those tests still run in every `cargo test --workspace`.
 - **Mutation:** `cargo mutants -p engine-core` inside the cgroup (`scripts/heavy.sh`).
 
 ### Run before declaring done

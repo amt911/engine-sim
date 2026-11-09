@@ -142,7 +142,15 @@ pub fn card(def: &EngineDef, scene: &Scene, parts: &[Instance], index: usize) ->
                 ]
             }),
         ),
-        Part::Turbine | Part::Compressor | Part::Intercooler => (
+        Part::Turbine
+        | Part::Compressor
+        | Part::Intercooler
+        | Part::TurbineHousing
+        | Part::CompressorHousing
+        | Part::CentreHousing
+        | Part::CompressorWheel
+        | Part::TurbineWheel
+        | Part::WastegateFlap => (
             "Turbocharger",
             def.turbo.as_ref().map_or(Vec::new(), |t| {
                 vec![
