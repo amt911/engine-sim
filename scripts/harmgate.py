@@ -12,7 +12,10 @@ Per real recording, each tracked instant (its .trk line, with a firing-line prom
 PROM_DB) gives one NREV-revolution window, resampled to crank angle along the tracked rpm:
 - bright: energy 500 Hz-4 kHz over 150-500 Hz, dB (below 150 Hz a recording carries wind);
 - centroid: the 150 Hz-8 kHz spectral centroid, log-frequency weighted, Hz;
-- harmonics: how many firing orders F..10F (F = cylinders / 2) stand within 20 dB of the strongest.
+- harmonics: how many firing orders F..10F (F = cylinders / 2) stand within 20 dB of the strongest;
+- treble: energy 2-8 kHz over 150-500 Hz, dB (a muffled top end hides in "bright" behind 1-2 kHz);
+- firing: the firing order's own level over the 150 Hz-8 kHz total, dB (the tone the ear follows;
+  a build whose firing tone sank 10 dB at 8000-8500 rpm still passed the other four, 2026-11-09).
 Single firing harmonics are not judged: each swings +-20 dB from one 500 rpm bin to the next with
 the pipes' resonances, in the approved build too (measured 2026-11-09).
 Medians per recording per rpm bin (BIN_RPM wide, at least MIN_WINDOWS windows); the recordings'
@@ -43,10 +46,10 @@ rg = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rg)
 
 PROM_DB, BIN_RPM, MIN_WINDOWS = 6.0, 500, 3
-TOL = [3.0, 0.0, 1.0]  # beyond the real envelope: dB, Hz (the envelope is wide already), harmonics
+TOL = [3.0, 0.0, 1.0, 3.0, 3.0]  # beyond the real envelope: dB, Hz (the envelope is wide already), harmonics
 MIN_RECORDINGS = 2  # one recording is no envelope: its microphone alone sets it
 MAX_RPM = 9000  # a held render above it sits on the LFA's limiter
-NAMES = ["bright dB", "centroid Hz", "harmonics"]
+NAMES = ["bright dB", "centroid Hz", "harmonics", "treble dB", "firing dB"]
 
 
 def measure_window(X, rpm, firing):
@@ -59,7 +62,9 @@ def measure_window(X, rpm, firing):
     cen = 2 ** (np.sum(X[k] * np.log2(hz[k])) / X[k].sum())
     o = np.array([X[m * rg.NREV - 1:m * rg.NREV + 2].sum() for m in range(firing, 10 * firing + 1, firing)])
     rich = float((10 * np.log10(o / o.max() + 1e-30) > -20).sum())
-    return np.array([10 * np.log10(hi / lo + 1e-30), cen, rich])
+    tre = X[(hz >= 2000) & (hz < 8000)].sum()
+    return np.array([10 * np.log10(hi / lo + 1e-30), cen, rich, 10 * np.log10(tre / lo + 1e-30),
+                     10 * np.log10(o[0] / X[k].sum() + 1e-30)])
 
 
 def real_bins(rec, firing):
