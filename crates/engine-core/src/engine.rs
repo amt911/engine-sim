@@ -354,6 +354,7 @@ impl EngineDef {
                     ducts: 1,
                     duct_length_m: 0.5,
                     duct_diameter_m: 0.065,
+                    ..crate::intake_fv::AirboxDef::default()
                 }),
                 ..IntakeDef::default()
             },
@@ -2348,6 +2349,10 @@ pub struct Engine {
     bay: Vec<crate::engine_bay::BayFilter>,
     /// The texture layers' signal this step, in the tails' units, before it is radiated.
     texture_signal: f64,
+    /// The surge tank's wall ([`crate::intake_fv::AirboxDef`]'s shell), built when the tank
+    /// has one, and the volume velocity it pushed into the air this step, m³/s.
+    airbox_shell: Option<crate::exhaust::Shell>,
+    airbox_shell_flow: f64,
     /// The turbulent jet at each tail pipe.
     jets: Vec<JetNoise>,
     /// Each exhaust valve's jet ([`crate::jet_noise::ValveJet`]).
@@ -2647,6 +2652,8 @@ impl Engine {
             structure_out: 0.0,
             bay: Vec::new(),
             texture_signal: 0.0,
+            airbox_shell: None,
+            airbox_shell_flow: 0.0,
             jets: Vec::new(),
             valve_jets: Vec::new(),
             tail_groups: Vec::new(),
@@ -3852,8 +3859,28 @@ impl Engine {
             }
             None => heard,
         };
+        // the surge tank's wall, shaken by the pressure inside, adds the volume velocity it
+        // pushes into the air (it does not load the gas: break-out is a small share of it)
+        self.airbox_shell_flow = match (&self.def.intake.airbox, &self.intake_net) {
+            (Some(b), Some(net)) if b.shell_thickness_m > 0.0 && b.shell_area_m2 > 0.0 => {
+                let wall = self.airbox_shell.get_or_insert_with(|| {
+                    crate::exhaust::Shell::new(
+                        b.shell_thickness_m,
+                        b.shell_density_kg_m3,
+                        b.shell_area_m2,
+                        b.shell_resonance_hz,
+                        // ρc of the air in the tank (300 K, as AIR_DENSITY)
+                        AIR_DENSITY * (crate::gas::GAMMA * crate::gas::R_AIR * 300.0).sqrt(),
+                    )
+                });
+                net.airbox_pressure()
+                    .map_or(0.0, |p| wall.step(p - crate::units::ATM_PA, dt))
+            }
+            _ => 0.0,
+        };
         let snd = &self.def.sound;
-        let intake_flow = -snd.intake * heard / AIR_DENSITY;
+        // (kept as before plus the wall's: an engine without one stays bit for bit the same)
+        let intake_flow = -snd.intake * heard / AIR_DENSITY + snd.intake * self.airbox_shell_flow;
         self.texture_signal = intake_flow;
         // each tail's jet: its exit velocity u = (ρc·u)/ρc, its own distance to the listener
         // Exit velocity at each tail: the mean is mass continuity, ṁ/(ρA), with ṁ the exhaust
@@ -10819,6 +10846,61 @@ mod probe {
             .map(|(a, b)| format!("{:6.1}", 10.0 * (a / b).log10()))
             .collect();
         println!("  tails/flows  {}", tf.join(" "));
+    }
+
+    #[test]
+    fn a_surge_tank_wall_below_its_resonance_moves_by_its_stiffness_and_is_heard() {
+        // A wall far stiffer than the firing range (first resonance 5 kHz) follows the tank's
+        // pressure by its stiffness: x = p/k, so its volume velocity is Q = S·(dp/dt)/k with
+        // k = (2π·f₀)²·m per unit area (Kinsler et al., *Fundamentals of Acoustics*, 4th ed.,
+        // §6.4, the stiffness-controlled region). 3 mm of glass-filled nylon (1360 kg/m³) over
+        // 0.175 m²: m = 4.08 kg/m², k = 4.03e9 Pa/m. The wall does not load the gas, so the
+        // intake's source is the run without it plus the wall's flow, step for step.
+        let mut d = EngineDef::lfa_v10();
+        let mut b = crate::intake_fv::AirboxDef::lfa_v10_estimate();
+        let mut walled = b.clone();
+        (walled.shell_thickness_m, walled.shell_density_kg_m3) = (0.003, 1360.0);
+        (walled.shell_area_m2, walled.shell_resonance_hz) = (0.175, 5000.0);
+        b.shell_thickness_m = 0.0;
+        d.intake.airbox = Some(b);
+        let mut w = d.clone();
+        w.intake.airbox = Some(walled);
+        let (rpm, dt) = (6000.0, 1.0 / 48_000.0);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(rpm),
+            ..Controls::default()
+        };
+        let (mut bare, mut wall) = (Engine::new(d, rpm, 1), Engine::new(w, rpm, 1));
+        for _ in 0..(0.5 / dt) as usize {
+            bare.step(dt, &c);
+            wall.step(dt, &c);
+        }
+        // at the firing tone (5 × 6000/60 = 500 Hz, 100 whole periods in 0.2 s)
+        let k = (2.0 * PI * 5000.0f64).powi(2) * 0.003 * 1360.0;
+        let (w0, n) = (2.0 * PI * 500.0, (0.2 / dt) as usize);
+        let (mut qz, mut pz, mut err) = ((0.0, 0.0), (0.0, 0.0), 0.0f64);
+        for j in 0..n {
+            bare.step(dt, &c);
+            wall.step(dt, &c);
+            let q = wall.airbox_shell_flow;
+            err = err.max((wall.texture_signal - bare.texture_signal - q).abs());
+            let p = wall.intake_net.as_ref().unwrap().airbox_pressure().unwrap();
+            let (cs, sn) = ((w0 * j as f64 * dt).cos(), (w0 * j as f64 * dt).sin());
+            qz = (qz.0 + q * cs, qz.1 + q * sn);
+            pz = (pz.0 + p * cs, pz.1 + p * sn);
+        }
+        let (q_amp, p_amp) = (qz.0.hypot(qz.1), pz.0.hypot(pz.1));
+        assert!(p_amp > 0.0, "the tank's pressure never moved");
+        let law = 0.175 * w0 * p_amp / k;
+        assert!(
+            (q_amp / law - 1.0).abs() < 0.1,
+            "wall {q_amp:e} against the law {law:e}"
+        );
+        assert!(
+            err < 1e-12,
+            "the wall's flow is not what the intake adds: {err}"
+        );
     }
 
     #[test]
