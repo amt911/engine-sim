@@ -158,12 +158,26 @@ engine:
           length_m: 0.1625
           diameter_m: 0.085
         tips:
-        - kind: muffler
-          length_m: 0.3
-          diameter_m: 0.245
-          tube_diameter_m: 0.0
-          packing_resistivity: 0.0
-          packing_porosity: 1.0
+        - kind: measured
+          length_m: 0.25
+          bore_m: 0.085
+          transmission_loss_db:
+          - - 50.0
+            - 8.0
+          - - 100.0
+            - 15.0
+          - - 150.0
+            - 17.5
+          - - 200.0
+            - 18.5
+          - - 300.0
+            - 20.0
+          - - 500.0
+            - 21.0
+          - - 700.0
+            - 20.5
+          - - 1000.0
+            - 19.0
         outlets:
         - - kind: pipe
             length_m: 0.13

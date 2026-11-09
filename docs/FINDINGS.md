@@ -1648,3 +1648,26 @@ source is not identified. Phone and YouTube recordings cannot judge below about 
   Open item: what damps a real spherical chamber (3D modes, the packed lower tip, the shell) and
   how to carry it in 1D. `coasting_down_from_the_redline_stays_a_sound` bounds the peak at 10×
   WOT (user's call, 2026-11-08), still three orders under the runaway it was written for.
+
+## The LFA's refit went muffled at 8000-8500 rpm: its intake cancels the firing tone (2026-11-09)
+
+- Symptom: the PR #127 build passed `realgate` (one dyno clip, 7500-9000 rpm, a summed score) and
+  the user heard it "muy tapado". Held at full throttle, its firing order's share of 150 Hz-8 kHz
+  sat 10-14 dB under every real full-throttle recording at 8000-8500 rpm.
+- Cause, one part at a time (probes on held renders): main's cams back, still dipped; main's
+  exhaust lengths back, still dipped; main's intake back (0.325 m runners, no airbox), the tone
+  returned. Intake off: the exhaust alone gives the same firing level with either intake. With
+  the airbox the intake's firing tone is close to the exhaust's and the listener, who hears
+  each from its own path, gets them out of phase over 7000-8500 rpm; with main's open trumpets
+  the intake is 16 dB over the exhaust (not an LFA with an airbox either).
+- The reactive 1D chamber the refit used for the sphere also dulled 6500-7000 rpm and boomed on
+  orders 1-2; the patent's Fig. 6 loss is back (`Segment::Measured`), held flat above its last
+  point (1 kHz) as the patent says the sphere's loss is nearly constant over a wide range
+  ([0045]). An empty-sphere modal model (`scripts/sphere_tl.py`) fitted to Fig. 6 within 2 dB
+  rms falls to 15 dB at 1 kHz and to 3-7 dB above: the real chamber is not empty, so the model
+  is not used past the figure. With the reactive chamber gone, the coast bound is 3× WOT again.
+- Real LFA recordings disagree by ~10 dB in 2-4 kHz: the dyno clip (close microphone, a room)
+  against full-throttle recordings outside at a track. The user chose the track recordings as the
+  reference (2026-11-09): `scripts/harmgate.py` (their envelope at every rpm, now also the
+  2-8 kHz treble and the firing order's own level) gates the clips; `realgate` against the dyno
+  clip is a diagnostic.

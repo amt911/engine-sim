@@ -112,6 +112,20 @@ impl Default for EngineDef {
     }
 }
 
+/// The LFA's spherical final chamber as a transmission loss, (Hz, dB): JP 2008-169751 A, Fig. 6.
+/// The figure ends at 1 kHz; the patent calls the sphere's loss nearly constant over a wide range
+/// ([0045]), and `Segment::Measured` holds the last point above it.
+const LFA_FINAL_CHAMBER_TL: [[f64; 2]; 8] = [
+    [50.0, 8.0],
+    [100.0, 15.0],
+    [150.0, 17.5],
+    [200.0, 18.5],
+    [300.0, 20.0],
+    [500.0, 21.0],
+    [700.0, 20.5],
+    [1000.0, 19.0],
+];
+
 /// Peak force of a valve striking its seat at `SEAT_FORCE_RPM`, N: an exhaust valve of a
 /// 4-cylinder petrol engine at 2500 rpm full load, 292 N in the head-coupled model validated
 /// against the running engine (Zheng et al., Appl. Sci. 10(15) 5145, 2020, Fig. 22; 412 N
@@ -1074,18 +1088,15 @@ impl EngineDef {
                             diameter_m: 0.085,
                         }],
                         // final chamber (30): a sphere of ≈ 0.30 m (ESTIMATE, the patent's Fig. 1
-                        // against the 60 mm tips) as a reactive chamber of its size. The
-                        // patent's Fig. 6 is a transmission loss, not the insertion loss the
-                        // sound sees: carried as a fixed 20 dB it took the treble too. With the
-                        // valve open the whole muffler's insertion loss here is 16/15/8/10 dB at
-                        // H1/H2/H4/H5 at 4800 rpm against the patent's measured 13/12/9/6
-                        // (Fig. 7A, solid against dashed).
-                        tips: vec![Segment::Muffler {
-                            length_m: 0.30,
-                            diameter_m: 0.245,
-                            tube_diameter_m: 0.0,
-                            packing_resistivity: 0.0,
-                            packing_porosity: 1.0,
+                        // against the 60 mm tips) carried as its published loss (JP 2008-169751 A,
+                        // Fig. 6; `LFA_FINAL_CHAMBER_TL`). A hollow reactive chamber of the
+                        // sphere's size (tried 2026-11-08) passed the low orders it does not tune
+                        // out and dulled 6500-7000 rpm below every real full-throttle recording
+                        // (`scripts/harmgate.py`, 2026-11-09; the user: "muy tapado").
+                        tips: vec![Segment::Measured {
+                            length_m: 0.25,
+                            bore_m: 0.085,
+                            transmission_loss_db: LFA_FINAL_CHAMBER_TL.to_vec(),
                         }],
                         // L₁ = 0.08 m above, L₂ = 0.23 m below (Fig. 1's proportion, ≈ 2.9·L₁;
                         // the claim: L₂ ≥ 2·L₁), 60 mm bores; the lower one packed along its
@@ -4572,6 +4583,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_lfa_final_chamber_is_the_patents_loss_held_flat_above_1_khz() {
+        // JP 2008-169751 A, Fig. 6, as read (≈ 15 dB at 100 Hz, 20-21 dB from 300 Hz to 700 Hz,
+        // 19 dB at 1 kHz); [0045]: the spherical chamber's loss is "略一定" (nearly constant)
+        // over a wide range, so the table ends at the figure's last point and `Measured` holds
+        // it above. An empty-sphere modal model fitted to the figure (`scripts/sphere_tl.py 0.15
+        // 0.025 180`) already falls to 15 dB at 1 kHz and collapses to 3-7 dB above: the real
+        // chamber is not that (2026-11-09).
+        let t = LFA_FINAL_CHAMBER_TL;
+        let at = |f: f64| t.iter().find(|p| p[0] == f).map(|p| p[1]);
+        assert_eq!(at(100.0), Some(15.0));
+        assert_eq!(at(500.0), Some(21.0));
+        assert_eq!(at(1000.0), Some(19.0));
+        let above: Vec<_> = t.iter().filter(|p| p[0] > 1000.0).collect();
+        assert!(
+            above.is_empty(),
+            "points past the patent's figure: {above:?}"
+        );
+    }
+
+    #[test]
     fn every_road_car_carries_a_catalyst_and_silencers_of_ten_swept_volumes() {
         // a road car has a catalyst and silencers totalling ten times its swept volume per
         // collector (US 3,318,412's rule of thumb, `road_exhaust`), whoever drew the car; the
@@ -6003,14 +6034,7 @@ mod tests {
         // Every engine lifted off at its redline and coasting down a quarter of it. A K20A from 8300 rpm (fuel cut, throttle closed): the tail
         // flow keeps swinging through zero and the jets' band-pass follows it every sample. As a
         // direct-form biquad it ran away at ~6860 rpm (2.3 kPa rms, 264 kPa peaks: the "rarísimo"
-        // distortion); the output must stay at the engine's own level (its peaks at full throttle).
-        // The bound is 10× (20 dB), three orders under that runaway. Not 3×: the LFA's final
-        // chamber, a lossless 1D cylinder for the patent's sphere, rings with its tips in the cold
-        // coasting gas (≈ 550 K against 1000 K at WOT; 13 m/s through the tips against 174, so no
-        // flow loss) right on firing order 2 at 7700 rpm: port to listener 21.5 dB more than at
-        // WOT for a port only 4.7 dB louder, a 5.2× peak. A physical resonance, not a runaway
-        // (the same in the FV, waveguide and linear exhausts); the real car's coast is not that
-        // loud (the dyno clip's lift-off: total and 1.25 kHz band as at WOT; FINDINGS 2026-11-08).
+        // distortion); the output must stay at the engine's own level (its peaks at full throttle)
         for d in [
             EngineDef::single(),
             EngineDef::inline4(),
@@ -6041,7 +6065,7 @@ mod tests {
                     .fold(peak, |a, v| a.max(v.abs()));
             }
             assert!(
-                peak < 10.0 * at_wot,
+                peak < 3.0 * at_wot,
                 "{}: coasting peak {peak:.1} Pa, WOT {at_wot:.1} Pa",
                 e.def.name
             );
