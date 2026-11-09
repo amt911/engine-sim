@@ -2358,9 +2358,12 @@ mod tests {
 
     #[test]
     fn duct_flow_off_is_the_old_net() {
-        // captured on the code before the duct flow noise (commit 2a93c48), with the noise off
+        // captured on the code before the duct flow noise (commit 2a93c48), with the noise off;
+        // captured again when the open end took Levine & Schwinger's end correction
+        // (fix/open-end-levine-schwinger, 2026-11-08: every open end's reflection changed on
+        // purpose, the duct noise path untouched)
         let h = bits_hash(&pulsed_inline4(|n| n.set_duct_flow(0.0)));
-        assert_eq!(h, 0xa7d3_471f_94a2_0251, "hash {h:#x}");
+        assert_eq!(h, 0x02e6_3e13_360a_6abd, "hash {h:#x}");
     }
 
     /// Mean square of `x` between `lo` and `hi` Hz, from Goertzel bins every 50 Hz.
