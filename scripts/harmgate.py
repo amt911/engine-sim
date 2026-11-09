@@ -18,14 +18,21 @@ PROM_DB) gives one NREV-revolution window, resampled to crank angle along the tr
   a build whose firing tone sank 10 dB at 8000-8500 rpm still passed the other four, 2026-11-09).
 Single firing harmonics are not judged: each swings +-20 dB from one 500 rpm bin to the next with
 the pipes' resonances, in the approved build too (measured 2026-11-09).
+- level: the total 150 Hz-8 kHz level re the source's own level at LEVEL_REF_RPM, dB (the real
+  car's level stays within ±1.2 dB from 6500 to 9000 rpm; a build whose hiss grew 10 dB there
+  sounded "fatal" and "tapado", 2026-11-09). Judged both ways: louder than every real recording
+  fails too.
 Medians per recording per rpm bin (BIN_RPM wide, at least MIN_WINDOWS windows); the recordings'
 lowest and highest medians make the real envelope (they differ in microphone and distance), used
-where at least MIN_RECORDINGS recordings cover the bin. Use full-throttle recordings from outside
+where two recordings cover the bin, or one past the last bin two cover (tolerance doubled). Use full-throttle recordings from outside
 the car: in-car films and decelerations are 10-20 dB duller (2026-11-09, LFA). A build is
 rendered held at full throttle at each bin's centre and FAILs where a measure falls more than TOL
 below the envelope's floor (muffled); above its ceiling is reported as a warning.
-Checked 2026-11-09 on the LFA: the approved main build passes, the PR #127 build the user heard
-as "tapado" fails at 6500-7000 rpm.
+Validated on the user's ear verdicts (LFA, 2026-11-09), frozen since: the approved main build
+PASSES (margins: level 1.8 dB at 8000 rpm, 2 dB at 9000; centroid only 8 Hz at 9000); the
+PR #127 build heard "muy tapado" FAILS (6500-7500 rpm dull, level 3.8-6.7 dB over); the build
+whose gears clip "suena fatal" FAILS (level 4-10.6 dB over at 5500-9000). Change it only by
+re-running that matrix and showing it still separates them.
 
 Usage:
   scripts/harmgate.py REFS.json LABEL=BIN:ENGINE.yaml [LABEL=BIN:ENGINE.yaml ...]
@@ -46,10 +53,11 @@ rg = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rg)
 
 PROM_DB, BIN_RPM, MIN_WINDOWS = 6.0, 500, 3
-TOL = [3.0, 0.0, 1.0, 3.0, 3.0]  # beyond the real envelope: dB, Hz (the envelope is wide already), harmonics
-MIN_RECORDINGS = 2  # one recording is no envelope: its microphone alone sets it
+TOL = [3.0, 0.0, 1.0, 3.0, 3.0, 3.0]  # beyond the real envelope: dB, Hz (the envelope is wide already), harmonics
+LEVEL_REF_RPM = 6500  # the level is judged against each source's own level here
+TWO_SIDED = {5}  # level: louder than every real recording fails too
 MAX_RPM = 9000  # a held render above it sits on the LFA's limiter
-NAMES = ["bright dB", "centroid Hz", "harmonics", "treble dB", "firing dB"]
+NAMES = ["bright dB", "centroid Hz", "harmonics", "treble dB", "firing dB", "level dB"]
 
 
 def measure_window(X, rpm, firing):
@@ -64,7 +72,7 @@ def measure_window(X, rpm, firing):
     rich = float((10 * np.log10(o / o.max() + 1e-30) > -20).sum())
     tre = X[(hz >= 2000) & (hz < 8000)].sum()
     return np.array([10 * np.log10(hi / lo + 1e-30), cen, rich, 10 * np.log10(tre / lo + 1e-30),
-                     10 * np.log10(o[0] / X[k].sum() + 1e-30)])
+                     10 * np.log10(o[0] / X[k].sum() + 1e-30), 10 * np.log10(X[k].sum() + 1e-30)])
 
 
 def real_bins(rec, firing):
@@ -92,7 +100,15 @@ def real_bins(rec, firing):
         X = np.abs(np.fft.rfft(y[:n] * np.hanning(n))) ** 2
         c = int(round(rpm / BIN_RPM)) * BIN_RPM
         got.setdefault(c, []).append(measure_window(X, rpm, firing))
-    return {c: np.median(v, axis=0) for c, v in got.items() if len(v) >= MIN_WINDOWS}
+    return relative_level({c: np.median(v, axis=0) for c, v in got.items() if len(v) >= MIN_WINDOWS})
+
+
+def relative_level(bins):
+    """The level measure re the source's own level at LEVEL_REF_RPM (NaN when it has none)."""
+    ref = bins[LEVEL_REF_RPM][5] if LEVEL_REF_RPM in bins else np.nan
+    for v in bins.values():
+        v[5] -= ref
+    return bins
 
 
 def build_bins(binary, engine, rpms, firing):
@@ -103,21 +119,24 @@ def build_bins(binary, engine, rpms, firing):
             x = x.mean(axis=1)
         y = rg.to_angle(x, fs, 0, lambda t: np.full_like(t, rpm))
         got[rpm] = np.median([measure_window(X, rpm, firing) for X in rg.windows(y)], axis=0)
-    return got
+    return relative_level(got)
 
 
 def envelope(refs):
     per = [real_bins(r, refs["firing_order"]) for r in refs["recordings"]]
     bins = sorted({c for p in per for c in p})
-    return {c: (np.min([p[c] for p in per if c in p], axis=0),
-                np.max([p[c] for p in per if c in p], axis=0),
+    return {c: (np.nanmin([p[c] for p in per if c in p], axis=0),
+                np.nanmax([p[c] for p in per if c in p], axis=0),
                 sum(c in p for p in per)) for c in bins}
 
 
 def main(argv):
     refs = json.load(open(argv[0]))
     env = envelope(refs)
-    rpms = [c for c in sorted(env) if c <= MAX_RPM and env[c][2] >= MIN_RECORDINGS]
+    # one recording sets no envelope on its own, except past the last bin two recordings cover:
+    # the pulls end there and the top is where a build goes wrong (2026-11-09)
+    top2 = max(c for c in env if env[c][2] >= 2)
+    rpms = [c for c in sorted(env) if c <= MAX_RPM and (env[c][2] >= 2 or c > top2)]
     print("real envelope (dB re total, floor..ceiling, recordings):")
     print(f"{'rpm':>5} " + " ".join(f"{n:>15}" for n in NAMES))
     for c in rpms:
@@ -127,16 +146,20 @@ def main(argv):
     for arg in argv[1:]:
         label, rest = arg.split("=", 1)
         binary, engine = rest.split(":", 1)
-        m = build_bins(binary, engine, rpms, refs["firing_order"])
+        m = build_bins(binary, engine, sorted(set(rpms) | {LEVEL_REF_RPM}), refs["firing_order"])
         fails, warns = [], []
         print(f"\n{label}:")
         for c in rpms:
-            lo, hi, _ = env[c]
+            lo, hi, n = env[c]
             print(f"{c:5} " + " ".join(f"{v:15.1f}" for v in m[c]))
             for i, name in enumerate(NAMES):
-                tol = TOL[i]
+                tol = TOL[i] * (2 if n < 2 else 1)
+                if np.isnan(lo[i]):
+                    continue
                 if m[c][i] < lo[i] - tol:
                     fails.append(f"{c} rpm: {name} {m[c][i]:.1f} under the real floor {lo[i]:.1f}")
+                elif m[c][i] > hi[i] + tol and i in TWO_SIDED:
+                    fails.append(f"{c} rpm: {name} {m[c][i]:.1f} over the real ceiling {hi[i]:.1f}")
                 elif m[c][i] > hi[i] + tol:
                     warns.append(f"{c} rpm: {name} {m[c][i]:.1f} over the real ceiling {hi[i]:.1f}")
         ok &= not fails
