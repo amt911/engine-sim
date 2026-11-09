@@ -955,4 +955,23 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn a_fully_open_valve_is_isentropic_pipe_flow_from_the_cylinder() {
+        // psi = 1 (and psi > 1, clamped): the throat is the pipe, no expansion loss, so the
+        // flow is isentropic from the cylinder's stagnation state (Saint-Venant, Heywood, *ICE
+        // Fundamentals* App. C): energy a²/(κ−1) + u²/2 = a_c²/(κ−1) with a = a_c·π, p = p_c·π⁷,
+        // so u/a_c = √((1 − π²)/KM), KM = (κ−1)/2 = 0.2. Pipe-side characteristic (u positive away
+        // from the valve): λ = π(1 − KM·u/a) = π − √(KM(1 − π²)). Hand values for π = 0.95
+        // (Mach 0.735, subsonic): u/a_c = √(0.0975/0.2) = 0.698212, λ = 0.95 − √0.0195 = 0.810358,
+        // p/p_c = 0.95⁷ = 0.698337. Tolerance 1e-4: closed form exact, λ is given to 6 digits (π moves
+        // by 4e-7 from that) and the root finder stops at its own tolerance.
+        let (p_c, a_c) = (2.0e5, 600.0);
+        for psi in [1.0, 2.5] {
+            let b = solve(p_c, a_c, psi, 0.810358, 500.0);
+            assert_relative_eq!(b.p / p_c, 0.698337, max_relative = 1e-4);
+            assert_relative_eq!(b.u / a_c, 0.698212, max_relative = 1e-4);
+            assert_relative_eq!(b.a / a_c, 0.95, max_relative = 1e-4);
+        }
+    }
 }
