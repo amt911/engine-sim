@@ -36,6 +36,15 @@ pub struct EngineBay {
     pub liner_thickness_m: f64,
     pub liner_resistivity: f64,
     pub liner_coverage: f64,
+    /// A floor closes the bay underneath (a flat underbody or an engine undertray): the
+    /// block's skirt and sump radiate into the bay and leave through it too. Open (false, the
+    /// default), they radiate straight out of the underside and only the head's ticking is
+    /// muffled.
+    pub closed_underside: bool,
+    /// The intake's mouth draws inside the bay (an air box under the bonnet, the usual road
+    /// car): its sound leaves through the bay's openings with the bay's loss, as the block's
+    /// does. False: a mouth out in the open air (a snorkel through the bonnet or the grille).
+    pub intake_inside: bool,
 }
 
 impl Default for EngineBay {
@@ -48,6 +57,8 @@ impl Default for EngineBay {
             liner_thickness_m: 0.02,
             liner_resistivity: crate::lining::Packing::default().flow_resistivity,
             liner_coverage: 0.25,
+            closed_underside: false,
+            intake_inside: true,
         }
     }
 }
@@ -132,6 +143,21 @@ impl BayFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_closed_underside_round_trips_and_old_files_leave_it_open() {
+        let bay = EngineBay {
+            closed_underside: true,
+            ..EngineBay::default()
+        };
+        let yaml = serde_yaml_ng::to_string(&bay).unwrap();
+        assert_eq!(serde_yaml_ng::from_str::<EngineBay>(&yaml).unwrap(), bay);
+        let json = serde_json::to_string(&bay).unwrap();
+        assert_eq!(serde_json::from_str::<EngineBay>(&json).unwrap(), bay);
+        // a file written before the field: the underside stays open
+        let old: EngineBay = serde_yaml_ng::from_str("open_fraction: 0.01\n").unwrap();
+        assert!(!old.closed_underside);
+    }
 
     #[test]
     fn a_fibre_liner_absorbs_the_highs_not_the_lows() {

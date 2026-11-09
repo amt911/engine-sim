@@ -67,6 +67,14 @@ pub struct AirboxDef {
     pub ducts: usize,
     pub duct_length_m: f64,
     pub duct_diameter_m: f64,
+    /// The tank's wall: its thickness, m (0: no wall radiates), density, kg/m³, area, m², and
+    /// first resonance, Hz (0: limp). The pressure inside shakes it and it radiates with the
+    /// duct mouths ([`crate::exhaust::Shell`], the silencer's break-out wall): the path a
+    /// surge tank tuned to sound takes (Yamaha 2009, the LFA's tank).
+    pub shell_thickness_m: f64,
+    pub shell_density_kg_m3: f64,
+    pub shell_area_m2: f64,
+    pub shell_resonance_hz: f64,
 }
 
 impl Default for AirboxDef {
@@ -76,6 +84,10 @@ impl Default for AirboxDef {
             ducts: 1,
             duct_length_m: 0.3,
             duct_diameter_m: 0.07,
+            shell_thickness_m: 0.0,
+            shell_density_kg_m3: 1360.0,
+            shell_area_m2: 0.0,
+            shell_resonance_hz: 0.0,
         }
     }
 }
@@ -93,14 +105,22 @@ impl AirboxDef {
     /// deep → ≈ 20 L (4 × the 4.8 L swept); each duct's mouth is as wide as the drawing's
     /// bank spacing over five cylinders → Ø 90 mm, ≈ 0.40 m along its curve. Helmholtz with
     /// both end corrections (L' = 0.465 m): (c/2π)√(2A/(L'V)) = 65 Hz lumped, 62 Hz as a
-    /// line. Yamaha tuned the case's walls to radiate the firing tone (250–500 Hz) — a path
-    /// this model does not have yet, which is why the preset does not use it (2026-10-29).
+    /// line. Yamaha tuned the case's walls to radiate the firing tone ("centred around 250 Hz"
+    /// at 3000 rpm, "500 Hz" at 6000; Yamaha news release, 2009-10-21): its top as the wall,
+    /// ≈ 0.5 × 0.35 m, 3 mm of glass-filled nylon (1360 kg/m³; plastic surge tanks run
+    /// 2.5–4 mm), its first mode at 730 Hz, as a plenum top's measured one (Sievewright 1998,
+    /// SAE 980273: 730 Hz; Villalva 2016: 652 Hz unribbed). ESTIMATES: Yamaha's are not
+    /// published.
     pub fn lfa_v10_estimate() -> Self {
         Self {
             volume_m3: 0.020,
             ducts: 2,
             duct_length_m: 0.40,
             duct_diameter_m: 0.09,
+            shell_thickness_m: 0.0,
+            shell_density_kg_m3: 1360.0,
+            shell_area_m2: 0.5 * 0.35,
+            shell_resonance_hz: 730.0,
         }
     }
 }
@@ -1385,6 +1405,20 @@ mod tests {
             serde_yaml_ng::from_str("model: fv\nindividual_throttles: true\n").unwrap();
         assert_eq!(old.airbox, None);
         assert_eq!(IntakeDef::default().airbox, None);
+    }
+
+    #[test]
+    fn an_airbox_wall_round_trips_and_an_old_file_has_none() {
+        let mut def = boxed(true);
+        let b = def.airbox.as_mut().unwrap();
+        (b.shell_thickness_m, b.shell_density_kg_m3) = (0.003, 1360.0);
+        (b.shell_area_m2, b.shell_resonance_hz) = (0.175, 500.0);
+        let json = serde_json::to_string(&def).unwrap();
+        assert_eq!(serde_json::from_str::<IntakeDef>(&json).unwrap(), def);
+        let yaml = serde_yaml_ng::to_string(&def).unwrap();
+        assert_eq!(serde_yaml_ng::from_str::<IntakeDef>(&yaml).unwrap(), def);
+        let old: AirboxDef = serde_yaml_ng::from_str("volume_m3: 0.02\n").unwrap();
+        assert_eq!((old.shell_thickness_m, old.shell_area_m2), (0.0, 0.0));
     }
 
     #[test]

@@ -34,12 +34,12 @@ engine:
   intake_valve:
     open_deg: 380.0
     duration_deg: 270.0
-    max_lift_m: 0.0124
+    max_lift_m: 0.01774
     diameter_m: 0.0496
   exhaust_valve:
-    open_deg: 137.0
-    duration_deg: 246.0
-    max_lift_m: 0.0103
+    open_deg: 124.0
+    duration_deg: 261.0
+    max_lift_m: 0.01474
     diameter_m: 0.0412
   intake_phaser:
     range_deg: 40.0
@@ -69,7 +69,7 @@ engine:
   idle_throttle: 0.0
   idle_rpm: 900.0
   exhaust:
-    primary_length_m: 0.8
+    primary_length_m: 0.6
     primary_diameter_m: 0.042
     collectors:
     - - 1
@@ -82,11 +82,11 @@ engine:
       - 8
       - 9
       - 10
-    collector_length_m: 0.4725
+    collector_length_m: 0.5725
     collector_diameter_m: 0.065
     collector_extra_length_m:
     - 0.0
-    - 0.07
+    - 0.03
     primary_length_deviation_m:
     - 0.016
     - -0.024
@@ -98,7 +98,7 @@ engine:
     - -0.004
     - 0.01
     - -0.026
-    tail_length_m: 1.88
+    tail_length_m: 2.06
     tail_diameter_m: 0.07
     tail_outlets: 1
     muffler_transmission: 1.0
@@ -116,7 +116,7 @@ engine:
       cells_per_in2: 400.0
       wall_m: 0.000165
     - kind: pipe
-      length_m: 1.88
+      length_m: 2.06
       diameter_m: 0.07
     merge:
       segments:
@@ -206,13 +206,21 @@ engine:
     gas_temperature: true
   intake:
     model: fv
-    runner_length_m: 0.325
+    runner_length_m: 0.24
     runner_diameter_m: 0.045
     individual_throttles: true
     trumpet_loss: 0.1
     film_fraction: 0.18
     film_tau_s: 1.0
-    airbox: null
+    airbox:
+      volume_m3: 0.02
+      ducts: 2
+      duct_length_m: 0.4
+      duct_diameter_m: 0.09
+      shell_thickness_m: 0.0
+      shell_density_kg_m3: 1360.0
+      shell_area_m2: 0.175
+      shell_resonance_hz: 730.0
     air_cleaner:
       fitted: false
       volume_m3: 0.0
@@ -281,6 +289,9 @@ engine:
       liner_thickness_m: 0.02
       liner_resistivity: 16000.0
       liner_coverage: 0.25
+      closed_underside: true
+      intake_inside: true
+    body_height_m: 1.22
     shuffle_hz: 3.5
     shuffle_damping: 0.15
   turbo: null

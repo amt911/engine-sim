@@ -1591,3 +1591,83 @@ source is not identified. Phone and YouTube recordings cannot judge below about 
   exhaust's treble modulation is 7 % (real 9.6 %).
 - On the FV exhaust the LFA's closed-valve path reads 75 dB Lin at 0.25 m at 3000 (Davies 104–110):
   its estimated chambers take too much (also its quiet idle).
+
+## Straight pipes too bright: the waveguide's valve source, not its steepening (2026-11-07)
+
+- The waveguide's steepening is right: one closed pipe driven by blowdown-sized pulses, the
+  non-linear lines match finite volumes converged at 2.5 mm cells within 1 dB in every octave to
+  16 kHz. FV at 2–4 cm cells (the engine's) loses 10–25 dB at 4–16 kHz to numerical diffusion — it
+  only *looked* like the real straight-pipe Harley. 2 cm and 4 cm agreeing is not convergence there.
+- Real straight pipes do shock: Jones & Brown (NASA TM-84061, 1981, Fig. 10) measure a weak shock
+  forming 1.12 m down a TS125's pipe from a +15 kPa pulse; inviscid MOC predicts it.
+- The fault was the amplitude: the waveguide's valve source was its mass flow at the blowdown
+  gas's stagnation temperature and an atmosphere (`exhaust_source_flow`), twice the volume the
+  compressed gas has at the valve; the characteristic boundary only set the mass flow. K20A at
+  4800 WOT stood at +316 kPa at the valve end; Heywood Fig. 6.10 (2.0 L four, WOT 4800, 200 mm
+  from the valve) measures 1.8 atm; the FV primary (same boundary) +92 kPa. The source is now
+  the boundary's volume flow u·A (u passes the contact surface unchanged): +122 kPa; overrun
+  against full power −5.8 dB radiated (FV −5.4; old −7.3). A source that stood the wave at the
+  boundary's *pressure* instead matched the peak too (+109 kPa) but carried 29 % less mean flow
+  and left overrun only 2 dB under full power.
+- Tried and reverted: friction on the pulse swing instead of the mean (≈ 1 dB, and
+  `ArrivalProbe` clones the primaries without `send`, so it broke the threaded exhaust's
+  determinism). The cross-family term ((3−γ)/4)·R⁻ of the characteristic speed is not missing in
+  effect: the closed-pipe comparison above has strong waves both ways.
+- Borda inflow (K = 1) at the open end: −9 dB HF on the straight V-twin; no effect where the tail
+  never draws in (LFA straight at 8500: mean outflow).
+
+## The sin² cam is not what starves the top end (2026-11-07)
+
+- FINDINGS 2026-10-27 proposed a measured cam profile for the K20A/LFA's missing power at speed.
+  Blair's profile fitted to measured SI cams (*Design and Simulation of Four-Stroke Engines*, 1999,
+  §1.5.5–1.5.6: cubic ramps over 40° to 20 % of the lift, cubic main lift) has the same time-area
+  as the sin² over the same seat-to-seat duration: mean lift 0.497 / 0.518 / 0.541 of the peak at
+  240° / 265° / 300°, sin² 0.500. A profile swap cannot buy 12 %.
+- Its lift above 10 % of the peak lasts 204° of a 265° duration (sin² 211°): a duration published
+  at 1 mm (Honda's habit) taken as seat-to-seat would make a cam ~40° short. Heywood's timings
+  (and so the LFA's) are at 0.15 mm lift (§6.3, Fig. 6.16): seat-to-seat, no such error there.
+
+## The LFA's coast rings its final chamber (2026-11-08)
+
+- With the refit preset (final chamber a lossless 1D cylinder 0.30 × 0.245 m standing in for the
+  patent's 0.30 m sphere, JP 2008-169751 A Fig. 1), coasting held at 7700 rpm reads 108.6 dB at
+  the listener against 90.0 at WOT; the coast peak is 5.2× the WOT peak. Not a runaway and not a
+  noise source: all `sound.*` off gives the same peak; FV, waveguide and linear exhausts all do it.
+- The excitation is sane: the exhaust port's 1.2–1.45 kHz band is only 4.7 dB over WOT (plenum
+  0.22 bar, cylinder minimum 0.17 bar). The transmission port → listener in that band is 21.5 dB
+  higher at coast (−51.2 against −72.7 dB). The coasting gas is ≈ 550 K in the tail against
+  1000 K at WOT and the tips carry 13 m/s against 174: the chamber-and-tips resonance drops onto
+  firing order 2 (1283 Hz at 7700) with no flow loss to damp it. A broadband +10…+25 dB
+  (400 Hz–8 kHz) coast-minus-WOT follows; the approved main (patent TL as `Segment::Measured`)
+  has −1…−23 dB there.
+- The real car does not: the dyno clip WJ_K9UCj1Ko's lift-off (16.75–20.5 s, 8600 → 5700 rpm)
+  has its total level and its 1.25 kHz third octave as at WOT (−9.6 / −13 dB against −9.3 /
+  −14 dB). Free revs (zICdHbITxbE): falling only 1.1 dB under rising.
+- Tried: tips 0.20 m (−4.5 dB at coast), chamber 0.40 m long at the same volume (−2.2 dB), a
+  sphere-equivalent area profile (coast 3.1× WOT, but `realgate` orders 7.70 against 5.50: FAIL).
+  Open item: what damps a real spherical chamber (3D modes, the packed lower tip, the shell) and
+  how to carry it in 1D. `coasting_down_from_the_redline_stays_a_sound` bounds the peak at 10×
+  WOT (user's call, 2026-11-08), still three orders under the runaway it was written for.
+
+## The LFA's refit went muffled at 8000-8500 rpm: its intake cancels the firing tone (2026-11-09)
+
+- Symptom: the PR #127 build passed `realgate` (one dyno clip, 7500-9000 rpm, a summed score) and
+  the user heard it "muy tapado". Held at full throttle, its firing order's share of 150 Hz-8 kHz
+  sat 10-14 dB under every real full-throttle recording at 8000-8500 rpm.
+- Cause, one part at a time (probes on held renders): main's cams back, still dipped; main's
+  exhaust lengths back, still dipped; main's intake back (0.325 m runners, no airbox), the tone
+  returned. Intake off: the exhaust alone gives the same firing level with either intake. With
+  the airbox the intake's firing tone is close to the exhaust's and the listener, who hears
+  each from its own path, gets them out of phase over 7000-8500 rpm; with main's open trumpets
+  the intake is 16 dB over the exhaust (not an LFA with an airbox either).
+- The reactive 1D chamber the refit used for the sphere also dulled 6500-7000 rpm and boomed on
+  orders 1-2; the patent's Fig. 6 loss is back (`Segment::Measured`), held flat above its last
+  point (1 kHz) as the patent says the sphere's loss is nearly constant over a wide range
+  ([0045]). An empty-sphere modal model (`scripts/sphere_tl.py`) fitted to Fig. 6 within 2 dB
+  rms falls to 15 dB at 1 kHz and to 3-7 dB above: the real chamber is not empty, so the model
+  is not used past the figure. With the reactive chamber gone, the coast bound is 3× WOT again.
+- Real LFA recordings disagree by ~10 dB in 2-4 kHz: the dyno clip (close microphone, a room)
+  against full-throttle recordings outside at a track. The user chose the track recordings as the
+  reference (2026-11-09): `scripts/harmgate.py` (their envelope at every rpm, now also the
+  2-8 kHz treble and the firing order's own level) gates the clips; `realgate` against the dyno
+  clip is a diagnostic.
