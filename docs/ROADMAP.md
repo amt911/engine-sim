@@ -4,7 +4,7 @@ The user's priority order, kept current: **every session reads it when it starts
 when a milestone lands** (with the CHANGELOG row and the tag). Everything is physics, with every
 constant cited; nothing is set by ear. Each item has its design in `docs/superpowers/specs/` and,
 once planned, its plan in `docs/superpowers/plans/`; verified facts live in `docs/FACTS.md`.
-Last updated: 2026-11-07.
+Last updated: 2026-11-09.
 
 ## Done (details in `CHANGELOG.md`)
 
@@ -12,6 +12,8 @@ Last updated: 2026-11-07.
   (single, inline-4, K20A, K20C1, LFA V10, V8s, EJ25 boxer, TDI/SDI diesels, Renesis/13B rotaries)
   — up to v0.41.
 - Turbo (v0.39.0), diesel (#88).
+- Physics formulas tested against their references (v0.56.0, `docs/physics-validation.md`);
+  open findings there: wall loss at 1 kHz (−11 %), Toro test 2, open end at ka = 2 (+13 %).
 - **3D view** (spec `2026-11-03-3d-view-design.md`), all five phases:
   - scene and camera (v0.40.0);
   - pipes (v0.42.0);
@@ -38,6 +40,8 @@ Last updated: 2026-11-07.
    - ✅ an exhaust edit rebuilds in 0.1 s on the LFA (#97);
    - ✅ v0.52.0: the edited part tinted amber while it changes (and 0.5 s after); an arrow on
      each cam for the timing (the valve's opening angle).
+   - ✅ v0.56.0: the turbo seen working in the 2D and 3D views (spec
+     `2026-11-08-turbo-views-design.md`); its cut-away layer is still to do.
 4. **Typical parts and typical sizes:** a catalogue of real components with their real
    dimensions, so an engine built from them sounds good. Examples:
    - road and race exhaust manifolds;
