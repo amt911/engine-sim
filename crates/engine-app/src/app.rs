@@ -481,11 +481,11 @@ mod tests {
             let img = h.render().expect("render");
             img.save(out.join(format!("engine-3d-{}-close.png", preset.slug())))
                 .unwrap();
+            drop(h);
             // the edit tint on the clicked piston (its bore edited), then the cam's phase arrow
             // on an intake cam, at the realistic detail
             if preset == Preset::Inline4 {
                 use crate::view3d::{handles::Field, scene::Part, ui::Tint};
-                drop(h);
                 state
                     .view3d
                     .governor
@@ -525,6 +525,45 @@ mod tests {
                         .build_ui(|ui| {
                             layout(ui, &mut state, &snap, &Ok(48_000), false);
                         });
+                    h.run();
+                    let img = h.render().expect("render");
+                    img.save(out.join(format!("engine-3d-{}-{name}.png", preset.slug())))
+                        .unwrap();
+                }
+            }
+            // the turbo close up, from the exhaust's side, at the realistic detail
+            if preset == Preset::HondaK20c1 {
+                use crate::view3d::scene::Part;
+                state
+                    .view3d
+                    .governor
+                    .set_manual(Some(crate::view3d::detail::Detail::High));
+                state.view3d.layers = Default::default();
+                state.view3d.selected = None;
+                let at = state.view3d.shared.lock().ok().and_then(|sh| {
+                    sh.instances
+                        .iter()
+                        .find(|i| i.part == Part::TurbineHousing)
+                        .map(|i| i.model.w_axis.truncate())
+                });
+                for (yaw, name) in [(0.0f32, "turbo"), (std::f32::consts::PI, "turbo-back")] {
+                    if let (Some(c), Some(p)) = (state.view3d.camera.as_mut(), at) {
+                        c.target = p;
+                        c.distance = 0.45;
+                        c.yaw += yaw;
+                    }
+                    let rs = kw::create_render_state(
+                        kw::default_wgpu_setup(),
+                        eframe::egui_wgpu::RendererOptions::PREDICTABLE,
+                    );
+                    crate::view3d::render::install(&rs);
+                    let mut h = egui_kittest::Harness::builder()
+                        .with_size(egui::vec2(1400.0, 860.0))
+                        .renderer(kw::WgpuTestRenderer::from_render_state(rs))
+                        .build_ui(|ui| {
+                            layout(ui, &mut state, &snap, &Ok(48_000), false);
+                        });
+                    h.run();
                     h.run();
                     let img = h.render().expect("render");
                     img.save(out.join(format!("engine-3d-{}-{name}.png", preset.slug())))
