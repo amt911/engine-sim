@@ -1591,3 +1591,19 @@ source is not identified. Phone and YouTube recordings cannot judge below about 
   exhaust's treble modulation is 7 % (real 9.6 %).
 - On the FV exhaust the LFA's closed-valve path reads 75 dB Lin at 0.25 m at 3000 (Davies 104–110):
   its estimated chambers take too much (also its quiet idle).
+
+## The free-field listener: heights kept, one outlet for a merged exhaust (2026-11-10)
+
+- Turning the ground image off by default (PR #135) also dropped the ear's height: `Listener`
+  took the heights only with the image. Now `Listener::with_heights` keeps the climb from the
+  tails to the ear whether or not the ground reflects. #135 was merged with two engine-core tests
+  red: `cargo test --workspace` stopped at engine-app's failure and never ran engine-core —
+  run each crate (or `--no-fail-fast`) before calling a branch green.
+- With the ground off, the Davies & Holland check (three road 4-cylinders, 107 dB(A) at 0.25 m)
+  reads ≈ 103 dB(A): the ground's image had been adding ≈ 4 dB at the 3 m listener. The test keeps
+  the ground on (its bound was set that way); the exhaust's source level against Davies in the free
+  field is an open item.
+- A merged exhaust (`merge`) split its one outlet's radiation equally over the branches' tails, and
+  the listener placed those `tail_spacing_m` apart: one tail pipe heard as two sources 0.9 m apart
+  combed every 1.3 ms (cepstrum 40 dB on the catalogue's 4-2-1 configs; a real K20A 4-2-1 reads
+  24–32). With a merge the tails now radiate from one place.

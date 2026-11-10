@@ -94,6 +94,12 @@ impl SoundDef {
         })
     }
 
+    /// (tail height, ear height) above the ground, m: where the ear stands whether or not the
+    /// ground reflects ([`crate::listener::Listener::with_heights`]).
+    pub fn heights(&self) -> (f64, f64) {
+        (self.tail_height_m, self.listener_height_m)
+    }
+
     pub fn ground_heights(&self) -> Option<(f64, f64)> {
         self.ground
             .then_some((self.tail_height_m, self.listener_height_m))
