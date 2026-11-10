@@ -3680,14 +3680,21 @@ impl Engine {
         }
         if self.listener.as_ref().is_none_or(|l| l.0 != dt) {
             let (ex, snd) = (&self.def.exhaust, &self.def.sound);
-            let l = Listener::with_street(
+            let l = Listener::with_heights(
                 self.tail_pipes,
-                ex.tail_spacing_m,
+                // a merged exhaust leaves through its one outlet: the branches' shares of it
+                // radiate from one place, whatever the tails' spacing says
+                if ex.merge.is_some() {
+                    0.0
+                } else {
+                    ex.tail_spacing_m
+                },
                 snd.listener_distance_m,
                 snd.listener_angle_deg,
                 PI * 0.25 * ex.radiating_diameter().powi(2),
                 dt,
-                snd.ground_heights(),
+                snd.heights(),
+                snd.ground,
                 snd.street(),
             )
             .with_engine_at(
@@ -7536,6 +7543,43 @@ mod tests {
     }
 
     #[test]
+    fn a_merged_exhaust_is_heard_from_its_one_outlet_however_far_apart_its_tails_were() {
+        // Two collectors joined in one duct leave through one open end: the tails' spacing,
+        // which places separate tail pipes, must not split that one outlet into two sources
+        // (0.9 m apart at 30° and 3 m it combed the sound every 1.3 ms, 2026-11-10).
+        let heard = |spacing: f64| {
+            let mut d = EngineDef::inline4();
+            d.exhaust.collectors = vec![vec![1, 4], vec![2, 3]];
+            d.exhaust.merge = Some(crate::exhaust::Merge {
+                segments: vec![Segment::Pipe {
+                    length_m: 0.5,
+                    diameter_m: 0.05,
+                }],
+                outlet_diameter_m: 0.05,
+                bypass: None,
+            });
+            d.exhaust.tail_spacing_m = spacing;
+            let (rpm, dt) = (4000.0, 1.0 / 48_000.0);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(rpm),
+                ..Controls::default()
+            };
+            let mut e = Engine::new(d, rpm, 1);
+            (0..(0.3 / dt) as usize)
+                .map(|_| e.step(dt, &c))
+                .collect::<Vec<f64>>()
+        };
+        let (apart, together) = (heard(0.9), heard(0.0));
+        let worst = apart
+            .iter()
+            .zip(&together)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f64::max);
+        assert!(worst < 1e-9, "the outlet heard differently: {worst}");
+    }
+
+    #[test]
     fn the_boxers_unequal_headers_make_its_rumble() {
         // an even-firing four's pulses reach an equal-length collector every 180°: order 4 and
         // its multiples only. Primaries of unequal length make them arrive alternately early
@@ -8254,15 +8298,17 @@ mod tests {
             ..Controls::default()
         };
         run(&mut e, 0.05, &c);
-        let mut l = crate::listener::Listener::new(
+        let mut l = crate::listener::Listener::with_heights(
             2,
-            d.exhaust.tail_spacing_m,
+            // the LFA's banks leave through their merged outlet: one place
+            0.0,
             d.sound.listener_distance_m,
             90.0,
-            // the LFA's banks leave through their merged outlet
             PI * 0.25 * d.exhaust.merge.as_ref().unwrap().outlet_diameter_m.powi(2),
             DT,
-            d.sound.ground_heights(),
+            d.sound.heights(),
+            d.sound.ground,
+            None,
         );
         let mut tails = Vec::new();
         let (mut got, mut want) = (Vec::new(), Vec::new());
@@ -9828,6 +9874,9 @@ mod tests {
             let s = &mut d.sound;
             (s.intake, s.block, s.mechanical) = (0.0, 0.0, 0.0);
             (s.piston_slap, s.main_bearings) = (0.0, 0.0);
+            // the bound was set with the ground under the 3 m listener (Davies' bench had a
+            // floor too); in the free field these three sit ≈ 4 dB lower (FINDINGS 2026-11-10)
+            s.ground = true;
             let rpm = 6000.0;
             let mut e = Engine::new(d, rpm, 1);
             let c = Controls {
