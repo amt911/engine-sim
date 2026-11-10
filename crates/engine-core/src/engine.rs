@@ -4034,10 +4034,16 @@ impl Engine {
             // The seats tick in the head, under the valve cover, and the pistons and journals
             // knock in the bores and the crankcase: what they shake radiates into the bay and
             // leaves through it (`vehicle.engine_bay`; heard without it, a LFA idle's 2–4 kHz sat
-            // 12–20 dB over recorded ones, docs/FINDINGS.md 2026-11-05). The combustion shakes the whole block, whose skirt and sump radiate into the open
-            // underside: it is heard without the bay (ESTIMATE: the bay taken as closed above
-            // the head only; with the whole block behind it the LFA at 6700 rpm full load loses
-            // the 3–4 kHz orders the dyno recording has, docs/FINDINGS.md 2026-11-01).
+            // 12–20 dB over recorded ones, docs/FINDINGS.md 2026-11-05). The combustion shakes the
+            // whole block, whose skirt and sump radiate into the underside: open, it is heard
+            // without the bay; closed by a flat floor (`closed_underside`), the bay's loss holds
+            // for it too (Vér & Beranek ch. 12: an enclosure's loss is every inside source's).
+            let underside_closed = self
+                .def
+                .vehicle
+                .engine_bay
+                .as_ref()
+                .is_some_and(|b| b.closed_underside);
             if let Some((_, s)) = &mut self.structure {
                 let (comb, head) = s.split_at_mut(n_banks);
                 for (b, out) in block.iter_mut().enumerate().take(n_banks) {
@@ -4082,11 +4088,14 @@ impl Engine {
                         .as_mut()
                         .and_then(|s| s.1.get_mut(b))
                         .map_or(0.0, |r| r.process(impact[b]));
-                    let inside = ticks + struck;
-                    let inside = self.bay.get_mut(b).map_or(inside, |f| f.process(inside));
                     let burn = comb[b].process(snd.block * p);
                     combustion += burn;
-                    *out = burn + inside;
+                    let (inside, outside) = if underside_closed {
+                        (ticks + struck + burn, 0.0)
+                    } else {
+                        (ticks + struck, burn)
+                    };
+                    *out = outside + self.bay.get_mut(b).map_or(inside, |f| f.process(inside));
                 }
             }
         };
@@ -5883,6 +5892,29 @@ mod tests {
             seats_only(open.clone(), 0.0, 1.0),
             seats_only(closed, 0.0, 1.0)
         );
+    }
+
+    #[test]
+    fn a_closed_underside_sends_the_combustion_through_the_bay() {
+        // A flat floor under the engine closes the bay below: the block's skirt and sump then
+        // radiate into it, and the bay's loss (4.0 dB at 63 Hz to 14.2 dB at 4 kHz, `engine_bay`'s
+        // tests) holds for the combustion too (Vér & Beranek, 2nd ed., ch. 12: an enclosure's
+        // insertion loss is every inside source's). Open below, it does not go through (above).
+        let mut open = EngineDef::single();
+        open.vehicle.engine_bay = Some(crate::engine_bay::EngineBay::default());
+        let mut closed = open.clone();
+        closed.vehicle.engine_bay = Some(crate::engine_bay::EngineBay {
+            closed_underside: true,
+            ..crate::engine_bay::EngineBay::default()
+        });
+        let rms = |x: &[f64]| (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
+        let burn = |d: &EngineDef| {
+            let off = seats_only(d.clone(), 0.0, 0.0);
+            let on = seats_only(d.clone(), 0.0, 1.0);
+            rms(&on.iter().zip(&off).map(|(a, b)| a - b).collect::<Vec<_>>())
+        };
+        let loss = 20.0 * (burn(&open) / burn(&closed)).log10();
+        assert!((4.0..14.2).contains(&loss), "{loss:.1} dB");
     }
 
     #[test]

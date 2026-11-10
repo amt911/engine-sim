@@ -205,7 +205,12 @@ impl VehicleDef {
             engine_ahead_m: 3.2,
             // roof: Lexus' published 1220 mm
             body_height_m: 1.22,
-            engine_bay: Some(crate::engine_bay::EngineBay::default()),
+            // a flat underbody to its carbon diffuser (Lexus, launch release 2009-10-21, as
+            // reported by autotrader.co.nz "Lexus supercar unveiled"): the bay closed below
+            engine_bay: Some(crate::engine_bay::EngineBay {
+                closed_underside: true,
+                ..crate::engine_bay::EngineBay::default()
+            }),
             shuffle_hz: 3.5,
             shuffle_damping: 0.15,
         }
