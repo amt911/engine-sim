@@ -137,7 +137,7 @@ engine:
     leveling: 0.0
     listener_distance_m: 3.0
     listener_angle_deg: 30.0
-    ground: true
+    ground: false
     tail_height_m: 0.3
     listener_height_m: 1.6
     street_width_m: 0.0

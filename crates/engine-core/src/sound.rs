@@ -66,6 +66,11 @@ pub struct SoundDef {
     pub listener_angle_deg: f64,
     /// The street: a rigid ground (asphalt) under the car and the listener returns each tail's
     /// sound from its image below the ground (ISO 9613-2) — the low end adds, the highs comb.
+    /// Off by default: the image is coherent only for a still source and a still ear, and combs
+    /// the highs 20 dB deep (LFA, 6000 rpm WOT, 2–7.5 kHz) where recordings of real cars ripple
+    /// 4.5 dB (60 steady segments, FINDINGS 2026-11-06); the user heard it as "enlatado" and
+    /// "ecos raros". Its cepstrum peaks 43 dB over the median at the image's 0.82 ms (inline-4),
+    /// 20 dB without it, as real recordings (16–25 dB, the LFA's four exterior clips).
     /// Off = free field.
     pub ground: bool,
     /// Heights above the ground of the tail pipes and of the listener's ear, m.
@@ -115,7 +120,7 @@ impl Default for SoundDef {
             leveling: 0.0,
             listener_distance_m: 3.0,
             listener_angle_deg: 30.0,
-            ground: true,
+            ground: false,
             // a road car's tail pipe and a standing adult's ear
             tail_height_m: 0.3,
             listener_height_m: 1.6,
@@ -251,16 +256,18 @@ mod tests {
     }
 
     #[test]
-    fn the_street_round_trips_and_old_files_stand_on_it() {
+    fn the_street_round_trips_and_old_files_stand_in_the_free_field() {
+        // the rigid ground's image combs the highs 20 dB deep at a standing listener; recordings
+        // of real cars ripple 4.5 dB (FINDINGS 2026-11-06): off unless a file asks for it
         let old: SoundDef = serde_yaml_ng::from_str("reverb: 0.2\n").unwrap();
-        assert_eq!(old.ground_heights(), Some((0.3, 1.6)));
+        assert_eq!(old.ground_heights(), None);
         let s = SoundDef {
-            ground: false,
+            ground: true,
             tail_height_m: 0.45,
             listener_height_m: 1.2,
             ..SoundDef::default()
         };
-        assert_eq!(s.ground_heights(), None);
+        assert_eq!(s.ground_heights(), Some((0.45, 1.2)));
         let json: SoundDef = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         let yaml: SoundDef =
             serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&s).unwrap()).unwrap();

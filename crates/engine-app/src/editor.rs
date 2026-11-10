@@ -1107,15 +1107,16 @@ mod tests {
 
     #[test]
     fn the_street_switch_and_heights_edit_the_sound() {
+        // the free field by default; the switch puts the street's ground under the car
         let mut h = harness(EngineDef::inline4());
-        assert!(h.state().def.sound.ground);
-        nudge(&mut h, "Ear height (m)");
-        assert!(h.state().def.sound.listener_height_m > 1.6);
+        assert!(!h.state().def.sound.ground);
         h.get_by_label("Street (ground reflection)").focus();
         h.run();
         h.key_press(egui::Key::Space);
         h.run();
-        assert!(!h.state().def.sound.ground);
+        assert!(h.state().def.sound.ground);
+        nudge(&mut h, "Ear height (m)");
+        assert!(h.state().def.sound.listener_height_m > 1.6);
         assert!(h.state().engine_dirty);
     }
 
