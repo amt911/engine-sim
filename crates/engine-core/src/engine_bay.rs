@@ -36,6 +36,10 @@ pub struct EngineBay {
     pub liner_thickness_m: f64,
     pub liner_resistivity: f64,
     pub liner_coverage: f64,
+    /// The intake's mouth draws inside the bay (an air box under the bonnet, the usual road
+    /// car): its sound leaves through the bay's openings with the bay's loss, as the block's
+    /// does. False: a mouth out in the open air (a snorkel through the bonnet or the grille).
+    pub intake_inside: bool,
 }
 
 impl Default for EngineBay {
@@ -48,6 +52,7 @@ impl Default for EngineBay {
             liner_thickness_m: 0.02,
             liner_resistivity: crate::lining::Packing::default().flow_resistivity,
             liner_coverage: 0.25,
+            intake_inside: true,
         }
     }
 }
