@@ -1607,3 +1607,30 @@ source is not identified. Phone and YouTube recordings cannot judge below about 
   the listener placed those `tail_spacing_m` apart: one tail pipe heard as two sources 0.9 m apart
   combed every 1.3 ms (cepstrum 40 dB on the catalogue's 4-2-1 configs; a real K20A 4-2-1 reads
   24–32). With a merge the tails now radiate from one place.
+
+## Wind: an open-end flow source, a steepening residue and mechanical rush (2026-11-11/12)
+
+- **Davies' 0.25 m bench is near field for flow noise.** The road 4-cylinders read 94.6 / 94.7 /
+  90.5 dB(A) at 3000 / 4500 / 6000 rpm against Davies' 88 / – / 107: his rise to 6000 rpm is the
+  tail jet's flow noise, measured inside its hydrodynamic near field. An open-end source fitted to
+  that 107 made every Honda windier than its exterior recordings (K20C1 floor 2-8 kHz −4.3 dB;
+  −30.1 without it). The open end now radiates no in-duct flow noise and Davies is a bound.
+- **The steepening pipes leave an aperiodic residue.** A periodic 60 kPa pulse train through 2 m
+  of steepening pipe comes out with −45 dB (48 kHz) to −48 dB (192-384 kHz) of its energy
+  between the harmonics at 8-16 kHz, independent of the step: shocks gather samples at a
+  different grid phase every cycle (the 0.34 % cycle-to-cycle settling the segment doc already
+  measured). With every sound source off, an inline-4's 8-16 kHz band is this residue at −36 dB
+  re the fundamental octave, flat-to-rising: a hiss. Wider kernels (MIN 4 / MAX 8 steps) take
+  only 6 dB off. Open: a grid-phase-invariant shock reconstruction (its own branch).
+- **The rush between 1 and 4 kHz is mechanical + intake + tail jet together** (one source at a
+  time, linear exhaust: piston slap −11.5 dB, bearings −14.6, mechanical −17.7 re the
+  fundamental octave at 2 kHz). Real exterior inline-4s sit at −25.6 (2 kHz band) / −37.4
+  (4 kHz) median against the simulator's −16 / −26: the exhaust tone is weak against sources
+  calibrated in absolute terms.
+- **Trembling upshifts were the overrun cut-off.** The gears scene's driver closed the throttle
+  to 0 above the take-up speed; at ≤ 1 % the ECU cut the fuel and refuelled as the revs crossed
+  it: −15 dB dropouts 0.5-0.9 s after each shift (none held at speed). The driver now feathers at
+  2 %. A production ECU waits before its overrun cut; adding that delay here (1 s) broke 20 idle,
+  blip and restart tests — its own branch.
+- **`shake.py` level wobble does not find it on its own**: the dropouts are short; the level's
+  2-12 Hz rms stayed within the real recordings'. Look at the spectrogram (vertical stripes).
