@@ -166,13 +166,19 @@ def redline_of(binary, engine, d):
     path = engine if os.path.exists(engine) else os.path.join(d, "engine.yaml")
     if not os.path.exists(path):
         subprocess.run([binary, "--preset", engine, "--save", path], check=True, capture_output=True)
-    return float(re.search(r"\n\s*redline_rpm: ([0-9.]+)", open(path).read()).group(1)), path
+    text = open(path).read()
+    red = float(re.search(r"\n\s*redline_rpm: ([0-9.]+)", text).group(1))
+    cut = re.search(r"\n\s*shutoff_rpm: ([0-9.]+)", text)
+    cut = float(cut.group(1)) if cut and float(cut.group(1)) > 0 else red
+    # held renders stay under the limiter: held on it the injection is cut and the firing line
+    # vanishes (a K20A held at its 8400 rpm redline read its fundamental 83 dB down, 2026-11-11)
+    return red, min(red, cut - 300.0), path
 
 
 def run(binary, engine, d):
     os.makedirs(d, exist_ok=True)
-    red, path = redline_of(binary, engine, d)
-    full = sorted({int(round(red * f / 100.0)) * 100 for f in np.linspace(0.5, 1.0, 7)})
+    red, top, path = redline_of(binary, engine, d)
+    full = sorted({int(round(f / 100.0)) * 100 for f in np.linspace(0.5 * red, top, 7)})
     mid = int(round(0.75 * red / 100.0)) * 100
     scenes = [f"held:{r}:1.0:4" for r in full] + [f"held:{mid}:{l}:4" for l in LOADS if l < 1.0]
     scenes += [] if mid in full else [f"held:{mid}:1.0:4"]

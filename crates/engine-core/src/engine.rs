@@ -8153,11 +8153,11 @@ mod tests {
 
     #[test]
     fn the_engine_is_heard_through_the_listener() {
-        // One tail and the engine at it: where you stand changes nothing (only the common
-        // path, which is dropped). (to rounding: √(sin² + cos²)·r is r in the last bit)
+        // One tail and the engine at it: either side of the tail at the same angle is the same
+        // (the outlet beams its highs along its axis, symmetrically; the common path is dropped).
         let mut at_tail = EngineDef::inline4();
         at_tail.vehicle.engine_ahead_m = 0.0;
-        let (a, b) = (heard_at(at_tail.clone(), 0.0), heard_at(at_tail, 60.0));
+        let (a, b) = (heard_at(at_tail.clone(), -60.0), heard_at(at_tail, 60.0));
         for (x, y) in a.iter().zip(&b) {
             assert_relative_eq!(x, y, max_relative = 1e-12, epsilon = 1e-15);
         }
@@ -8345,6 +8345,7 @@ mod tests {
         let mut d = EngineDef::lfa_v10();
         d.sound = crate::sound::SoundDef {
             flow_noise: 0.0,
+            duct_flow: 0.0,
             mechanical: 0.0,
             main_bearings: 0.0,
             piston_slap: 0.0,
@@ -9939,6 +9940,9 @@ mod tests {
             // the bound was set with the ground under the 3 m listener (Davies' bench had a
             // floor too); in the free field these three sit ≈ 4 dB lower (FINDINGS 2026-11-10)
             s.ground = true;
+            // Davies' microphone: 45° off the tail's axis, level with it, 3 m out (spread to
+            // 0.25 m below): the outlet's beaming as the paper measured it
+            (s.listener_angle_deg, s.listener_height_m) = (45.0, s.tail_height_m);
             let rpm = 6000.0;
             let mut e = Engine::new(d, rpm, 1);
             let c = Controls {
@@ -10018,6 +10022,8 @@ mod tests {
         let heard = |jet: f64| {
             let mut d = EngineDef::inline4();
             d.sound.valve_jet = jet;
+            // on the tail's axis: the jets' character, not the outlet's beaming
+            (d.sound.listener_angle_deg, d.sound.tail_height_m) = (0.0, d.sound.listener_height_m);
             let mut e = Engine::new(d, 4000.0, 1);
             let c = Controls {
                 throttle: 1.0,
