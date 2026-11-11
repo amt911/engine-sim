@@ -7,6 +7,11 @@ shifts in a render's gears scene (the level drops > 6 dB in under 0.3 s and come
 its rms (dB) and its strongest frequency. Real recordings with gear changes and a microphone that
 rides with the vehicle (onboard, exhaust: no pass-by Doppler or distance swing) give the range.
 
+Dropouts: a frame more than DIP_DB under the level's running median (0.3 s) while the engine
+pulls after a shift — a cut, a misfire, the overrun cut-off switching (the trembling upshifts of
+2026-11-11). Any dropout raises an ALARM with its time: look at it (spectrogram) and decide
+whether the physics says it belongs (a limiter, a deliberate cut) or it is a defect.
+
 usage: shake.py LABEL ...     renders/LABEL/gears.wav against the onboard gear-change recordings
 """
 import json
@@ -25,6 +30,7 @@ import sp_core as C  # noqa: E402
 FS = C.FS
 HOP = 0.01                       # level frames, s
 AFTER = 1.5                      # s analysed after each shift
+DIP_DB = 8.0                     # a dropout: this far under the running median
 REAL_IDS = ["drz-exh", "scrambler-exh", "pantera-exh", "s1000rr-onb", "rmz-int", "scania-eng"]
 
 
@@ -104,18 +110,39 @@ def pitch_wobble(F, r):
     return float(np.sqrt(np.mean(signal.filtfilt(b, a, seg) ** 2)))
 
 
+def dropouts(L, rs):
+    """Times (s) of the frames more than DIP_DB under the level's 0.3 s running median, in the
+    AFTER s after each shift (the engine back under load), one per dip."""
+    from scipy.ndimage import median_filter
+    sm = np.convolve(L, np.ones(3) / 3, mode="same")
+    med = median_filter(sm, size=int(0.3 / HOP))
+    out = []
+    for r in rs:
+        seg = np.arange(r + int(0.1 / HOP), min(len(L), r + int(AFTER / HOP)))
+        low = seg[sm[seg] < med[seg] - DIP_DB]
+        for i, k in enumerate(low):
+            if i == 0 or k - low[i - 1] > 3:
+                out.append(round(k * HOP, 2))
+    return out
+
+
 def report(name, x):
     L = a_level(x)
     F = pitch(x)
     rs = shifts(L)
     pw = [pitch_wobble(F, r) for r in rs]
     w = [wobble(L, r) for r in rs]
+    dips = dropouts(L, rs)
     if not w:
         print(f"  {name:28s} no shift found")
         return None
     rms = [a for a, _ in w]
     print(f"  {name:28s} {len(w)} shifts: wobble {np.median(rms):4.1f} dB rms (max {max(rms):4.1f}) "
-          f"at {np.median([f for _, f in w]):4.1f} Hz; pitch wobble {np.nanmedian(pw):5.1f} cents rms")
+          f"at {np.median([f for _, f in w]):4.1f} Hz; pitch wobble {np.nanmedian(pw):5.1f} cents rms; "
+          f"dropouts {len(dips)}")
+    if dips:
+        print(f"    ALARM: {len(dips)} dropouts > {DIP_DB:.0f} dB under the running level after shifts, at "
+              f"{', '.join(f'{t:.2f}' for t in dips[:12])} s — look: a limiter or cut that belongs, or a defect?")
     return float(np.median(rms)), float(np.nanmedian(pw))
 
 
