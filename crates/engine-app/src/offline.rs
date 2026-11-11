@@ -162,6 +162,12 @@ const PULL_IDLE_S: f64 = 1.0;
 const LAUNCH_SHARE: f64 = 0.45;
 /// Upshift at this share of the redline (just under the ECU's limiter).
 const SHIFT_SHARE: f64 = 0.97;
+/// The throttle a driver's foot rests at through a clutch take-up after an upshift, where the
+/// revs need none: just over the ECU's closed-throttle threshold (1 %), so its overrun cut-off
+/// does not switch the injection off and on as the revs cross the take-up speed (each switch a
+/// dropout: the trembling upshifts heard 2026-11-11). A production ECU also waits before cutting
+/// overrun fuel (Bosch, *Gasoline Engine Management*, 2015, Torque Demand); this one does not yet.
+pub(crate) const FEATHER_THROTTLE: f64 = 0.02;
 /// A shift: throttle off and clutch down this long, s (a quick manual shift).
 const SHIFT_S: f64 = 0.3;
 /// Lift-off at the end, s.
@@ -316,7 +322,7 @@ impl GearPull {
             }
             PullPhase::Pull if !locked && self.shift_time > 0.0 && self.gear > 1 => (1.0, false),
             PullPhase::Pull if !locked => (
-                ((self.takeup - rpm) / (0.1 * self.takeup)).clamp(0.0, 1.0),
+                ((self.takeup - rpm) / (0.1 * self.takeup)).clamp(FEATHER_THROTTLE, 1.0),
                 false,
             ),
             PullPhase::Pull => (1.0, false),
@@ -698,12 +704,18 @@ mod tests {
         // second gear in at 5000 rpm, the clutch still slipping: the clutch pulls the revs down
         // to the new gear's, the driver comes in under where it came up — none there (half
         // throttle there flared a bridge-ported 13B 500 rpm with its clutch barely biting: an
-        // odd surge at every shift), half 5 % under, full 10 % under
+        // odd surge at every shift) but a feathering foot's [`FEATHER_THROTTLE`] (shut, the ECU's
+        // overrun cut-off switched the injection off and on as the revs crossed the take-up: the
+        // trembling upshifts of 2026-11-11), half 5 % under, full 10 % under
         let (thr, d) = step(5000.0, false);
         assert_eq!((d.gear, d.clutch_pedal), (2, false));
-        assert_eq!(thr, 0.0);
+        assert_eq!(thr, FEATHER_THROTTLE);
+        assert!(
+            FEATHER_THROTTLE > 0.01,
+            "over the ECU's closed-throttle threshold"
+        );
         assert!((step(4750.0, false).0 - 0.5).abs() < 1e-9);
-        assert_eq!(step(5600.0, false).0, 0.0);
+        assert_eq!(step(5600.0, false).0, FEATHER_THROTTLE);
         assert_eq!(step(4500.0, false).0, 1.0);
         // locked: flat out
         assert_eq!(step(4000.0, true).0, 1.0);

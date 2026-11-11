@@ -121,6 +121,14 @@ lines below bind even if you never open the document; open it before working on 
   it separates the user's past ear verdicts; compare at matched rpm, load, exhaust and microphone;
   Ange's new simulator's audio is a measurable target; one validated metric, then physics — no clip
   per guess.
+- **Realism renders run in parallel, never in series** (user, 2026-11-11). Every render is one
+  single-threaded process: `physgate.py run` renders its scenes `PHYSGATE_JOBS` at a time (default
+  4), and the presets of one check run side by side, each in its own cgroup, the ceilings summing to
+  ≤ 6 GB (6 presets × 3 jobs × `MemoryMax=1G` on the 24-core tower). Longest scenes (`gears`,
+  `drive`) start first. Every physics change is judged on **all** presets, never one (the physics
+  must generalise; user, 2026-11-11) — speed comes from parallelism and reuse, not fewer engines.
+  Kill a batch by PID (`pgrep` then `kill`), never `pkill -f` with a pattern your own shell matches,
+  and delete the half-written renders before rerunning (a WAV that exists is skipped).
 - **Agentic PR verification (mandatory)** → [docs/agents/pr-verification.md](docs/agents/pr-verification.md).
   Every PR gets a verdict from a pass that runs the real app (headless render + GUI launch), as a PR
   comment.

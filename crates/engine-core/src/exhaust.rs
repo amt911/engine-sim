@@ -1313,7 +1313,16 @@ impl DuctFlow {
         let rho = crate::gas::GAMMA * crate::units::ATM_PA / (c * c);
         let a_jet = 0.25 * std::f64::consts::PI * src.site.d_jet * src.site.d_jet;
         let u = m_dot / (rho * a_jet);
-        self.gain * src.jet.step(u, rho, c, src.site.d_jet, src.site.d_down, dt)
+        // the open end is no area step: Nelson & Morfey (1981) find the flow there absorbs the
+        // in-duct sound about as much as the end reflects it, not a source of its own
+        let k = match src.site.at {
+            SiteAt::Exit => 0.0,
+            _ => crate::jet_noise::expansion_k(src.site.d_jet, src.site.d_down),
+        };
+        self.gain
+            * src
+                .jet
+                .step(k, u, rho, c, src.site.d_jet, src.site.d_down, dt)
     }
 }
 
@@ -2385,8 +2394,18 @@ mod tests {
     }
 
     fn steady_inline4(setup: impl Fn(&mut super::ExhaustNet), flow: f64) -> Vec<f64> {
+        steady_inline4_with(setup, flow, true)
+    }
+
+    /// [`steady_inline4`] with its pipes steepening or linear.
+    fn steady_inline4_with(
+        setup: impl Fn(&mut super::ExhaustNet),
+        flow: f64,
+        steepening: bool,
+    ) -> Vec<f64> {
         let dt = 1.0 / 48_000.0;
-        let def = crate::engine::EngineDef::inline4().exhaust;
+        let mut def = crate::engine::EngineDef::inline4().exhaust;
+        def.steepening = steepening;
         let mut net = super::ExhaustNet::new(&def, 4, dt);
         setup(&mut net);
         (0..(0.6 / dt) as usize)
@@ -2395,16 +2414,29 @@ mod tests {
     }
 
     #[test]
-    fn an_expansion_with_flow_hisses() {
+    fn an_expansions_hiss_in_a_fixed_band_grows_as_the_cube_of_its_flow() {
+        // Linear pipes: the network is linear in its waves, so the run with the flow noise on
+        // minus the run with it off is the noise alone (the pipes' ringing from the flow's start
+        // and a steepening pipe's residue cancel). Davies & Holland (JSV 223(3), 1999, §4): the
+        // in-duct flow noise's power scales as U⁴ with plane waves only, spread over a band
+        // that scales with U (its Strouhal peak, 0.2·U/d: 324 Hz at 89 m/s), so the power in a
+        // fixed band goes as U⁴/U = U³: twice the flow, 8× in 300-1500 Hz, under the tail's
+        // cut-on (1.84·c/(π·d) = 2.1 kHz in its 140 mm at 500 m/s); within √2 of it (the band
+        // holds a different share of the shape at each speed; U² or U⁴ in the band fall outside).
         let dt = 1.0 / 48_000.0;
-        let off = steady_inline4(|n| n.set_duct_flow(0.0), 0.03);
-        let on = steady_inline4(|n| n.set_duct_flow(1.0), 0.03);
-        // the last 0.2 s: the pipes' ringing from the flow's start has died away
-        let (a, b) = (
-            band_power(&off[19_200..], dt, 1000.0, 5000.0),
-            band_power(&on[19_200..], dt, 1000.0, 5000.0),
+        let noise = |flow: f64| {
+            let off = steady_inline4_with(|n| n.set_duct_flow(0.0), flow, false);
+            let on = steady_inline4_with(|n| n.set_duct_flow(1.0), flow, false);
+            let d: Vec<f64> = on.iter().zip(&off).map(|(a, b)| a - b).collect();
+            band_power(&d[9_600..], dt, 300.0, 1500.0)
+        };
+        let (one, two) = (noise(0.03), noise(0.06));
+        assert!(one > 0.0, "it hisses");
+        let r = two / one;
+        assert!(
+            (5.66..11.31).contains(&r),
+            "twice the flow: {r:.1}x the power"
         );
-        assert!(b > 2.0 * a && b > 0.0, "on {b:.3e} off {a:.3e}");
     }
 
     #[test]

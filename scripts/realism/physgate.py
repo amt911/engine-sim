@@ -28,6 +28,7 @@ Usage:
   physgate.py selftest                         the metrics on synthetic signals
 Needs numpy, scipy and ffmpeg: `uv run --with numpy --with scipy python -I physgate.py ...`.
 """
+import concurrent.futures
 import glob
 import os
 import re
@@ -182,11 +183,16 @@ def run(binary, engine, d):
     mid = int(round(0.75 * red / 100.0)) * 100
     scenes = [f"held:{r}:1.0:4" for r in full] + [f"held:{mid}:{l}:4" for l in LOADS if l < 1.0]
     scenes += [] if mid in full else [f"held:{mid}:1.0:4"]
-    for sc in scenes + ["drive", "gears"]:
+    todo = []
+    for sc in ["gears", "drive"] + scenes:     # the longest scenes first
         out = os.path.join(d, sc.replace(":", "_") + ".wav")
         if not os.path.exists(out):
-            subprocess.run(["nice", "-n19", binary, "--engine", path, "--render", sc, "--out", out],
-                           check=True, capture_output=True)
+            todo.append(["nice", "-n19", binary, "--engine", path, "--render", sc, "--out", out])
+    # every render is one single-threaded process: run PHYSGATE_JOBS of them at once (default 4)
+    jobs = max(1, int(os.environ.get("PHYSGATE_JOBS", "4")))
+    with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
+        for f in [pool.submit(subprocess.run, c, check=True, capture_output=True) for c in todo]:
+            f.result()
     return judge(d, red)
 
 
