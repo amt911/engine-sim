@@ -5883,7 +5883,11 @@ mod tests {
         // ticks, broadband, come out between the two, nearer the highs they are made of.
         let open = EngineDef::single();
         let mut closed = open.clone();
-        closed.vehicle.engine_bay = Some(crate::engine_bay::EngineBay::default());
+        // a bay open below, so that only the head's ticking goes through it
+        closed.vehicle.engine_bay = Some(crate::engine_bay::EngineBay {
+            closed_underside: false,
+            ..crate::engine_bay::EngineBay::default()
+        });
         let rms = |x: &[f64]| (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
         let loss = 20.0 * (rms(&ticks(&open)) / rms(&ticks(&closed))).log10();
         assert!((8.0..14.2).contains(&loss), "{loss:.1} dB");
@@ -5901,7 +5905,10 @@ mod tests {
         // tests) holds for the combustion too (Vér & Beranek, 2nd ed., ch. 12: an enclosure's
         // insertion loss is every inside source's). Open below, it does not go through (above).
         let mut open = EngineDef::single();
-        open.vehicle.engine_bay = Some(crate::engine_bay::EngineBay::default());
+        open.vehicle.engine_bay = Some(crate::engine_bay::EngineBay {
+            closed_underside: false,
+            ..crate::engine_bay::EngineBay::default()
+        });
         let mut closed = open.clone();
         closed.vehicle.engine_bay = Some(crate::engine_bay::EngineBay {
             closed_underside: true,

@@ -168,7 +168,7 @@ engine:
       liner_thickness_m: 0.02
       liner_resistivity: 16000.0
       liner_coverage: 0.25
-      closed_underside: false
+      closed_underside: true
       intake_inside: true
     body_height_m: 1.45
     shuffle_hz: 3.5

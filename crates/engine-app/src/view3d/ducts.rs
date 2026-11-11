@@ -706,7 +706,6 @@ mod tests {
             ducts: 2,
             duct_length_m: 0.3,
             duct_diameter_m: 0.06,
-            ..Default::default()
         });
         let mut out = Vec::new();
         intake(&d, &mut out);

@@ -116,6 +116,8 @@ pub struct Listener {
     /// state.
     radiation_k: f64,
     radiated: f64,
+    /// The outlet's beaming: off its axis a pipe's end radiates its highs less ([`Directivity`]).
+    directivity: Option<Directivity>,
     /// The same for the intake mouths ([`Listener::radiate_mouth_at`]): their area and corner.
     mouth_area: f64,
     mouth_k: f64,
@@ -126,6 +128,57 @@ pub struct Listener {
     /// throttle's mouth), each heard from where it sits. One at the tails' mean distance until
     /// [`Listener::with_engine_at`] places them.
     engine: Vec<EngineSource>,
+}
+
+/// A pipe's open end beams its highs along its axis: a piston in its end radiates at θ off the
+/// axis by 2·J1(x)/x, x = k·a·sinθ (Kinsler et al., *Fundamentals of Acoustics*, 4th ed., §7.4;
+/// an unflanged pipe's main lobe within a dB of it, Levine & Schwinger 1948). The main lobe as a
+/// second-order Butterworth low-pass at its −3 dB point, x = 1.62 (its −14.7 dB at x = 3.24
+/// within 3 dB; the side lobes, 17.6 dB down and lower, left out). The tails point straight back
+/// along the car (−y).
+#[derive(Debug, Clone)]
+struct Directivity {
+    b: [f64; 3],
+    a: [f64; 2],
+    x: [f64; 2],
+    y: [f64; 2],
+}
+
+impl Directivity {
+    /// For an outlet of `radius_m` and the ear at `to_ear` (across, along, up) from it.
+    fn new(radius_m: f64, to_ear: (f64, f64, f64), dt: f64) -> Option<Self> {
+        let (x, y, z) = to_ear;
+        let r = (x * x + y * y + z * z).sqrt();
+        let sin_t = ((x * x + z * z).sqrt() / r.max(1e-9)).min(1.0);
+        if sin_t < 1e-6 {
+            return None;
+        }
+        let fc = 1.62 * C_AMBIENT / (2.0 * std::f64::consts::PI * radius_m * sin_t);
+        if fc >= 0.45 / dt {
+            return None;
+        }
+        let k = (std::f64::consts::PI * fc * dt).tan();
+        let norm = 1.0 / (1.0 + std::f64::consts::SQRT_2 * k + k * k);
+        let b0 = k * k * norm;
+        Some(Self {
+            b: [b0, 2.0 * b0, b0],
+            a: [
+                2.0 * (k * k - 1.0) * norm,
+                (1.0 - std::f64::consts::SQRT_2 * k + k * k) * norm,
+            ],
+            x: [0.0; 2],
+            y: [0.0; 2],
+        })
+    }
+
+    fn process(&mut self, x0: f64) -> f64 {
+        let y0 = self.b[0] * x0 + self.b[1] * self.x[0] + self.b[2] * self.x[1]
+            - self.a[0] * self.y[0]
+            - self.a[1] * self.y[1];
+        self.x = [x0, self.x[0]];
+        self.y = [y0, self.y[0]];
+        y0
+    }
 }
 
 /// One place on the engine that radiates (a bank, a common mouth): its distance to the
@@ -353,6 +406,7 @@ impl Listener {
             dt,
             radiation_k,
             radiated: 0.0,
+            directivity: Directivity::new(radius, (lx - xs[0], ly, rise), dt),
             mouth_area: 0.0,
             mouth_k: 1.0,
             engine: vec![EngineSource::at(mean_distance, 0)],
@@ -549,12 +603,54 @@ impl Listener {
     pub fn radiate(&mut self, tails: &[f64]) -> f64 {
         let y = self.process(tails);
         self.radiated += self.radiation_k * (y - self.radiated);
-        self.radiated
+        match &mut self.directivity {
+            Some(d) => d.process(self.radiated),
+            None => self.radiated,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn an_outlet_beams_its_highs_along_its_axis() {
+        // A piston in a pipe's end radiates off its axis by 2·J1(x)/x, x = k·a·sinθ (Kinsler et
+        // al., *Fundamentals of Acoustics*, 4th ed., §7.4; an unflanged pipe's main lobe is the
+        // same to within a dB, Levine & Schwinger 1948): −3 dB at x = 1.62, −14.7 dB at x = 3.24
+        // (J1(3.24) = 0.2998). A 65 mm tail heard 90° off its axis, ear level with it: x = 1.62
+        // at f = 1.62·c/(2π·a) = 1.62 × 343 / (2π × 0.0325) = 2721 Hz.
+        let dt = 1.0 / 192_000.0;
+        let area = std::f64::consts::PI * 0.0325 * 0.0325;
+        let gain = |angle: f64, f: f64| {
+            let mk =
+                || Listener::with_heights(1, 0.0, 3.0, angle, area, dt, (0.3, 0.3), false, None);
+            let (mut l, mut flat) = (mk(), mk());
+            flat.directivity = None;
+            let (mut a, mut b) = (0.0, 0.0);
+            let n = (0.2 / dt) as usize;
+            for j in 0..n {
+                let x = (2.0 * std::f64::consts::PI * f * j as f64 * dt).sin();
+                let (ya, yb) = (l.radiate(&[x]), flat.radiate(&[x]));
+                if j > n / 2 {
+                    (a, b) = (a + ya * ya, b + yb * yb);
+                }
+            }
+            10.0 * (a / b).log10()
+        };
+        assert!(
+            (gain(90.0, 2721.0) + 3.0).abs() < 0.5,
+            "{}",
+            gain(90.0, 2721.0)
+        );
+        assert!(
+            (gain(90.0, 5442.0) + 14.7).abs() < 3.0,
+            "{}",
+            gain(90.0, 5442.0)
+        );
+        // on its axis it is heard whole
+        assert!(gain(0.0, 5442.0).abs() < 0.1, "{}", gain(0.0, 5442.0));
+    }
 
     #[test]
     fn a_car_body_between_the_engine_and_the_ear_takes_maekawa_s_loss() {

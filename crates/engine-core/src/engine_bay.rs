@@ -36,10 +36,13 @@ pub struct EngineBay {
     pub liner_thickness_m: f64,
     pub liner_resistivity: f64,
     pub liner_coverage: f64,
-    /// A floor closes the bay underneath (a flat underbody or an engine undertray): the
-    /// block's skirt and sump radiate into the bay and leave through it too. Open (false, the
-    /// default), they radiate straight out of the underside and only the head's ticking is
-    /// muffled.
+    /// A floor closes the bay underneath (a flat underbody or an engine undertray, as road cars
+    /// carry; the default): the block's skirt and sump radiate into the bay and leave through it
+    /// too. Open (false: a race car with no undertray), they radiate straight out of the
+    /// underside and only the head's ticking is muffled. Open by default it left every preset's
+    /// block 10-15 dB over real exterior recordings at the rear (the spectral realism tier,
+    /// 2026-11-10: periodic 1-2 kHz, weak fundamental; closed, texture scores fell 0.72→0.53
+    /// K20A, 1.59→0.55 TDI, 0.46→0.28 inline-4).
     pub closed_underside: bool,
     /// The intake's mouth draws inside the bay (an air box under the bonnet, the usual road
     /// car): its sound leaves through the bay's openings with the bay's loss, as the block's
@@ -57,7 +60,7 @@ impl Default for EngineBay {
             liner_thickness_m: 0.02,
             liner_resistivity: crate::lining::Packing::default().flow_resistivity,
             liner_coverage: 0.25,
-            closed_underside: false,
+            closed_underside: true,
             intake_inside: true,
         }
     }
@@ -145,18 +148,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_closed_underside_round_trips_and_old_files_leave_it_open() {
+    fn a_road_cars_bay_is_closed_below_and_draws_its_intake_inside() {
+        // road cars carry an engine undertray and draw through an air box under the bonnet;
+        // an open bay (a race car, a kit car) says so in its file
+        let b = EngineBay::default();
+        assert!(b.closed_underside && b.intake_inside);
+    }
+
+    #[test]
+    fn an_open_underside_round_trips_and_old_files_get_a_road_cars_undertray() {
         let bay = EngineBay {
-            closed_underside: true,
+            closed_underside: false,
             ..EngineBay::default()
         };
         let yaml = serde_yaml_ng::to_string(&bay).unwrap();
         assert_eq!(serde_yaml_ng::from_str::<EngineBay>(&yaml).unwrap(), bay);
         let json = serde_json::to_string(&bay).unwrap();
         assert_eq!(serde_json::from_str::<EngineBay>(&json).unwrap(), bay);
-        // a file written before the field: the underside stays open
+        // a file written before the field: a road car's bay, closed below
         let old: EngineBay = serde_yaml_ng::from_str("open_fraction: 0.01\n").unwrap();
-        assert!(!old.closed_underside);
+        assert!(old.closed_underside);
     }
 
     #[test]

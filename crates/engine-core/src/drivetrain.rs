@@ -207,8 +207,12 @@ impl VehicleDef {
             body_height_m: 1.22,
             // a flat underbody to its carbon diffuser (Lexus, launch release 2009-10-21, as
             // reported by autotrader.co.nz "Lexus supercar unveiled"): the bay closed below
+            // its surge tank was tuned to radiate (Yamaha, 2009-10-21), its intake heard in the
+            // open: through the bay, the block and the closed-throttle half orders it masks stood
+            // over the firing tone (spectral tier 2026-11-10)
             engine_bay: Some(crate::engine_bay::EngineBay {
                 closed_underside: true,
+                intake_inside: false,
                 ..crate::engine_bay::EngineBay::default()
             }),
             shuffle_hz: 3.5,
