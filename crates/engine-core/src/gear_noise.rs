@@ -8,6 +8,8 @@
 //! Velex, "An analytical expression for the time-varying contact length in perfect cylindrical
 //! gears", *Mech. Mach. Theory* 31(5), 1996: the lines are parallel across the plane of action.
 
+use crate::silencer2d::Biquad;
+
 use crate::drivetrain::VehicleDef;
 use serde::{Deserialize, Serialize};
 
@@ -120,6 +122,28 @@ const AIR_DENSITY: f64 = 1.2;
 /// `p = ρ₀·F / (2π·r·m″)` (the half-space monopole of Pierce, *Acoustics*, eq. 4-4.5).
 pub fn housing_pressure_pa(force_n: f64, wall_m: f64, r_m: f64) -> f64 {
     AIR_DENSITY * force_n / (2.0 * std::f64::consts::PI * r_m * HOUSING_DENSITY * wall_m)
+}
+
+/// Side of the housing's wall panels between its ribs and flanges, m.
+///
+/// ESTIMATE: a passenger-car box case is ~0.3–0.4 m across, ribbed into panels of about half that.
+const HOUSING_PANEL_M: f64 = 0.2;
+
+/// Young's modulus and Poisson's ratio of die-cast aluminium (A380: 71 GPa, 0.33).
+const HOUSING_E: f64 = 70e9;
+const HOUSING_NU: f64 = 0.33;
+
+/// First bending mode of a simply supported square housing panel of [`HOUSING_PANEL_M`] and
+/// wall `wall_m`, Hz: `f₁₁ = (π/2)·(2/a²)·√(D/m″)`, `D = E·h³/(12(1−ν²))` (Leissa, *Vibration
+/// of Plates*, NASA SP-160, 1969, §4.1).
+///
+/// Below it the wall is stiffness-controlled: its volume velocity under a force falls with ω²
+/// against the mass law's (Cremer, Heckl & Petersson, *Structure-Borne Sound*, ch. 5), so the
+/// housing radiates [`housing_pressure_pa`] only above it.
+pub fn housing_first_mode_hz(wall_m: f64) -> f64 {
+    let d = HOUSING_E * wall_m.powi(3) / (12.0 * (1.0 - HOUSING_NU * HOUSING_NU));
+    let m2 = HOUSING_DENSITY * wall_m;
+    std::f64::consts::FRAC_PI_2 * 2.0 / (HOUSING_PANEL_M * HOUSING_PANEL_M) * (d / m2).sqrt()
 }
 
 /// Static deflection of the teeth in contact along the line of action, m: `W / (c′·b·L)` with
@@ -418,6 +442,9 @@ pub struct GearboxNoise {
     final_dyn: MeshDynamics,
     loose: Vec<LooseGear>,
     last_gear: usize,
+    /// The housing wall's response ([`housing_first_mode_hz`]) and the step it was built for.
+    housing: Biquad,
+    housing_dt: f64,
 }
 
 impl GearboxNoise {
@@ -441,6 +468,8 @@ impl GearboxNoise {
             meshes,
             final_mesh,
             last_gear: 0,
+            housing: Biquad::highpass(1.0, 1.0, 2.0),
+            housing_dt: 0.0,
         }
     }
 
@@ -486,7 +515,14 @@ impl GearboxNoise {
                 force += g.step(speed, dt, self.def.backlash_m, self.def.drag_nm);
             }
         }
-        housing_pressure_pa(force, wall, 1.0)
+        if dt != self.housing_dt {
+            // a Butterworth's smooth knee for the modes' sum: a ribbed case has many, not one
+            // sharp resonance (ESTIMATE)
+            let f1 = housing_first_mode_hz(wall).min(0.4 / dt);
+            self.housing = Biquad::highpass(f1, std::f64::consts::FRAC_1_SQRT_2, 1.0 / dt);
+            self.housing_dt = dt;
+        }
+        self.housing.process(housing_pressure_pa(force, wall, 1.0))
     }
 
     fn silence(&mut self) {
@@ -585,6 +621,22 @@ pub(crate) mod tests {
         (s1 * s1 + s2 * s2 - c * s1 * s2) / (x.len() as f64).powi(2)
     }
 
+    /// How far under the whole `x`'s content below `hz` lies, dB: the DFT's bins up to `hz`
+    /// against the whole by Parseval (Σ|X_k|² over all k = N·Σx²).
+    fn under_db(x: &[f64], hz: f64, fs: f64) -> f64 {
+        let n = x.len();
+        let bin = |k: usize| {
+            let w = 2.0 * std::f64::consts::PI * k as f64 / n as f64;
+            let (re, im) = x.iter().enumerate().fold((0.0, 0.0), |(re, im), (i, &v)| {
+                (re + v * (w * i as f64).cos(), im - v * (w * i as f64).sin())
+            });
+            re * re + im * im
+        };
+        let top = (hz * n as f64 / fs) as usize;
+        let low = bin(0) + 2.0 * (1..=top).map(bin).sum::<f64>();
+        db(n as f64 * x.iter().map(|v| v * v).sum::<f64>(), low)
+    }
+
     fn rms(x: &[f64]) -> f64 {
         (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt()
     }
@@ -617,6 +669,15 @@ pub(crate) mod tests {
         // m'' = 2700·0.006 = 16.2 kg/m²; p = 1.2·100 / (2π·1·16.2) = 120 / 101.788 = 1.1789 Pa
         let p = housing_pressure_pa(100.0, 0.006, 1.0);
         assert!((p - 1.179).abs() < 1e-3, "{p}");
+    }
+
+    #[test]
+    fn the_housings_first_mode_by_hand() {
+        // D = 70e9·0.006³/(12·(1 − 0.33²)) = 15 120 000/10.6932 = 1414.0 N·m; m″ = 16.2 kg/m²;
+        // √(D/m″) = 9.343; (π/2)·(2/0.04)·9.343 = 733.8 Hz. Doubling the wall doubles it
+        // (h³ over h, square-rooted: ∝ h)
+        assert!((housing_first_mode_hz(0.006) - 733.8).abs() < 1.0);
+        assert!((housing_first_mode_hz(0.012) - 1467.6).abs() < 2.0);
     }
 
     #[test]
@@ -807,24 +868,39 @@ pub(crate) mod tests {
             })
             .collect();
         let tail = &out[9_600..];
-        // the DFT's bins up to 200 Hz (k = 0..=180 over 86 400 samples: 1.11 Hz apart), their
-        // share of the whole by Parseval: Σ|X_k|² over all k = N·Σx²
-        let n = tail.len();
-        let bin = |k: usize| {
-            let w = 2.0 * std::f64::consts::PI * k as f64 / n as f64;
-            let (re, im) = tail
-                .iter()
-                .enumerate()
-                .fold((0.0, 0.0), |(re, im), (i, &x)| {
-                    (re + x * (w * i as f64).cos(), im - x * (w * i as f64).sin())
-                });
-            re * re + im * im
-        };
-        let low = bin(0) + 2.0 * (1..=180).map(bin).sum::<f64>();
-        let whole = n as f64 * tail.iter().map(|x| x * x).sum::<f64>();
-        let margin = db(whole, low);
+        let margin = under_db(tail, 200.0, 96_000.0);
         assert!(
             margin >= 30.0,
+            "under 200 Hz only {margin} dB below the whole"
+        );
+    }
+
+    #[test]
+    fn a_rattling_box_radiates_no_impulse_train_below_its_housings_first_mode() {
+        // the neutral rattle of the test below: impacts at the firing rate, each a one-sided
+        // pulse. Below the housing's first bending mode the wall is stiffness-controlled and
+        // its volume velocity falls with ω² (Cremer, Heckl & Petersson, ch. 5); 6 mm aluminium
+        // over a 0.2 m panel: f₁₁ = (π/2)·(2/a²)·√(D/m″), D = 70e9·0.006³/(12·0.89) = 1416 N·m,
+        // m″ = 16.2 kg/m²: 1.5708·50·9.35 = 734 Hz. Under 200 Hz the train's pulses would be
+        // (200/734)² ⇒ 22.6 dB down at least; the box radiates nothing there 20 dB up.
+        let v = box_vehicle();
+        let w = 2.0 * std::f64::consts::PI * 27.06;
+        let dt = 1.0 / 96_000.0;
+        let mut g = GearboxNoise::new(&v);
+        let out: Vec<f64> = (0..96_000)
+            .map(|i| {
+                let s = DriveState {
+                    gear: 0,
+                    input_omega: 85.0 + 4.25 * (w * i as f64 * dt).sin(),
+                    input_torque_nm: 0.0,
+                    clutch_locked: true,
+                };
+                g.step(&v, &s, dt)
+            })
+            .collect();
+        let margin = under_db(&out[9_600..], 200.0, 96_000.0);
+        assert!(
+            margin >= 20.0,
             "under 200 Hz only {margin} dB below the whole"
         );
     }
@@ -852,10 +928,18 @@ pub(crate) mod tests {
                 .collect::<Vec<f64>>()
         };
         let up = run(true);
-        let edges = up[19_200..]
-            .windows(2)
-            .filter(|w| w[0].abs() <= 1e-12 && w[1].abs() > 1e-12)
-            .count();
+        // impacts: the sound rising through 30 % of its peak, at most one per 10 ms (a hit
+        // rings the housing for a few ms; the driver's period is 37 ms)
+        let tail = &up[19_200..];
+        let top = tail.iter().fold(0.0f64, |m, p| m.max(p.abs()));
+        let mut last = usize::MAX / 2;
+        let mut edges = 0;
+        for (i, w) in tail.windows(2).enumerate() {
+            if w[0].abs() < 0.3 * top && w[1].abs() >= 0.3 * top && i.wrapping_sub(last) > 960 {
+                edges += 1;
+                last = i;
+            }
+        }
         assert!(edges >= 20, "{edges}");
         assert!(run(false).iter().all(|&p| p == 0.0));
     }

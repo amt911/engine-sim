@@ -406,6 +406,18 @@ impl Biquad {
         }
     }
 
+    /// A second-order high-pass at `fc` Hz, quality `q`, at `fs` (Bristow-Johnson, ibid.).
+    pub fn highpass(fc: f64, q: f64, fs: f64) -> Self {
+        let w0 = 2.0 * std::f64::consts::PI * fc / fs;
+        let alpha = w0.sin() / (2.0 * q);
+        let (c, a0) = (w0.cos(), 1.0 + alpha);
+        Self {
+            b: [(1.0 + c) / 2.0 / a0, -(1.0 + c) / a0, (1.0 + c) / 2.0 / a0],
+            a: [-2.0 * c / a0, (1.0 - alpha) / a0],
+            z: [0.0; 2],
+        }
+    }
+
     pub fn process(&mut self, x: f64) -> f64 {
         let y = self.b[0] * x + self.z[0];
         self.z[0] = self.b[1] * x - self.a[0] * y + self.z[1];
@@ -671,6 +683,16 @@ mod tests {
         }
     }
     const AIR: Gas = Gas { c: 343.0, rho: 1.2 };
+
+    #[test]
+    fn a_butterworth_high_pass_by_its_closed_form() {
+        // |H(f)|² = (f/fc)⁴ / (1 + (f/fc)⁴) for Q = 1/√2, far below Nyquist (bilinear warping
+        // at 96 kHz is < 0.1 dB here): −3.01 dB at fc, −24.10 dB at fc/4, 0 dB well above
+        let h = Biquad::highpass(734.0, std::f64::consts::FRAC_1_SQRT_2, 96_000.0);
+        assert!((h.response_db(734.0, 96_000.0) + 3.01).abs() < 0.05);
+        assert!((h.response_db(183.5, 96_000.0) + 24.10).abs() < 0.1);
+        assert!(h.response_db(8000.0, 96_000.0).abs() < 0.05);
+    }
 
     #[test]
     fn a_designed_silencer_is_remembered_and_the_same() {
