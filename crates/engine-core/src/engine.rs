@@ -1585,6 +1585,19 @@ const DASHPOT_TAU_S: f64 = 1.0;
 const DECEL_AIR_BASE_RPM: f64 = 1500.0;
 const FUEL_REACTIVATION_ABOVE_IDLE_RPM: f64 = 300.0;
 const FUEL_CUT_HYSTERESIS_RPM: f64 = 100.0;
+
+/// How long the throttle must stay shut before the overrun cut-off comes, s, at `rpm`: the ECU's
+/// delay table, short near the cut-off speed and long near the redline "to allow gear changes to
+/// occur before cutting" (Haltech, "Cut Delay Time": about 200-500 ms at low speed, 2500-3000 ms
+/// at high speed). Their midpoints at the cut-off speed and the redline, linear between and held
+/// past either (ESTIMATE: one tuner's typical calibration, not a measured car).
+fn overrun_cut_delay_s(def: &EngineDef, rpm: f64) -> f64 {
+    const LOW_S: f64 = 0.35;
+    const HIGH_S: f64 = 2.75;
+    let lo = def.overrun_fuel_cut_rpm;
+    let span = (def.redline_rpm - lo).max(1.0);
+    LOW_S + (HIGH_S - LOW_S) * ((rpm - lo) / span).clamp(0.0, 1.0)
+}
 /// The speed limiter cuts injection at the redline and resumes it this far below (Bosch,
 /// *Gasoline Engine Management*, "engine-speed limitation"): a floored engine bounces off the
 /// limiter in a rhythm instead of firing at random cylinders. Estimate.
@@ -2240,6 +2253,11 @@ pub struct Engine {
     /// The ECU's injection cut-offs, each with its hysteresis: overrun (pedal released at
     /// speed) and the speed limiter.
     overrun_cut: bool,
+    /// How long the throttle has been shut, s (0 while open): the overrun cut waits for it.
+    throttle_shut_s: f64,
+    /// Pedal up over the cut-off speed, the cut not yet come (`overrun_cut_delay_s`): already
+    /// decelerating, the ECU leaves the idle loop alone.
+    overrun_wait: bool,
     /// The ECU's air channel during a torque cut: the trapped charge it last saw, as a share
     /// of the charge before the cut (`charge_ref`, kg), and the trim on the pedal's throttle
     /// its charge loop holds.
@@ -2577,6 +2595,8 @@ impl Engine {
             plate: 0.0,
             iac_last_rpm: initial_rpm,
             overrun_cut: false,
+            throttle_shut_s: 0.0,
+            overrun_wait: false,
             charge_ref: 0.0,
             charge_share: 1.0,
             air_trim: 1.0,
@@ -2739,7 +2759,12 @@ impl Engine {
         let raw = (rpm - self.iac_last_rpm) / dt;
         self.iac_last_rpm = rpm;
         self.iac_rate += (raw - self.iac_rate) * (dt / IAC_RATE_TAU_S).min(1.0);
-        if c.throttle > 0.01 || !c.ignition || rpm < 0.4 * target || self.overrun_cut {
+        if c.throttle > 0.01
+            || !c.ignition
+            || rpm < 0.4 * target
+            || self.overrun_cut
+            || self.overrun_wait
+        {
             self.idle_spark_deg = self.slew_spark(0.0, dt);
             return;
         }
@@ -2812,8 +2837,13 @@ impl Engine {
 
     /// Update the injection cut-offs from the speed and the pedal, each switching off only once
     /// the speed has crossed back past its hysteresis.
-    fn fuel_cutoffs(&mut self, throttle: f64) {
+    fn fuel_cutoffs(&mut self, throttle: f64, dt: f64) {
         let rpm = self.rpm();
+        self.throttle_shut_s = if throttle <= 0.01 {
+            self.throttle_shut_s + dt
+        } else {
+            0.0
+        };
         let cut = self.def.overrun_fuel_cut_rpm;
         let resume = (self.def.idle_rpm + FUEL_REACTIVATION_ABOVE_IDLE_RPM)
             .min(cut - FUEL_CUT_HYSTERESIS_RPM);
@@ -2821,7 +2851,13 @@ impl Engine {
         self.overrun_cut = self.def.combustion.is_spark()
             && cut > 0.0
             && throttle <= 0.01
-            && (rpm > cut || (self.overrun_cut && rpm > resume));
+            && ((rpm > cut && self.throttle_shut_s >= overrun_cut_delay_s(&self.def, rpm))
+                || (self.overrun_cut && rpm > resume));
+        self.overrun_wait = !self.overrun_cut
+            && self.def.combustion.is_spark()
+            && cut > 0.0
+            && throttle <= 0.01
+            && rpm > cut;
         let red = if self.def.shutoff_rpm > 0.0 {
             self.def.shutoff_rpm
         } else {
@@ -2873,7 +2909,8 @@ impl Engine {
         }
         let t = throttle.clamp(0.0, 1.0);
         // The idle bypass, trimmed by the idle-speed control. While the overrun cut-off holds,
-        // the ECU opens it in proportion to speed above DECEL_AIR_BASE_RPM (its deceleration air):
+        // the ECU opens it in proportion to speed above DECEL_AIR_BASE_RPM (its deceleration air;
+        // not while the cut waits to come: air with the fuel on would hold the speed up):
         // the engine's pumping grows with speed, so the manifold holds ≈ 0.2–0.3 bar instead of
         // being pulled to a near vacuum that drives violent exhaust reversion.
         let decel = if self.overrun_cut {
@@ -2921,7 +2958,7 @@ impl Engine {
         };
         let demand = c.throttle * self.air_trim;
         // the ECU first decides whether it injects, then trims the idle accordingly
-        self.fuel_cutoffs(c.throttle);
+        self.fuel_cutoffs(c.throttle, dt);
         self.idle_control(dt, c);
         self.plate_step(demand, dt);
         self.dashpot_step(self.plate, dt);
@@ -6550,7 +6587,8 @@ mod tests {
         // redline 7000 → the limiter resumes at 6800.
         let at = |e: &mut Engine, rpm: f64, throttle: f64| {
             e.omega = rpm_to_rad_s(rpm);
-            e.fuel_cutoffs(throttle);
+            // a step long past the ECU's wait (`overrun_cut_delay_s`): the hysteresis alone
+            e.fuel_cutoffs(throttle, 10.0);
             (e.overrun_cut, e.limiter_cut)
         };
         let mut e = Engine::new(EngineDef::inline4(), 800.0, 1);
@@ -8915,6 +8953,52 @@ mod tests {
     }
 
     #[test]
+    fn the_overrun_cut_waits_longer_the_faster_the_engine() {
+        // Haltech's "Cut Delay Time" table (support.haltech.com, decel-cut-delay-time): about
+        // 200-500 ms at low speed, 2500-3000 ms at high speed, "to allow gear changes to occur
+        // before cutting". Their midpoints, 0.35 s at the cut-off speed and 2.75 s at the
+        // redline, linear between: an inline-4 (cut 1500, redline 7000) at 4250 rev/min waits
+        // 0.35 + 2.4·2750/5500 = 1.55 s (hand)
+        let d = EngineDef::inline4();
+        assert!((overrun_cut_delay_s(&d, 1500.0) - 0.35).abs() < 1e-12);
+        assert!((overrun_cut_delay_s(&d, 4250.0) - 1.55).abs() < 1e-12);
+        assert!((overrun_cut_delay_s(&d, 7000.0) - 2.75).abs() < 1e-12);
+        assert!(
+            (overrun_cut_delay_s(&d, 9000.0) - 2.75).abs() < 1e-12,
+            "held past the redline"
+        );
+    }
+
+    #[test]
+    fn a_throttle_flickering_shut_does_not_cut_the_fuel() {
+        // A driver feathering the pedal through a clutch take-up closes it for a few tens of
+        // milliseconds at a time: the ECU waits (`overrun_cut_delay_s`) before cutting. At 4000
+        // rpm, over the cut-off speed, a throttle shut 40 ms of every 100 ms keeps every cylinder
+        // firing; shut for good, the cut comes once the delay has passed.
+        let mut e = Engine::new(EngineDef::inline4(), 4000.0, 1);
+        let mut c = Controls {
+            hold_rpm: Some(4000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.2, &Controls { throttle: 0.2, ..c });
+        let n = e.combustions();
+        for _ in 0..10 {
+            c.throttle = 0.0;
+            run(&mut e, 0.04, &c);
+            c.throttle = 0.05;
+            run(&mut e, 0.06, &c);
+        }
+        // 1 s at 4000 rpm: 4 cylinders × 33.3 cycles
+        assert!(e.combustions() - n > 120, "{} fired", e.combustions() - n);
+        c.throttle = 0.0;
+        let wait = overrun_cut_delay_s(&e.def, 4000.0);
+        run(&mut e, wait + 0.1, &c);
+        let n = e.combustions();
+        run(&mut e, 0.3, &c);
+        assert_eq!(e.combustions() - n, 0, "shut for good: cut");
+    }
+
+    #[test]
     fn overrun_cuts_fuel_above_the_threshold_only() {
         // Deceleration fuel cut-off: closed throttle above `overrun_fuel_cut_rpm` → no combustion;
         // at idle (below it) the engine keeps firing.
@@ -8925,7 +9009,8 @@ mod tests {
                 hold_rpm: Some(rpm),
                 ..Controls::default()
             };
-            run(&mut e, 0.2, &c);
+            // past the ECU's wait (`overrun_cut_delay_s`)
+            run(&mut e, 2.0, &c);
             let n = e.combustions();
             run(&mut e, 0.3, &c);
             e.combustions() - n
@@ -9079,7 +9164,8 @@ mod tests {
                 hold_rpm: Some(7000.0),
                 ..Controls::default()
             };
-            run(&mut e, 0.5, &c);
+            // past the ECU's wait for the cut (`overrun_cut_delay_s`, 2.75 s at the redline)
+            run(&mut e, 3.5, &c);
             let map = e.plenum_pressure_pa() / 1e5;
             assert!(
                 (0.12..0.45).contains(&map),
