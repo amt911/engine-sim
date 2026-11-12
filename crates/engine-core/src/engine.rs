@@ -1488,6 +1488,9 @@ pub struct Controls {
     /// [`MAX_RETARD_DEG`]). A full cut asks for no torque: a closed throttle at speed, which
     /// the overrun cut-off answers by cutting the fuel. Default 0.
     pub torque_cut: f64,
+    /// What the vehicle hands the engine for the gearbox's noise ([`crate::gear_noise`]); `None`
+    /// (no vehicle: the dyno, a bare engine) keeps the gearbox silent. Default `None`.
+    pub drive: Option<crate::gear_noise::DriveState>,
 }
 
 impl Default for Controls {
@@ -1500,6 +1503,7 @@ impl Default for Controls {
             hold_rpm: None,
             extra_inertia_kgm2: 0.0,
             torque_cut: 0.0,
+            drive: None,
         }
     }
 }
@@ -2371,6 +2375,11 @@ pub struct Engine {
     /// The blow-off valve's jet ([`crate::jet_noise`]).
     bov_jet: JetNoise,
     compressor_tone: crate::turbo::CompressorTone,
+    gearbox_noise: crate::gear_noise::GearboxNoise,
+    /// The car the simulation drives, whose gearbox the noise follows; the engine's own car
+    /// (`def.vehicle`) keeps placing the engine for the listener.
+    driven_vehicle: crate::drivetrain::VehicleDef,
+    drive_seen: Option<crate::gear_noise::DriveState>,
     /// The exhaust's mean-flow losses after the collector (from its segments).
     exit_losses: Option<crate::exhaust::ExitLosses>,
     /// Mean exit Mach number of each tail (its open end absorbs sound with it).
@@ -2554,6 +2563,8 @@ impl Engine {
                 cs
             })
             .collect();
+        let gearbox_noise = crate::gear_noise::GearboxNoise::new(&def.vehicle);
+        let driven_vehicle = def.vehicle.clone();
         let mut e = Self {
             plenum: GasVolume::at(ATM_PA, AMBIENT_K, def.plenum_volume_m3),
             def,
@@ -2640,6 +2651,9 @@ impl Engine {
             turbo_mean: (0.0, crate::intake_fv::AMBIENT_T_K, 0.0),
             bov_jet: JetNoise::new(seed.wrapping_add(0xB0F)),
             compressor_tone: crate::turbo::CompressorTone::default(),
+            gearbox_noise,
+            driven_vehicle,
+            drive_seen: None,
             exit_losses: None,
             tail_mach: Vec::new(),
             cyl_mean_flow: Vec::new(),
@@ -2904,6 +2918,7 @@ impl Engine {
 
     /// Advance by `dt` seconds; returns the raw acoustic source sample (Pa).
     pub fn step(&mut self, dt: f64, c: &Controls) -> f64 {
+        self.drive_seen = c.drive;
         let g = self.def.geometry;
         // each chamber's cycle angle: the crank's, or ⅔ of a Wankel's eccentric shaft
         let shaft_k = self.def.chamber_ratio();
@@ -4128,7 +4143,15 @@ impl Engine {
                     }
                     _ => 0.0,
                 };
-                rest + l.from_engine_at(n_banks, at_mouth + bov + whine)
+                // the gearbox's whine and rattle through its housing, heard from the block
+                let gears = match &c.drive {
+                    Some(d) if snd.gear_noise > 0.0 => {
+                        let p = self.gearbox_noise.step(&self.driven_vehicle, d, dt);
+                        snd.gear_noise * l.spread_from_1m_at(n_banks, p)
+                    }
+                    _ => 0.0,
+                };
+                rest + l.from_engine_at(n_banks, at_mouth + bov + whine + gears)
             }
             None => 0.0,
         };
@@ -4445,6 +4468,14 @@ impl Engine {
 
     pub fn rpm(&self) -> f64 {
         rad_s_to_rpm(self.omega)
+    }
+    /// The drive the last step was handed (see [`Controls::drive`]).
+    pub fn last_drive(&self) -> Option<crate::gear_noise::DriveState> {
+        self.drive_seen
+    }
+    /// Swap the vehicle whose gearbox this engine's noise follows.
+    pub fn set_driven_vehicle(&mut self, v: crate::drivetrain::VehicleDef) {
+        self.driven_vehicle = v;
     }
     /// Crank angle in degrees within the 720° cycle.
     pub fn crank_deg(&self) -> f64 {
@@ -5584,6 +5615,91 @@ mod tests {
         let expected = 6.0 * rpm / 60.0;
         assert!(expected > 1000.0, "the shaft spins: {rpm} rpm");
         assert!((f / expected - 1.0).abs() < 0.05, "{f} Hz vs {expected} Hz");
+    }
+
+    /// The sound of `e` at 192 kHz for `secs` with `hold_rpm` held, `drive` fed from the engine's
+    /// own torque and speed (the clutch locked) in `gear`.
+    fn driven_sound(mut e: Engine, rpm: f64, throttle: f64, gear: usize, secs: f64) -> Vec<f64> {
+        let dt = 1.0 / 192_000.0;
+        // let the pressure waves and the torque average settle
+        let warm = Controls {
+            throttle,
+            hold_rpm: Some(rpm),
+            ..Controls::default()
+        };
+        run(&mut e, 0.4, &warm);
+        (0..(secs / dt) as usize)
+            .map(|_| {
+                let c = Controls {
+                    drive: Some(crate::gear_noise::DriveState {
+                        gear,
+                        input_omega: rpm * 2.0 * PI / 60.0,
+                        input_torque_nm: e.torque_nm(),
+                        clutch_locked: true,
+                    }),
+                    ..warm
+                };
+                e.step(dt, &c)
+            })
+            .collect()
+    }
+
+    fn gear_difference(
+        d: EngineDef,
+        rpm: f64,
+        throttle: f64,
+        gear: usize,
+        secs: f64,
+    ) -> (Vec<f64>, Vec<f64>) {
+        let sound = |gain: f64| {
+            let mut d = d.clone();
+            d.sound.gear_noise = gain;
+            driven_sound(Engine::new(d, rpm, 1), rpm, throttle, gear, secs)
+        };
+        let (on, off) = (sound(1.0), sound(0.0));
+        let diff = on.iter().zip(&off).map(|(a, b)| a - b).collect();
+        (diff, off)
+    }
+
+    #[test]
+    fn the_driven_cars_gearbox_leaves_the_engines_own_car_alone() {
+        // the engine's own car places it for the listener (engine_ahead_m, engine bay): the
+        // gearbox the simulation drives must not move it. A default car (0.9 m, no bay) handed
+        // to the LFA once changed its sound by 0.2 dB (the orders ratchet in engine-app).
+        let def = EngineDef::lfa_v10();
+        let own = def.vehicle.clone();
+        let mut e = Engine::new(def, 3000.0, 1);
+        let driven = crate::drivetrain::VehicleDef::default();
+        assert_ne!(driven, own, "the fixture needs a different car");
+        e.set_driven_vehicle(driven);
+        assert_eq!(e.def().vehicle, own);
+    }
+
+    #[test]
+    fn the_engine_carries_the_gearbox_whine() {
+        // inline4's 3rd is 1.36: 60 / 2.36 = 25.4 -> 25 input teeth; 3000 rpm = 50 rev/s:
+        // 25 · 50 = 1250 Hz
+        let (diff, _) = gear_difference(EngineDef::inline4(), 3000.0, 0.5, 3, 1.0);
+        let p = |hz| crate::gear_noise::tests::goertzel(&diff, hz, 192_000.0);
+        for off in [-100.0, 100.0] {
+            let margin = 10.0 * (p(1250.0) / p(1250.0 + off)).log10();
+            assert!(margin >= 20.0, "{off}: {margin} dB");
+        }
+    }
+
+    #[test]
+    fn a_road_box_whines_under_the_engine() {
+        // Sellgren & Akerblom (DESIGN 2004, Dubrovnik): the design target for a road gearbox's
+        // whine is 15 dB under the other sources. A plausibility check of the physics, not a fit.
+        let (diff, rest) = gear_difference(EngineDef::honda_k20c1(), 2500.0, 0.3, 4, 2.0);
+        let rms = |x: &[f64]| (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
+        assert!(rms(&diff) > 0.0, "the gearbox made no sound at all");
+        let margin = 20.0 * (rms(&rest) / rms(&diff)).log10();
+        eprintln!("gearbox whine margin under the rest: {margin} dB");
+        assert!(
+            margin >= 15.0,
+            "the whine is only {margin} dB under the engine"
+        );
     }
 
     #[test]

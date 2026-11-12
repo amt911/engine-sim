@@ -110,6 +110,13 @@ impl Simulation {
         seed: u64,
         quality: Quality,
     ) -> Self {
+        let mut engine = Engine::with_fidelity(
+            quality.apply(&def),
+            IDLE_START_RPM,
+            seed,
+            quality.fidelity(),
+        );
+        engine.set_driven_vehicle(vehicle.clone());
         // the car's driveline needs the crank's own inertia (the shuffle's other mass)
         let mut car = Vehicle::new(vehicle);
         car.set_engine_inertia(def.flywheel_inertia_kgm2);
@@ -118,12 +125,7 @@ impl Simulation {
             drive: DriveInput::default(),
             voice: voice_for(&def, sample_rate),
             anti_alias: anti_alias(sample_rate, quality),
-            engine: Engine::with_fidelity(
-                quality.apply(&def),
-                IDLE_START_RPM,
-                seed,
-                quality.fidelity(),
-            ),
+            engine,
             def,
             quality,
             sample_rate,
@@ -159,6 +161,7 @@ impl Simulation {
     }
     /// Swap the car (it stops, in neutral, so the new gearing cannot jump).
     pub fn replace_vehicle(&mut self, def: VehicleDef) {
+        self.engine.set_driven_vehicle(def.clone());
         self.vehicle = Vehicle::new(def);
         self.vehicle
             .set_engine_inertia(self.def.flywheel_inertia_kgm2);
@@ -256,6 +259,7 @@ impl Simulation {
                 let load = self.vehicle.step(dt, omega, self.drive.brake);
                 c.load_torque_nm = self.controls.load_torque_nm + load.torque_nm;
                 c.extra_inertia_kgm2 = self.controls.extra_inertia_kgm2 + load.inertia_kgm2;
+                c.drive = Some(self.vehicle.drive_state(omega, &load));
                 self.steps.push(self.engine.step(dt, &c));
             }
             let c0 = self.engine.cylinder(0);
@@ -988,6 +992,20 @@ pub(crate) mod tests {
         render_secs(&mut sim, 0.05);
         sim.drive.clutch_pedal = false;
         sim
+    }
+
+    #[test]
+    fn the_drive_reaches_the_engine() {
+        let mut sim = driven(EngineDef::inline4(), VehicleDef::inline4(), 2, 0.5);
+        render_secs(&mut sim, 1.0);
+        let seen = sim
+            .engine()
+            .last_drive()
+            .expect("the engine was handed the drive");
+        assert_eq!(seen.gear, sim.vehicle().gear());
+        assert_eq!(seen.gear, 2);
+        assert_eq!(seen.clutch_locked, sim.vehicle().locked());
+        assert!(seen.input_omega > 50.0, "{}", seen.input_omega);
     }
 
     #[test]

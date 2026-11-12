@@ -78,6 +78,10 @@ pub struct VehicleDef {
     /// the head radiates into it ([`crate::engine_bay`]). Like every field, files without it take
     /// the default car's (a road car's bay).
     pub engine_bay: Option<crate::engine_bay::EngineBay>,
+    /// The gearbox's gear pairs and housing, for its whine and rattle
+    /// ([`crate::gear_noise`]); a default road-car box when the file has none.
+    #[serde(skip_serializing_if = "crate::gear_noise::GearboxDef::is_default")]
+    pub gearbox: crate::gear_noise::GearboxDef,
     /// First torsional mode of the driveline in first gear ("shuffle"), Hz: the half-shafts,
     /// tyres and clutch damper are a spring between the crank and the car, 2–7 Hz on road cars
     /// (Farshidianfar et al., *Int. J. Heavy Vehicle Systems*, 2002; 1–10 Hz by gear and
@@ -114,6 +118,7 @@ impl VehicleDef {
             // the engine sits ahead of a rear-side silencer's tip (ESTIMATE)
             engine_ahead_m: 0.9,
             engine_bay: None,
+            gearbox: crate::gear_noise::GearboxDef::default(),
             shuffle_hz: 3.5,
             shuffle_damping: 0.15,
         }
@@ -139,6 +144,7 @@ impl VehicleDef {
             // front engine over the front axle: 2.6 m wheelbase + 0.8 m rear overhang (ESTIMATE)
             engine_ahead_m: 3.4,
             engine_bay: Some(crate::engine_bay::EngineBay::default()),
+            gearbox: crate::gear_noise::GearboxDef::default(),
             shuffle_hz: 3.5,
             shuffle_damping: 0.15,
         }
@@ -166,6 +172,7 @@ impl VehicleDef {
             // front engine over the front axle: 2.7 m wheelbase + 0.9 m rear overhang (ESTIMATE)
             engine_ahead_m: 3.6,
             engine_bay: Some(crate::engine_bay::EngineBay::default()),
+            gearbox: crate::gear_noise::GearboxDef::default(),
             shuffle_hz: 3.5,
             shuffle_damping: 0.15,
         }
@@ -195,6 +202,7 @@ impl VehicleDef {
             // front-mid engine ~0.35 m behind the front axle: 0.96 m rear overhang + 2.605 m wheelbase − 0.35 m (Lexus GB, 2009-10-21; the 0.35 m an ESTIMATE)
             engine_ahead_m: 3.2,
             engine_bay: Some(crate::engine_bay::EngineBay::default()),
+            gearbox: crate::gear_noise::GearboxDef::default(),
             shuffle_hz: 3.5,
             shuffle_damping: 0.15,
         }
@@ -221,6 +229,7 @@ impl VehicleDef {
             // mid engine, its centre ~0.7 m ahead of the rear axle, ~1.0 m rear overhang (ESTIMATE)
             engine_ahead_m: 1.7,
             engine_bay: Some(crate::engine_bay::EngineBay::default()),
+            gearbox: crate::gear_noise::GearboxDef::default(),
             shuffle_hz: 3.5,
             shuffle_damping: 0.15,
         }
@@ -247,6 +256,7 @@ impl VehicleDef {
             // front-mid engine just behind the front axle: ~2.69 m wheelbase + ~1.0 m rear overhang − 0.2 m (ESTIMATE)
             engine_ahead_m: 3.5,
             engine_bay: Some(crate::engine_bay::EngineBay::default()),
+            gearbox: crate::gear_noise::GearboxDef::default(),
             shuffle_hz: 3.5,
             shuffle_damping: 0.15,
         }
@@ -432,6 +442,20 @@ impl Vehicle {
         self.speed_m_s = (self.speed_m_s - f / self.effective_mass() * dt).max(0.0);
     }
 
+    /// What the gearbox sees now, for its noise ([`crate::gear_noise::GearboxNoise`]): the gear,
+    /// the instantaneous crank speed, and the torque through the clutch of the last
+    /// [`Self::step`] (`load.torque_nm`): locked, the driveline spring's; slipping, the clutch's.
+    pub fn drive_state(&self, engine_omega: f64, load: &Load) -> crate::gear_noise::DriveState {
+        crate::gear_noise::DriveState {
+            gear: self.gear,
+            input_omega: engine_omega,
+            input_torque_nm: load.torque_nm,
+            // in neutral nothing is "locked" for the car, but a released clutch still ties the
+            // input shaft (and the box's loose gears) to the crank
+            clutch_locked: self.locked || (self.gear == 0 && self.clutch >= 0.99),
+        }
+    }
+
     /// Advance by `dt` given the engine speed (rad/s) and brake pedal (0..1). Returns the
     /// load on the crank for the engine's next step.
     pub fn step(&mut self, dt: f64, engine_omega: f64, brake: f64) -> Load {
@@ -538,9 +562,46 @@ mod tests {
             shift_time_s: 0.0,
             engine_ahead_m: 0.0,
             engine_bay: None,
+            gearbox: crate::gear_noise::GearboxDef::default(),
             shuffle_hz: 3.5,
             shuffle_damping: 0.15,
         }
+    }
+
+    #[test]
+    fn the_drive_state_carries_the_gear_the_lock_and_the_torque() {
+        let mut v = in_first();
+        v.set_speed(5.0);
+        let omega = 5.0 / 0.3 * 12.0 + 1.0;
+        let load = v.step(1e-4, omega, 0.0);
+        let s = v.drive_state(omega, &load);
+        assert_eq!((s.gear, s.input_omega), (1, omega));
+        assert_eq!(s.clutch_locked, v.locked());
+        // slipping: the clutch torque is the load on the crank
+        assert!(!s.clutch_locked);
+        assert_eq!(s.input_torque_nm, load.torque_nm);
+        // neutral: gear 0
+        let n = Vehicle::new(fixture());
+        assert_eq!(n.drive_state(100.0, &Load::default()).gear, 0);
+    }
+
+    #[test]
+    fn in_neutral_the_input_shaft_turns_with_the_crank_when_the_clutch_is_up() {
+        // the loose gears of a box in neutral rattle on the input shaft only while the clutch
+        // ties it to the crank; with the pedal down it is free (Singh et al. 1989)
+        let mut v = Vehicle::new(fixture());
+        v.set_clutch_engage_s(0.0);
+        v.set_clutch(1.0);
+        let load = v.step(1e-3, 85.0, 0.0);
+        let up = v.drive_state(85.0, &load);
+        assert_eq!(up.gear, 0);
+        assert!(up.clutch_locked, "pedal up in neutral");
+        v.set_clutch(0.0);
+        let mut load = Load::default();
+        for _ in 0..300 {
+            load = v.step(1e-2, 85.0, 0.0);
+        }
+        assert!(!v.drive_state(85.0, &load).clutch_locked, "pedal down");
     }
 
     fn in_first() -> Vehicle {
