@@ -110,6 +110,7 @@ engine:
     chamber_ring: 1.0
     block_modes: 0.0
     blow_off: 1.0
+    throttle_hiss: 1.0
     compressor_whine: 1.0
     reverb: 0.0
     leveling: 0.0

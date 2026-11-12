@@ -1878,6 +1878,26 @@ fn bov_jet(s: &crate::turbo::TurboState, area: f64) -> (f64, f64, f64) {
     (s.bov_m_dot / (rho * area), (4.0 * area / PI).sqrt(), rho)
 }
 
+/// The jet a throttle blows into its manifold, fully expanded: (velocity m/s, diameter m,
+/// density kg/m³) of the air `m_dot` kg/s drawn from `p_up` Pa and `t_up` K down to `p_down`.
+/// Mixing noise is scaled on the fully expanded jet even when the throttle chokes (SAE ARP876;
+/// Tanna, *J. Sound Vib.* 50(3), 1977): isentropic Mⱼ² = 2/(γ−1)·((p_up/p_down)^((γ−1)/γ) − 1),
+/// Tⱼ = T_up/(1 + (γ−1)/2·Mⱼ²), and the area that carries `m_dot` at ρⱼVⱼ. No drop or no flow:
+/// no jet.
+fn throttle_jet(p_up: f64, t_up: f64, p_down: f64, m_dot: f64) -> (f64, f64, f64) {
+    use crate::gas::{GAMMA, R_AIR};
+    if m_dot <= 0.0 || p_down <= 0.0 || p_up <= p_down {
+        return (0.0, 0.0, 0.0);
+    }
+    let g1 = GAMMA - 1.0;
+    let m2 = 2.0 / g1 * ((p_up / p_down).powf(g1 / GAMMA) - 1.0);
+    let t = t_up / (1.0 + 0.5 * g1 * m2);
+    let v = m2.sqrt() * (GAMMA * R_AIR * t).sqrt();
+    let rho = p_down / (R_AIR * t);
+    let area = m_dot / (rho * v);
+    (v, (4.0 * area / PI).sqrt(), rho)
+}
+
 /// The acoustic velocity a tail's pressure swing `p` Pa drives out of each of its `outlets`
 /// exits of impedance `z` (Pa·s/m): u = p/(z·n), the swing shared between them.
 fn tail_swing_velocity(p: f64, z: f64, outlets: f64) -> f64 {
@@ -2333,6 +2353,8 @@ pub struct Engine {
     pub(crate) impacts_this_step: usize,
     /// What the structure radiated this step, Pa at 1 m, all banks (for tests and probes).
     pub(crate) structure_out: f64,
+    /// The throttle's hiss at 1 m after the air cleaner, Pa (tests).
+    pub(crate) throttle_hiss_out: f64,
     /// The engine bay round each bank's side of the block ([`crate::engine_bay`]), built with
     /// the listener.
     bay: Vec<crate::engine_bay::BayFilter>,
@@ -2370,6 +2392,9 @@ pub struct Engine {
     turbo_mean: (f64, f64, f64),
     /// The blow-off valve's jet ([`crate::jet_noise`]).
     bov_jet: JetNoise,
+    /// The throttle's jet ([`throttle_jet`]) and its own path through the air cleaner.
+    throttle_noise: JetNoise,
+    hiss_cleaner: Option<(f64, crate::air_cleaner::AirCleaner)>,
     compressor_tone: crate::turbo::CompressorTone,
     /// The exhaust's mean-flow losses after the collector (from its segments).
     exit_losses: Option<crate::exhaust::ExitLosses>,
@@ -2620,6 +2645,7 @@ impl Engine {
             combustion_power: (0.0, 0, 0.0),
             impacts_this_step: 0,
             structure_out: 0.0,
+            throttle_hiss_out: 0.0,
             bay: Vec::new(),
             texture_signal: 0.0,
             jets: Vec::new(),
@@ -2639,6 +2665,8 @@ impl Engine {
             compressor_flow: 0.0,
             turbo_mean: (0.0, crate::intake_fv::AMBIENT_T_K, 0.0),
             bov_jet: JetNoise::new(seed.wrapping_add(0xB0F)),
+            throttle_noise: JetNoise::new(seed.wrapping_add(0x7417)),
+            hiss_cleaner: None,
             compressor_tone: crate::turbo::CompressorTone::default(),
             exit_losses: None,
             tail_mach: Vec::new(),
@@ -3828,6 +3856,39 @@ impl Engine {
             }
             None => heard,
         };
+        // The throttle's own jet: the air it lets through, fully expanded from the supply down
+        // to the manifold (`throttle_jet`), its mixing noise at 1 m as the tails' and the
+        // blow-off valve's are. Half its power runs up the throttle body to the air cleaner and
+        // out of its mouth (the other half into the manifold, inside the engine); through the
+        // cleaner as the mouth's flow goes. Individual throttles: one jet each, the flow shared.
+        let throttle_hiss = if self.def.sound.throttle_hiss > 0.0 {
+            let (p_up, t_up) = self
+                .turbo_seen
+                .map_or((self.atm.pressure_pa, self.atm.temperature_k), |s| {
+                    (s.boost_pa, s.boost_t_k)
+                });
+            let n = if self.def.intake.individual_throttles {
+                self.cyl.len().max(1) as f64
+            } else {
+                1.0
+            };
+            let (v, d, rho) =
+                throttle_jet(p_up, t_up, self.plenum_pressure_pa(), drawn.max(0.0) / n);
+            let p = self.throttle_noise.step(v, d, rho, 1.0, dt) * (0.5 * n).sqrt();
+            match cleaner {
+                Some(def) => {
+                    if self.hiss_cleaner.as_ref().is_none_or(|c| c.0 != dt) {
+                        self.hiss_cleaner =
+                            Some((dt, crate::air_cleaner::AirCleaner::new(&def, dt)));
+                    }
+                    self.hiss_cleaner.as_mut().map_or(p, |c| c.1.process(p))
+                }
+                None => p,
+            }
+        } else {
+            0.0
+        };
+        self.throttle_hiss_out = throttle_hiss;
         let snd = &self.def.sound;
         let intake_flow = -snd.intake * heard / AIR_DENSITY;
         self.texture_signal = intake_flow;
@@ -4128,7 +4189,8 @@ impl Engine {
                     }
                     _ => 0.0,
                 };
-                rest + l.from_engine_at(n_banks, at_mouth + bov + whine)
+                let hiss = snd.throttle_hiss * l.spread_from_1m_at(n_banks, throttle_hiss);
+                rest + l.from_engine_at(n_banks, at_mouth + bov + whine + hiss)
             }
             None => 0.0,
         };
@@ -4548,6 +4610,50 @@ impl EngineDef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_shut_throttle_hisses_and_an_open_one_hardly() {
+        // The jet's mixing noise goes as Vⱼ^7.5 (SAE ARP876): shut at idle the throttle chokes
+        // (Vⱼ ≈ 416 m/s fully expanded at a third of an atmosphere, 4 g/s), wide open at 3000
+        // rev/min it drops ~2 kPa (Vⱼ ≈ 60 m/s, ~30× the flow): 75·log(60/416) = −63 dB, the
+        // area +15 dB, ≈ −48 dB. At least 30 dB apart, and the idle's not silent.
+        let hiss = |rpm: f64, throttle: f64| {
+            let mut e = Engine::new(EngineDef::inline4(), rpm, 1);
+            let c = Controls {
+                throttle,
+                hold_rpm: Some(rpm),
+                ..Controls::default()
+            };
+            run(&mut e, 1.0, &c);
+            let n = (0.5 / DT) as usize;
+            let s: f64 = (0..n)
+                .map(|_| {
+                    e.step(DT, &c);
+                    e.throttle_hiss_out.powi(2)
+                })
+                .sum();
+            (s / n as f64).sqrt()
+        };
+        let (idle, open) = (hiss(800.0, 0.0), hiss(3000.0, 1.0));
+        assert!(idle > 1e-3, "idle hiss {idle} Pa at 1 m");
+        let gap = 20.0 * (idle / open.max(1e-30)).log10();
+        assert!(gap > 30.0, "idle {idle} open {open}: {gap} dB");
+    }
+
+    #[test]
+    fn a_throttle_at_idle_blows_a_fully_expanded_jet_by_hand() {
+        // 101 325 → 30 000 Pa at 293 K: (p_up/p_down)^(2/7) = 3.37750^0.285714 = 1.41590,
+        // Mⱼ² = 5·0.41590 = 2.07950, Mⱼ = 1.44205; Tⱼ = 293/1.41590 = 206.935 K;
+        // cⱼ = √(1.4·287·206.935) = 288.35 m/s, Vⱼ = 415.83 m/s; ρⱼ = 30 000/(287·206.935) =
+        // 0.50514 kg/m³; 4 g/s: A = 0.004/(0.50514·415.83) = 1.9043e-5 m², d = 4.924 mm
+        let (v, d, rho) = throttle_jet(101_325.0, 293.0, 30_000.0, 0.004);
+        assert!((v - 415.83).abs() < 0.2, "{v}");
+        assert!((d - 4.924e-3).abs() < 2e-6, "{d}");
+        assert!((rho - 0.50514).abs() < 1e-4, "{rho}");
+        // no drop, or no flow: no jet
+        assert_eq!(throttle_jet(101_325.0, 293.0, 101_325.0, 0.004).0, 0.0);
+        assert_eq!(throttle_jet(101_325.0, 293.0, 30_000.0, 0.0).0, 0.0);
+    }
 
     #[test]
     fn every_road_car_carries_a_catalyst_and_silencers_of_ten_swept_volumes() {
@@ -8289,6 +8395,8 @@ mod tests {
             block: 0.0,
             combustion_jitter: 0.0,
             intake: 0.0,
+            // the throttle's hiss leaves by the mouth, not the tails
+            throttle_hiss: 0.0,
             listener_angle_deg: 90.0,
             ..crate::sound::SoundDef::default()
         };
@@ -9008,6 +9116,8 @@ mod tests {
             (s.valve_jet, s.combustion_jitter) = (0.0, 0.0);
             // the impacts strike random points and the duct noise is noise: random sources too
             (s.piston_slap, s.main_bearings, s.duct_flow) = (0.0, 0.0, 0.0);
+            // and the throttle's jet, shut here: its mixing noise is noise
+            s.throttle_hiss = 0.0;
             let rpm = 0.85 * d.redline_rpm;
             let mut e = Engine::new(d, rpm, 1);
             let c = Controls {
