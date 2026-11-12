@@ -4131,13 +4131,6 @@ impl Engine {
                 for (b, &p) in block.iter().enumerate().take(n_banks) {
                     rest += l.from_engine_at(b, l.spread_from_1m_at(b, p));
                 }
-                let at_mouth = l.radiate_mouth_at(n_banks, intake_flow, mouth_area);
-                // a mouth in the bay is heard through its openings ([`EngineBay::intake_inside`])
-                let at_mouth = match self.bay.get_mut(n_banks) {
-                    Some(f) => f.process(at_mouth),
-                    None => at_mouth,
-                };
-                self.intake_heard = at_mouth;
                 // a turbo's blow-off valve venting to the air on a lift-off (a recirculating one
                 // vents into the intake, unheard): the jet of what it lets out,
                 // through its own bore at the delivered air's density (the turbulent mixing
@@ -4160,7 +4153,16 @@ impl Engine {
                     }
                     _ => 0.0,
                 };
-                rest + l.from_engine_at(n_banks, at_mouth + bov + whine)
+                // the turbocharger and its valve sit by the air box: heard with the mouth,
+                // through the bay with it
+                let at_mouth = l.radiate_mouth_at(n_banks, intake_flow, mouth_area) + bov + whine;
+                // a mouth in the bay is heard through its openings ([`EngineBay::intake_inside`])
+                let at_mouth = match self.bay.get_mut(n_banks) {
+                    Some(f) => f.process(at_mouth),
+                    None => at_mouth,
+                };
+                self.intake_heard = at_mouth;
+                rest + l.from_engine_at(n_banks, at_mouth)
             }
             None => 0.0,
         };
@@ -10819,6 +10821,58 @@ mod probe {
             .map(|(a, b)| format!("{:6.1}", 10.0 * (a / b).log10()))
             .collect();
         println!("  tails/flows  {}", tf.join(" "));
+    }
+
+    #[test]
+    fn a_compressor_in_the_bay_is_heard_through_the_bays_loss() {
+        // The turbocharger sits in the engine bay with the air box: its tone leaves through the
+        // bay's openings as the mouth's does, the bay's insertion loss quieter at its frequency
+        // than with the intake drawn in the open (the K20C1 on boost, the mouth's own flow off so
+        // the tone stands alone)
+        let (rpm, dt) = (5000.0, 1.0 / 48_000.0);
+        let heard = |inside: bool| {
+            let mut d = EngineDef::honda_k20c1();
+            d.vehicle.engine_bay.as_mut().unwrap().intake_inside = inside;
+            d.sound.intake = 0.0;
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(rpm),
+                ..Controls::default()
+            };
+            let mut e = Engine::new(d, rpm, 1);
+            for _ in 0..(2.0 / dt) as usize {
+                e.step(dt, &c);
+            }
+            (0..(0.3 / dt) as usize)
+                .map(|_| {
+                    e.step(dt, &c);
+                    e.intake_heard
+                })
+                .collect::<Vec<f64>>()
+        };
+        let amp = |x: &[f64], f: f64| {
+            let w = 2.0 * PI * f * dt;
+            let (re, im) = x
+                .iter()
+                .enumerate()
+                .fold((0.0f64, 0.0f64), |(re, im), (j, v)| {
+                    (re + v * (w * j as f64).cos(), im + v * (w * j as f64).sin())
+                });
+            re.hypot(im)
+        };
+        let (open, closed) = (heard(false), heard(true));
+        // the tone: the strongest line from 2 to 20 kHz of the open one
+        let f = (0..720)
+            .map(|k| 2000.0 + 25.0 * k as f64)
+            .max_by(|a, b| amp(&open, *a).total_cmp(&amp(&open, *b)))
+            .unwrap_or(0.0);
+        assert!(amp(&open, f) > 0.0, "no tone heard at the mouth");
+        let loss = 20.0 * (amp(&open, f) / amp(&closed, f)).log10();
+        let want = crate::engine_bay::EngineBay::default().insertion_loss_db(f);
+        assert!(
+            (loss - want).abs() < 1.5,
+            "{f} Hz: {loss:.2} dB against the bay's {want:.2} dB"
+        );
     }
 
     #[test]
