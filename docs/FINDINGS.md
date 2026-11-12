@@ -1641,3 +1641,15 @@ source is not identified. Phone and YouTube recordings cannot judge below about 
   only +0.6 dB(A) from 4500 to 8000 rpm, every flow source together < 0.1 dB of it. Main passed
   the crescendo check through the open-end flow noise. A rotary also passes twice the flow of a
   four-stroke of its displacement per shaft revolution; the rule sizes it by the displacement.
+
+## YouTube dyno pulls cannot set a crescendo bound: they read flat for every engine (2026-11-12)
+
+Fifteen stock RX-8 videos and twelve more rotary dynos (`target/scratch-refs/yt/rx8`, local) read
+-2.1 to +5.5 dB(A)/octave above half the redline, median +0.7 — under physgate's 3.0. The control
+spoils it: seven naturally aspirated piston dynos from YouTube, measured the same way (pull windows
+read off the spectrogram, speed by harmonic sum, A-weighted 0.25 s frames), read -4.9 to +6.6,
+median +2.7, against +10.6 for the fixed-gain recordings the bound came from. Phone AGC and
+upload loudness processing flatten a pull; four of the RX-8 dynos sit within 2-5 dB over their
+whole length. Screening for dynamic range is not enough. A bound for a family needs fixed-gain
+recordings (sound libraries), not videos. Also: the lowest line of a rotary is the shaft order
+(rpm/60), not the firing order — a 100-330 Hz tracker caught harmonics and short fragments.
