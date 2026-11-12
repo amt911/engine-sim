@@ -201,10 +201,20 @@ impl DelayLine {
         let w = (time - a.t[j]) / (a.t[k] - a.t[j]);
         self.buf[j] + (self.buf[k] - self.buf[j]) * w
     }
+    /// [`Self::arrived`] averaged over the step centred on `time` (eight points, a box of one
+    /// step): the wave integrated over the sample's interval rather than sampled at its instant.
+    /// A shock's front moves continuously with where it falls between two steps, where a point
+    /// read jumped with the grid's phase, a different error every cycle (an aperiodic hiss).
+    fn arrived_over_step(&self, a: &Arrivals, time: f64) -> f64 {
+        const AT: [f64; 8] = [
+            -0.4375, -0.3125, -0.1875, -0.0625, 0.0625, 0.1875, 0.3125, 0.4375,
+        ];
+        AT.iter().map(|d| self.arrived(a, time + d)).sum::<f64>() * 0.125
+    }
     /// The value pushed `delay` steps ago (interpolated). Call before `push` each step.
     pub fn read(&self) -> f64 {
         if let Some(a) = &self.arrivals {
-            return self.arrived(a, a.now);
+            return self.arrived_over_step(a, a.now);
         }
         let n = self.buf.len();
         // index of the value pushed k steps ago (k ≤ whole + 1 < n)
@@ -228,7 +238,7 @@ impl DelayLine {
             return None;
         }
         if let Some(a) = &self.arrivals {
-            return Some(self.arrived(a, a.now + ahead as f64));
+            return Some(self.arrived_over_step(a, a.now + ahead as f64));
         }
         let n = self.buf.len();
         let back = |k: usize| {
@@ -2441,5 +2451,67 @@ mod tests {
                 assert_relative_eq!(*o, t, epsilon = 1e-12);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod periodic_shocks {
+    use super::*;
+
+    /// Energy between the harmonics of `f0` from 8 to 16 kHz over all of `y` (Hann window), in
+    /// dB re the signal's total.
+    fn aperiodic_8_16k(y: &[f64], dt: f64, f0: f64) -> f64 {
+        let n = y.len();
+        let total: f64 = y.iter().map(|v| v * v).sum::<f64>() * 0.375; // Hann's power gain 3/8
+        let bin = 1.0 / (n as f64 * dt);
+        let (mut between, mut f) = (0.0, 8000.0);
+        while f < 16000.0 {
+            let k = (f / f0).round();
+            if (f - k * f0).abs() > 4.0 * bin {
+                let w = 2.0 * std::f64::consts::PI * f * dt;
+                let (mut re, mut im) = (0.0, 0.0);
+                for (j, v) in y.iter().enumerate() {
+                    let h = 0.5 - 0.5 * (2.0 * std::f64::consts::PI * j as f64 / n as f64).cos();
+                    re += v * h * (w * j as f64).cos();
+                    im += v * h * (w * j as f64).sin();
+                }
+                between += 2.0 * (re * re + im * im) / n as f64;
+            }
+            f += 5.0 * bin;
+        }
+        10.0 * (5.0 * between / total).log10()
+    }
+
+    #[test]
+    fn a_periodic_pulse_train_steepens_into_a_periodic_wave() {
+        // A deterministic line fed a periodic input gives a periodic output: whatever the pulses
+        // steepen into, their spectrum is lines at the harmonics. Blowdown-like half-sine pulses,
+        // 60 kPa and 2 ms wide, at 170 Hz (an inline-4's firing at 5100 rpm: 1129.4 steps a
+        // period at 192 kHz, off the grid), through 2 m of 50 mm pipe at 500 m/s, where they turn
+        // into shocks (formation distance ρc³/(βωp) ≈ 0.8 m by hand). Over 1 s (1 Hz bins; the
+        // harmonics fall on bins) the energy between the lines from 8 to 16 kHz is only the Hann
+        // window's leakage: under −70 dB of the total. Shocks gathering samples at a different
+        // grid phase every cycle made it −48 dB of noise, a hiss heard as wind (FINDINGS
+        // 2026-11-12).
+        let dt = 1.0 / 192_000.0;
+        let f0 = 170.0;
+        let mut p = Pipe::new(2.0, 0.05, 500.0, dt, 0.0).steepening();
+        let settle = (0.5 / dt) as usize;
+        let n = (1.0 / dt) as usize;
+        let mut y = Vec::with_capacity(n);
+        for i in 0..settle + n {
+            let ph = (i as f64 * dt * f0).fract() / f0;
+            let s = if ph < 0.002 {
+                60_000.0 * (std::f64::consts::PI * ph / 0.002).sin()
+            } else {
+                0.0
+            };
+            if i >= settle {
+                y.push(p.at_far());
+            }
+            p.send(s, 0.0);
+        }
+        let r = aperiodic_8_16k(&y, dt, f0);
+        assert!(r < -70.0, "aperiodic 8-16 kHz {r:.1} dB re total");
     }
 }
