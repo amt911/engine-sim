@@ -1634,3 +1634,10 @@ source is not identified. Phone and YouTube recordings cannot judge below about 
   blip and restart tests — its own branch.
 - **`shake.py` level wobble does not find it on its own**: the dropouts are short; the level's
   2-12 Hz rms stayed within the real recordings'. Look at the spectrogram (vertical stripes).
+- **Road silencers are the same length for every engine** (`road_exhaust`: 0.35 m and 0.45 m,
+  only the shells' diameters scale with the swept volume). The 0.45 m box's first chamber
+  resonance (≈ c/4L ≈ 278 Hz hot) eats any firing fundamental that reaches it at the top: the
+  Renesis's (267 Hz at 8000 rpm) falls 2.9 dB over its last octave and its full-load level rises
+  only +0.6 dB(A) from 4500 to 8000 rpm, every flow source together < 0.1 dB of it. Main passed
+  the crescendo check through the open-end flow noise. A rotary also passes twice the flow of a
+  four-stroke of its displacement per shaft revolution; the rule sizes it by the displacement.
