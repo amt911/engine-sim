@@ -273,15 +273,37 @@ impl ValveJet {
     }
 }
 
-/// The duct-flow constant K of [`duct_flow_power_w`], dimensionless, one for every engine:
-/// the fraction of ρ·A·U³ (the jet's kinetic power flux, scaled by M) radiated as sound. Set
-/// once against a measured production exhaust: Davies & Holland (JSV 223(3), 1999, Fig. 1(c)), a
-/// 4-cylinder at 0.25 m reading ≈ 80 / 88 / 107 dB(A) at 1000 / 3000 / 6000 rpm full load.
-/// Three 4-cylinder presets with the rule-sized road silencers on the FV exhaust fit it best at
-/// 2.5·10⁻⁵ (6000 rpm: −1.2 dB mean; rms over the three speeds 5.7 dB, the rest the pulses'
-/// own +8 dB at 3000; `scripts/realism/` and `docs/FINDINGS.md`, 2026-11-06). The treble's
-/// firing-rhythm modulation does not set it: the flow noise follows the pulses it rides on.
-pub const DUCT_FLOW_K: f64 = 2.5e-5;
+/// K of [`duct_flow_power_w`] for the open end, dimensionless: the tail pipe's jet leaving into
+/// the air, where no in-duct area step applies ([`expansion_k`] is 0 for a duct ending in its
+/// own bore). Set once against a measured production exhaust: Davies & Holland (JSV 223(3),
+/// 1999, Fig. 1(c)), a 4-cylinder at 0.25 m reading ≈ 107 dB(A) at 6000 rpm full load — three
+/// 4-cylinder presets on the FV exhaust heard as the paper's microphone (45° off the tail's
+/// axis), with their silencers' expansions at [`expansion_k`] (2026-11-11). The one fitted
+/// constant of the duct-flow noise.
+pub const DUCT_FLOW_K: f64 = 8e-5;
+/// K₀ of [`expansion_k`]: Nelson & Morfey (JSV 79(2), 1981) eq. 31, the in-duct sound power of a
+/// flow spoiler, with Fig. 9's K²(St) ≈ 82 dB re 10⁻¹² at St ≈ 0.1 (Gordon's data the same),
+/// written as K·ρ·A_jet·U⁴/c for a jet of open-area ratio σ: K = K₀·(1 − σ)⁴/σ.
+pub const EXPANSION_K0: f64 = 4.7e-5;
+/// σ under which [`expansion_k`] stops growing: a jet into a duct twenty times its area is
+/// already a free jet's mixing layer, not a spoiler's (the formula's 1/σ would run away).
+const EXPANSION_SIGMA_MIN: f64 = 0.05;
+
+/// K of [`duct_flow_power_w`] for a jet of diameter `d_jet` expanding into a duct of diameter
+/// `d_down`: [`EXPANSION_K0`]·(1 − σ)⁴/σ with σ = (d_jet/d_down)². No step, or a contraction
+/// (σ ≥ 1): no expansion jet, 0. A mild step (a cat's brick, a collector's taper) is quiet; a
+/// silencer's chamber is loud.
+pub fn expansion_k(d_jet: f64, d_down: f64) -> f64 {
+    if d_jet <= 0.0 || d_down <= 0.0 {
+        return 0.0;
+    }
+    let sigma = (d_jet / d_down).powi(2);
+    if sigma >= 1.0 {
+        return 0.0;
+    }
+    let s = sigma.max(EXPANSION_SIGMA_MIN);
+    EXPANSION_K0 * (1.0 - sigma).powi(4) / s
+}
 /// Mach number up to which flow noise in ducts was measured to scale as U⁴/c (Davies &
 /// Holland 1999, §4: "with M < 0.3, which is typical for intake and exhaust flows").
 pub const DUCT_U4_MACH_LIMIT: f64 = 0.3;
@@ -330,36 +352,69 @@ fn white(rng: &mut u64) -> f64 {
 #[derive(Debug, Clone)]
 pub struct DuctJet {
     rng: u64,
-    spectrum: FineScale,
+    spectrum: DuctShape,
     /// One-pole low-pass state at the cut-on (the shelf's split).
     shelf: f64,
+}
+
+/// The spectrum of flow noise made in a duct: Nelson & Morfey's K(St) (JSV 79(2), 1981, Figs.
+/// 9-10, Gordon's data alike) is flat to St = f·d/U ≈ 0.2 and decays about 20 dB a decade, 6 dB
+/// an octave, above it. As a filter on white noise, two one-pole low-passes at f0 = 0.2·U/d and
+/// 4·f0: its octaves fall 5.4 dB from 2–4·f0 to 4–8·f0 and 7.4 dB to 8–16·f0. Its power,
+/// ∫|H|² df = (π/2)·f0·4/5, is [`DuctShape::INTEGRAL`]·f0. (Tam's free-jet shape had been used:
+/// flat in power density to 6.8·f0, its octaves rising 3 dB each, a hiss over every engine.)
+#[derive(Debug, Clone, Default)]
+struct DuctShape {
+    y1: f64,
+    y2: f64,
+}
+
+impl DuctShape {
+    const INTEGRAL: f64 = std::f64::consts::FRAC_PI_2 * 0.8;
+
+    fn process(&mut self, x: f64, f0: f64, dt: f64) -> f64 {
+        let a1 = 1.0 - (-2.0 * PI * f0 * dt).exp();
+        let a2 = 1.0 - (-2.0 * PI * (4.0 * f0).min(0.45 / dt) * dt).exp();
+        self.y1 += a1 * (x - self.y1);
+        self.y2 += a2 * (self.y1 - self.y2);
+        self.y2
+    }
 }
 
 impl DuctJet {
     pub fn new(seed: u64) -> Self {
         Self {
             rng: seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1,
-            spectrum: FineScale::new(),
+            spectrum: DuctShape::default(),
             shelf: 0.0,
         }
     }
 
-    /// One step of `dt` for a jet at `u` m/s (+ into the expansion) of diameter `d_jet` into a
+    /// One step of `dt` for a jet of duct-flow constant `k` ([`expansion_k`], [`DUCT_FLOW_K`]) at `u` m/s (+ into the expansion) of diameter `d_jet` into a
     /// duct of diameter `d_down`, in gas of density `rho` and sound speed `c`: the pressure, Pa,
     /// sent each way into a 1 m² duct. 0 with no flow or reversed flow.
-    pub fn step(&mut self, u: f64, rho: f64, c: f64, d_jet: f64, d_down: f64, dt: f64) -> f64 {
+    #[allow(clippy::too_many_arguments)]
+    pub fn step(
+        &mut self,
+        k: f64,
+        u: f64,
+        rho: f64,
+        c: f64,
+        d_jet: f64,
+        d_down: f64,
+        dt: f64,
+    ) -> f64 {
         let x = white(&mut self.rng);
         if u <= 0.0 || d_jet <= 0.0 {
-            self.spectrum
-                .process(0.0, self.spectrum.f_peak.max(1.0), dt);
+            self.spectrum = DuctShape::default();
             self.shelf = 0.0;
             return 0.0;
         }
         let a_jet = 0.25 * PI * d_jet * d_jet;
-        let w = duct_flow_power_w(DUCT_FLOW_K, rho, a_jet, u, c);
+        let w = duct_flow_power_w(k, rho, a_jet, u, c);
         let level = plane_wave_rms_pa(w, rho * c, 1.0);
         let f_peak = (PEAK_STROUHAL * u / d_jet).min(0.05 / dt);
-        let kept = (2.0 * f_peak * ValveJet::SHAPE_INTEGRAL * dt).sqrt();
+        let kept = (2.0 * f_peak * DuctShape::INTEGRAL * dt).sqrt();
         let y = level / kept * self.spectrum.process(x, f_peak, dt);
         // the shelf: below the cut-on as it is, above it × M/0.3 in amplitude
         let f_co = duct_cut_on_hz(c, d_down).min(0.45 / dt);
@@ -373,6 +428,70 @@ impl DuctJet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_expansions_flow_noise_grows_with_its_area_step() {
+        // Nelson & Morfey (JSV 79(2), 1981, eq. 31 with Fig. 9's K² ≈ 82 dB re 1e-12 at St 0.1)
+        // put as K·ρ·A_jet·U⁴/c: K(σ) = 4.7e-5·(1 − σ)⁴/σ, σ the jet's area over the duct's.
+        // By hand: σ = 0.17 (50 mm into 120 mm): 4.7e-5 × 0.83⁴ / 0.17 = 1.312e-4;
+        // σ = 0.5: 4.7e-5 × 0.0625 / 0.5 = 5.875e-6; no step (σ = 1): no noise.
+        let k = |dj: f64, dd: f64| expansion_k(dj, dd);
+        assert!((k(0.05, 0.05 / 0.17f64.sqrt()) / 1.312e-4 - 1.0).abs() < 0.01);
+        assert!((k(0.05, 0.05 / 0.5f64.sqrt()) / 5.875e-6 - 1.0).abs() < 0.01);
+        assert_eq!(k(0.05, 0.05), 0.0);
+        assert_eq!(k(0.06, 0.05), 0.0); // a contraction: no expansion jet
+    }
+
+    #[test]
+    fn flow_noise_in_a_duct_falls_six_db_an_octave_past_its_strouhal_peak() {
+        // Nelson & Morfey (JSV 79(2), 1981, Fig. 9-10; Gordon's data the same): the in-duct flow
+        // noise's 20·log10 K(St) decays about 20 dB a decade (6 dB an octave) above St ≈ 0.2.
+        // The source's shape, poles at f0 = 0.2·U/d and 4·f0, by hand: octave 2-4·f0 to 4-8·f0
+        // −5.37 dB; its power kept (∫|H|² df = (π/2)·0.8·f0): rms = the Davies level.
+        let dt = 1.0 / 192_000.0;
+        let (u, rho, c, d) = (100.0, 0.6, 500.0, 0.05);
+        let f0 = 0.2 * u / d;
+        let mut j = DuctJet::new(7);
+        // a duct so narrow its cut-on sits past the band: plane waves only
+        let x: Vec<f64> = (0..(4.0 / dt) as usize)
+            .map(|_| j.step(DUCT_FLOW_K, u, rho, c, d, 1e-4, dt))
+            .collect();
+        let w = duct_flow_power_w(DUCT_FLOW_K, rho, 0.25 * PI * d * d, u, c);
+        let want = plane_wave_rms_pa(w, rho * c, 1.0);
+        let rms = (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
+        assert!((rms / want - 1.0).abs() < 0.1, "rms {rms} against {want}");
+        // power at 64 log-spaced tones between f0 and 16·f0, averaged over 8192-sample segments
+        // (one long periodogram per tone scatters ±100 %)
+        let spec: Vec<f64> = (0..64)
+            .map(|k| {
+                let f = f0 * 16f64.powf(k as f64 / 63.0);
+                let w0 = 2.0 * PI * f * dt;
+                let p: f64 = x[x.len() / 4..]
+                    .as_chunks::<8192>()
+                    .0
+                    .iter()
+                    .map(|seg| {
+                        let (mut s1, mut s2) = (0.0, 0.0);
+                        for (i, &v) in seg.iter().enumerate() {
+                            let h = 0.5 - 0.5 * (2.0 * PI * i as f64 / 8191.0).cos();
+                            let s0 = h * v + 2.0 * w0.cos() * s1 - s2;
+                            s2 = s1;
+                            s1 = s0;
+                        }
+                        s1 * s1 + s2 * s2 - 2.0 * w0.cos() * s1 * s2
+                    })
+                    .sum();
+                p * f
+            })
+            .collect();
+        // per-octave power ∝ PSD·f, read at 16 log-spaced points per octave
+        let oct = |a: usize| spec[a..a + 16].iter().sum::<f64>();
+        let slope = 10.0 * (oct(32) / oct(16)).log10();
+        assert!(
+            (slope + 5.37).abs() < 1.5,
+            "octave 4-8 f0 re 2-4 f0: {slope:.2} dB"
+        );
+    }
 
     #[test]
     fn a_choked_exhaust_valve_jet_by_hand() {
@@ -655,7 +774,10 @@ mod tests {
         let mut j = DuctJet::new(3);
         for u in [0.0, -20.0] {
             for _ in 0..1000 {
-                assert_eq!(j.step(u, 0.6, 500.0, 0.05, 0.1, 1.0 / 48_000.0), 0.0);
+                assert_eq!(
+                    j.step(DUCT_FLOW_K, u, 0.6, 500.0, 0.05, 0.1, 1.0 / 48_000.0),
+                    0.0
+                );
             }
         }
     }
@@ -665,8 +787,8 @@ mod tests {
         let (mut a, mut b) = (DuctJet::new(7), DuctJet::new(7));
         for _ in 0..10_000 {
             let (x, y) = (
-                a.step(40.0, 0.6, 500.0, 0.05, 0.1, 1.0 / 48_000.0),
-                b.step(40.0, 0.6, 500.0, 0.05, 0.1, 1.0 / 48_000.0),
+                a.step(DUCT_FLOW_K, 40.0, 0.6, 500.0, 0.05, 0.1, 1.0 / 48_000.0),
+                b.step(DUCT_FLOW_K, 40.0, 0.6, 500.0, 0.05, 0.1, 1.0 / 48_000.0),
             );
             assert_eq!(x.to_bits(), y.to_bits());
         }
@@ -676,7 +798,10 @@ mod tests {
         let mut j = DuctJet::new(11);
         let n = (0.5 / dt) as usize;
         let s: f64 = (0..n)
-            .map(|_| j.step(u, 0.6, 500.0, d_jet, d_down, dt).powi(2))
+            .map(|_| {
+                j.step(DUCT_FLOW_K, u, 0.6, 500.0, d_jet, d_down, dt)
+                    .powi(2)
+            })
             .sum();
         (s / n as f64).sqrt()
     }
@@ -695,7 +820,7 @@ mod tests {
         let dt = 1.0 / 12_000.0;
         let mut s = 0.0;
         for _ in 0..12_000 {
-            let x = j.step(300.0, 0.6, 500.0, 0.01, 0.05, dt);
+            let x = j.step(DUCT_FLOW_K, 300.0, 0.6, 500.0, 0.01, 0.05, dt);
             assert!(x.is_finite());
             s += x * x;
         }

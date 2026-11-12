@@ -154,6 +154,7 @@ engine:
     shift_time_s: 0.0
     engine_ahead_m: 0.9
     engine_bay: null
+    body_height_m: 0.0
     shuffle_hz: 3.5
     shuffle_damping: 0.15
   turbo: null
