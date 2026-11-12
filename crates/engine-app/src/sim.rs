@@ -35,6 +35,8 @@ pub struct Snapshot {
     pub quality: Quality,
     /// Samples the audio device found missing so far: the simulation fell behind real time.
     pub dropouts: u64,
+    /// The turbo's state as the engine sees it (None: aspirated), for the 2D and 3D views.
+    pub turbo: Option<engine_core::turbo::TurboState>,
 }
 
 /// The driver's pedals and lever, set from the UI.
@@ -115,8 +117,11 @@ impl Simulation {
             quality.fidelity(),
         );
         engine.set_driven_vehicle(vehicle.clone());
+        // the car's driveline needs the crank's own inertia (the shuffle's other mass)
+        let mut car = Vehicle::new(vehicle);
+        car.set_engine_inertia(def.flywheel_inertia_kgm2);
         Self {
-            vehicle: Vehicle::new(vehicle),
+            vehicle: car,
             drive: DriveInput::default(),
             voice: voice_for(&def, sample_rate),
             anti_alias: anti_alias(sample_rate, quality),
@@ -150,10 +155,16 @@ impl Simulation {
     pub fn vehicle(&self) -> &Vehicle {
         &self.vehicle
     }
+    #[cfg(test)]
+    pub fn vehicle_mut_for_test(&mut self) -> &mut Vehicle {
+        &mut self.vehicle
+    }
     /// Swap the car (it stops, in neutral, so the new gearing cannot jump).
     pub fn replace_vehicle(&mut self, def: VehicleDef) {
         self.engine.set_driven_vehicle(def.clone());
         self.vehicle = Vehicle::new(def);
+        self.vehicle
+            .set_engine_inertia(self.def.flywheel_inertia_kgm2);
     }
     pub fn engine(&self) -> &Engine {
         &self.engine
@@ -327,6 +338,7 @@ impl Simulation {
             speed_m_s: self.vehicle.speed_m_s(),
             gear: self.vehicle.gear(),
             clutch: self.vehicle.clutch(),
+            turbo: e.turbo(),
         }
     }
 }
@@ -918,6 +930,25 @@ pub(crate) mod tests {
             "compression visible in trace"
         );
         assert!(s.rpm > 0.0);
+        assert_eq!(s.turbo, None, "an aspirated engine has no turbo to show");
+    }
+
+    #[test]
+    fn the_snapshot_carries_the_turbo_the_views_draw() {
+        let mut sim = Simulation::new(EngineDef::honda_k20c1(), FS, 1);
+        sim.controls = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(5000.0),
+            ..Controls::default()
+        };
+        render_secs(&mut sim, 1.0);
+        let s = sim.snapshot();
+        let t = s.turbo.expect("the K20C1's turbo");
+        // the turbine's gas, as the panel colours it, is the hot exhaust (over 700 K floored)
+        assert!(t.turbine_inlet_t_k > 700.0, "{}", t.turbine_inlet_t_k);
+        // floored at 5000 rpm the shaft spins (tens of thousands of rpm) and the boost is up
+        assert!(t.shaft_rpm > 10_000.0, "{}", t.shaft_rpm);
+        assert!(t.boost_pa > 1.2e5, "{}", t.boost_pa);
     }
 
     #[test]
@@ -978,6 +1009,22 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_car_knows_the_cranks_inertia() {
+        // the driveline's spring is sized against the crank's own inertia: the engine's flywheel
+        let mut def = EngineDef::inline4();
+        def.flywheel_inertia_kgm2 = 0.3;
+        let mut sim = Simulation::with_quality(def, VehicleDef::inline4(), FS, 1, Quality::Ultra);
+        let mut v = Vehicle::new(VehicleDef::inline4());
+        v.set_engine_inertia(0.3);
+        v.set_gear(1);
+        sim.vehicle_mut_for_test().set_gear(1);
+        assert_eq!(sim.vehicle().stiffness_nm_rad(), v.stiffness_nm_rad());
+        sim.replace_vehicle(VehicleDef::inline4());
+        sim.vehicle_mut_for_test().set_gear(1);
+        assert_eq!(sim.vehicle().stiffness_nm_rad(), v.stiffness_nm_rad());
+    }
+
+    #[test]
     fn launching_in_first_accelerates_the_car_without_stalling() {
         let mut sim = driven(EngineDef::inline4(), VehicleDef::inline4(), 1, 0.6);
         render_secs(&mut sim, 4.0);
@@ -989,6 +1036,39 @@ pub(crate) mod tests {
         // Locked: car speed = ω·r/G (1st: 3.62·4.1 = 14.842, r = 0.316).
         let omega = s.rpm * std::f64::consts::PI / 30.0;
         assert!((s.speed_m_s - omega * 0.316 / 14.842).abs() < 0.05);
+    }
+
+    #[test]
+    fn every_preset_starts_and_idles_on_its_own_at_ultra() {
+        // Ultra runs every engine on finite-volume pipes: each must catch its idle after the
+        // start flare and hold it, pedal up (the flat-plane V8 sank from 1925 rpm to a stall
+        // when its idle air was a hand-set 0.3 % instead of the shared law)
+        use crate::controls::Preset;
+        for p in Preset::ALL {
+            let def = p.def();
+            let target = def.idle_rpm;
+            let mut sim = Simulation::with_quality(
+                def,
+                p.vehicle(),
+                48_000.0,
+                1,
+                crate::quality::Quality::Ultra,
+            );
+            let mut buf = vec![0.0f32; 12_000];
+            let (mut low, mut sum) = (f64::INFINITY, 0.0);
+            for k in 0..24 {
+                sim.render(&mut buf);
+                if k >= 8 {
+                    let rpm = sim.snapshot().rpm;
+                    low = low.min(rpm);
+                    sum += rpm / 16.0;
+                }
+            }
+            assert!(
+                low > 0.6 * target && (sum / target - 1.0).abs() < 0.25,
+                "{p:?}: low {low}, mean {sum}"
+            );
+        }
     }
 
     #[test]

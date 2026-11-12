@@ -79,8 +79,34 @@ fn marks(d: Detail) -> usize {
     }
 }
 
+/// How long the edited parts stay tinted after the last change, s.
+pub const TINT_SECS: f64 = 0.5;
+
+/// The measure last edited and when its tint ends (egui's clock, s).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tint {
+    pub field: super::handles::Field,
+    pub until: f64,
+}
+
+/// A part's colour pulled to the highlight (the arrows' amber).
+fn tinted(c: [f32; 4]) -> [f32; 4] {
+    const AMBER: [f32; 3] = [1.0, 0.77, 0.16];
+    [
+        0.35 * c[0] + 0.65 * AMBER[0],
+        0.35 * c[1] + 0.65 * AMBER[1],
+        0.35 * c[2] + 0.65 * AMBER[2],
+        c[3],
+    ]
+}
+
 #[derive(Debug, Clone)]
 pub struct View3dState {
+    /// The measure being edited, tinted on the parts it changes until [`TINT_SECS`] after its
+    /// last change.
+    pub tint: Option<Tint>,
+    /// The measure whose parts were drawn tinted last frame.
+    pub tinted: Option<super::handles::Field>,
     /// Where the clicked part's handles stood on screen last frame (what each edits).
     pub handle_spots: Vec<(super::handles::Field, egui::Pos2)>,
     /// A handle being dragged.
@@ -89,6 +115,9 @@ pub struct View3dState {
     pub selected: Option<(usize, egui::Pos2)>,
     /// How far round its pipe each pipe's flow marks have run (0..1).
     phases: Vec<f32>,
+    /// The turbo's wheels' angle, rad (turning at [`crate::turbo_view::SHOWN_FRACTION`] of the
+    /// shaft, as in the 2D view).
+    turbo_wheel: f64,
     pub layers: Layers,
     pub mode: ViewMode,
     /// Whether the renderer is installed (a wgpu device exists); without it the view is 2D.
@@ -106,10 +135,13 @@ pub struct View3dState {
 impl Default for View3dState {
     fn default() -> Self {
         Self {
+            tint: None,
+            tinted: None,
             handle_spots: Vec::new(),
             drag: None,
             selected: None,
             phases: Vec::new(),
+            turbo_wheel: 0.0,
             layers: Layers::default(),
             mode: ViewMode::ThreeD,
             available: false,
@@ -136,6 +168,35 @@ impl View3dState {
             .position(|i| i.part == part)
     }
 
+    /// `field` was changed at `now`: its parts are tinted for [`TINT_SECS`] from now.
+    pub fn touch(&mut self, field: super::handles::Field, now: f64) {
+        self.tint = Some(Tint {
+            field,
+            until: now + TINT_SECS,
+        });
+    }
+
+    /// The measure tinted at `now`, if its time has not run out.
+    pub fn tint_field(&self, now: f64) -> Option<super::handles::Field> {
+        self.tint.filter(|t| now < t.until).map(|t| t.field)
+    }
+
+    /// Tint, in the frame just filled, the parts the measure being edited changes.
+    fn tint_frame(&mut self, def: &EngineDef, now: f64) {
+        self.tinted = self.tint_field(now);
+        let Some(field) = self.tinted else { return };
+        if let Ok(mut sh) = self.shared.lock() {
+            let mut parts = std::mem::take(&mut sh.instances);
+            let hit: Vec<usize> = (0..parts.len())
+                .filter(|&k| field.changes(def, &parts, k))
+                .collect();
+            for k in hit {
+                parts[k].color = tinted(parts[k].color);
+            }
+            sh.instances = parts;
+        }
+    }
+
     /// The view to draw: 3D only when asked for and a renderer exists.
     pub fn shows_3d(&self) -> bool {
         self.available && self.mode == ViewMode::ThreeD
@@ -146,7 +207,21 @@ impl View3dState {
         if self.drawn.as_ref() != Some(def) {
             self.def_version += 1;
             let s = scene::build(def);
-            self.camera = Some(OrbitCamera::framing(s.focus.0, s.focus.1, start_yaw(def)));
+            // an edit keeps the user's view; another engine (layout, cylinders, or a size a
+            // quarter off) is framed afresh
+            let same_size = self.scene.as_ref().is_some_and(|old| {
+                let k = s.focus.1 / old.focus.1.max(1e-6);
+                (0.8..=1.25).contains(&k)
+            });
+            let same_engine = same_size
+                && self.drawn.as_ref().is_some_and(|d| {
+                    d.cylinders == def.cylinders
+                        && d.layout == def.layout
+                        && d.geometry.rotor.is_some() == def.geometry.rotor.is_some()
+                });
+            if !same_engine || self.camera.is_none() {
+                self.camera = Some(OrbitCamera::framing(s.focus.0, s.focus.1, start_yaw(def)));
+            }
             self.scene = Some(s);
             self.drawn = Some(def.clone());
         }
@@ -156,6 +231,27 @@ impl View3dState {
     fn fill(&mut self, snap: &Snapshot, aspect: f32, dt: f32) {
         let Some(s) = &self.scene else { return };
         scene::moving(&snap.def, &snap.cylinders, &mut self.moving);
+        // Low draws no valve train: its parts would be invisible but still clickable
+        if !self.governor.detail.realistic() {
+            self.moving.retain(|i| !i.part.is_valve_train());
+        }
+        // the turbo's wheels and wastegate flap (the realistic detail draws them)
+        let housing = s
+            .static_parts
+            .iter()
+            .find(|i| i.part == scene::Part::TurbineHousing)
+            .map(|i| i.model);
+        if let (true, Some(h), Some(ports), Some(t)) = (
+            self.governor.detail.realistic(),
+            housing,
+            super::parts::turbo_ports(),
+            snap.turbo,
+        ) {
+            self.turbo_wheel =
+                crate::turbo_view::advance_wheel(self.turbo_wheel, t.shaft_rpm, f64::from(dt));
+            let flap = crate::turbo_view::flap_angle_rad(t.wastegate_open) as f32;
+            scene::turbo_moving(h, &ports, self.turbo_wheel as f32, flap, &mut self.moving);
+        }
         self.phases.resize(s.pipes.len(), 0.0);
         let n_marks = if self.layers.flow && !snap.pipes.is_empty() {
             marks(self.governor.detail)
@@ -173,6 +269,20 @@ impl View3dState {
                         for i in &mut sh.instances[p.instances.clone()] {
                             i.color = c;
                         }
+                    }
+                }
+            }
+            // the turbo's sides in their gas: the turbine's exhaust, the compressor's charge
+            if let (true, Some(t)) = (self.layers.temperature, snap.turbo) {
+                for i in &mut sh.instances {
+                    match i.part {
+                        scene::Part::TurbineHousing | scene::Part::Turbine => {
+                            i.color = super::colormap::temperature(t.turbine_inlet_t_k);
+                        }
+                        scene::Part::CompressorHousing | scene::Part::Compressor => {
+                            i.color = super::colormap::temperature(t.boost_t_k);
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -349,54 +459,81 @@ pub fn show(
     dirty: &mut bool,
 ) {
     st.sync(&snap.def);
+    let now = ui.input(|i| i.time);
     let (rect, resp) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
-    // the handles of the clicked part, on screen
-    let handles: Vec<(super::handles::Handle, egui::Pos2)> = match (st.selected, &st.scene) {
-        (Some((k, _)), Some(scene)) => st
-            .shared
-            .lock()
-            .ok()
-            .map(|sh| {
-                super::handles::handles(&snap.def, scene, &sh.instances, k)
-                    .into_iter()
-                    .filter_map(|h| to_screen(sh.view_proj, rect, h.at).map(|p| (h, p)))
-                    .collect()
-            })
-            .unwrap_or_default(),
-        _ => Vec::new(),
-    };
+    // the handles of the clicked part, on screen: where each stands, the screen direction its
+    // value grows along and how many pixels a metre of it takes there
+    let handles: Vec<(super::handles::Handle, egui::Pos2, egui::Vec2, f32)> =
+        match (st.selected, &st.scene) {
+            (Some((k, _)), Some(scene)) => st
+                .shared
+                .lock()
+                .ok()
+                .map(|sh| {
+                    super::handles::handles(&snap.def, scene, &sh.instances, k)
+                        .into_iter()
+                        .filter_map(|h| {
+                            let at = to_screen(sh.view_proj, rect, h.at)?;
+                            let tip = to_screen(sh.view_proj, rect, h.at + 0.01 * h.axis)?;
+                            let v = (tip - at) / 0.01;
+                            (v.length() > 1e-3).then(|| (h, at, v.normalized(), v.length()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
     st.handle_spots.clear();
     st.handle_spots
-        .extend(handles.iter().map(|(h, p)| (h.field, *p)));
-    if resp.drag_started()
-        && let Some(pos) = resp.interact_pointer_pos()
-        && let Some((h, at)) = handles
+        .extend(handles.iter().map(|(h, p, _, _)| (h.field, *p)));
+    // the arrow under the pointer (the nearest, if they cross)
+    let grab = |pos: egui::Pos2| {
+        handles
             .iter()
-            .find(|(_, p)| p.distance(pos) < 12.0)
+            .filter(|(_, at, dir, _)| {
+                super::arrows::hit(
+                    pos,
+                    *at,
+                    *dir,
+                    super::arrows::HALF_PX,
+                    super::arrows::GRAB_PX,
+                )
+            })
+            .min_by(|a, b| a.1.distance(pos).total_cmp(&b.1.distance(pos)))
             .copied()
+    };
+    let hovered = resp.hover_pos().and_then(grab).map(|(h, ..)| h.field);
+    // where the press was, not where the pointer is once the move counts as a drag
+    let pressed_at = ui.input(|i| i.pointer.press_origin());
+    if resp.drag_started()
+        && let Some((h, _, dir, px_per_m)) = pressed_at.and_then(grab)
     {
-        let vp = st.shared.lock().map(|sh| sh.view_proj).unwrap_or_default();
-        if let Some(tip) = to_screen(vp, rect, h.at + 0.01 * h.axis) {
-            let v = (tip - at) / 0.01;
-            let start = h.field.get(&snap.def);
-            st.drag = Some(Drag {
-                handle: h,
-                start,
-                value: start,
-                along_px: 0.0,
-                dir: v.normalized(),
-                px_per_m: v.length(),
-            });
-        }
+        let start = h.field.get(&snap.def);
+        st.drag = Some(Drag {
+            handle: h,
+            start,
+            value: start,
+            along_px: 0.0,
+            dir,
+            px_per_m,
+        });
     }
     if let Some(d) = st.drag.as_mut() {
         d.along_px += resp.drag_delta().dot(d.dir);
-        d.value = super::handles::dragged(&d.handle, d.start, d.along_px, d.px_per_m);
-        if resp.drag_stopped() {
-            // the engine takes it now, once: a valid engine is rebuilt, the editor follows
+        let value = super::handles::dragged(&d.handle, d.start, d.along_px, d.px_per_m);
+        // the engine follows as the arrow moves (the sim paces the rebuilds); the part stays
+        // selected, its card showing the new numbers
+        if value != d.value || resp.drag_stopped() {
+            d.value = value;
             *dirty |= super::handles::apply(edit, d.handle.field, d.value);
+        }
+        // held: its parts stay tinted, and half a second after the last change
+        st.tint = Some(Tint {
+            field: d.handle.field,
+            until: now + TINT_SECS,
+        });
+        if resp.drag_stopped() {
             st.drag = None;
-            st.selected = None;
         }
     } else if let Some(c) = st.camera.as_mut() {
         let d = resp.drag_delta();
@@ -433,13 +570,17 @@ pub fn show(
             realistic: st.governor.detail.realistic(),
             rod_over_bore: rod_over_bore(&snap.def),
             throw_over_bore: throw_over_bore(&snap.def),
+            intake_lobe_over_bore: lobe_over_bore(&snap.def, true),
+            exhaust_lobe_over_bore: lobe_over_bore(&snap.def, false),
         },
     };
     ui.painter()
         .add(egui_wgpu::Callback::new_paint_callback(rect, frame));
     // a click picks the part under the pointer (another click on nothing, or Escape, lets go)
+    // a click on an arrow is not a click on the scene: the part stays selected
     if resp.clicked()
         && let Some(pos) = resp.interact_pointer_pos()
+        && grab(pos).is_none()
     {
         let ndc = (
             2.0 * (pos.x - rect.left()) / rect.width().max(1.0) - 1.0,
@@ -453,15 +594,23 @@ pub fn show(
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         st.selected = None;
     }
+    let mut tint_touched = None;
     if let (Some((k, pos)), Some(scene)) = (st.selected, &st.scene) {
         let card = st.shared.lock().ok().and_then(|sh| {
             let c = super::card::card(&snap.def, scene, &sh.instances, k)?;
             Some((c, super::handles::card_fields(&snap.def, &sh.instances, k)))
         });
         if let Some((c, fields)) = card {
-            // right of the pointer and of every handle: the card sits above the scene, so a
-            // handle under it could not be grabbed
-            let right = handles.iter().map(|(_, p)| p.x).fold(pos.x, f32::max);
+            // right of the pointer and of every arrow with its label: the card sits above the
+            // scene, so an arrow under it could not be grabbed
+            let right = handles
+                .iter()
+                .map(|(h, at, dir, _)| {
+                    // the label's width at the lit size (14 px: about 8 px a character)
+                    let label = h.field.label().len() + h.field.show(h.field.get(&snap.def)).len();
+                    at.x + dir.x.abs() * super::arrows::HALF_PX + 24.0 + 8.0 * label as f32
+                })
+                .fold(pos.x, f32::max);
             egui::Area::new(egui::Id::unique("part_card"))
                 .fixed_pos(egui::pos2(right + 14.0, pos.y + 8.0))
                 .show(ui.ctx(), |ui| {
@@ -493,6 +642,7 @@ pub fn show(
                                         .labelled_by(name.id);
                                     if r.changed() {
                                         *dirty |= super::handles::apply(edit, f, shown / k);
+                                        tint_touched = Some(f);
                                     }
                                     ui.end_row();
                                 }
@@ -502,22 +652,34 @@ pub fn show(
                 });
         }
     }
-    // the handles over the scene, and the value in the hand
+    if let Some(f) = tint_touched {
+        st.touch(f, now);
+    }
+    // the edited parts tinted while they change; the frame is plain again once the time is up
+    st.tint_frame(&snap.def, now);
+    if let Some(t) = st.tint.filter(|t| now < t.until) {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs_f64(
+                (t.until - now).min(TINT_SECS),
+            ));
+    }
+    // the handles over the scene as arrows, named with their values; the one under the pointer
+    // or in the hand lit
     {
         let p = ui.painter_at(rect);
-        for (h, at) in &handles {
-            p.circle(
+        let held = st.drag.map(|d| d.handle.field);
+        for (h, at, dir, _) in &handles {
+            let lit = held == Some(h.field) || (held.is_none() && hovered == Some(h.field));
+            let value = match st.drag {
+                Some(d) if d.handle.field == h.field => d.value,
+                _ => h.field.get(&snap.def),
+            };
+            super::arrows::paint(
+                &p,
                 *at,
-                7.0,
-                egui::Color32::from_rgb(255, 214, 64),
-                egui::Stroke::new(1.5, egui::Color32::BLACK),
-            );
-            p.text(
-                *at + egui::vec2(10.0, -10.0),
-                egui::Align2::LEFT_BOTTOM,
-                h.field.label(),
-                egui::FontId::proportional(11.0),
-                egui::Color32::from_rgb(255, 214, 64),
+                *dir,
+                lit,
+                &format!("{} {}", h.field.label(), h.field.show(value)),
             );
         }
         if let Some(d) = st.drag {
@@ -525,7 +687,7 @@ pub fn show(
                 rect.left_top() + egui::vec2(12.0, 12.0),
                 egui::Align2::LEFT_TOP,
                 format!(
-                    "{}: {} (release to apply)",
+                    "{}: {}",
                     d.handle.field.label(),
                     d.handle.field.show(d.value)
                 ),
@@ -543,6 +705,17 @@ pub fn show(
 /// Half the stroke over the bore: what the realistic throw's mesh depends on.
 fn throw_over_bore(def: &EngineDef) -> f32 {
     (0.5 * def.geometry.stroke_m / def.geometry.bore_m.max(1e-6)) as f32
+}
+
+/// The tallest lift of the intake (or exhaust) lobe over the bore: what the realistic cam's
+/// mesh depends on.
+fn lobe_over_bore(def: &EngineDef, intake: bool) -> f32 {
+    let v = if intake {
+        &def.intake_valve
+    } else {
+        &def.exhaust_valve
+    };
+    (scene::lobe_lift_m(v) / def.geometry.bore_m.max(1e-6)) as f32
 }
 
 /// The rod's length over the bore: what the realistic rod's mesh depends on.
@@ -577,6 +750,40 @@ mod tests {
         d.cylinders = 6;
         st.sync(&d);
         assert_eq!(st.def_version, 2);
+    }
+
+    #[test]
+    fn an_edit_keeps_the_camera_and_another_engine_reframes_it() {
+        let mut st = View3dState::default();
+        let mut d = EngineDef::inline4();
+        st.sync(&d);
+        if let Some(c) = st.camera.as_mut() {
+            c.distance = 0.123;
+        }
+        // a bigger bore: the same engine, edited, seen from where the user put the camera
+        d.geometry.bore_m *= 1.05;
+        st.sync(&d);
+        assert_eq!(st.def_version, 2, "rebuilt");
+        assert_eq!(st.camera.map(|c| c.distance), Some(0.123), "camera kept");
+        // another layout (a V8): framed afresh
+        st.sync(&EngineDef::crossplane_v8());
+        assert_ne!(st.camera.map(|c| c.distance), Some(0.123), "reframed");
+        // another engine of the same layout but another size (a much bigger inline four): framed
+        // afresh too
+        let mut d = EngineDef::inline4();
+        st.sync(&d);
+        if let Some(c) = st.camera.as_mut() {
+            c.distance = 0.123;
+        }
+        d.geometry.bore_m *= 1.6;
+        d.geometry.stroke_m *= 1.6;
+        d.geometry.rod_m *= 1.6;
+        st.sync(&d);
+        assert_ne!(
+            st.camera.map(|c| c.distance),
+            Some(0.123),
+            "a bigger engine reframed"
+        );
     }
 
     #[test]
@@ -670,6 +877,8 @@ mod tests {
                         realistic: detail.realistic(),
                         rod_over_bore: rod_over_bore(&def),
                         throw_over_bore: throw_over_bore(&def),
+                        intake_lobe_over_bore: lobe_over_bore(&def, true),
+                        exhaust_lobe_over_bore: lobe_over_bore(&def, false),
                     },
                 };
                 let mut enc = rs.device.create_command_encoder(&Default::default());
@@ -757,6 +966,57 @@ mod tests {
     }
 
     #[test]
+    fn the_turbo_spins_opens_its_gate_and_takes_its_gas_temperature() {
+        let def = EngineDef::honda_k20c1();
+        let mut st = View3dState::default();
+        st.governor.set_manual(Some(Detail::Medium));
+        st.sync(&def);
+        let mut sim = crate::sim::Simulation::new(def, 48_000.0, 1);
+        crate::sim::tests::render_secs(&mut sim, 0.05);
+        let mut snap = sim.snapshot();
+        let mut t = snap
+            .turbo
+            .expect("a turbo engine's snapshot carries its turbo");
+        (
+            t.shaft_rpm,
+            t.wastegate_open,
+            t.turbine_inlet_t_k,
+            t.boost_t_k,
+        ) = (120_000.0, 0.5, 1100.0, 330.0);
+        snap.turbo = Some(t);
+        st.layers.temperature = true;
+        let model = |st: &View3dState, p: scene::Part| {
+            let sh = st.shared.lock().unwrap();
+            sh.instances
+                .iter()
+                .find(|i| i.part == p)
+                .map(|i| (i.model, i.color))
+        };
+        st.fill(&snap, 1.5, 0.05);
+        let (w0, _) = model(&st, scene::Part::CompressorWheel).expect("the wheel at Medium");
+        st.fill(&snap, 1.5, 0.05);
+        let (w1, _) = model(&st, scene::Part::CompressorWheel).unwrap();
+        // 120 krpm shows as 120 rpm: 2 turns a second, 0.2π in 0.05 s
+        let turned = (w0.inverse() * w1)
+            .transform_vector3(glam::Vec3::Y)
+            .angle_between(glam::Vec3::Y);
+        assert!(
+            (turned - 0.2 * std::f32::consts::PI).abs() < 1e-3,
+            "{turned}"
+        );
+        assert!(model(&st, scene::Part::WastegateFlap).is_some());
+        // the turbine side in its exhaust's colour, the compressor's in its charge's
+        let (_, hot) = model(&st, scene::Part::TurbineHousing).unwrap();
+        let (_, cool) = model(&st, scene::Part::CompressorHousing).unwrap();
+        assert_eq!(hot, super::super::colormap::temperature(1100.0));
+        assert_eq!(cool, super::super::colormap::temperature(330.0));
+        // Low draws none of the moving parts
+        st.governor.set_manual(Some(Detail::Low));
+        st.fill(&snap, 1.5, 0.05);
+        assert!(model(&st, scene::Part::CompressorWheel).is_none());
+    }
+
+    #[test]
     fn the_pipes_take_their_temperature_and_the_marks_run_with_the_gas() {
         use engine_core::exhaust::PipeState;
         let def = EngineDef::inline4();
@@ -804,5 +1064,73 @@ mod tests {
         st.fill(&snap, 1.5, 0.1);
         let sh = st.shared.lock().unwrap();
         assert!(!sh.instances.iter().any(|i| i.color[3] == 0.3));
+    }
+
+    #[test]
+    fn an_edit_tints_its_parts_for_half_a_second() {
+        use super::super::handles::Field;
+        let mut t = View3dState::default();
+        assert_eq!(t.tint_field(0.0), None);
+        t.touch(Field::IntakeOpens, 10.0);
+        assert_eq!(t.tint_field(10.0), Some(Field::IntakeOpens));
+        assert_eq!(t.tint_field(10.49), Some(Field::IntakeOpens));
+        assert_eq!(t.tint_field(10.5), None, "off at the timeout");
+        // another touch while it is on takes it over and runs the clock again
+        t.touch(Field::Bore, 10.4);
+        t.touch(Field::Rod, 10.8);
+        assert_eq!(t.tint_field(11.2), Some(Field::Rod));
+        assert_eq!(t.tint_field(11.3), None);
+    }
+
+    #[test]
+    fn the_tint_colours_the_edited_parts_only() {
+        use super::super::handles::Field;
+        let def = EngineDef::inline4();
+        let mut st = View3dState::default();
+        st.governor.set_manual(Some(Detail::High));
+        st.sync(&def);
+        let snap = crate::sim::Simulation::new(def.clone(), 48_000.0, 1).snapshot();
+        st.fill(&snap, 1.5, 0.0);
+        let colours = |st: &View3dState| -> Vec<(scene::Part, [f32; 4])> {
+            let sh = st.shared.lock().unwrap();
+            sh.instances.iter().map(|i| (i.part, i.color)).collect()
+        };
+        let before = colours(&st);
+        // nothing touched: nothing tinted
+        st.tint_frame(&snap.def, 5.0);
+        assert_eq!(st.tinted, None);
+        assert_eq!(colours(&st), before);
+        st.touch(Field::IntakeOpens, 5.0);
+        st.tint_frame(&snap.def, 5.1);
+        assert_eq!(st.tinted, Some(Field::IntakeOpens));
+        let after = colours(&st);
+        let mut hit = 0;
+        for (b, a) in before.iter().zip(&after) {
+            if a.1 != b.1 {
+                hit += 1;
+                assert!(
+                    matches!(
+                        b.0,
+                        scene::Part::IntakeValve | scene::Part::IntakeStem | scene::Part::IntakeCam
+                    ),
+                    "{:?} tinted",
+                    b.0
+                );
+                // towards amber: red and green up, blue down
+                assert!(
+                    a.1[0] >= b.1[0] && a.1[1] >= b.1[1] && a.1[2] <= b.1[2],
+                    "{a:?} {b:?}"
+                );
+            }
+        }
+        assert!(
+            hit >= 3 * 4,
+            "{hit} parts tinted (4 cylinders × valve, stem, cam)"
+        );
+        // past the timeout the next frame is plain again
+        st.fill(&snap, 1.5, 0.0);
+        st.tint_frame(&snap.def, 5.6);
+        assert_eq!(st.tinted, None);
+        assert_eq!(colours(&st), before);
     }
 }

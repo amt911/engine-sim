@@ -15,7 +15,38 @@ pub fn local_bounds(kind: MeshKind) -> (Vec3, Vec3) {
         | MeshKind::PistonRing
         | MeshKind::WristPin
         | MeshKind::RodEye
-        | MeshKind::ValveStem => (Vec3::new(-1.0, 0.0, -1.0), Vec3::new(1.0, 1.0, 1.0)),
+        | MeshKind::ValveStem
+        | MeshKind::Plug
+        | MeshKind::TurboDrum => (Vec3::new(-1.0, 0.0, -1.0), Vec3::new(1.0, 1.0, 1.0)),
+        // the realistic turbo, in metres at its 56 mm reference (scripts/turbo.py), measured
+        // off the assets and padded 1 mm: the housings about the shaft's middle, the wheels
+        // about their back faces, the flap about its hinge
+        MeshKind::TurbineHousing => (
+            Vec3::new(0.021, -0.061, -0.073),
+            Vec3::new(0.091, 0.050, 0.055),
+        ),
+        MeshKind::CompressorHousing => (
+            Vec3::new(-0.099, -0.065, -0.060),
+            Vec3::new(-0.023, 0.055, 0.072),
+        ),
+        MeshKind::CentreHousing => (
+            Vec3::new(-0.047, -0.041, -0.041),
+            Vec3::new(0.040, 0.041, 0.041),
+        ),
+        MeshKind::CompressorWheel => (
+            Vec3::new(-0.029, -0.029, -0.029),
+            Vec3::new(0.005, 0.029, 0.029),
+        ),
+        MeshKind::TurbineWheel => (
+            Vec3::new(-0.004, -0.028, -0.028),
+            Vec3::new(0.025, 0.028, 0.028),
+        ),
+        MeshKind::WastegateFlap => (
+            Vec3::new(-0.005, -0.020, -0.011),
+            Vec3::new(0.005, 0.004, 0.011),
+        ),
+        // the realistic eccentric shaft: its shaft runs past the lobe's ends
+        MeshKind::Eccentric => (Vec3::new(-1.05, -0.25, -1.05), Vec3::new(1.05, 1.1, 1.05)),
         MeshKind::Cuboid | MeshKind::ApexSeal => (Vec3::splat(-0.5), Vec3::splat(0.5)),
         // the realistic rod's big end reaches past the primitive bar: about 0.4 bore round the
         // crankpin, which is 2 depths (0.2 bore) and 0.25 rod lengths of the shortest rods
@@ -24,13 +55,19 @@ pub fn local_bounds(kind: MeshKind) -> (Vec3, Vec3) {
         MeshKind::Throw => (Vec3::new(-5.8, -1.9, -10.5), Vec3::new(5.8, 2.9, 2.5)),
         // the realistic valve on its head's frame (0.17 × 0.04 × 0.17 bore): the head on the
         // face, the stem 0.5 bore up, past 12 units
-        MeshKind::Valve => (Vec3::new(-1.05, -0.1, -1.05), Vec3::new(1.05, 13.5, 1.05)),
+        MeshKind::Valve => (Vec3::new(-1.05, -0.1, -1.05), Vec3::new(1.05, 29.0, 1.05)),
+        // in bores about their seat/shaft: the spring 0.44 tall, 0.16 round; the cam 0.33 bore
+        // out in y and z, the shaft 0.3 either side along the crank
+        MeshKind::ValveSpring => (Vec3::new(-0.2, -0.02, -0.2), Vec3::new(0.2, 0.46, 0.2)),
+        MeshKind::IntakeCam | MeshKind::ExhaustCam => {
+            (Vec3::new(-0.31, -0.35, -0.35), Vec3::new(0.31, 0.35, 0.35))
+        }
         MeshKind::Rod => (Vec3::new(-1.0, -0.8, -2.2), Vec3::new(1.0, 0.65, 2.2)),
         MeshKind::Sphere => (Vec3::splat(-1.0), Vec3::splat(1.0)),
         // the housing's outer wall reaches 1 + e + 0.22 < 1.6 of its generating radius
-        MeshKind::Housing | MeshKind::HousingRing => {
-            (Vec3::new(-1.6, 0.0, -1.6), Vec3::new(1.6, 1.0, 1.6))
-        }
+        MeshKind::HousingRing => (Vec3::new(-1.6, 0.0, -1.6), Vec3::new(1.6, 1.0, 1.6)),
+        // the realistic side plate: its stationary gear stands 2.4 of its depths forward
+        MeshKind::Housing => (Vec3::new(-1.6, -0.3, -1.6), Vec3::new(1.6, 2.5, 1.6)),
         // the realistic rotor's apexes reach R over the frame's 0.97 R, its gear past the face
         MeshKind::Rotor => (Vec3::new(-1.04, -0.1, -1.04), Vec3::new(1.04, 1.1, 1.04)),
         // a web: the pin end to 1.45, the counterweight to −1.1
@@ -149,5 +186,37 @@ mod tests {
         let (o, d) = ray(cam.view_proj(1.5), (0.0, 0.0)).unwrap();
         let to_target = (cam.target - o).normalize();
         assert!((d - to_target).length() < 1e-4, "{d} vs {to_target}");
+    }
+
+    #[test]
+    fn the_turbos_parts_fit_their_click_boxes() {
+        use crate::view3d::parts::{self, TurboHousing};
+        for (kind, mesh) in [
+            (
+                MeshKind::TurbineHousing,
+                parts::turbo_housing(TurboHousing::Turbine),
+            ),
+            (
+                MeshKind::CompressorHousing,
+                parts::turbo_housing(TurboHousing::Compressor),
+            ),
+            (
+                MeshKind::CentreHousing,
+                parts::turbo_housing(TurboHousing::Centre),
+            ),
+            (MeshKind::CompressorWheel, parts::compressor_wheel()),
+            (MeshKind::TurbineWheel, parts::turbine_wheel()),
+            (MeshKind::WastegateFlap, parts::wastegate_flap()),
+        ] {
+            let (lo, hi) = local_bounds(kind);
+            let m = mesh.expect("the turbo's assets");
+            for v in &m.vertices {
+                let p = Vec3::from(v.pos);
+                assert!(
+                    p.cmpge(lo - 1e-4).all() && p.cmple(hi + 1e-4).all(),
+                    "{kind:?}: {p} outside {lo}..{hi}"
+                );
+            }
+        }
     }
 }

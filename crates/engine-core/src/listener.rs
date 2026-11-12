@@ -191,6 +191,38 @@ impl Listener {
         ground: Option<(f64, f64)>,
         street: Option<Street>,
     ) -> Self {
+        let (heights, image) = match ground {
+            Some(h) => (h, true),
+            None => ((0.0, 0.0), false),
+        };
+        Self::with_heights(
+            tails,
+            spacing_m,
+            distance_m,
+            angle_deg,
+            tail_area_m2,
+            dt,
+            heights,
+            image,
+            street,
+        )
+    }
+
+    /// [`Listener::with_street`] with the tails and the ear at `heights` (tail, ear) above the
+    /// ground whether or not the ground reflects: the direct path climbs the ear's height over
+    /// the tails in the free field too, and `ground_image` adds the ground's image.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_heights(
+        tails: usize,
+        spacing_m: f64,
+        distance_m: f64,
+        angle_deg: f64,
+        tail_area_m2: f64,
+        dt: f64,
+        heights: (f64, f64),
+        ground_image: bool,
+        street: Option<Street>,
+    ) -> Self {
         let n = tails.max(1);
         let (lx, ly) = {
             let a = angle_deg.to_radians();
@@ -198,10 +230,8 @@ impl Listener {
         };
         // heights above the ground (tail, ear): the direct path climbs (h_l − h_s), the
         // ground's image path (h_l + h_s); free field has neither
-        let (rise, image_rise) = match ground {
-            Some((hs, hl)) => (hl - hs, Some(hl + hs)),
-            None => (0.0, None),
-        };
+        let (hs, hl) = heights;
+        let (rise, image_rise) = (hl - hs, ground_image.then_some(hl + hs));
         let xs: Vec<f64> = (0..n)
             .map(|k| {
                 if n == 1 {
@@ -429,6 +459,23 @@ impl Listener {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_free_field_ear_keeps_its_height_and_hears_no_image() {
+        // tail 0.3 m, ear 1.6 m, 3 m behind: the direct path climbs 1.3 m, √(3² + 1.3²) =
+        // 3.2696 m, with or without the ground; only the ground adds its image
+        let dt = 1.0 / 48_000.0;
+        let free = Listener::with_heights(1, 0.0, 3.0, 0.0, 1e-3, dt, (0.3, 1.6), false, None);
+        assert!(
+            (free.distances()[0] - 3.2696).abs() < 1e-4,
+            "{:?}",
+            free.distances()
+        );
+        assert!(free.images.iter().all(|i| i.is_empty()));
+        let ground = Listener::with_heights(1, 0.0, 3.0, 0.0, 1e-3, dt, (0.3, 1.6), true, None);
+        assert!((ground.distances()[0] - 3.2696).abs() < 1e-4);
+        assert_eq!(ground.images[0].len(), 1);
+    }
 
     #[test]
     fn the_engine_is_heard_from_ahead_of_the_tails_farther_and_later() {

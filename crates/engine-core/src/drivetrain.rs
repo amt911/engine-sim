@@ -15,6 +15,11 @@
 //!   engine and car then move as one body, the crank sees the car's mass as the reflected
 //!   inertia `(m + J_w/r²)·r²/G²` and the road load reflected through `G` and the driveline
 //!   efficiency. If the needed torque exceeds `T_max` it slips again.
+//! * Locked, the car is not a rigid inertia on the crank: the half-shafts, tyres and clutch
+//!   damper are a torsional spring and damper between them, their first mode ("shuffle")
+//!   at `VehicleDef::shuffle_hz` in first gear (2–7 Hz on road cars). Above it the crank turns
+//!   free of the car's inertia, and each cycle's combustion moves it as it does in neutral
+//!   (docs/superpowers/specs/2026-11-05-driveline-compliance-design.md).
 
 use serde::{Deserialize, Serialize};
 
@@ -28,11 +33,10 @@ pub const LOCK_SLIP: f64 = 0.5;
 const SLIP_EPS: f64 = 2.0;
 /// Speed (m/s) over which rolling resistance fades in, so a stopped car does not creep back.
 const ROLL_FADE_SPEED: f64 = 0.1;
-/// Low-pass time constant of the locked clutch's required-torque estimate, s. Filters the
-/// combustion pulses, which a real clutch rides out by micro-slip.
-const TORQUE_FILTER_TAU: f64 = 0.02;
 /// Clutch engagement rate when the pedal is released (1 / s): about 0.7 s to full.
 const CLUTCH_ENGAGE_RATE: f64 = 1.5;
+/// The crank's inertia the vehicle assumes until told (`Vehicle::set_engine_inertia`), kg·m².
+const DEFAULT_ENGINE_INERTIA: f64 = 0.15;
 /// Clutch engagement rate when the pedal is pressed (1 / s).
 const CLUTCH_RELEASE_RATE: f64 = 10.0;
 
@@ -78,6 +82,13 @@ pub struct VehicleDef {
     /// ([`crate::gear_noise`]); a default road-car box when the file has none.
     #[serde(skip_serializing_if = "crate::gear_noise::GearboxDef::is_default")]
     pub gearbox: crate::gear_noise::GearboxDef,
+    /// First torsional mode of the driveline in first gear ("shuffle"), Hz: the half-shafts,
+    /// tyres and clutch damper are a spring between the crank and the car, 2–7 Hz on road cars
+    /// (Farshidianfar et al., *Int. J. Heavy Vehicle Systems*, 2002; 1–10 Hz by gear and
+    /// stiffness, Michigan Tech's shuffle and clunk model). Default 3.5: the middle (ESTIMATE).
+    pub shuffle_hz: f64,
+    /// That mode's damping ratio ζ (ESTIMATE: a lightly damped mode that rings once or twice).
+    pub shuffle_damping: f64,
 }
 
 impl Default for VehicleDef {
@@ -108,6 +119,8 @@ impl VehicleDef {
             engine_ahead_m: 0.9,
             engine_bay: None,
             gearbox: crate::gear_noise::GearboxDef::default(),
+            shuffle_hz: 3.5,
+            shuffle_damping: 0.15,
         }
     }
 
@@ -132,6 +145,8 @@ impl VehicleDef {
             engine_ahead_m: 3.4,
             engine_bay: Some(crate::engine_bay::EngineBay::default()),
             gearbox: crate::gear_noise::GearboxDef::default(),
+            shuffle_hz: 3.5,
+            shuffle_damping: 0.15,
         }
     }
 
@@ -158,6 +173,8 @@ impl VehicleDef {
             engine_ahead_m: 3.6,
             engine_bay: Some(crate::engine_bay::EngineBay::default()),
             gearbox: crate::gear_noise::GearboxDef::default(),
+            shuffle_hz: 3.5,
+            shuffle_damping: 0.15,
         }
     }
 
@@ -186,6 +203,8 @@ impl VehicleDef {
             engine_ahead_m: 3.2,
             engine_bay: Some(crate::engine_bay::EngineBay::default()),
             gearbox: crate::gear_noise::GearboxDef::default(),
+            shuffle_hz: 3.5,
+            shuffle_damping: 0.15,
         }
     }
 
@@ -211,6 +230,8 @@ impl VehicleDef {
             engine_ahead_m: 1.7,
             engine_bay: Some(crate::engine_bay::EngineBay::default()),
             gearbox: crate::gear_noise::GearboxDef::default(),
+            shuffle_hz: 3.5,
+            shuffle_damping: 0.15,
         }
     }
 
@@ -236,6 +257,8 @@ impl VehicleDef {
             engine_ahead_m: 3.5,
             engine_bay: Some(crate::engine_bay::EngineBay::default()),
             gearbox: crate::gear_noise::GearboxDef::default(),
+            shuffle_hz: 3.5,
+            shuffle_damping: 0.15,
         }
     }
 
@@ -267,10 +290,16 @@ pub struct Vehicle {
     /// Engagement rate when the clutch closes, 1/s.
     engage_rate: f64,
     locked: bool,
-    prev_omega: f64,
-    required_nm: f64,
     /// Set after an overload: no relock until the slip has grown past `2·LOCK_SLIP`.
     relock_blocked: bool,
+    /// The crank's own inertia (flywheel and crank), kg·m²: the shuffle's other mass.
+    engine_inertia: f64,
+    /// Locked: the driveline's twist referred to the crank, rad (crank ahead of the car), and
+    /// the car's speed referred to the crank, rad/s.
+    twist: f64,
+    car_omega: f64,
+    /// The clutch's torque at the last slipping step, N·m (a lock takes it on as the spring's).
+    slip_torque: f64,
 }
 
 impl Vehicle {
@@ -284,9 +313,62 @@ impl Vehicle {
             clutch_target: 1.0,
             engage_rate: CLUTCH_ENGAGE_RATE,
             locked: false,
-            prev_omega: 0.0,
-            required_nm: 0.0,
             relock_blocked: false,
+            engine_inertia: DEFAULT_ENGINE_INERTIA,
+            twist: 0.0,
+            car_omega: 0.0,
+            slip_torque: 0.0,
+        }
+    }
+
+    /// The crank's own inertia, kg·m² (the engine's flywheel and crank).
+    pub fn set_engine_inertia(&mut self, j: f64) {
+        if j > 0.0 {
+            self.engine_inertia = j;
+        }
+    }
+
+    /// The car's inertia referred to the crank in the current gear, kg·m² (0 in neutral).
+    pub fn car_inertia_kgm2(&self) -> f64 {
+        let g = self.def.overall_ratio(self.gear);
+        if g == 0.0 {
+            return 0.0;
+        }
+        self.effective_mass() * self.def.wheel_radius_m.powi(2) / (g * g)
+    }
+
+    /// The driveline's torsional stiffness referred to the crank in the current gear, N·m/rad:
+    /// the wheel-side stiffness k_w that puts the first gear's shuffle at `shuffle_hz`,
+    /// k₁ = (2πf)²/(1/J_e + 1/J_v1), k_w = k₁·G₁², here k_w/G² (0 in neutral).
+    pub fn stiffness_nm_rad(&self) -> f64 {
+        let (g1, g) = (self.def.overall_ratio(1), self.def.overall_ratio(self.gear));
+        if g == 0.0 || g1 == 0.0 {
+            return 0.0;
+        }
+        let j_v1 = self.effective_mass() * self.def.wheel_radius_m.powi(2) / (g1 * g1);
+        let w = 2.0 * std::f64::consts::PI * self.def.shuffle_hz;
+        let k1 = w * w / (1.0 / self.engine_inertia + 1.0 / j_v1);
+        k1 * g1 * g1 / (g * g)
+    }
+
+    /// Its damping, N·m·s/rad: c = 2ζ·√(k·J_e·J_v/(J_e + J_v)).
+    fn damping(&self, k: f64, j_v: f64) -> f64 {
+        let j = self.engine_inertia * j_v / (self.engine_inertia + j_v);
+        2.0 * self.def.shuffle_damping * (k * j).sqrt()
+    }
+
+    /// The driveline's twist referred to the crank, rad (0 unless locked).
+    pub fn twist_rad(&self) -> f64 {
+        if self.locked { self.twist } else { 0.0 }
+    }
+
+    /// The car's speed referred to the crank, rad/s.
+    pub fn car_omega(&self) -> f64 {
+        let g = self.def.overall_ratio(self.gear);
+        if self.locked {
+            self.car_omega
+        } else {
+            self.speed_m_s / self.def.wheel_radius_m * g
         }
     }
     pub fn def(&self) -> &VehicleDef {
@@ -361,18 +443,13 @@ impl Vehicle {
     }
 
     /// What the gearbox sees now, for its noise ([`crate::gear_noise::GearboxNoise`]): the gear,
-    /// the instantaneous crank speed, and the torque through the clutch, which is, locked, the
-    /// torque the car asks (the filtered `required_nm` of the last [`Self::step`]) and, slipping,
-    /// the clutch's own (`load.torque_nm`).
+    /// the instantaneous crank speed, and the torque through the clutch of the last
+    /// [`Self::step`] (`load.torque_nm`): locked, the driveline spring's; slipping, the clutch's.
     pub fn drive_state(&self, engine_omega: f64, load: &Load) -> crate::gear_noise::DriveState {
         crate::gear_noise::DriveState {
             gear: self.gear,
             input_omega: engine_omega,
-            input_torque_nm: if self.locked {
-                self.required_nm
-            } else {
-                load.torque_nm
-            },
+            input_torque_nm: load.torque_nm,
             // in neutral nothing is "locked" for the car, but a released clutch still ties the
             // input shaft (and the box's loose gears) to the crank
             clutch_locked: self.locked || (self.gear == 0 && self.clutch >= 0.99),
@@ -395,34 +472,58 @@ impl Vehicle {
             self.def.driveline_efficiency,
             self.effective_mass(),
         );
+        let k = self.stiffness_nm_rad();
+        let j_v = m_eff * r * r / (g * g);
         if self.locked {
-            // Torque the clutch must carry to keep the car accelerating with the crank.
-            let accel = (engine_omega - self.prev_omega) / dt * r / g;
-            let needed = (m_eff * accel + self.road_force_n(self.speed_m_s, brake)) * r / (g * eta);
-            self.required_nm += (needed - self.required_nm) * (dt / TORQUE_FILTER_TAU).min(1.0);
-            if self.required_nm.abs() > t_max {
+            // The car joins the crank through the driveline's spring and damper: its torque
+            // T = k·twist + c·(ω_e − ω_v) loads the crank and drives the car (the shuffle mode).
+            let c = self.damping(k, j_v);
+            let t = k * self.twist + c * (engine_omega - self.car_omega);
+            if t.abs() > t_max {
+                // the clutch lets go: it slips at its capacity from this step
                 self.locked = false;
                 self.relock_blocked = true;
+                self.slip_torque = t_max * t.signum();
+                return Load {
+                    torque_nm: self.slip_torque,
+                    inertia_kgm2: 0.0,
+                };
             }
+            // symplectic Euler, in sub-steps short against the mode (ω_n·h ≤ 0.2: stable for
+            // any step a caller takes)
+            let w_n = (k * (1.0 / self.engine_inertia + 1.0 / j_v)).sqrt();
+            let n = ((dt * w_n / 0.2).ceil() as usize).max(1);
+            let h = dt / n as f64;
+            for _ in 0..n {
+                let t = k * self.twist + c * (engine_omega - self.car_omega);
+                let to_car = if t >= 0.0 { t * eta } else { t / eta };
+                let road = self.road_force_n(self.car_omega * r / g, brake) * r / g;
+                self.car_omega = (self.car_omega + (to_car - road) / j_v * h).max(0.0);
+                self.twist += (engine_omega - self.car_omega) * h;
+            }
+            self.speed_m_s = self.car_omega * r / g;
+            return Load {
+                torque_nm: t,
+                inertia_kgm2: 0.0,
+            };
         }
         let slip = engine_omega - self.speed_m_s / r * g;
         if self.relock_blocked && slip.abs() > 2.0 * LOCK_SLIP {
             self.relock_blocked = false;
         }
-        if !self.locked && !self.relock_blocked && slip.abs() < LOCK_SLIP {
+        if !self.locked && !self.relock_blocked && slip.abs() < LOCK_SLIP && k > 0.0 {
+            // the spring takes on the clutch's last torque: no step on locking
             self.locked = true;
-            self.required_nm = 0.0;
-        }
-        if self.locked {
-            self.prev_omega = engine_omega;
-            self.speed_m_s = engine_omega * r / g;
+            self.car_omega = self.speed_m_s / r * g;
+            self.twist = self.slip_torque / k;
             return Load {
-                torque_nm: self.road_force_n(self.speed_m_s, brake) * r / (g * eta),
-                inertia_kgm2: m_eff * r * r / (g * g),
+                torque_nm: self.slip_torque,
+                inertia_kgm2: 0.0,
             };
         }
         // Slipping: Coulomb friction, regularised at zero slip.
         let t_c = t_max * (slip / SLIP_EPS).tanh();
+        self.slip_torque = t_c;
         // Power flows engine → wheels losing η; wheels → engine (engine braking) likewise.
         let f_wheel = if t_c >= 0.0 {
             t_c * g * eta / r
@@ -462,6 +563,8 @@ mod tests {
             engine_ahead_m: 0.0,
             engine_bay: None,
             gearbox: crate::gear_noise::GearboxDef::default(),
+            shuffle_hz: 3.5,
+            shuffle_damping: 0.15,
         }
     }
 
@@ -526,9 +629,10 @@ mod tests {
         assert!((v.clutch() - 0.5).abs() < 1e-12, "{}", v.clutch());
     }
 
-    /// Locked in 1st (overall 12) at 2 m/s, clutch 0.5 → capacity 0.25·400 = 100 N·m; the crank
-    /// accelerates at `alpha` rad/s² for 0.3 s. Needed clutch torque (hand calc, fixture):
-    /// (m·a + F_roll)·r/(g·η) with a = α·r/g, F_roll ≈ 0.01·1000·9.81 = 98.1 N:
+    /// Locked in 1st (overall 12) at 2 m/s, clutch 0.5 → capacity 0.25·400 = 100 N·m; the crank's
+    /// acceleration rises to `alpha` rad/s² over 1 s (smoothly: a step would ring the shuffle
+    /// mode) and stays there to 3 s. Needed clutch torque once the driveline settles (hand calc,
+    /// fixture): (m·a + F_roll)·r/(g·η) with a = α·r/g, F_roll ≈ 0.01·1000·9.81 = 98.1 N:
     /// α = 111.3 → 80 N·m (holds); α = 168.9 → 120 N·m (slips).
     fn locked_run(alpha: f64) -> bool {
         let mut v = Vehicle::new(fixture());
@@ -542,8 +646,8 @@ mod tests {
         let dt = 1e-4;
         v.step(dt, omega, 0.0);
         assert!(v.locked(), "starts locked");
-        for _ in 0..3000 {
-            omega += alpha * dt;
+        for i in 0..30_000 {
+            omega += alpha * (i as f64 * dt).min(1.0) * dt;
             v.step(dt, omega, 0.0);
             if !v.locked() {
                 return false;
@@ -571,11 +675,13 @@ mod tests {
         let dt = 1e-5;
         v.step(dt, wheel(&v), 0.0);
         assert!(v.locked());
-        // a gradual overload (120 N·m > 100 N·m, see `locked_run`): unlocks with little slip
+        // a gradual overload (120 N·m > 100 N·m, see `locked_run`): unlocks
         let mut omega = wheel(&v);
+        let mut i = 0usize;
         while v.locked() {
-            omega += 168.9 * dt;
+            omega += 168.9 * (i as f64 * dt).min(1.0) * dt;
             v.step(dt, omega, 0.0);
+            i += 1;
         }
         assert!(!v.locked(), "overload unlocks");
         // slip back inside LOCK_SLIP right away: blocked, must not relock
@@ -633,26 +739,35 @@ mod tests {
 
     #[test]
     fn locked_clutch_reflects_road_load_and_car_inertia() {
-        // ω = 120 rad/s in 1st (G = 12): v = 120·0.3/12 = 3.0 m/s, no slip → locks.
+        // ω = 120 rad/s in 1st (G = 12): v = 120·0.3/12 = 3.0 m/s, no slip → locks; held there,
+        // the driveline settles to the road load.
         let mut v = in_first();
         v.set_speed(3.0);
-        let load = v.step(0.01, 120.0, 0.0);
+        v.step(1e-3, 120.0, 0.0);
         assert!(v.locked());
+        let mut load = Load::default();
+        for _ in 0..20_000 {
+            load = v.step(1e-3, 120.0, 0.0);
+        }
         // Road load at 3 m/s: aero 3.24 N + rolling 98.1 N = 101.34 N.
         // Crank torque = F·r/(G·η) = 101.34·0.3/(12·0.9) = 2.815 N·m.
-        assert_relative_eq!(load.torque_nm, 2.815, max_relative = 1e-9);
-        // Reflected inertia m·r²/G² = 1000·0.09/144 = 0.625 kg·m².
-        assert_relative_eq!(load.inertia_kgm2, 0.625, max_relative = 1e-9);
+        assert_relative_eq!(load.torque_nm, 2.815, max_relative = 1e-3);
+        // The car is not on the crank's inertia: it is the spring's other end, m·r²/G² =
+        // 1000·0.09/144 = 0.625 kg·m².
+        assert_eq!(load.inertia_kgm2, 0.0);
+        assert_relative_eq!(v.car_inertia_kgm2(), 0.625, max_relative = 1e-9);
     }
 
     #[test]
     fn locked_car_speed_follows_the_crank() {
         let mut v = in_first();
         v.set_speed(3.0);
-        v.step(0.01, 120.0, 0.0);
-        v.step(0.01, 120.5, 0.0);
-        // v = ω·r/G = 120.5·0.3/12 = 3.0125 m/s.
-        assert_relative_eq!(v.speed_m_s(), 3.0125, max_relative = 1e-9);
+        v.step(1e-3, 120.0, 0.0);
+        for _ in 0..20_000 {
+            v.step(1e-3, 120.5, 0.0);
+        }
+        // once the shuffle has died: v = ω·r/G = 120.5·0.3/12 = 3.0125 m/s.
+        assert_relative_eq!(v.speed_m_s(), 3.0125, max_relative = 1e-4);
     }
 
     #[test]
@@ -720,11 +835,20 @@ mod tests {
     fn an_overloaded_lock_lets_go() {
         let mut v = in_first();
         v.set_speed(3.0);
-        v.step(0.1, 120.0, 0.0);
+        v.step(1e-3, 120.0, 0.0);
         assert!(v.locked());
-        // Crank jumps 120 → 200 rad/s in 0.1 s: α = 800 rad/s² → car a = 800·0.3/12 = 20 m/s²
-        // → required torque (1000·20 + 101.34)·0.3/(12·0.9) = 558.5 N·m > 400 → slips.
-        let load = v.step(0.1, 200.0, 0.0);
+        // Crank driven at α = 800 rad/s² → car a = 800·0.3/12 = 20 m/s² → required torque
+        // (1000·20 + 101.34)·0.3/(12·0.9) = 558.5 N·m > 400: the spring's torque builds within
+        // a fraction of the shuffle's period (0.29 s) and the clutch slips at 400.
+        let mut w = 120.0;
+        let mut load = Load::default();
+        for _ in 0..500 {
+            w += 0.8;
+            load = v.step(1e-3, w, 0.0);
+            if !v.locked() {
+                break;
+            }
+        }
         assert!(!v.locked());
         assert_relative_eq!(load.torque_nm, 400.0, max_relative = 1e-9);
     }
@@ -774,9 +898,9 @@ mod tests {
         let mut v = Vehicle::new(d);
         v.set_gear(1);
         v.set_speed(3.0);
-        let load = v.step(0.01, 120.0, 0.0);
+        v.step(0.01, 120.0, 0.0);
         // (1000 + 100)·0.09/144 = 0.6875 kg·m².
-        assert_relative_eq!(load.inertia_kgm2, 0.6875, max_relative = 1e-9);
+        assert_relative_eq!(v.car_inertia_kgm2(), 0.6875, max_relative = 1e-9);
     }
 
     #[test]
@@ -911,5 +1035,183 @@ mod tests {
         let c = VehicleDef::crossplane_v8();
         assert_eq!(c.gear_ratios, vec![2.66, 1.78, 1.30, 1.00, 0.74, 0.50]);
         assert_eq!((c.final_drive, c.mass_kg), (3.42, 1441.0));
+    }
+
+    // --- the elastic driveline (docs/superpowers/specs/2026-11-05-driveline-compliance-design.md)
+
+    fn frictionless() -> VehicleDef {
+        VehicleDef {
+            drag_cd_a_m2: 0.0,
+            rolling_coeff: 0.0,
+            shuffle_damping: 0.0,
+            driveline_efficiency: 1.0,
+            ..fixture()
+        }
+    }
+
+    /// A locked vehicle in `gear` cruising with the crank at `omega`.
+    fn locked_at(def: VehicleDef, gear: usize, omega: f64) -> Vehicle {
+        let mut v = Vehicle::new(def);
+        v.set_engine_inertia(0.15);
+        v.set_gear(gear);
+        let g = v.def().overall_ratio(gear);
+        v.set_speed(omega * v.def().wheel_radius_m / g);
+        v.step(1e-4, omega, 0.0);
+        assert!(v.locked());
+        v
+    }
+
+    /// Frequency of the twist's ringing after a torque step, Hz (zero crossings of twist − mean).
+    fn ringing_hz(v: &mut Vehicle, dt: f64) -> f64 {
+        let mut twist = Vec::new();
+        let mut w = 300.0;
+        for _ in 0..(4.0 / dt) as usize {
+            let load = v.step(dt, w, 0.0);
+            w += (50.0 - load.torque_nm) / 0.15 * dt;
+            twist.push(v.twist_rad());
+        }
+        let mean = twist.iter().sum::<f64>() / twist.len() as f64;
+        let crossings = twist
+            .windows(2)
+            .filter(|p| (p[0] - mean) * (p[1] - mean) < 0.0)
+            .count();
+        crossings as f64 / 2.0 / (twist.len() as f64 * dt)
+    }
+
+    #[test]
+    fn the_shuffle_frequency_by_hand() {
+        // fixture: J_v1 = 1000·0.3²/12² = 0.625 kg·m², J_e = 0.15: k₁ = (2π·3.5)²/(1/0.15 + 1/0.625)
+        // = 483.61/8.2667 = 58.50 N·m/rad, and the twist rings at 3.5 Hz
+        let mut v = locked_at(frictionless(), 1, 300.0);
+        assert!(
+            (v.stiffness_nm_rad() - 58.50).abs() < 0.05,
+            "{}",
+            v.stiffness_nm_rad()
+        );
+        let f = ringing_hz(&mut v, 1e-4);
+        assert!((f - 3.5).abs() < 0.1, "{f} Hz");
+    }
+
+    #[test]
+    fn the_higher_gear_shuffles_faster() {
+        // gear 2 (G = 8): k = k₁·12²/8² = 131.6 N·m/rad, J_v = 90/64 = 1.406 kg·m²:
+        // f = √(131.6·(1/0.15 + 1/1.406))/2π = √971.0/2π = 4.96 Hz
+        let mut v = locked_at(frictionless(), 2, 300.0);
+        assert!(
+            (v.stiffness_nm_rad() - 131.6).abs() < 0.2,
+            "{}",
+            v.stiffness_nm_rad()
+        );
+        let f = ringing_hz(&mut v, 1e-4);
+        assert!((f - 4.96).abs() < 0.1, "{f} Hz");
+    }
+
+    #[test]
+    fn a_steady_cruise_twists_by_the_torque_over_k() {
+        // the fixture's own road load at a steady crank speed, damped: the spring carries it,
+        // twist = T/k, and the car keeps the crank's speed over the ratio
+        let mut v = locked_at(fixture(), 1, 300.0);
+        let dt = 1e-4;
+        let speed = 300.0 * 0.3 / 12.0;
+        let t_road = v.road_force_n(speed, 0.0) * 0.3 / (12.0 * 0.9);
+        // hold the crank at 300 rad/s for 20 s of a well-damped driveline
+        for _ in 0..(20.0 / dt) as usize {
+            v.step(dt, 300.0, 0.0);
+        }
+        let twist = v.twist_rad();
+        assert!(
+            (twist - t_road / v.stiffness_nm_rad()).abs() < 0.02 * twist.abs(),
+            "{twist}"
+        );
+        assert!((v.speed_m_s() - speed).abs() < 1e-3, "{}", v.speed_m_s());
+    }
+
+    #[test]
+    fn energy_is_kept_without_damping_or_load() {
+        let mut v = locked_at(frictionless(), 1, 300.0);
+        let dt = 1e-5;
+        let e = |v: &Vehicle, w: f64| {
+            0.5 * 0.15 * w * w
+                + 0.5 * v.car_inertia_kgm2() * v.car_omega().powi(2)
+                + 0.5 * v.stiffness_nm_rad() * v.twist_rad().powi(2)
+        };
+        // a kick: the crank 5 rad/s ahead of the car, then free
+        let mut w = 305.0;
+        let e0 = e(&v, w);
+        for _ in 0..(10.0 / dt) as usize {
+            let load = v.step(dt, w, 0.0);
+            w -= load.torque_nm / 0.15 * dt;
+        }
+        let e1 = e(&v, w);
+        assert!(((e1 - e0) / e0).abs() < 1e-3, "{e0} → {e1}");
+    }
+
+    #[test]
+    fn locking_does_not_step_the_torque() {
+        // slipping just under the lock, then locking: the torque the crank feels is continuous
+        let mut v = Vehicle::new(fixture());
+        v.set_engine_inertia(0.15);
+        v.set_gear(1);
+        v.set_speed(300.0 * 0.3 / 12.0);
+        let before = v.step(1e-4, 300.0 + 0.6, 0.0);
+        assert!(!v.locked());
+        let after = v.step(1e-4, 300.0 + 0.4, 0.0);
+        assert!(v.locked());
+        assert!(
+            (after.torque_nm - before.torque_nm).abs() < 0.05 * 400.0,
+            "{before:?} → {after:?}"
+        );
+        assert_eq!(after.inertia_kgm2, 0.0);
+    }
+
+    #[test]
+    fn neutral_has_no_spring() {
+        let mut v = Vehicle::new(fixture());
+        v.set_engine_inertia(0.15);
+        assert_eq!(v.step(1e-4, 300.0, 0.0), Load::default());
+        assert_eq!(v.twist_rad(), 0.0);
+    }
+
+    #[test]
+    fn the_shuffle_fields_round_trip_and_old_files_take_the_defaults() {
+        let old: VehicleDef = serde_yaml_ng::from_str("mass_kg: 1200.0\n").unwrap();
+        assert_eq!((old.shuffle_hz, old.shuffle_damping), (3.5, 0.15));
+        let d = VehicleDef {
+            shuffle_hz: 5.0,
+            shuffle_damping: 0.2,
+            ..fixture()
+        };
+        let json: VehicleDef = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+        let yaml: VehicleDef =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&d).unwrap()).unwrap();
+        assert_eq!((json, yaml), (d.clone(), d));
+    }
+
+    #[test]
+    fn above_the_shuffle_the_crank_turns_free_of_the_car() {
+        // A cycle's torque swinging ±10 N·m at 27 Hz (the cycle at 3300 rev/min) on a crank of
+        // 0.15 kg·m², locked in 1st (k = 58.50 N·m/rad, J_v = 0.625, ζ = 0): far above the 3.5 Hz
+        // shuffle the car's end barely moves, the spring only takes k/ω² off the crank's
+        // inertia: |ω_e| = A/(ω·(J_e − k/ω²)) = 10/(169.65·(0.15 − 58.50/28 781)) = 0.3984 rad/s.
+        // A rigid car would hold it to 10/(169.65·0.775) = 0.0761.
+        let mut v = locked_at(frictionless(), 1, 300.0);
+        let (dt, w) = (1e-5, 2.0 * std::f64::consts::PI * 27.0);
+        let mut om = 300.0;
+        let (mut re, mut im, mut count) = (0.0, 0.0, 0.0);
+        let n = (6.0 / dt) as usize;
+        for i in 0..n {
+            let t = i as f64 * dt;
+            let load = v.step(dt, om, 0.0);
+            om += (10.0 * (w * t).sin() - load.torque_nm) / (0.15 + load.inertia_kgm2) * dt;
+            // the 27 Hz part alone, over the last 27 whole periods (the slow shuffle the start
+            // set ringing projects out)
+            if t >= 5.0 {
+                re += om * (w * t).sin();
+                im += om * (w * t).cos();
+                count += 1.0;
+            }
+        }
+        let amp = 2.0 * (re * re + im * im).sqrt() / count;
+        assert!((amp - 0.3984).abs() < 0.02, "{amp}");
     }
 }

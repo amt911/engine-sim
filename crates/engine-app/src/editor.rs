@@ -1097,7 +1097,9 @@ mod tests {
         assert_eq!(h.state().def.exhaust.after_collector.len(), n);
         assert!(h.state().engine_dirty);
         // an engine without a path starts one from its can and tail
-        let mut h = harness(EngineDef::single());
+        let mut bare = EngineDef::single();
+        bare.exhaust.after_collector.clear();
+        let mut h = harness(bare);
         assert!(h.state().def.exhaust.after_collector.is_empty());
         press(&mut h, "Design the path");
         let x = &h.state().def.exhaust;
@@ -1117,15 +1119,16 @@ mod tests {
 
     #[test]
     fn the_street_switch_and_heights_edit_the_sound() {
+        // the free field by default; the switch puts the street's ground under the car
         let mut h = harness(EngineDef::inline4());
-        assert!(h.state().def.sound.ground);
-        nudge(&mut h, "Ear height (m)");
-        assert!(h.state().def.sound.listener_height_m > 1.6);
+        assert!(!h.state().def.sound.ground);
         h.get_by_label("Street (ground reflection)").focus();
         h.run();
         h.key_press(egui::Key::Space);
         h.run();
-        assert!(!h.state().def.sound.ground);
+        assert!(h.state().def.sound.ground);
+        nudge(&mut h, "Ear height (m)");
+        assert!(h.state().def.sound.listener_height_m > 1.6);
         assert!(h.state().engine_dirty);
     }
 

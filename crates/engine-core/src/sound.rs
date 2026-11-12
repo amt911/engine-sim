@@ -20,6 +20,18 @@ pub struct SoundDef {
     /// noise of each blowdown through the valve's curtain, sent down the pipes with the pulse.
     /// 1 = physical, 0 = off.
     pub valve_jet: f64,
+    /// Flow noise at the exhaust's abrupt area expansions ([`crate::jet_noise::DuctJet`]):
+    /// vortex shedding and shear-layer mixing where the flow separates, W = K·ρ·A·U⁴/c (Davies &
+    /// Holland 1999 §4) at each site's own instantaneous flow. 1 = that law at the one
+    /// calibrated K, 0 = off.
+    pub duct_flow: f64,
+    /// Main bearings struck across their oil clearance at each load reversal, heard through
+    /// the block ([`crate::mechanical`]): 1 = the measured petrol engine's mechanical noise
+    /// (Lalor et al. 1980, shared with `piston_slap`), 0 = none.
+    pub main_bearings: f64,
+    /// Pistons slapping the liner at each side-thrust reversal ([`crate::mechanical`]): 1 =
+    /// physical, 0 = none.
+    pub piston_slap: f64,
     /// The block's radiated combustion noise ([`crate::structure`]): the cylinder pressure
     /// through the measured structure response of engine blocks, 1 = physical, 0 = off.
     pub block: f64,
@@ -57,6 +69,11 @@ pub struct SoundDef {
     pub listener_angle_deg: f64,
     /// The street: a rigid ground (asphalt) under the car and the listener returns each tail's
     /// sound from its image below the ground (ISO 9613-2) — the low end adds, the highs comb.
+    /// Off by default: the image is coherent only for a still source and a still ear, and combs
+    /// the highs 20 dB deep (LFA, 6000 rpm WOT, 2–7.5 kHz) where recordings of real cars ripple
+    /// 4.5 dB (60 steady segments, FINDINGS 2026-11-06); the user heard it as "enlatado" and
+    /// "ecos raros". Its cepstrum peaks 43 dB over the median at the image's 0.82 ms (inline-4),
+    /// 20 dB without it, as real recordings (16–25 dB, the LFA's four exterior clips).
     /// Off = free field.
     pub ground: bool,
     /// Heights above the ground of the tail pipes and of the listener's ear, m.
@@ -80,6 +97,12 @@ impl SoundDef {
         })
     }
 
+    /// (tail height, ear height) above the ground, m: where the ear stands whether or not the
+    /// ground reflects ([`crate::listener::Listener::with_heights`]).
+    pub fn heights(&self) -> (f64, f64) {
+        (self.tail_height_m, self.listener_height_m)
+    }
+
     pub fn ground_heights(&self) -> Option<(f64, f64)> {
         self.ground
             .then_some((self.tail_height_m, self.listener_height_m))
@@ -92,6 +115,9 @@ impl Default for SoundDef {
             flow_noise: 1.0,
             intake: 1.0,
             valve_jet: 1.0,
+            duct_flow: 1.0,
+            main_bearings: 1.0,
+            piston_slap: 1.0,
             block: 1.0,
             mechanical: 1.0,
             chamber_ring: 1.0,
@@ -104,7 +130,7 @@ impl Default for SoundDef {
             leveling: 0.0,
             listener_distance_m: 3.0,
             listener_angle_deg: 30.0,
-            ground: true,
+            ground: false,
             // a road car's tail pipe and a standing adult's ear
             tail_height_m: 0.3,
             listener_height_m: 1.6,
@@ -180,6 +206,35 @@ mod tests {
     }
 
     #[test]
+    fn the_duct_flow_round_trips_and_old_files_hear_it() {
+        let old: SoundDef = serde_yaml_ng::from_str("reverb: 0.2\n").unwrap();
+        assert_eq!(old.duct_flow, 1.0);
+        let s = SoundDef {
+            duct_flow: 0.5,
+            ..SoundDef::default()
+        };
+        let json: SoundDef = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        let yaml: SoundDef =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&s).unwrap()).unwrap();
+        assert_eq!((json, yaml), (s.clone(), s));
+    }
+
+    #[test]
+    fn the_impacts_round_trip_and_old_files_hear_them() {
+        let old: SoundDef = serde_yaml_ng::from_str("reverb: 0.2\n").unwrap();
+        assert_eq!((old.main_bearings, old.piston_slap), (1.0, 1.0));
+        let s = SoundDef {
+            main_bearings: 0.5,
+            piston_slap: 0.25,
+            ..SoundDef::default()
+        };
+        let json: SoundDef = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        let yaml: SoundDef =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&s).unwrap()).unwrap();
+        assert_eq!((json, yaml), (s.clone(), s));
+    }
+
+    #[test]
     fn the_block_round_trips_and_old_files_hear_it() {
         let old: SoundDef = serde_yaml_ng::from_str("reverb: 0.2\n").unwrap();
         assert_eq!(old.block, 1.0);
@@ -211,16 +266,18 @@ mod tests {
     }
 
     #[test]
-    fn the_street_round_trips_and_old_files_stand_on_it() {
+    fn the_street_round_trips_and_old_files_stand_in_the_free_field() {
+        // the rigid ground's image combs the highs 20 dB deep at a standing listener; recordings
+        // of real cars ripple 4.5 dB (FINDINGS 2026-11-06): off unless a file asks for it
         let old: SoundDef = serde_yaml_ng::from_str("reverb: 0.2\n").unwrap();
-        assert_eq!(old.ground_heights(), Some((0.3, 1.6)));
+        assert_eq!(old.ground_heights(), None);
         let s = SoundDef {
-            ground: false,
+            ground: true,
             tail_height_m: 0.45,
             listener_height_m: 1.2,
             ..SoundDef::default()
         };
-        assert_eq!(s.ground_heights(), None);
+        assert_eq!(s.ground_heights(), Some((0.45, 1.2)));
         let json: SoundDef = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         let yaml: SoundDef =
             serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&s).unwrap()).unwrap();

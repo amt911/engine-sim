@@ -764,6 +764,127 @@ mod tests {
         assert_relative_eq!(at(&p, 0.2).rho, 1.0, max_relative = 1e-3);
     }
 
+    /// Toro's exact-Riemann problems (E. F. Toro, *Riemann Solvers and Numerical Methods for Fluid
+    /// Dynamics*, 3rd ed., Springer 2009, §4.3.3, Table 4.1 initial data, Table 4.2 star values), γ = 1.4,
+    /// `n` cells on [0, 1]. Initial data re-checked against Tasker et al. 2008
+    /// (arXiv:0711.4141 §2.1-2.5) and Cholla's 1D-Two-Shocks page (Test 4: x0 = 0.4, t = 0.035); star
+    /// values of Tests 2, 3, 5 against Toro et al. (arXiv:2412.03522 Table 1, rows "7" and "4"), and of
+    /// Tests 3-5 reproduced by an independent exact solver (bisection on Toro's f(p), Python, run
+    /// outside the repo): T2 (0.0018939, 0), T3 (460.8938, 19.59745), T4 (1691.647, 8.68977),
+    /// T5 (460.8938, 1.4e-6). The end time is ours: only a plateau must exist and no wave reach a wall.
+    fn toro(l: Prim, r: Prim, x0: f64, t_end: f64, n: usize) -> Pipe1d {
+        let mut p = Pipe1d::new(1.0, n, l);
+        for i in 0..n {
+            if (i as f64 + 0.5) * p.dx > x0 {
+                p.cells[i] = r.to_cons();
+            }
+        }
+        // Both ends pinned to the initial states: exact while no wave has reached them. Walls would
+        // be wrong here, Tests 4-5 move gas away from them and a vacuum forms (seen in the first run).
+        p.left = Boundary::State(l);
+        p.right = Boundary::State(r);
+        let mut t = 0.0;
+        while t < t_end {
+            let dt = p.max_dt(0.8).min(t_end - t);
+            p.step(dt);
+            t += dt;
+        }
+        p
+    }
+
+    fn prim(rho: f64, u: f64, p: f64) -> Prim {
+        Prim { rho, u, p }
+    }
+
+    #[test]
+    #[ignore = "finding: HLLC/WENO overestimates the near-vacuum star pressure by 16 % at x=0.5 (0.00219 vs 0.00189), see docs/physics-validation.md"]
+    fn toro_test2_123_problem_near_vacuum_star_state() {
+        // Initial: (1, -2, 0.4) | (1, 2, 0.4), x0 = 0.5. Exact star: p* = 0.00189, u* = 0 (Toro Table 4.2).
+        // Tolerances fixed before the run: p* 10 % (the reference has 3 digits and the plateau is 0.5 % of
+        // the initial pressure, so scheme smearing dominates), u* |.| < 0.05 (2 % of the 2.0 outflow speed).
+        let p = toro(prim(1.0, -2.0, 0.4), prim(1.0, 2.0, 0.4), 0.5, 0.15, 1000);
+        let c = at(&p, 0.5);
+        assert_relative_eq!(c.p, 0.00189, max_relative = 0.10);
+        assert!(c.u.abs() < 0.05, "u* {}", c.u);
+        // Undisturbed beyond the rarefaction heads (x = 0.5 -/+ (2 + 0.748)·0.15 = 0.088 / 0.912).
+        assert_relative_eq!(at(&p, 0.03).p, 0.4, max_relative = 1e-3);
+        for i in 0..p.cells.len() {
+            let q = p.prim(i);
+            assert!(q.rho > 0.0 && q.p > 0.0, "cell {i}: {q:?}");
+        }
+    }
+
+    #[test]
+    fn toro_test3_strong_blast_matches_the_exact_star_state() {
+        // (1, 0, 1000) | (1, 0, 0.01), x0 = 0.5. Exact: p* = 460.894, u* = 19.5975.
+        // Tolerance 3 %: reference has 6 digits, the scheme's smearing of a Mach-200 shock dominates.
+        // Plateaus (hand-estimated from the exact waves, t = 0.012): left star 0.333..0.735, right star
+        // 0.735..0.782 (contact 0.5 + 19.6 t, shock ≈ 23.5 t).
+        let p = toro(
+            prim(1.0, 0.0, 1000.0),
+            prim(1.0, 0.0, 0.01),
+            0.5,
+            0.012,
+            1000,
+        );
+        for x in [0.6, 0.758] {
+            let s = at(&p, x);
+            assert_relative_eq!(s.p, 460.894, max_relative = 0.03);
+            assert_relative_eq!(s.u, 19.5975, max_relative = 0.03);
+        }
+        assert_relative_eq!(at(&p, 0.9).p, 0.01, max_relative = 1e-3);
+    }
+
+    #[test]
+    fn toro_test4_two_shocks_collision_matches_the_exact_star_state() {
+        // (5.99924, 19.5975, 460.894) | (5.99242, -6.19633, 46.0950), x0 = 0.4. Exact: p* = 1691.64,
+        // u* = 8.68975 (Table 4.2). Tolerance 3 % (6-digit reference; scheme smearing dominates).
+        // t = 0.035: contact at 0.4 + 8.69 t = 0.704, shocks ≈ 0.428 and ≈ 0.829 (Rankine-Hugoniot by hand).
+        let p = toro(
+            prim(5.99924, 19.5975, 460.894),
+            prim(5.99242, -6.19633, 46.0950),
+            0.4,
+            0.035,
+            1000,
+        );
+        for x in [0.57, 0.77] {
+            let s = at(&p, x);
+            assert_relative_eq!(s.p, 1691.64, max_relative = 0.03);
+            assert_relative_eq!(s.u, 8.68975, max_relative = 0.03);
+        }
+        // Outside both shocks the initial states are untouched.
+        assert_relative_eq!(at(&p, 0.2).p, 460.894, max_relative = 1e-3);
+        assert_relative_eq!(at(&p, 0.95).p, 46.0950, max_relative = 1e-3);
+    }
+
+    #[test]
+    fn toro_test5_stationary_contact_keeps_the_contact_in_place() {
+        // Test 3 with a background velocity of -19.59745 (x0 = 0.8): (1, -19.59745, 1000) |
+        // (1, -19.59745, 0.01). Exact: p* = 460.894 and u* = 19.5975 - 19.59745 ≈ 0 (Galilean shift
+        // of Test 3), so the contact stays at x0 = 0.8. (Toro Table 4.2; the inventory's "u* = 8.68975"
+        // was Test 4's.) Tolerance: p* 3 %; |u*| < 1.0 (5 % of the 19.6 shift); contact within 3 cells.
+        let p = toro(
+            prim(1.0, -19.59745, 1000.0),
+            prim(1.0, -19.59745, 0.01),
+            0.8,
+            0.012,
+            1000,
+        );
+        for x in [0.75, 0.823] {
+            let s = at(&p, x);
+            assert_relative_eq!(s.p, 460.894, max_relative = 0.03);
+            assert!(s.u.abs() < 1.0, "u* at {x}: {}", s.u);
+        }
+        // Left of the contact ρ*L = 0.57506 (isentropic ρ-p from the exact star p*, hand: (p*/pL)^(1/γ)
+        // = 0.46089^0.7143); right of it ρ*R = 5.99242 (Toro's Test 4 ρR). Find the jump.
+        let jump = (0..p.cells.len() - 1)
+            .filter(|&i| p.prim(i).rho < 3.0 && p.prim(i + 1).rho > 3.0 && i > 600)
+            .map(|i| (i as f64 + 1.0) * p.dx)
+            .next()
+            .expect("contact jump");
+        assert!((jump - 0.8).abs() < 0.003, "contact at {jump}");
+    }
+
     #[test]
     fn prescribed_flux_adds_exactly_that_mass_and_energy() {
         let air = Prim {

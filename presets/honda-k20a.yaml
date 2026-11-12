@@ -78,7 +78,7 @@ engine:
   flywheel_inertia_kgm2: 0.15
   plenum_volume_m3: 0.004
   throttle_diameter_m: 0.062
-  idle_throttle: 0.0055
+  idle_throttle: 0.0
   idle_rpm: 800.0
   exhaust:
     primary_length_m: 0.624
@@ -104,13 +104,34 @@ engine:
       porosity: 0.95
     tail_spacing_m: 0.9
     after_collector:
+    - kind: pipe
+      length_m: 0.4
+      diameter_m: 0.05
     - kind: catalyst
       length_m: 0.13
       diameter_m: 0.1399
       cells_per_in2: 400.0
       wall_m: 0.000165
     - kind: pipe
-      length_m: 1.84
+      length_m: 1.0
+      diameter_m: 0.05
+    - kind: muffler
+      length_m: 0.35
+      diameter_m: 0.1206
+      tube_diameter_m: 0.05
+      packing_resistivity: 16000.0
+      packing_porosity: 0.95
+    - kind: pipe
+      length_m: 0.8
+      diameter_m: 0.05
+    - kind: muffler
+      length_m: 0.45
+      diameter_m: 0.2127
+      tube_diameter_m: 0.05
+      packing_resistivity: 16000.0
+      packing_porosity: 0.95
+    - kind: pipe
+      length_m: 0.3
       diameter_m: 0.05
     merge: null
     steepening: true
@@ -124,6 +145,12 @@ engine:
     film_fraction: 0.18
     film_tau_s: 1.0
     airbox: null
+    air_cleaner:
+      fitted: true
+      volume_m3: 0.0
+      snorkel_length_m: 0.3
+      snorkel_diameter_m: 0.0
+      filter_resistance_pa_s_m3: 0.0
   redline_rpm: 8400.0
   shutoff_rpm: 0.0
   starter_torque_nm: 60.0
@@ -140,6 +167,9 @@ engine:
     flow_noise: 1.0
     intake: 1.0
     valve_jet: 1.0
+    duct_flow: 1.0
+    main_bearings: 1.0
+    piston_slap: 1.0
     block: 1.0
     mechanical: 1.0
     combustion_jitter: 1.0
@@ -151,7 +181,7 @@ engine:
     leveling: 0.0
     listener_distance_m: 3.0
     listener_angle_deg: 30.0
-    ground: true
+    ground: false
     tail_height_m: 0.3
     listener_height_m: 1.6
     street_width_m: 0.0
@@ -182,4 +212,6 @@ engine:
       liner_thickness_m: 0.02
       liner_resistivity: 16000.0
       liner_coverage: 0.25
+    shuffle_hz: 3.5
+    shuffle_damping: 0.15
   turbo: null

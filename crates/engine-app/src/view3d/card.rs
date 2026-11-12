@@ -142,7 +142,15 @@ pub fn card(def: &EngineDef, scene: &Scene, parts: &[Instance], index: usize) ->
                 ]
             }),
         ),
-        Part::Turbine | Part::Compressor | Part::Intercooler => (
+        Part::Turbine
+        | Part::Compressor
+        | Part::Intercooler
+        | Part::TurbineHousing
+        | Part::CompressorHousing
+        | Part::CentreHousing
+        | Part::CompressorWheel
+        | Part::TurbineWheel
+        | Part::WastegateFlap => (
             "Turbocharger",
             def.turbo.as_ref().map_or(Vec::new(), |t| {
                 vec![
@@ -187,6 +195,30 @@ pub fn card(def: &EngineDef, scene: &Scene, parts: &[Instance], index: usize) ->
                 ("Temperature".into(), "no data (not simulated)".into()),
             ],
         ),
+        Part::IntakeSpring | Part::ExhaustSpring | Part::IntakeCam | Part::ExhaustCam => {
+            let intake = matches!(part.part, Part::IntakeSpring | Part::IntakeCam);
+            let v = if intake {
+                &def.intake_valve
+            } else {
+                &def.exhaust_valve
+            };
+            (
+                if matches!(part.part, Part::IntakeSpring | Part::ExhaustSpring) {
+                    "Valve spring"
+                } else {
+                    "Cam"
+                },
+                vec![
+                    (
+                        "Valve".into(),
+                        if intake { "intake" } else { "exhaust" }.into(),
+                    ),
+                    ("Max lift".into(), mm(v.max_lift_m)),
+                    ("Duration".into(), format!("{:.0}°", v.duration_deg)),
+                    ("Opens".into(), format!("{:.0}°", v.open_deg)),
+                ],
+            )
+        }
     };
     Some(Card {
         title: title.into(),
@@ -221,6 +253,21 @@ mod tests {
 
     fn row<'a>(c: &'a Card, label: &str) -> &'a str {
         &c.rows.iter().find(|r| r.0 == label).unwrap().1
+    }
+
+    #[test]
+    fn a_cam_shows_its_valves_timing() {
+        let mut d = EngineDef::inline4();
+        d.exhaust_valve.open_deg = 481.0;
+        let (s, parts) = frame(&d);
+        let k = parts
+            .iter()
+            .position(|i| i.part == Part::ExhaustCam)
+            .unwrap();
+        let c = card(&d, &s, &parts, k).unwrap();
+        assert_eq!(c.title, "Cam");
+        assert_eq!(row(&c, "Valve"), "exhaust");
+        assert_eq!(row(&c, "Opens"), "481°");
     }
 
     #[test]

@@ -25,15 +25,36 @@ const COUNTERWEIGHT_B: f32 = 0.74;
 /// A valve with its keepers and retainer (origin: the face's centre, closed, stem +Y; `stretch`
 /// weights 0 on the head, 1 on the tip, keepers and retainer).
 const VALVE_GLB: &[u8] = include_bytes!("../../../../assets/3d-parts/out/valve.glb");
-/// The reference stem, face to tip, m (README) and the scene's, in bores (the head's box).
+/// The reference stem, face to tip, m (README).
 const REF_STEM: f32 = 0.0989;
-const SCENE_STEM_B: f32 = 0.5;
+/// The valve spring (origin: its seat in the head, axis +Y).
+const SPRING_GLB: &[u8] = include_bytes!("../../../../assets/3d-parts/out/valve_spring.glb");
+/// The bucket-follower cam lobe with a stub of camshaft (shaft along +X, nose +Y at angle 0;
+/// morph target 0 adds the lift).
+const CAM_GLB: &[u8] = include_bytes!("../../../../assets/3d-parts/out/cam_lobe.glb");
+/// Where the valve train stands over the closed valve's face, in bores (all scale with the bore,
+/// README): the stem's tip, the spring's seat in the head (0.0566 m at 86 mm), the spring's free
+/// height (0.0378 m), the cam's base circle (scripts: 0.22 B) and the lobe's reference lift
+/// (0.00946 m = 0.11 B).
+pub const STEM_B: f32 = REF_STEM / REF_BORE;
+pub const SPRING_SEAT_B: f32 = 0.0566 / REF_BORE;
+pub const SPRING_HEIGHT_B: f32 = 0.0378 / REF_BORE;
+pub const CAM_BASE_B: f32 = 0.22;
+const CAM_LIFT_REF_B: f32 = 0.11;
 /// The Wankel rotor with its seals, gear and bearing (real size: e 15, R 105, width 80 mm, the
 /// RENESIS; its plane x–z, apex 0 on +x, centred in y: the frame of `mesh::rotor`).
 const ROTOR_GLB: &[u8] = include_bytes!("../../../../assets/3d-parts/out/wankel_rotor.glb");
 const REF_E: f32 = 0.015;
 const REF_R: f32 = 0.105;
 const REF_W: f32 = 0.080;
+/// The rotor housing with its chromed trochoid and its two plugs, the side plate with the
+/// stationary gear, and the eccentric shaft with its lobe: the same assembly frame as the rotor
+/// (the side plate on −y, the lobe's centre at +x = e).
+const HOUSING_GLB: &[u8] = include_bytes!("../../../../assets/3d-parts/out/wankel_housing.glb");
+const SIDE_PLATE_GLB: &[u8] =
+    include_bytes!("../../../../assets/3d-parts/out/wankel_side_plate.glb");
+const ECCENTRIC_GLB: &[u8] =
+    include_bytes!("../../../../assets/3d-parts/out/wankel_eccentric_shaft.glb");
 /// The reference engine's bore, m (README: bore 86, stroke 86, rod 143 mm).
 const REF_BORE: f32 = 0.086;
 
@@ -68,6 +89,11 @@ impl std::fmt::Display for PartError {
 
 /// Read a `.glb`: every mesh of its default scene merged.
 pub fn load(bytes: &[u8]) -> Result<GlbPart, PartError> {
+    load_nodes(bytes, |_| true)
+}
+
+/// Read the meshes of the nodes whose name `keep` accepts, merged.
+fn load_nodes(bytes: &[u8], keep: impl Fn(&str) -> bool) -> Result<GlbPart, PartError> {
     let file = gltf::Gltf::from_slice(bytes).map_err(PartError::Gltf)?;
     let blob = file.blob.as_deref().ok_or(PartError::NoBinary)?;
     let scene = file
@@ -81,6 +107,9 @@ pub fn load(bytes: &[u8]) -> Result<GlbPart, PartError> {
         let at = parent * Mat4::from_cols_array_2d(&node.transform().matrix());
         stack.extend(node.children().map(|c| (c, at)));
         let Some(mesh) = node.mesh() else { continue };
+        if !keep(node.name().unwrap_or("")) {
+            continue;
+        }
         // a skinned mesh ignores its node's transform (glTF 2.0 §3.7.3.3): its vertices are in
         // the model's frame at rest; its `stretch` joint carries the part's stretch weights
         let (to_model, stretch) = match node.skin() {
@@ -292,15 +321,111 @@ pub fn valve_asset() -> Option<&'static GlbPart> {
 }
 
 /// The realistic valve in the procedural valve head's unit frame: that disc stands on the face,
-/// 0.17 bore in radius (the asset's head too, README) and 0.04 bore thick. Its stem is brought to
-/// the scene's 0.5 bore by the README's rule (`p' = s·p + w·(stem − s·0.0989)·Ŷ`).
+/// 0.17 bore in radius (the asset's head too, README) and 0.04 bore thick. Its stem keeps the
+/// asset's 1.15 bore (README rule `p' = s·p + w·(stem − s·0.0989)·Ŷ` with the stem scaling with
+/// the bore: no stretch).
 pub fn valve() -> Option<Mesh> {
-    let mut part = valve_asset()?.clone();
-    let extra = SCENE_STEM_B - REF_STEM / REF_BORE;
-    for (p, &w) in part.positions.iter_mut().zip(&part.stretch_w) {
-        *p = *p / REF_BORE + w * extra * Vec3::Y;
+    let part = valve_asset()?;
+    Some(to_unit(
+        part,
+        1.0 / REF_BORE,
+        Vec3::ZERO,
+        Vec3::new(0.17, 0.04, 0.17),
+    ))
+}
+
+/// The spring, in bores about its seat (instance: translate to the seat, scale by the bore, y by
+/// [`spring_squash`]), built once.
+pub fn spring() -> Option<&'static Mesh> {
+    static SPRING: std::sync::OnceLock<Option<Mesh>> = std::sync::OnceLock::new();
+    SPRING
+        .get_or_init(|| {
+            load(SPRING_GLB)
+                .inspect_err(|e| {
+                    eprintln!("3D view: valve_spring.glb unreadable ({e}), drawing nothing")
+                })
+                .ok()
+                .map(|p| to_unit(&p, 1.0 / REF_BORE, Vec3::ZERO, Vec3::ONE))
+        })
+        .as_ref()
+}
+
+/// The factor on the spring's height at a lift of `lift_b` bores (README: scale y by
+/// `(s·0.0378 − lift)/(s·0.0378)`; kept above a sliver so a wild lift cannot flatten it).
+pub fn spring_squash(lift_b: f32) -> f32 {
+    ((SPRING_HEIGHT_B - lift_b) / SPRING_HEIGHT_B).max(0.05)
+}
+
+/// The cam asset, read once.
+fn cam_asset() -> Option<&'static GlbPart> {
+    static CAM: std::sync::OnceLock<Option<GlbPart>> = std::sync::OnceLock::new();
+    CAM.get_or_init(|| {
+        load(CAM_GLB)
+            .inspect_err(|e| eprintln!("3D view: cam_lobe.glb unreadable ({e}), drawing nothing"))
+            .ok()
+    })
+    .as_ref()
+}
+
+/// The cam (lobe and a stub of shaft) in bores about the camshaft, its nose +Y at angle 0, for a
+/// lobe that lifts `lift_b` bores: morph target 0 with weight `lift/0.11 − 1` (README: exact, the
+/// profile is linear in the lift).
+pub fn cam(lift_b: f32) -> Option<Mesh> {
+    let part = cam_asset()?;
+    let w = lift_b.max(0.0) / CAM_LIFT_REF_B - 1.0;
+    let moved: Vec<Vec3> = part
+        .positions
+        .iter()
+        .enumerate()
+        .map(|(i, &p)| p + w * part.morph0.get(i).copied().unwrap_or(Vec3::ZERO))
+        .collect();
+    let at = GlbPart {
+        positions: moved,
+        ..part.clone()
+    };
+    Some(to_unit(&at, 1.0 / REF_BORE, Vec3::ZERO, Vec3::ONE))
+}
+
+/// How far the cam is turned from its nose on the follower, rad, when the valve is at `ratio` of
+/// its lobe's lift (1 at the nose, 0 on the base circle, where it returns the angle the flank
+/// starts at). Inverts the flat follower's contact height, the support of the lobe over the
+/// shaft, which the profile makes `base + lift·g(angle)` for every lift (README).
+pub fn cam_angle(ratio: f32) -> f32 {
+    static TABLE: std::sync::OnceLock<Vec<f32>> = std::sync::OnceLock::new();
+    const STEP_DEG: f32 = 0.5;
+    let table = TABLE.get_or_init(|| {
+        let Some(part) = cam_asset() else {
+            return vec![1.0, 0.0];
+        };
+        // support height of the lobe at the reference lift for 0..=180°
+        let h: Vec<f32> = (0..=360)
+            .map(|k| {
+                let (s, c) = (k as f32 * STEP_DEG).to_radians().sin_cos();
+                part.positions
+                    .iter()
+                    .map(|p| (p.y * c - p.z * s) / REF_BORE)
+                    .fold(f32::MIN, f32::max)
+            })
+            .collect();
+        let (top, base) = (h[0], h[360]);
+        h.iter().map(|v| (v - base) / (top - base)).collect()
+    });
+    let ratio = ratio.clamp(0.0, 1.0);
+    // g falls from 1 to ~0 down the flank, then stays on the base circle: the first angle where
+    // it has fallen to the ratio (to a hair above 0 for the base circle's start)
+    let target = ratio.max(0.004);
+    let k = table.iter().position(|&g| g <= target).unwrap_or(0);
+    if k == 0 {
+        return 0.0;
     }
-    Some(to_unit(&part, 1.0, Vec3::ZERO, Vec3::new(0.17, 0.04, 0.17)))
+    // linear between the two samples
+    let (g0, g1) = (table[k - 1], table[k]);
+    let t = if g0 > g1 {
+        (g0 - target) / (g0 - g1)
+    } else {
+        0.0
+    };
+    ((k - 1) as f32 + t) * STEP_DEG.to_radians()
 }
 
 /// The realistic rotor in the procedural rotor's unit frame (0.97 R across, 0.9 width deep from
@@ -328,6 +453,196 @@ pub fn rotor(e_over_r: f32) -> Option<Mesh> {
             ))
         })
         .clone()
+}
+
+/// The asset's e/R, which a rotary's other parts must share (another one is another trochoid).
+fn rotary_matches(e_over_r: f32) -> bool {
+    let reference = REF_E / REF_R;
+    (e_over_r - reference).abs() <= 0.01 * reference
+}
+
+/// The realistic rotor housing (and its plugs) in the procedural housing ring's unit frame: the
+/// generating radius across, the rotor's width deep from its front face (`scene::build`).
+pub fn housing(e_over_r: f32) -> Option<Mesh> {
+    static MESH: std::sync::OnceLock<Option<Mesh>> = std::sync::OnceLock::new();
+    rotary_part(&MESH, e_over_r, "wankel_housing.glb", HOUSING_GLB, || {
+        (
+            Vec3::new(0.0, 0.5 * REF_W, 0.0),
+            Vec3::new(REF_R, REF_W, REF_R),
+        )
+    })
+}
+
+/// A rotary part read once into its unit frame (offset and scale, metres, from `frame`); none
+/// for another e/R or an unreadable asset.
+fn rotary_part(
+    cell: &'static std::sync::OnceLock<Option<Mesh>>,
+    e_over_r: f32,
+    name: &str,
+    bytes: &[u8],
+    frame: impl FnOnce() -> (Vec3, Vec3),
+) -> Option<Mesh> {
+    if !rotary_matches(e_over_r) {
+        return None;
+    }
+    cell.get_or_init(|| {
+        let part = load(bytes)
+            .inspect_err(|e| eprintln!("3D view: {name} unreadable ({e}), drawing the primitive"))
+            .ok()?;
+        let (offset, scale) = frame();
+        Some(to_unit(&part, 1.0, offset, scale))
+    })
+    .clone()
+}
+
+/// The realistic side plate (and stationary gear) in the procedural side plate's unit frame:
+/// 0.12 width deep, from 0.62 width behind the rotor's centre plane.
+pub fn side_plate(e_over_r: f32) -> Option<Mesh> {
+    static MESH: std::sync::OnceLock<Option<Mesh>> = std::sync::OnceLock::new();
+    rotary_part(
+        &MESH,
+        e_over_r,
+        "wankel_side_plate.glb",
+        SIDE_PLATE_GLB,
+        || {
+            (
+                Vec3::new(0.0, 0.62 * REF_W, 0.0),
+                Vec3::new(REF_R, 0.12 * REF_W, REF_R),
+            )
+        },
+    )
+}
+
+/// The realistic eccentric shaft in the procedural eccentric's unit frame, turned with the lobe:
+/// that cylinder stands on the lobe's centre, e from the shaft, 0.35 R in radius and 1.05 width
+/// long from 0.525 width behind the rotor's centre plane.
+pub fn eccentric(e_over_r: f32) -> Option<Mesh> {
+    static MESH: std::sync::OnceLock<Option<Mesh>> = std::sync::OnceLock::new();
+    rotary_part(
+        &MESH,
+        e_over_r,
+        "wankel_eccentric_shaft.glb",
+        ECCENTRIC_GLB,
+        || {
+            (
+                Vec3::new(-REF_E, 0.525 * REF_W, 0.0),
+                Vec3::new(0.35 * REF_R, 1.05 * REF_W, 0.35 * REF_R),
+            )
+        },
+    )
+}
+
+/// The turbocharger's parts (README, `scripts/turbo.py`): drawn at `compressor_tip_diameter_m /
+/// TURBO_REF_TIP` of their size, in metres about their own origins.
+pub const TURBO_REF_TIP: f32 = 0.056;
+const TURBO_HOUSING_GLB: &[u8] =
+    include_bytes!("../../../../assets/3d-parts/out/turbo_housing.glb");
+const TURBO_CWHEEL_GLB: &[u8] =
+    include_bytes!("../../../../assets/3d-parts/out/turbo_compressor_wheel.glb");
+const TURBO_TWHEEL_GLB: &[u8] =
+    include_bytes!("../../../../assets/3d-parts/out/turbo_turbine_wheel.glb");
+const TURBO_FLAP_GLB: &[u8] =
+    include_bytes!("../../../../assets/3d-parts/out/turbo_wastegate_flap.glb");
+
+/// Where the turbo's housing meets the rest, in its frame at the reference size (glTF axes, the
+/// shaft midway between the wheels at the origin, the turbine at +X): the turbine's inlet flange
+/// (opening up), its outlet face (+X), the compressor's charge outlet (up) and its eye (-X), the
+/// wastegate flap's hinge, and each wheel's back face at ±`wheel_x`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TurboPorts {
+    pub inlet: Vec3,
+    pub outlet: Vec3,
+    pub charge: Vec3,
+    pub eye: Vec3,
+    pub hinge: Vec3,
+    pub wheel_x: f32,
+}
+
+/// The ports a `.glb` carries in a node's `engine_sim` extras (none: not a turbo housing).
+fn read_ports(bytes: &[u8]) -> Option<TurboPorts> {
+    let file = gltf::Gltf::from_slice(bytes).ok()?;
+    file.document.nodes().find_map(|n| {
+        let raw: serde_json::Value = serde_json::from_str(n.extras().as_ref()?.get()).ok()?;
+        let ex: serde_json::Value = serde_json::from_str(raw.get("engine_sim")?.as_str()?).ok()?;
+        let v = |k: &str| -> Option<Vec3> {
+            let a = ex.get(k)?.as_array()?;
+            Some(Vec3::new(
+                a.first()?.as_f64()? as f32,
+                a.get(1)?.as_f64()? as f32,
+                a.get(2)?.as_f64()? as f32,
+            ))
+        };
+        Some(TurboPorts {
+            inlet: v("inlet")?,
+            outlet: v("outlet")?,
+            charge: v("charge")?,
+            eye: v("eye")?,
+            hinge: v("hinge")?,
+            wheel_x: ex.get("wheel_x")?.as_f64()? as f32,
+        })
+    })
+}
+
+/// The turbo housing's ports, read once (none if the asset lacks them: the primitives stay).
+pub fn turbo_ports() -> Option<TurboPorts> {
+    static PORTS: std::sync::OnceLock<Option<TurboPorts>> = std::sync::OnceLock::new();
+    *PORTS.get_or_init(|| read_ports(TURBO_HOUSING_GLB))
+}
+
+/// A turbo part read once (its nodes named `node`, or all), in metres at the reference size
+/// about its own origin.
+fn turbo_part(
+    cell: &'static std::sync::OnceLock<Option<Mesh>>,
+    name: &str,
+    bytes: &[u8],
+    node: Option<&str>,
+) -> Option<Mesh> {
+    cell.get_or_init(|| {
+        let part = load_nodes(bytes, |n| node.is_none_or(|want| n == want))
+            .inspect_err(|e| eprintln!("3D view: {name} unreadable ({e}), drawing the primitive"))
+            .ok()?;
+        Some(to_unit(&part, 1.0, Vec3::ZERO, Vec3::ONE))
+    })
+    .clone()
+}
+
+/// One of the turbo's housings about the shaft's middle: the compressor's, the centre (bearing)
+/// one or the turbine's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurboHousing {
+    Compressor,
+    Centre,
+    Turbine,
+}
+
+pub fn turbo_housing(which: TurboHousing) -> Option<Mesh> {
+    static C: std::sync::OnceLock<Option<Mesh>> = std::sync::OnceLock::new();
+    static M: std::sync::OnceLock<Option<Mesh>> = std::sync::OnceLock::new();
+    static T: std::sync::OnceLock<Option<Mesh>> = std::sync::OnceLock::new();
+    let (cell, node) = match which {
+        TurboHousing::Compressor => (&C, "compressor_housing"),
+        TurboHousing::Centre => (&M, "centre_housing"),
+        TurboHousing::Turbine => (&T, "turbine_housing"),
+    };
+    turbo_part(cell, "turbo_housing.glb", TURBO_HOUSING_GLB, Some(node))
+}
+
+/// The compressor wheel about its back face's centre, the inducer towards -X.
+pub fn compressor_wheel() -> Option<Mesh> {
+    static MESH: std::sync::OnceLock<Option<Mesh>> = std::sync::OnceLock::new();
+    turbo_part(&MESH, "turbo_compressor_wheel.glb", TURBO_CWHEEL_GLB, None)
+}
+
+/// The turbine wheel about its back face's centre, the exducer towards +X.
+pub fn turbine_wheel() -> Option<Mesh> {
+    static MESH: std::sync::OnceLock<Option<Mesh>> = std::sync::OnceLock::new();
+    turbo_part(&MESH, "turbo_turbine_wheel.glb", TURBO_TWHEEL_GLB, None)
+}
+
+/// The wastegate's flap about its hinge axis (+Z).
+pub fn wastegate_flap() -> Option<Mesh> {
+    static MESH: std::sync::OnceLock<Option<Mesh>> = std::sync::OnceLock::new();
+    turbo_part(&MESH, "turbo_wastegate_flap.glb", TURBO_FLAP_GLB, None)
 }
 
 /// Into a unit frame: `p ↦ (p·k + offset) / scale`, normals `n ↦ n·scale` (normalised).
@@ -517,17 +832,76 @@ mod tests {
         });
         assert!((r - 0.17).abs() < 0.005, "{r}");
         assert!(low > -0.005, "{low}");
-        // the tip end (weight 1) moved down by 0.0989/0.086 − 0.5 = 0.65 bore: its top at the
-        // asset's top less that
-        let asset = valve_asset().unwrap();
-        let top_ref = asset
-            .positions
-            .iter()
-            .map(|p| p.y / REF_BORE)
-            .fold(f32::MIN, f32::max);
+        // the stem keeps the asset's length, 0.0989 m at 86 mm = 1.15 bore (README), scaled with
+        // the bore: the tip stands 1.15 bore over the face
         let top = bores.iter().map(|(p, _)| p.y).fold(f32::MIN, f32::max);
-        let drop = REF_STEM / REF_BORE - SCENE_STEM_B;
-        assert!((top - (top_ref - drop)).abs() < 1e-3, "{top} {top_ref}");
+        assert!((top - 0.0989 / 0.086).abs() < 1e-3, "{top}");
+        assert!((STEM_B - 1.15).abs() < 1e-3, "{STEM_B}");
+    }
+
+    #[test]
+    fn the_spring_closes_up_with_lift() {
+        // README: scale y by (s·0.0378 − lift)/(s·0.0378). A lift of 0.00946 m on the 86 mm
+        // reference (0.11 bore): (0.0378 − 0.00946)/0.0378 = 0.74974
+        assert!((spring_squash(0.00946 / 0.086) - 0.74974).abs() < 1e-3);
+        assert_eq!(spring_squash(0.0), 1.0);
+        // never flat or inverted, whatever the lift
+        assert!(spring_squash(1.0) > 0.0);
+        // the asset: its seat at the origin, free height 0.44 bore (scripts: H_REF = 0.44 B)
+        let m = spring().expect("valve_spring.glb");
+        let (lo, hi) = bounds(m.vertices.iter().map(|v| Vec3::from(v.pos)));
+        assert!(
+            lo.y.abs() < 0.02 && (hi.y - 0.0378 / 0.086).abs() < 0.02,
+            "{lo} {hi}"
+        );
+        // the seat in the head: 0.0566 m at 86 mm (README)
+        assert!(
+            (SPRING_SEAT_B - 0.0566 / 0.086).abs() < 1e-4,
+            "{SPRING_SEAT_B}"
+        );
+    }
+
+    #[test]
+    fn the_cam_nose_reaches_the_lift() {
+        // the nose (+Y at angle 0) stands base radius + lift over the camshaft: 0.22 bore base
+        // circle (scripts: R_BASE = 0.22 B) + 0.11 bore at the reference lift; the profile is
+        // linear in the lift, so the morph weight lift/0.11 − 1 is exact (README)
+        let top = |lift_b: f32| {
+            let m = cam(lift_b).expect("cam_lobe.glb");
+            m.vertices.iter().map(|v| v.pos[1]).fold(f32::MIN, f32::max)
+        };
+        assert!((top(0.11) - 0.33).abs() < 0.005, "{}", top(0.11));
+        assert!((top(0.0) - 0.22).abs() < 0.005, "{}", top(0.0));
+        assert!((top(0.07) - 0.29).abs() < 0.005, "{}", top(0.07));
+        let m = cam(0.07).unwrap();
+        assert!(
+            m.vertices
+                .iter()
+                .all(|v| (Vec3::from(v.normal).length() - 1.0).abs() < 1e-3)
+        );
+    }
+
+    #[test]
+    fn the_cam_angle_follows_the_lift_down_the_flank() {
+        // full lift: the nose on the follower (angle 0); none: the base circle (beyond the
+        // lobe's 80° half duration, cam degrees: scripts HALF_DUR)
+        assert!(cam_angle(1.0).abs() < 0.01);
+        let base = cam_angle(0.0).to_degrees();
+        assert!((base - 80.0).abs() < 6.0, "{base}");
+        let (a, b) = (cam_angle(0.8), cam_angle(0.3));
+        assert!(0.0 < a && a < b && b < cam_angle(0.0));
+        // and the cam really touches the follower: turned by the angle, the lobe's highest point
+        // over the shaft is the base radius + the ratio of its lift
+        let lobe = cam(0.11).unwrap();
+        for ratio in [0.2f32, 0.5, 0.9] {
+            let phi = cam_angle(ratio);
+            let h = lobe
+                .vertices
+                .iter()
+                .map(|v| v.pos[1] * phi.cos() - v.pos[2] * phi.sin())
+                .fold(f32::MIN, f32::max);
+            assert!((h - (0.22 + ratio * 0.11)).abs() < 0.004, "{ratio}: {h}");
+        }
     }
 
     #[test]
@@ -557,6 +931,113 @@ mod tests {
         assert!(lo > -0.1 && hi < 1.1, "{lo} {hi}");
         // another e/R: none (the primitive stays)
         assert!(rotor(0.16).is_none());
+    }
+
+    fn span(m: &Mesh, axis: usize) -> (f32, f32) {
+        m.vertices.iter().fold((f32::MAX, f32::MIN), |(l, h), v| {
+            (l.min(v.pos[axis]), h.max(v.pos[axis]))
+        })
+    }
+
+    #[test]
+    fn the_wankel_housing_side_plate_and_shaft_sit_in_their_frames() {
+        let eor = REF_E / REF_R;
+        // housing: ±151.5 mm across over R = 105; its 80 mm depth (centred) fills 0..1
+        let h = housing(eor).expect("the realistic housing");
+        let (lo, hi) = span(&h, 0);
+        assert!((hi - 151.5 / 105.0).abs() < 0.01 && (lo + 151.5 / 105.0).abs() < 0.01);
+        let (lo, hi) = span(&h, 1);
+        assert!(lo.abs() < 0.01 && (hi - 1.0).abs() < 0.01, "{lo} {hi}");
+        // side plate: −52…−26.5 mm deep in the assembly; its frame starts 0.62 width behind the
+        // centre plane, 0.12 width deep: (−52/80 + 0.62)/0.12 = −0.25, (−26.5/80 + 0.62)/0.12 = 2.406
+        let p = side_plate(eor).expect("the realistic side plate");
+        let (lo, hi) = span(&p, 1);
+        assert!(
+            (lo + 0.25).abs() < 0.01 && (hi - 2.406).abs() < 0.01,
+            "{lo} {hi}"
+        );
+        // eccentric: the lobe's centre (x = e = 15 mm) at the frame's origin; across in 0.35 R:
+        // −21.7…51.8 mm → (−21.7 − 15)/36.75 = −0.999, (51.8 − 15)/36.75 = 1.001
+        let e = eccentric(eor).expect("the realistic eccentric shaft");
+        let (lo, hi) = span(&e, 0);
+        assert!(
+            (lo + 0.999).abs() < 0.01 && (hi - 1.001).abs() < 0.01,
+            "{lo} {hi}"
+        );
+        // its length: −60…48 mm deep, from 0.525·80 = 42 mm behind the centre plane, over
+        // 1.05·80 = 84 mm: (−60 + 42)/84 = −0.214, (48 + 42)/84 = 1.071
+        let (lo, hi) = span(&e, 1);
+        assert!(
+            (lo + 0.214).abs() < 0.01 && (hi - 1.071).abs() < 0.01,
+            "{lo} {hi}"
+        );
+        // another e/R: none of them
+        assert!(housing(0.16).is_none() && side_plate(0.16).is_none() && eccentric(0.16).is_none());
+    }
+
+    #[test]
+    fn the_turbo_parts_load_at_their_reference_size() {
+        // scripts/turbo.py: compressor wheel tip D = 56 mm, turbine wheel 0.95 D, each wheel's back
+        // face at the origin (inducer -X, exducer +X)
+        let radial = |m: &Mesh| {
+            m.vertices
+                .iter()
+                .map(|v| Vec3::from(v.pos))
+                .fold(0.0f32, |r, p| r.max(p.y.hypot(p.z)))
+        };
+        let c = compressor_wheel().expect("turbo_compressor_wheel.glb");
+        assert!(
+            (radial(&c) - 0.5 * TURBO_REF_TIP).abs() < 0.2e-3,
+            "{}",
+            radial(&c)
+        );
+        let t = turbine_wheel().expect("turbo_turbine_wheel.glb");
+        assert!(
+            (radial(&t) - 0.475 * TURBO_REF_TIP).abs() < 0.2e-3,
+            "{}",
+            radial(&t)
+        );
+        assert!(wastegate_flap().is_some());
+        // each housing on its own, the turbine's beyond +wheel_x, the compressor's beyond -wheel_x
+        let span_x = |m: Mesh| {
+            m.vertices.iter().fold((f32::MAX, f32::MIN), |(lo, hi), v| {
+                (lo.min(v.pos[0]), hi.max(v.pos[0]))
+            })
+        };
+        let (_, c_hi) = span_x(turbo_housing(TurboHousing::Compressor).unwrap());
+        let (t_lo, _) = span_x(turbo_housing(TurboHousing::Turbine).unwrap());
+        assert!(c_hi < 0.0 && t_lo > 0.0, "{c_hi} {t_lo}");
+        assert!(turbo_housing(TurboHousing::Centre).is_some());
+    }
+
+    #[test]
+    fn the_turbo_housing_carries_its_ports() {
+        // the extras of scripts/turbo.py, glTF axes, at the 56 mm reference: the turbine inlet and
+        // the compressor's charge outlet open upwards on their sides, the turbine outlet beyond
+        // its wheel along +X and the compressor's eye beyond its wheel along -X; the wheels' backs
+        // at ±0.75 D
+        let p = turbo_ports().expect("the housing's extras");
+        let d = TURBO_REF_TIP;
+        assert!((p.wheel_x - 0.75 * d).abs() < 1e-5, "{}", p.wheel_x);
+        assert!(p.inlet.x > 0.0 && p.inlet.y > 0.0, "{}", p.inlet);
+        assert!(p.charge.x < 0.0 && p.charge.y > 0.0, "{}", p.charge);
+        assert!(
+            (p.outlet - Vec3::new(1.6 * d, 0.0, 0.0)).length() < 1e-5,
+            "{}",
+            p.outlet
+        );
+        assert!(
+            (p.eye - Vec3::new(-1.75 * d, 0.0, 0.0)).length() < 1e-5,
+            "{}",
+            p.eye
+        );
+        assert!(
+            p.hinge.x > p.wheel_x,
+            "the flap on the turbine's outlet face: {}",
+            p.hinge
+        );
+        // an asset without them gives none, not a panic
+        assert_eq!(read_ports(PISTON_GLB), None);
     }
 
     #[test]

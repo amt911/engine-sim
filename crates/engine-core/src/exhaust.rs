@@ -28,6 +28,19 @@ pub(crate) fn tail_reference_density() -> f64 {
 /// *Fundamentals of Acoustics*, §9.4) gives 0.0295 Np/m in a 42 mm primary of 900 K gas (c 600
 /// m/s, ν 1e-4 m²/s) at 200 Hz, about the firing orders' band: 1 − e^(−0.0295) ≈ 0.03.
 pub const LOSS_PER_M: f64 = 0.03;
+/// Running radial clearance of a hot exhaust butterfly round its disc, m: ESTIMATE, a gap left
+/// for the disc's thermal growth (≈ 0.5 mm on 50–90 mm valves).
+pub const BUTTERFLY_CLEARANCE_M: f64 = 0.0005;
+
+/// Share of a butterfly's pipe a radial gap of `clearance_m` round its disc leaves open: the ring
+/// π·D·c over the bore π·D²/4, 4c/D (capped at the whole pipe; 0 with no gap or no pipe).
+pub fn valve_leak_share(clearance_m: f64, bore_m: f64) -> f64 {
+    if bore_m <= 0.0 || clearance_m <= 0.0 {
+        return 0.0;
+    }
+    (4.0 * clearance_m / bore_m).min(1.0)
+}
+
 /// Bore a path ends in, m (a silencer's tube if it has one, else its shell); 0 for none.
 fn exit_diameter(path: &[Segment]) -> f64 {
     match path.last() {
@@ -58,7 +71,7 @@ fn exit_diameter(path: &[Segment]) -> f64 {
 const WAVE_LIMIT_PA: f64 = 3.0e5;
 const WAVE_MIN_PA: f64 = -3.5 * crate::units::ATM_PA;
 
-fn clamp_wave(p: f64) -> f64 {
+pub(crate) fn clamp_wave(p: f64) -> f64 {
     p.clamp(WAVE_MIN_PA, WAVE_LIMIT_PA)
 }
 
@@ -155,6 +168,10 @@ pub struct Bypass {
     pub open_rpm: f64,
     /// Valve travel, closed to open, s.
     pub travel_s: f64,
+    /// Radial clearance round the valve's disc, m: a butterfly keeps a gap for its thermal
+    /// growth, so shut it still passes a jet through [`valve_leak_share`] of its pipe (0:
+    /// sealed). Default 0.5 mm: ESTIMATE, a hot exhaust butterfly's running clearance.
+    pub valve_clearance_m: f64,
     /// The silencer's outer wall over its inlet chamber (the first of `closed`): its thickness,
     /// m (0: no wall radiates), density, kg/m³, and area, m². The gas in the chamber shakes the
     /// wall, which radiates as well as the tips ("break-out" noise, Munjal, *Acoustics of Ducts
@@ -178,6 +195,7 @@ impl Default for Bypass {
             baffle_open_area: 1.0,
             open_rpm: 3000.0,
             travel_s: 0.3,
+            valve_clearance_m: BUTTERFLY_CLEARANCE_M,
             shell_thickness_m: 0.0,
             shell_density_kg_m3: 7850.0,
             shell_area_m2: 0.0,
@@ -297,7 +315,9 @@ impl Valved {
         };
         let rho = tail_reference_density();
         let z = rho * C_TAIL;
-        let shut = self.x <= 0.0;
+        // shut, the disc still leaves its clearance open
+        let opening = self.x.max(self.leak);
+        let shut = opening <= 0.0;
         let baffle = baffle_loss(self.baffle, rho);
         let (open_near, open_far) = (self.open.at_near(), self.open.at_far());
         // split: the shared duct, the closed path and (unless shut) the valve into the open path
@@ -313,7 +333,7 @@ impl Valved {
             );
             to_open = open_near; // the shut valve reflects as a wall
         } else {
-            let loss = valve_loss(self.x, rho);
+            let loss = valve_loss(opening, rho);
             crate::waveguide::lossy_junction(
                 &[
                     duct_area,
@@ -464,7 +484,7 @@ pub enum Segment {
 }
 
 /// A road car's exhaust after one collector, from sizing rules rather than one car's drawings
-/// (a starting point to design from; no preset uses it — the rule is not any car's data):
+/// (every road preset without a drawn silencer carries it, `EngineDef::with_road_exhaust`):
 /// a close-coupled catalyst of about the swept volume (standard 400 cpsi / 0.165 mm substrate)
 /// and silencers totalling ten times it (a long-standing rule of thumb for muffler volume, e.g.
 /// US patent 3,318,412), a fifth in a centre resonator and the rest in the rear box, both
@@ -919,6 +939,157 @@ pub(crate) fn after_collector(
     )
 }
 
+/// Area ratio from which a step out into a wider passage is an abrupt expansion that sheds the
+/// flow (a sudden-expansion loss (1 − σ)² ≥ 0.11 at σ = 1/1.5; below it the jet stays mostly
+/// attached and its noise is left to the pipes).
+pub const EXPANSION_RATIO_MIN: f64 = 1.5;
+
+/// Where along the exhaust an [`ExpansionSite`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SiteAt {
+    /// A primary (0-based cylinder) jetting into its collector.
+    Collector { primary: usize },
+    /// The step into segment `index` of the collector's path ([`ExhaustDef::path`]).
+    Segment { index: usize },
+    /// A branch's path jetting into the shared duct of a [`Merge`].
+    MergeJunction,
+    /// The step into segment `index` of the merge's shared duct.
+    MergedSegment { index: usize },
+    /// The open end: the branch's tail (or the merge's outlet) jetting into the air.
+    Exit,
+}
+
+/// An abrupt area expansion of the exhaust, where the flow separates and sheds vortices: a
+/// source of duct flow noise ([`crate::jet_noise::DuctJet`]; Davies & Holland 1999 §4). `branch`
+/// is the collector it belongs to (None: after a merge); `d_jet` the passage the flow leaves,
+/// `d_down` the one it enters (for the exit: the tail itself, which carries its waves out).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExpansionSite {
+    pub branch: Option<usize>,
+    pub at: SiteAt,
+    pub d_jet: f64,
+    pub d_down: f64,
+}
+
+/// The bore the flow passes through in `seg`: a straight-through silencer's tube, an empty can's
+/// shell, a catalyst's face. None for a side resonator (off the flow).
+fn passage_diameter(seg: &Segment) -> Option<f64> {
+    match *seg {
+        Segment::Pipe { diameter_m, .. } | Segment::Catalyst { diameter_m, .. } => Some(diameter_m),
+        Segment::Measured { bore_m, .. } => Some(bore_m),
+        Segment::Muffler {
+            diameter_m,
+            tube_diameter_m,
+            ..
+        } => Some(if tube_diameter_m > 0.0 && tube_diameter_m < diameter_m {
+            tube_diameter_m
+        } else {
+            diameter_m
+        }),
+        Segment::Resonator { .. } => None,
+    }
+}
+
+/// The expansions along `segments` entered from a passage of `d_from`, pushed as `at(index)`;
+/// returns the last passage's diameter.
+fn path_sites(
+    segments: &[Segment],
+    mut d_from: f64,
+    branch: Option<usize>,
+    at: impl Fn(usize) -> SiteAt,
+    out: &mut Vec<ExpansionSite>,
+) -> f64 {
+    for (index, seg) in segments.iter().enumerate() {
+        let Some(d) = passage_diameter(seg) else {
+            continue;
+        };
+        if d * d >= EXPANSION_RATIO_MIN * d_from * d_from {
+            out.push(ExpansionSite {
+                branch,
+                at: at(index),
+                d_jet: d_from,
+                d_down: d,
+            });
+        }
+        d_from = d;
+    }
+    d_from
+}
+
+/// Every abrupt area expansion of `def`'s exhaust for an engine of `cylinders`, in a fixed
+/// order both exhaust models share: for each collector (in `def.collectors` order, or one for
+/// all), its primaries' jets into it, the expansions along its path, and its exit (none when a
+/// [`Merge`] takes the paths); then each branch's step into the merge, the merge's own
+/// expansions and its outlet. The bypass silencer's inner chambers are not listed.
+pub fn expansion_sites(def: &ExhaustDef, cylinders: usize) -> Vec<ExpansionSite> {
+    let groups = def.groups(cylinders);
+    let path = def.path();
+    let mut out = Vec::new();
+    let mut branch_exit = Vec::with_capacity(groups.len());
+    let (dp, dc) = (def.primary_diameter_m, def.collector_diameter_m);
+    for (b, group) in groups.iter().enumerate() {
+        if dc * dc >= EXPANSION_RATIO_MIN * dp * dp {
+            for &primary in group {
+                out.push(ExpansionSite {
+                    branch: Some(b),
+                    at: SiteAt::Collector { primary },
+                    d_jet: dp,
+                    d_down: dc,
+                });
+            }
+        }
+        let d_end = path_sites(
+            &path,
+            dc,
+            Some(b),
+            |index| SiteAt::Segment { index },
+            &mut out,
+        );
+        branch_exit.push(d_end);
+        if def.merge.is_none() {
+            out.push(ExpansionSite {
+                branch: Some(b),
+                at: SiteAt::Exit,
+                d_jet: d_end,
+                d_down: d_end,
+            });
+        }
+    }
+    if let Some(m) = &def.merge {
+        let d_shared = m
+            .segments
+            .iter()
+            .find_map(passage_diameter)
+            .unwrap_or(m.outlet_diameter_m);
+        for (b, &d_end) in branch_exit.iter().enumerate() {
+            if d_shared * d_shared >= EXPANSION_RATIO_MIN * d_end * d_end {
+                out.push(ExpansionSite {
+                    branch: Some(b),
+                    at: SiteAt::MergeJunction,
+                    d_jet: d_end,
+                    d_down: d_shared,
+                });
+            }
+        }
+        // the first shared segment is the junction's own duct: its expansions start after it
+        let rest = m.segments.get(1..).unwrap_or(&[]);
+        path_sites(
+            rest,
+            d_shared,
+            None,
+            |i| SiteAt::MergedSegment { index: i + 1 },
+            &mut out,
+        );
+        out.push(ExpansionSite {
+            branch: None,
+            at: SiteAt::Exit,
+            d_jet: m.outlet_diameter_m,
+            d_down: m.outlet_diameter_m,
+        });
+    }
+    out
+}
+
 /// The duct of `path`'s segments, its last pipe carrying `transmission`; a lone pipe of
 /// `fallback` (length, diameter) if the path is empty. The lining's segment length no longer
 /// applies here: a packed silencer is its 2D transmission ([`crate::silencer2d`]), not a lumped
@@ -943,10 +1114,12 @@ fn segments_duct(
     let pipe = |len: f64, d: f64| shaped(plain(len, d), steep);
     let mut duct: Option<Duct> = None;
     let mut pending = Node::Plain;
+    let mut starts = Vec::with_capacity(path.len());
     let last_pipe = path
         .iter()
         .rposition(|s| !matches!(s, Segment::Resonator { .. }));
     for (i, seg) in path.iter().enumerate() {
+        starts.push(duct.as_ref().map_or(0, Duct::pipe_count));
         let piece =
             match *seg {
                 Segment::Pipe {
@@ -1038,7 +1211,9 @@ fn segments_duct(
             None => piece,
         });
     }
-    duct.unwrap_or_else(|| Duct::new(vec![pipe(fallback.0, fallback.1)]))
+    let mut duct = duct.unwrap_or_else(|| Duct::new(vec![pipe(fallback.0, fallback.1)]));
+    duct.segment_starts = starts;
+    duct
 }
 
 /// A pipe's gas as the 3D view shows it ([`ExhaustNet::probe`]).
@@ -1090,7 +1265,56 @@ pub struct ExhaustNet {
     shared: Option<Shared>,
     /// The gas's temperature along the pipes ([`ExhaustDef::gas_temperature`]).
     heat: Option<Heat>,
+    /// Flow noise at the exhaust's area expansions ([`ExhaustNet::set_duct_flow`]).
+    duct_flow: DuctFlow,
     pub dt: f64,
+}
+
+/// The exhaust's duct flow noise: one [`crate::jet_noise::DuctJet`] per [`ExpansionSite`], in
+/// [`expansion_sites`] order, at a mix `gain` (0: off, nothing computed).
+#[derive(Debug, Clone, Default)]
+struct DuctFlow {
+    gain: f64,
+    sites: Vec<SiteSource>,
+    /// Each site's mass flow handed in from outside ([`ExhaustNet::set_site_flows`]), kg/s;
+    /// empty: the net's own.
+    given: Vec<f64>,
+}
+
+#[derive(Debug, Clone)]
+struct SiteSource {
+    site: ExpansionSite,
+    jet: crate::jet_noise::DuctJet,
+}
+
+impl DuctFlow {
+    fn new(def: &ExhaustDef, cylinders: usize) -> Self {
+        let sites = expansion_sites(def, cylinders)
+            .into_iter()
+            .enumerate()
+            .map(|(i, site)| SiteSource {
+                site,
+                jet: crate::jet_noise::DuctJet::new(0xD0C7_F10E ^ (i as u64 + 1)),
+            })
+            .collect();
+        Self {
+            gain: 0.0,
+            sites,
+            given: Vec::new(),
+        }
+    }
+
+    /// Site `i`'s noise this step as the plane-wave pressure for a 1 m² duct (scale by 1/√A),
+    /// its mass flow `own` (kg/s, + towards the tail) unless one was given, in gas of sound
+    /// speed `c` at an atmosphere.
+    fn pressure(&mut self, i: usize, own: f64, c: f64, dt: f64) -> f64 {
+        let m_dot = self.given.get(i).copied().unwrap_or(own);
+        let src = &mut self.sites[i];
+        let rho = crate::gas::GAMMA * crate::units::ATM_PA / (c * c);
+        let a_jet = 0.25 * std::f64::consts::PI * src.site.d_jet * src.site.d_jet;
+        let u = m_dot / (rho * a_jet);
+        self.gain * src.jet.step(u, rho, c, src.site.d_jet, src.site.d_down, dt)
+    }
 }
 
 /// The pipes' walls and their gas ([`crate::pipe_heat`]): one state per pipe, in the order
@@ -1159,7 +1383,7 @@ fn coldest_sound_speed() -> f64 {
 
 /// The branches' common duct and open end, and each branch's last tail wave (scratch).
 #[derive(Debug, Clone)]
-struct Shared {
+pub(crate) struct Shared {
     duct: Duct,
     end: OpenEnd,
     /// Each branch tail's near-end wave this step, sent once the junction is solved.
@@ -1167,6 +1391,134 @@ struct Shared {
     /// The tails' far-end area over the outlet's: a tail's Mach to the outlet's.
     tail_to_outlet: f64,
     valved: Option<Valved>,
+}
+
+impl Shared {
+    /// The duct the branches' tails join and its open end, from [`ExhaustDef::merge`] (none
+    /// without one), for `n_branches` tails.
+    pub(crate) fn new(
+        def: &ExhaustDef,
+        n_branches: usize,
+        dt: f64,
+        lining_m: f64,
+        memo: &mut crate::silencer2d::EqMemo,
+    ) -> Option<Self> {
+        def.merge.as_ref().map(|m| {
+            let fallback = (def.tail_length_m, m.outlet_diameter_m);
+            // the muffler's transmission factor belongs to the last duct before the open end
+            let last = |valved: bool| {
+                if valved {
+                    1.0
+                } else {
+                    def.muffler_transmission
+                }
+            };
+            let duct = segments_duct(
+                &m.segments,
+                last(m.bypass.is_some()),
+                fallback,
+                dt,
+                lining_m,
+                def.steepening,
+                memo,
+            );
+            let valved = m.bypass.as_ref().map(|b| {
+                let mut duct = |path: &[Segment], t: f64| {
+                    segments_duct(path, t, fallback, dt, lining_m, def.steepening, memo)
+                };
+                Valved {
+                    closed: duct(&b.closed, 1.0),
+                    open: duct(&b.open, 1.0),
+                    tips: duct(&b.tips, def.muffler_transmission),
+                    outlets: b
+                        .outlets
+                        .iter()
+                        .map(|o| (duct(o, 1.0), OpenEnd::new(exit_diameter(o), dt)))
+                        .collect(),
+                    scratch: std::array::from_fn(|_| vec![0.0; b.outlets.len() + 1]),
+                    baffle: b.baffle_open_area,
+                    open_rpm: b.open_rpm,
+                    travel_s: b.travel_s,
+                    leak: valve_leak_share(b.valve_clearance_m, exit_diameter(&b.open)),
+                    x: 0.0,
+                    opening: false,
+                    shell: Shell::new(
+                        b.shell_thickness_m,
+                        b.shell_density_kg_m3,
+                        b.shell_area_m2,
+                        b.shell_resonance_hz,
+                        tail_reference_density() * C_TAIL,
+                    ),
+                }
+            });
+            let tail_area = std::f64::consts::PI * 0.25 * def.tail_diameter_m.powi(2);
+            let outlet_area = std::f64::consts::PI * 0.25 * def.radiating_diameter().powi(2);
+            Shared {
+                duct,
+                end: OpenEnd::new(m.outlet_diameter_m, dt),
+                near: vec![0.0; n_branches],
+                tail_to_outlet: tail_area / outlet_area,
+                valved,
+            }
+        })
+    }
+
+    /// The tails' mean outflow Mach numbers (`mach`, one per tail): their volume flows add up
+    /// through the outlet ([`OpenEnd::set_outflow_mach`]).
+    pub(crate) fn set_outflow_mach(&mut self, mach: &[f64]) {
+        let m = mach.iter().sum::<f64>() * self.tail_to_outlet;
+        self.end.set_outflow_mach(m);
+        if let Some(v) = &mut self.valved {
+            v.set_outflow_mach(m);
+        }
+    }
+
+    /// The engine speed, rpm, that a bypass valve follows (it opens above its `open_rpm`).
+    pub(crate) fn set_engine_speed(&mut self, rpm: f64) {
+        if let Some(v) = &mut self.valved {
+            v.opening = rpm > v.open_rpm;
+        }
+    }
+
+    /// A bypass valve's opening fraction (0 shut … 1 open), if there is one.
+    pub(crate) fn bypass_opening(&self) -> Option<f64> {
+        self.valved.as_ref().map(|v| v.x)
+    }
+
+    /// The pressure junction of the tails' far ends (`tails`: each one's far-end area and
+    /// arriving wave) with this duct's near end: fills `areas`, `incoming` and `outgoing` (the
+    /// tails first, this duct last).
+    pub(crate) fn solve_merge(
+        &self,
+        tails: impl Iterator<Item = (f64, f64)>,
+        areas: &mut Vec<f64>,
+        incoming: &mut Vec<f64>,
+        outgoing: &mut Vec<f64>,
+    ) {
+        areas.clear();
+        incoming.clear();
+        for (a, w) in tails {
+            areas.push(a);
+            incoming.push(w);
+        }
+        areas.push(self.duct.end_areas().0);
+        incoming.push(self.duct.at_near());
+        outgoing.resize(incoming.len(), 0.0);
+        junction(areas, incoming, outgoing);
+    }
+
+    /// This duct's far end through its open end or its valved silencer, with `exit` (a source
+    /// at the outlet) added both ways, and `near` sent into its near end: what it radiates.
+    pub(crate) fn radiate(&mut self, near: f64, exit: f64, dt: f64) -> f64 {
+        let arriving = self.duct.at_far() + exit;
+        let (reflected, out) = match &mut self.valved {
+            None => self.end.process(arriving),
+            Some(v) => v.step(&mut self.end, arriving, self.duct.end_areas().1, dt),
+        };
+        self.duct
+            .send(clamp_wave(near), clamp_wave(reflected + exit));
+        out
+    }
 }
 
 /// A [`Bypass`]'s ducts and its valve's state.
@@ -1183,6 +1535,8 @@ struct Valved {
     baffle: f64,
     open_rpm: f64,
     travel_s: f64,
+    /// [`Bypass::valve_clearance_m`].
+    leak: f64,
     /// Opening fraction, 0 shut … 1 open.
     x: f64,
     /// Whether the engine is above `open_rpm` (the valve's target).
@@ -1426,65 +1780,10 @@ impl ExhaustNet {
             tails: vec![0.0; def.groups(cylinders).len()],
             mean_flows: (Vec::new(), Vec::new()),
             scratch: Scratch::default(),
-            shared: def.merge.as_ref().map(|m| {
-                let fallback = (def.tail_length_m, m.outlet_diameter_m);
-                // the muffler's transmission factor belongs to the last duct before the open end
-                let last = |valved: bool| {
-                    if valved {
-                        1.0
-                    } else {
-                        def.muffler_transmission
-                    }
-                };
-                let duct = segments_duct(
-                    &m.segments,
-                    last(m.bypass.is_some()),
-                    fallback,
-                    dt,
-                    lining_m,
-                    def.steepening,
-                    memo,
-                );
-                let valved = m.bypass.as_ref().map(|b| {
-                    let mut duct = |path: &[Segment], t: f64| {
-                        segments_duct(path, t, fallback, dt, lining_m, def.steepening, memo)
-                    };
-                    Valved {
-                        closed: duct(&b.closed, 1.0),
-                        open: duct(&b.open, 1.0),
-                        tips: duct(&b.tips, def.muffler_transmission),
-                        outlets: b
-                            .outlets
-                            .iter()
-                            .map(|o| (duct(o, 1.0), OpenEnd::new(exit_diameter(o), dt)))
-                            .collect(),
-                        scratch: std::array::from_fn(|_| vec![0.0; b.outlets.len() + 1]),
-                        baffle: b.baffle_open_area,
-                        open_rpm: b.open_rpm,
-                        travel_s: b.travel_s,
-                        x: 0.0,
-                        opening: false,
-                        shell: Shell::new(
-                            b.shell_thickness_m,
-                            b.shell_density_kg_m3,
-                            b.shell_area_m2,
-                            b.shell_resonance_hz,
-                            tail_reference_density() * C_TAIL,
-                        ),
-                    }
-                });
-                let tail_area = std::f64::consts::PI * 0.25 * def.tail_diameter_m.powi(2);
-                let outlet_area = std::f64::consts::PI * 0.25 * def.radiating_diameter().powi(2);
-                Shared {
-                    duct,
-                    end: OpenEnd::new(m.outlet_diameter_m, dt),
-                    near: vec![0.0; branches.len()],
-                    tail_to_outlet: tail_area / outlet_area,
-                    valved,
-                }
-            }),
+            shared: Shared::new(def, branches.len(), dt, lining_m, memo),
             branches,
             heat: def.gas_temperature.then(Heat::default),
+            duct_flow: DuctFlow::new(def, cylinders),
             dt,
         }
         .with_room_for_cold_gas()
@@ -1676,12 +1975,7 @@ impl ExhaustNet {
     /// Mean outflow Mach number at each tail's open end (see [`OpenEnd::set_outflow_mach`]).
     pub fn set_outflow_mach(&mut self, mach: &[f64]) {
         if let Some(sh) = &mut self.shared {
-            // the tails' volume flows add up through the outlet
-            let m = mach.iter().sum::<f64>() * sh.tail_to_outlet;
-            sh.end.set_outflow_mach(m);
-            if let Some(v) = &mut sh.valved {
-                v.set_outflow_mach(m);
-            }
+            sh.set_outflow_mach(mach);
         }
         for (b, m) in self.branches.iter_mut().zip(mach) {
             b.end.set_outflow_mach(*m);
@@ -1729,14 +2023,14 @@ impl ExhaustNet {
 
     /// The engine speed, rpm, that a bypass valve follows (it opens above its `open_rpm`).
     pub fn set_engine_speed(&mut self, rpm: f64) {
-        if let Some(v) = self.shared.as_mut().and_then(|sh| sh.valved.as_mut()) {
-            v.opening = rpm > v.open_rpm;
+        if let Some(sh) = &mut self.shared {
+            sh.set_engine_speed(rpm);
         }
     }
 
     /// A bypass valve's opening fraction (0 shut … 1 open), if the net has one.
     pub fn bypass_opening(&self) -> Option<f64> {
-        self.shared.as_ref()?.valved.as_ref().map(|v| v.x)
+        self.shared.as_ref()?.bypass_opening()
     }
 
     /// The waves each primary last sent toward its valve (from its collector end) in the last
@@ -1798,6 +2092,41 @@ impl ExhaustNet {
     /// Advance one step. `flows[i]`: mass flow (kg/s) from cylinder `i` into its primary
     /// (negative = reversion). Valve end: p⁺ = p⁻ + c·ṁ/A. Returns the radiated pressure
     /// summed over the tail pipes.
+    /// The duct flow noise's mix: 1 = Davies' law at [`crate::jet_noise::DUCT_FLOW_K`], 0 = off
+    /// (the net exactly as without it).
+    pub fn set_duct_flow(&mut self, gain: f64) {
+        self.duct_flow.gain = gain.max(0.0);
+    }
+
+    /// Each expansion site's instantaneous mass flow, kg/s (+ towards the tail), in
+    /// [`expansion_sites`] order, from outside (an FV exhaust's cells) for the coming steps;
+    /// until then the net uses the flow its own waves carry.
+    pub fn set_site_flows(&mut self, flows: &[f64]) {
+        self.duct_flow.given.clear();
+        self.duct_flow.given.extend_from_slice(flows);
+    }
+
+    /// The duct flow noise's mix ([`ExhaustNet::set_duct_flow`]).
+    pub fn duct_flow_gain(&self) -> f64 {
+        self.duct_flow.gain
+    }
+
+    /// The flow out of each open end at the last step as A·Δp/c, kg/s of the tail's reference
+    /// gas (the junctions keep A·Δp: an inflow ṁ reads ṁ·C_PRIMARY/C_TAIL here), one per branch
+    /// or one for a merge's outlet. Its ripple over its mean is the pulsation's.
+    pub fn exit_flows(&self, out: &mut Vec<f64>) {
+        out.clear();
+        match &self.shared {
+            Some(sh) => out.push(sh.duct.far_flow()),
+            None => out.extend(self.branches.iter().map(|b| b.tail.far_flow())),
+        }
+    }
+
+    /// How many expansion sites make duct flow noise.
+    pub fn duct_sites(&self) -> usize {
+        self.duct_flow.sites.len()
+    }
+
     pub fn step(&mut self, flows: &[f64]) -> f64 {
         if let Some(h) = &mut self.heat {
             h.steps += 1;
@@ -1812,6 +2141,9 @@ impl ExhaustNet {
         from_far.clear();
         from_far.resize(n, 0.0);
         let mut radiated = 0.0;
+        let dt = self.dt;
+        let df = &mut self.duct_flow;
+        let noise = df.gain > 0.0;
         for (k, (b, tail_out)) in self
             .branches
             .iter_mut()
@@ -1834,10 +2166,34 @@ impl ExhaustNet {
                 primary_impedance(),
                 outgoing,
             );
+            // each primary's jet into the collector: its noise half back up the primary, half on
+            let mut collector_add = 0.0;
+            if noise {
+                for i in 0..df.sites.len() {
+                    let site = &df.sites[i].site;
+                    let (Some(bk), SiteAt::Collector { primary }) = (site.branch, site.at) else {
+                        continue;
+                    };
+                    let Some(j) = b.members.iter().position(|&m| m == primary) else {
+                        continue;
+                    };
+                    if bk != k {
+                        continue;
+                    }
+                    let own = areas[j] * (incoming[j] - outgoing[j]) / C_PRIMARY;
+                    let p = df.pressure(i, own, C_PRIMARY, dt);
+                    outgoing[j] += p / areas[j].sqrt();
+                    collector_add += p / b.collector.area_m2.sqrt();
+                }
+            }
             for (k, &m) in b.members.iter().enumerate() {
                 from_far[m] = clamp_wave(outgoing[k]);
             }
-            let collector_near = clamp_wave(outgoing[b.members.len()]);
+            let collector_near = if noise {
+                clamp_wave(outgoing[b.members.len()] + collector_add)
+            } else {
+                clamp_wave(outgoing[b.members.len()])
+            };
             let mut two = [0.0; 2];
             let areas = [b.collector.area_m2, b.tail.end_areas().0];
             let incoming = [b.collector.at_far(), b.tail.at_near()];
@@ -1847,40 +2203,97 @@ impl ExhaustNet {
                     junction(&areas, &incoming, &mut two);
                 }
             }
+            // the path's expansions and its exit, each on the flow through it
+            let mut exit = 0.0;
+            if noise {
+                let own = areas[0] * (incoming[0] - two[0]) / C_COLLECTOR;
+                for i in 0..df.sites.len() {
+                    let site = &df.sites[i].site;
+                    if site.branch != Some(k) {
+                        continue;
+                    }
+                    let at = site.at;
+                    match at {
+                        SiteAt::Segment { index } => match b.tail.segment_node(index) {
+                            None => {
+                                let p = df.pressure(i, own, C_TAIL, dt);
+                                two[0] += p / areas[0].sqrt();
+                                two[1] += p / areas[1].sqrt();
+                            }
+                            Some(node) => {
+                                // the flow through that node (the last step's: one sample)
+                                let p = df.pressure(i, b.tail.node_flow(node), C_TAIL, dt);
+                                let (a1, a2) = b.tail.node_areas(node);
+                                b.tail.inject(node, p / a1.sqrt(), p / a2.sqrt());
+                            }
+                        },
+                        SiteAt::Exit => {
+                            let p = df.pressure(i, b.tail.far_flow(), C_TAIL, dt);
+                            exit = p / b.tail.end_areas().1.sqrt();
+                        }
+                        _ => {}
+                    }
+                }
+            }
             b.collector.send(collector_near, clamp_wave(two[0]));
             match &mut self.shared {
                 // the tail's far end meets the shared duct below
                 Some(sh) => sh.near[k] = clamp_wave(two[1]),
                 None => {
-                    let (reflected, out) = b.end.process(b.tail.at_far());
+                    let arriving = if noise {
+                        b.tail.at_far() + exit
+                    } else {
+                        b.tail.at_far()
+                    };
+                    let (reflected, out) = b.end.process(arriving);
                     radiated += out;
                     *tail_out = out;
-                    b.tail.send(clamp_wave(two[1]), clamp_wave(reflected));
+                    let back = if noise { reflected + exit } else { reflected };
+                    b.tail.send(clamp_wave(two[1]), clamp_wave(back));
                 }
             }
         }
         if let Some(sh) = &mut self.shared {
             // the tails' far ends and the shared duct's near end: one pressure junction
-            areas.clear();
-            incoming.clear();
-            for b in &self.branches {
-                areas.push(b.tail.end_areas().1);
-                incoming.push(b.tail.at_far());
+            sh.solve_merge(
+                self.branches
+                    .iter()
+                    .map(|b| (b.tail.end_areas().1, b.tail.at_far())),
+                areas,
+                incoming,
+                outgoing,
+            );
+            // the merge's sites: each branch's jet into the shared duct, then its expansions
+            // and its outlet on all the branches' flow
+            let mut exit = 0.0;
+            if noise {
+                let shared_index = self.branches.len();
+                for i in 0..df.sites.len() {
+                    let (branch, at) = (df.sites[i].site.branch, df.sites[i].site.at);
+                    match (branch, at) {
+                        (Some(bk), SiteAt::MergeJunction) => {
+                            let own = self.branches.get(bk).map_or(0.0, |b| b.tail.far_flow());
+                            let p = df.pressure(i, own, C_TAIL, dt);
+                            outgoing[bk] += p / areas[bk].sqrt();
+                            outgoing[shared_index] += p / areas[shared_index].sqrt();
+                        }
+                        (None, SiteAt::MergedSegment { index }) => {
+                            if let Some(node) = sh.duct.segment_node(index) {
+                                let p = df.pressure(i, sh.duct.node_flow(node), C_TAIL, dt);
+                                let (a1, a2) = sh.duct.node_areas(node);
+                                sh.duct.inject(node, p / a1.sqrt(), p / a2.sqrt());
+                            }
+                        }
+                        (None, SiteAt::Exit) => {
+                            let p = df.pressure(i, sh.duct.far_flow(), C_TAIL, dt);
+                            exit = p / sh.duct.end_areas().1.sqrt();
+                        }
+                        _ => {}
+                    }
+                }
             }
-            areas.push(sh.duct.end_areas().0);
-            incoming.push(sh.duct.at_near());
-            outgoing.resize(incoming.len(), 0.0);
-            junction(areas, incoming, outgoing);
             // the wave back into the shared duct's far end, and what the open end radiates
-            let (reflected, out) = match &mut sh.valved {
-                None => sh.end.process(sh.duct.at_far()),
-                Some(v) => v.step(
-                    &mut sh.end,
-                    sh.duct.at_far(),
-                    sh.duct.end_areas().1,
-                    self.dt,
-                ),
-            };
+            let out = sh.radiate(outgoing[self.branches.len()], exit, self.dt);
             radiated += out;
             let share = out / self.branches.len().max(1) as f64;
             for ((b, tail_out), (near, back)) in self
@@ -1892,10 +2305,6 @@ impl ExhaustNet {
                 *tail_out = share;
                 b.tail.send(*near, clamp_wave(*back));
             }
-            sh.duct.send(
-                clamp_wave(outgoing[self.branches.len()]),
-                clamp_wave(reflected),
-            );
         }
         for i in 0..n {
             let a = self.primaries[i].area_m2;
@@ -1909,6 +2318,223 @@ impl ExhaustNet {
 
 #[cfg(test)]
 mod tests {
+    use super::{ExpansionSite, SiteAt, expansion_sites};
+
+    fn site(branch: Option<usize>, at: SiteAt, d_jet: f64, d_down: f64) -> ExpansionSite {
+        ExpansionSite {
+            branch,
+            at,
+            d_jet,
+            d_down,
+        }
+    }
+
+    /// An inline-4 net driven 0.2 s by firing-like pulses (each primary 0.06 kg/s for a fifth of
+    /// its 20 ms cycle, staggered by 5 ms), its radiated samples.
+    fn pulsed_inline4(setup: impl Fn(&mut super::ExhaustNet)) -> Vec<f64> {
+        let dt = 1.0 / 48_000.0;
+        let def = crate::engine::EngineDef::inline4_catalyst_only().exhaust;
+        let mut net = super::ExhaustNet::new(&def, 4, dt);
+        setup(&mut net);
+        (0..(0.2 / dt) as usize)
+            .map(|n| {
+                let t = n as f64 * dt;
+                let flows: Vec<f64> = (0..4)
+                    .map(|k| {
+                        let ph = ((t + 0.005 * k as f64) / 0.02).fract();
+                        if ph < 0.2 { 0.06 } else { 0.0 }
+                    })
+                    .collect();
+                net.step(&flows)
+            })
+            .collect()
+    }
+
+    fn bits_hash(v: &[f64]) -> u64 {
+        v.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, x| {
+            (h ^ x.to_bits()).wrapping_mul(0x0100_0000_01b3)
+        })
+    }
+
+    #[test]
+    fn duct_flow_off_is_the_old_net() {
+        // captured on the code before the duct flow noise (commit 2a93c48), with the noise off;
+        // captured again when the open end took Levine & Schwinger's end correction
+        // (fix/open-end-levine-schwinger, 2026-11-08: every open end's reflection changed on
+        // purpose, the duct noise path untouched)
+        let h = bits_hash(&pulsed_inline4(|n| n.set_duct_flow(0.0)));
+        assert_eq!(h, 0x02e6_3e13_360a_6abd, "hash {h:#x}");
+    }
+
+    /// Mean square of `x` between `lo` and `hi` Hz, from Goertzel bins every 50 Hz.
+    fn band_power(x: &[f64], dt: f64, lo: f64, hi: f64) -> f64 {
+        let mut f = lo;
+        let mut sum = 0.0;
+        while f < hi {
+            let w = 2.0 * std::f64::consts::PI * f * dt;
+            let (mut s1, mut s2) = (0.0, 0.0);
+            for &v in x {
+                let s0 = v + 2.0 * w.cos() * s1 - s2;
+                s2 = s1;
+                s1 = s0;
+            }
+            sum += s1 * s1 + s2 * s2 - 2.0 * w.cos() * s1 * s2;
+            f += 50.0;
+        }
+        sum / (x.len() * x.len()) as f64
+    }
+
+    fn steady_inline4(setup: impl Fn(&mut super::ExhaustNet), flow: f64) -> Vec<f64> {
+        let dt = 1.0 / 48_000.0;
+        let def = crate::engine::EngineDef::inline4().exhaust;
+        let mut net = super::ExhaustNet::new(&def, 4, dt);
+        setup(&mut net);
+        (0..(0.6 / dt) as usize)
+            .map(|_| net.step(&[flow; 4]))
+            .collect()
+    }
+
+    #[test]
+    fn an_expansion_with_flow_hisses() {
+        let dt = 1.0 / 48_000.0;
+        let off = steady_inline4(|n| n.set_duct_flow(0.0), 0.03);
+        let on = steady_inline4(|n| n.set_duct_flow(1.0), 0.03);
+        // the last 0.2 s: the pipes' ringing from the flow's start has died away
+        let (a, b) = (
+            band_power(&off[19_200..], dt, 1000.0, 5000.0),
+            band_power(&on[19_200..], dt, 1000.0, 5000.0),
+        );
+        assert!(b > 2.0 * a && b > 0.0, "on {b:.3e} off {a:.3e}");
+    }
+
+    #[test]
+    fn no_flow_no_hiss() {
+        let off = steady_inline4(|n| n.set_duct_flow(0.0), 0.0);
+        let on = steady_inline4(|n| n.set_duct_flow(1.0), 0.0);
+        assert_eq!(bits_hash(&on), bits_hash(&off));
+    }
+
+    #[test]
+    fn reversed_flow_is_silent_at_every_site() {
+        let off = steady_inline4(|n| n.set_duct_flow(0.0), 0.03);
+        let on = steady_inline4(
+            |n| {
+                n.set_duct_flow(1.0);
+                n.set_site_flows(&[-0.02; 6]);
+            },
+            0.03,
+        );
+        assert_eq!(bits_hash(&on), bits_hash(&off));
+    }
+
+    #[test]
+    fn a_steady_flow_leaves_by_the_exit() {
+        // 0.03 kg/s into each of four primaries, held. The junctions keep A·Δp (one ρc for all
+        // the pipes), so the tail's A·Δp/c reads the flow in its own reference gas:
+        // 0.12 · C_PRIMARY/C_TAIL = 0.12 · 600/500 = 0.144 kg/s (the walls' loss: ±5 %)
+        let dt = 1.0 / 48_000.0;
+        let def = crate::engine::EngineDef::inline4().exhaust;
+        let mut net = super::ExhaustNet::new(&def, 4, dt);
+        for _ in 0..(1.0 / dt) as usize {
+            net.step(&[0.03; 4]);
+        }
+        let mut out = Vec::new();
+        net.exit_flows(&mut out);
+        assert_eq!(out.len(), 1);
+        assert!((out[0] / 0.144 - 1.0).abs() < 0.05, "{}", out[0]);
+    }
+
+    #[test]
+    fn the_inline4_expands_where_by_hand() {
+        // presets/inline4.yaml: 4 primaries of 40 mm into one 55 mm collector ((55/40)² = 1.89
+        // ≥ 1.5: each primary's jet expands), the collector into a 139.9 mm catalyst (6.5×),
+        // the catalyst into the 50 mm tail (a contraction: none), the tail's exit
+        let ex = crate::engine::EngineDef::inline4_catalyst_only().exhaust;
+        let want = vec![
+            site(Some(0), SiteAt::Collector { primary: 0 }, 0.04, 0.055),
+            site(Some(0), SiteAt::Collector { primary: 1 }, 0.04, 0.055),
+            site(Some(0), SiteAt::Collector { primary: 2 }, 0.04, 0.055),
+            site(Some(0), SiteAt::Collector { primary: 3 }, 0.04, 0.055),
+            site(Some(0), SiteAt::Segment { index: 0 }, 0.055, 0.1399),
+            site(Some(0), SiteAt::Exit, 0.05, 0.05),
+        ];
+        assert_eq!(expansion_sites(&ex, 4), want);
+    }
+
+    #[test]
+    fn the_lfa_sites_by_hand() {
+        // presets/lfa-v10.yaml: banks 1–5 and 6–10, primaries 42 mm into 65 mm collectors
+        // (2.4×), each into a 153.4 mm catalyst, its 70 mm pipe into the shared 85 mm duct
+        // ((85/70)² = 1.47 < 1.5: no expansion site), one merged exit of 103.9 mm. The bypass
+        // silencer's chambers are not sites (this plan's ruling).
+        let ex = crate::engine::EngineDef::lfa_v10().exhaust;
+        let got = expansion_sites(&ex, 10);
+        let collectors = got
+            .iter()
+            .filter(|s| matches!(s.at, SiteAt::Collector { .. }))
+            .count();
+        assert_eq!(collectors, 10);
+        assert_eq!(
+            got.iter()
+                .filter(|s| s.at == SiteAt::Segment { index: 0 })
+                .count(),
+            2
+        );
+        assert!(!got.iter().any(|s| s.at == SiteAt::MergeJunction));
+        let exits: Vec<_> = got.iter().filter(|s| s.at == SiteAt::Exit).collect();
+        assert_eq!(exits.len(), 1);
+        assert_eq!(exits[0].branch, None);
+        assert!((exits[0].d_jet - 0.103_923_048_454_132_62).abs() < 1e-12);
+        // the second bank's collector sites carry cylinders 6–10 (indices 5–9)
+        assert_eq!(got[6].at, SiteAt::Collector { primary: 5 });
+        assert_eq!(got[6].branch, Some(1));
+    }
+
+    #[test]
+    fn a_pipe_no_wider_than_its_primaries_has_only_its_exit() {
+        // primaries and collector alike (no expansion), one plain pipe of the same bore
+        let mut ex = crate::engine::EngineDef::inline4().exhaust;
+        ex.primary_diameter_m = 0.05;
+        ex.collector_diameter_m = 0.05;
+        ex.after_collector = vec![super::Segment::Pipe {
+            length_m: 1.0,
+            diameter_m: 0.05,
+        }];
+        assert_eq!(
+            expansion_sites(&ex, 4),
+            vec![site(Some(0), SiteAt::Exit, 0.05, 0.05)]
+        );
+    }
+
+    #[test]
+    fn an_empty_chamber_is_a_site_and_a_straight_through_one_is_not() {
+        let mut ex = crate::engine::EngineDef::inline4().exhaust;
+        ex.after_collector = vec![
+            super::Segment::Muffler {
+                length_m: 0.3,
+                diameter_m: 0.15,
+                tube_diameter_m: 0.05,
+                packing_resistivity: 16000.0,
+                packing_porosity: 0.95,
+            },
+            super::Segment::Muffler {
+                length_m: 0.3,
+                diameter_m: 0.15,
+                tube_diameter_m: 0.0,
+                packing_resistivity: 0.0,
+                packing_porosity: 1.0,
+            },
+            super::Segment::Pipe {
+                length_m: 0.5,
+                diameter_m: 0.05,
+            },
+        ];
+        let got = expansion_sites(&ex, 4);
+        // the 55 mm collector into the 50 mm tube: no; the tube into the empty 150 mm can: yes
+        assert!(!got.iter().any(|s| s.at == SiteAt::Segment { index: 0 }));
+        assert!(got.contains(&site(Some(0), SiteAt::Segment { index: 1 }, 0.05, 0.15)));
+    }
+
     #[test]
     fn a_limp_shell_moves_by_the_mass_law() {
         // A wall of 4.5 kg/m² (1 mm of titanium) between gas of ρc 250 and air of ρc 413.4
@@ -2212,6 +2838,8 @@ mod tests {
             baffle_open_area: 1.0,
             open_rpm: 3000.0,
             travel_s: 0.3,
+            // sealed: the paths heard one at a time (the leak has its own test)
+            valve_clearance_m: 0.0,
             ..Bypass::default()
         });
         d
@@ -2356,7 +2984,17 @@ mod tests {
     fn a_bypass_round_trips_and_merges_without_one_still_load() {
         let old: Merge = serde_yaml_ng::from_str("outlet_diameter_m: 0.07\n").unwrap();
         assert_eq!(old.bypass, None);
-        let d = valved_banks();
+        // a bypass written before the clearance was a field gets a butterfly's 0.5 mm
+        let old: Bypass = serde_yaml_ng::from_str("open_rpm: 3000.0\n").unwrap();
+        assert_eq!(old.valve_clearance_m, 0.0005);
+        let mut d = valved_banks();
+        d.merge
+            .as_mut()
+            .unwrap()
+            .bypass
+            .as_mut()
+            .unwrap()
+            .valve_clearance_m = 0.001;
         let json: ExhaustDef = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
         let yaml: ExhaustDef =
             serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&d).unwrap()).unwrap();
@@ -2424,6 +3062,55 @@ mod tests {
         assert!(
             (shut - open - 172.8).abs() < 4.0,
             "shut {shut}, open {open}"
+        );
+    }
+
+    #[test]
+    fn a_butterflys_leak_is_its_clearance_round_its_disc() {
+        // the gap is a ring π·D·c of the bore's π·D²/4: 4c/D. By hand: 0.5 mm round an 85 mm
+        // disc is 2/85 = 0.023529; round a 50 mm one 0.04; no gap or no pipe, nothing leaks
+        assert!((valve_leak_share(0.0005, 0.085) - 0.023529).abs() < 1e-6);
+        assert!((valve_leak_share(0.0005, 0.05) - 0.04).abs() < 1e-12);
+        assert_eq!(valve_leak_share(0.0, 0.085), 0.0);
+        assert_eq!(valve_leak_share(0.0005, 0.0), 0.0);
+        // a gap as wide as the disc is no valve: all open
+        assert_eq!(valve_leak_share(0.05, 0.085), 1.0);
+    }
+
+    #[test]
+    fn a_shut_valve_leaks_round_its_disc() {
+        // a butterfly keeps radial clearance for its thermal growth: shut, a pulse still takes
+        // the short way through the gap, 172.8 steps (1.8 ms at 96 kHz) before the chamber path
+        // (`shut_the_sound_goes_round_the_chambers_open_it_takes_the_short_way`). Sealed, nothing
+        // arrives that early
+        let dt = 1.0 / 96_000.0;
+        let heard = |clearance_m: f64| {
+            let mut d = valved_banks();
+            d.merge
+                .as_mut()
+                .unwrap()
+                .bypass
+                .as_mut()
+                .unwrap()
+                .valve_clearance_m = clearance_m;
+            let mut net = ExhaustNet::new(&d, 2, dt);
+            net.set_engine_speed(1000.0);
+            for _ in 0..(0.4 / dt) as usize {
+                net.step(&[0.0, 0.0]);
+            }
+            (0..(0.02 / dt) as usize)
+                .map(|k| net.step(&[if k < 5 { 0.05 } else { 0.0 }, 0.0]))
+                .collect::<Vec<f64>>()
+        };
+        let first = |out: &[f64]| {
+            let peak = out.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+            out.iter().position(|v| v.abs() > 0.05 * peak).unwrap()
+        };
+        let (sealed, leaking) = (heard(0.0), heard(0.0005));
+        let early = first(&sealed) as f64 - first(&leaking) as f64;
+        assert!(
+            (early - 172.8).abs() < 4.0,
+            "the leak arrives {early} steps early"
         );
     }
 

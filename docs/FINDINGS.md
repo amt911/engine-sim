@@ -37,6 +37,55 @@ Found: <YYYY-MM-DD> · <area: build | tests | db | ci | deploy | env>
 
 ## Findings
 
+### An empty `after_collector` is not a straight pipe: it adds a packed can
+
+**Symptom.** A "straight pipe" preset (PowerFist 212 bench) had a 300–1250 Hz hole and no pipe ring.
+**Cause.** `ExhaustDef::path()`: with `after_collector` empty, the older fields build a can of
+`muffler_volume_m3` lined with `muffler_packing`, then the tail. Inherited 0.003 m³: a packed silencer.
+**Fix / workaround.** A straight pipe sets `muffler_volume_m3: 0.0` (or one `kind: pipe` segment).
+With it, our PowerFist at 3600 rpm loaded, 2 m, sits within 3–6 dB of Ange's sim in every third-octave.
+**Why it isn't obvious.** The YAML reads "no segments"; the legacy fallback is only in `path()`'s doc.
+
+Found: 2026-11-06 · sound
+
+### The rotaries' port exchange depends on the step: the RENESIS stalls at 96 kHz
+
+**Symptom.** Low/Medium quality (physics at 96 kHz): the RENESIS idles high and stalls after a
+blip; at 192 kHz it is fine. The 13B bridge port and the R26B idle hunt ±40–50 %.
+**Cause.** `plan_exchange` caps a valve's mass per step at `VALVE_RELAX` (0.5) of the mass that
+would equalise the two volumes. A rotor's huge port against the intake runner's small last cell
+hits that cap (≈2.4× at 96 kHz): a per-step cap is a per-second cap ∝ 1/dt. With the cap at 1.0
+the RENESIS runs at 96 kHz but the bridge port (big overlap, two open ports on a small chamber)
+stalls: the cap is what keeps the explicit coupling stable.
+**Fix / workaround.** Open: the intake port as a boundary of its runner solved by characteristics,
+as the exhaust valve already is (`valve_boundary`, Benson), with no per-step cap.
+**Why it isn't obvious.** Every test steps at 192 kHz (`DT`), where it passes.
+
+Found: 2026-11-07 · physics
+
+### A road LFA's limiter cut is masked by its intake
+
+**Symptom.** Floored in neutral the LFA bounces off its 9500 rpm fuel cut (5 cycles cut, 3 fired,
+~10 Hz, 9260–9600 rpm), but the road preset's level ripples only ~3 dB; straight-piped, ~10 dB.
+**Cause.** At 9000 rpm WOT the intake mouth reads ~20 dB over the silenced exhaust in the 1 kHz
+octave, and it keeps breathing through a fuel cut. With the intake 10 dB lower the ripple is 6 dB.
+**Fix / workaround.** None yet: the intake/exhaust balance at high speed needs data (a drive-by
+study has a sports car's intake dominating early in the zone, the exhaust late). The user rejected
+a progressive limiter: the cut must be heard.
+**Why it isn't obvious.** The limiter works; the rpm trace shows it, the sound hides it.
+
+Found: 2026-11-07 · sound
+
+### Normalizing clips by RMS clips straight pipes
+
+**Symptom.** "Sounds like clipping" on straight-pipe clips.
+**Cause.** Straight pipes' crest factor is 15–20 dB (a real straight-piped PowerFist: 18.8 dB); a
+gain set by RMS pushed peaks to 1.6 and the export clipped them. The renders themselves are only
+scaled down (`offline::normalize`), never limited.
+**Fix / workaround.** Gain = min(RMS target, 0.89 / peak).
+
+Found: 2026-11-07 · tooling
+
 ### The V10's "mosquito": its two banks were heard from one point, so their orders cancelled
 
 **Symptom.** The LFA at full load sounds like a pure tone on the firing order (user: "muy agudo y
@@ -504,6 +553,13 @@ Two worktrees built with the same `CARGO_TARGET_DIR` uplift to the same `release
 a build that cargo finds fresh does not re-uplift, so both "builds" can hand you one binary.
 **Fix.** A/B binaries get their own target dir (`target/tgt-<name>`); check `md5sum` before
 rendering comparisons.
+
+**Libraries too, not only the binary (2026-11-08).** The workspace crates' dep-info lists their
+sources by *relative* path (`crates/engine-core/src/lib.rs`) and their metadata hash does not
+depend on the worktree, so worktree A's `libengine_core-<hash>.rlib` is "Fresh" for worktree B.
+Symptom: a field just added to `engine-core` is "no field" in `engine-app`, while
+`cargo check` passes and `touch` does not help. A branch that changes `engine-core`'s API needs its
+own `CARGO_TARGET_DIR=target/tgt-<branch>`; so does any gate whose verdict counts.
 
 ## A worktree's `../../scripts/...` is the main checkout's script (2026-10-26)
 
@@ -1493,3 +1549,61 @@ some 15–25 dB over our I4s.
 fart in a toilet"). Filling gaps with reverberation is wrong however well the envelope metric likes it.
 **Kept.** `sound.block_modes` for (1), `spray_spread_deg` for (2). (3) is open: prototype clips only, the
 source is not identified. Phone and YouTube recordings cannot judge below about 125 Hz.
+
+## Low rpm on the measured source levels: the impacts heard as an open engine (2026-11-05)
+
+- **Cause:** the piston/journal impacts (Part A) bypassed the engine bay, the valve ticks'
+  2026-11-01 failure again. LFA free idle 2 kHz −10.7 / 4 kHz −13.1 dB re total against −27 /
+  −35 on the real exhaust-mic idle and −28…−40 / −34…−43 on four YouTube idles. Through the bay:
+  −22.2 / −24.8. Raff & Perry 1973 Fig. 1 (no load 2.5–5 dB under full load at 1000 rpm, ≈ 0 from
+  3000) via the manifold pressure: −25.5 / −27.4; 1–3 kHz band −23.5 dB re 50–300 Hz = the real
+  idle's. Load explains ≤ 5 dB, never the 16 dB excess.
+- **Exposed, not caused:** the listener's rigid ground image combs the tails' highs (~1.2 kHz
+  notches; LFA 6000 WOT ripple 2–7.5 kHz 20.3 dB with the ground, 8.2 without; 60 real steady
+  segments median 4.5, p25–p75 2.9–6.7). The broadband impacts used to fill the notches.
+- **Matched against recordings (`scripts/realism/tilt.py`, octaves re total by rpm):** the LFA at
+  3000–5000 WOT is 10–20 dB short of every YouTube LFA in 2–8 kHz (3000: −28/−34/−43 at 2/4/8 kHz
+  vs −8…−14/−9…−16/−12…−23), the same before this change. Not general: K20A, EJ25 and V8 at 3000
+  WOT sit at or above the 209 real segments' median; inline4 a little dark. The LFA's idle-to-peak
+  range is 47 dB against 21–30 dB on Sonniss stationary-mic idle+blip recordings (inline4 27.6,
+  K20A 28.4, V8 36.2, TDI 15.3): the LFA's closed-valve silencer path (ESTIMATED chambers) is the
+  outlier. The general defect stays the firing-rhythm modulation: 35–70 % on every preset at 3000
+  WOT against 9.6 % real.
+- **tilt.py's rpm:** harmonic summation picks f0/2 when the half orders are strong (our LFA's bank
+  orders at 8600 rpm sit 4–5 dB under the firing ones; the real LFA's 14–17 dB, papers/recordings
+  README) — an octave correction climbs while odd multiples sit 3 dB under the even ones; use held
+  renders (known rpm) for our side.
+
+## Duct flow noise: K from Davies' production exhaust, not from the modulation (2026-11-06)
+
+- The treble's firing-rhythm modulation cannot set K: the U⁴ noise follows the pulses it rides
+  on (FV, all presets: median ≥ 36 % at any gain). In the recordings the modulation depends on the
+  microphone: at the pipe 25–78 % (Harley "Exhaust Pipe Mic", Softail "EXHAUST – Back", Anarchy
+  "pipeside"), at the engine or a few metres away 7–12 %; ours (35–70 %) reads like a pipe mic.
+  Measured outdoor IRs (EchoThief, local diagnosis only — no licence stated) take it to 33–40 %
+  in open spaces, 19–23 % in a stone courtyard.
+- Absolute anchor instead: Davies & Holland 1999 Fig. 1(c), production 4-cylinder at 0.25 m,
+  80 / 88 / 107 dB(A) at 1000 / 3000 / 6000. Bare presets sit 7–23 dB over Davies' 104–110 dB
+  Lin; with the rule-sized road silencers the pulses fall 15–20 dB from 3000 to 6000 (both
+  models; not the mean-flow area-change loss, friction, steepening or gas temperature) while
+  Davies' exhaust rises 19 dB(A): the flow noise carries 6000. K = 2.5·10⁻⁵ fits inline-4, K20A,
+  EJ25 (6000 mean −1.2 dB; 3000 +8 dB from the pulses themselves, open). At 6000 the silenced
+  exhaust's treble modulation is 7 % (real 9.6 %).
+- On the FV exhaust the LFA's closed-valve path reads 75 dB Lin at 0.25 m at 3000 (Davies 104–110):
+  its estimated chambers take too much (also its quiet idle).
+
+## The free-field listener: heights kept, one outlet for a merged exhaust (2026-11-10)
+
+- Turning the ground image off by default (PR #135) also dropped the ear's height: `Listener`
+  took the heights only with the image. Now `Listener::with_heights` keeps the climb from the
+  tails to the ear whether or not the ground reflects. #135 was merged with two engine-core tests
+  red: `cargo test --workspace` stopped at engine-app's failure and never ran engine-core —
+  run each crate (or `--no-fail-fast`) before calling a branch green.
+- With the ground off, the Davies & Holland check (three road 4-cylinders, 107 dB(A) at 0.25 m)
+  reads ≈ 103 dB(A): the ground's image had been adding ≈ 4 dB at the 3 m listener. The test keeps
+  the ground on (its bound was set that way); the exhaust's source level against Davies in the free
+  field is an open item.
+- A merged exhaust (`merge`) split its one outlet's radiation equally over the branches' tails, and
+  the listener placed those `tail_spacing_m` apart: one tail pipe heard as two sources 0.9 m apart
+  combed every 1.3 ms (cepstrum 40 dB on the catalogue's 4-2-1 configs; a real K20A 4-2-1 reads
+  24–32). With a merge the tails now radiate from one place.

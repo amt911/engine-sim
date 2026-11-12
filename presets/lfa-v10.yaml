@@ -66,7 +66,7 @@ engine:
   flywheel_inertia_kgm2: 0.28
   plenum_volume_m3: 0.008
   throttle_diameter_m: 0.14230249470757708
-  idle_throttle: 0.0021333333333333334
+  idle_throttle: 0.0
   idle_rpm: 900.0
   exhaust:
     primary_length_m: 0.8
@@ -197,10 +197,11 @@ engine:
         baffle_open_area: 0.03
         open_rpm: 3000.0
         travel_s: 0.3
+        valve_clearance_m: 0.0005
         shell_thickness_m: 0.001
         shell_density_kg_m3: 4510.0
         shell_area_m2: 0.1382300767579509
-        shell_resonance_hz: 300.0
+        shell_resonance_hz: 7420.0
     steepening: true
     gas_temperature: true
   intake:
@@ -212,6 +213,12 @@ engine:
     film_fraction: 0.18
     film_tau_s: 1.0
     airbox: null
+    air_cleaner:
+      fitted: false
+      volume_m3: 0.0
+      snorkel_length_m: 0.3
+      snorkel_diameter_m: 0.0
+      filter_resistance_pa_s_m3: 0.0
   redline_rpm: 9000.0
   shutoff_rpm: 9500.0
   starter_torque_nm: 150.0
@@ -228,6 +235,9 @@ engine:
     flow_noise: 1.0
     intake: 1.0
     valve_jet: 1.0
+    duct_flow: 1.0
+    main_bearings: 1.0
+    piston_slap: 1.0
     block: 1.0
     mechanical: 1.0
     combustion_jitter: 1.0
@@ -239,7 +249,7 @@ engine:
     leveling: 0.0
     listener_distance_m: 3.0
     listener_angle_deg: 30.0
-    ground: true
+    ground: false
     tail_height_m: 0.3
     listener_height_m: 1.6
     street_width_m: 0.0
@@ -271,4 +281,6 @@ engine:
       liner_thickness_m: 0.02
       liner_resistivity: 16000.0
       liner_coverage: 0.25
+    shuffle_hz: 3.5
+    shuffle_damping: 0.15
   turbo: null

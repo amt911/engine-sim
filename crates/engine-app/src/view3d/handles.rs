@@ -68,6 +68,53 @@ pub struct Handle {
 }
 
 impl Field {
+    /// Whether the drawn `parts[k]` is one this field reshapes or moves (what is tinted while
+    /// it changes): the part kinds it changes, and for a silencer's field only its own can.
+    pub fn changes(self, def: &EngineDef, parts: &[Instance], k: usize) -> bool {
+        let Some(p) = parts.get(k) else { return false };
+        let kind = p.part;
+        match self {
+            Field::Bore => matches!(
+                kind,
+                Part::Piston | Part::PistonRing | Part::Liner | Part::Charge
+            ),
+            Field::Stroke => matches!(
+                kind,
+                Part::Throw | Part::Crank | Part::Web | Part::Piston | Part::Charge
+            ),
+            Field::Rod => matches!(kind, Part::Rod | Part::RodEye),
+            Field::CompressionRatio => matches!(kind, Part::Head | Part::Charge),
+            Field::RunnerLength | Field::RunnerDiameter => {
+                matches!(kind, Part::Runner | Part::Trumpet)
+            }
+            Field::PrimaryLength | Field::PrimaryDiameter => {
+                matches!(kind, Part::Pipe | Part::Joint)
+            }
+            Field::PlenumVolume => kind == Part::Plenum,
+            Field::IntakeValveDiameter => matches!(kind, Part::IntakeValve | Part::IntakeStem),
+            Field::ExhaustValveDiameter => matches!(kind, Part::ExhaustValve | Part::ExhaustStem),
+            Field::IntakeLift => matches!(
+                kind,
+                Part::IntakeValve | Part::IntakeStem | Part::IntakeSpring | Part::IntakeCam
+            ),
+            Field::ExhaustLift => matches!(
+                kind,
+                Part::ExhaustValve | Part::ExhaustStem | Part::ExhaustSpring | Part::ExhaustCam
+            ),
+            // timing moves the valve and turns its cam
+            Field::IntakeDuration | Field::IntakeOpens => {
+                matches!(kind, Part::IntakeValve | Part::IntakeStem | Part::IntakeCam)
+            }
+            Field::ExhaustDuration | Field::ExhaustOpens => matches!(
+                kind,
+                Part::ExhaustValve | Part::ExhaustStem | Part::ExhaustCam
+            ),
+            Field::SilencerLength(i) | Field::SilencerDiameter(i) => {
+                silencer_at(def, parts, k) == Some(i)
+            }
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Field::Bore => "Bore",
@@ -304,6 +351,39 @@ pub fn handles(def: &EngineDef, scene: &Scene, parts: &[Instance], selected: usi
                 },
             ]
         }
+        Part::IntakeCam | Part::ExhaustCam => {
+            // the cam turns in the bank's frame (its spring's: the cam's own turns with it):
+            // the phase arrow is the tangent over the base circle. A later opening is the cam
+            // turned back (half the crank's angle), towards -z, the way the cam turns for a
+            // positive angle about the camshaft (x) being +y towards +z
+            let (spring, field) = if p.part == Part::IntakeCam {
+                (Part::IntakeSpring, Field::IntakeOpens)
+            } else {
+                (Part::ExhaustSpring, Field::ExhaustOpens)
+            };
+            let Some(frame) = (selected.saturating_sub(4)..selected)
+                .rev()
+                .find(|&i| parts[i].part == spring)
+                .map(|i| &parts[i])
+            else {
+                return Vec::new();
+            };
+            let x = frame.model.x_axis.truncate().normalize_or_zero();
+            let up = frame.model.y_axis.truncate().normalize_or_zero();
+            let z = x.cross(up);
+            let rho = 1.15 * super::parts::CAM_BASE_B * p.model.x_axis.truncate().length();
+            if rho <= 0.0 {
+                return Vec::new();
+            }
+            vec![Handle {
+                at: p.model.w_axis.truncate() + up * rho,
+                axis: -z,
+                field,
+                // the arrow's point goes round the cam at radius rho: s / rho rad of the cam is
+                // 2 s / rho rad of the cycle
+                per_metre: 360.0 / (std::f64::consts::PI * rho as f64),
+            }]
+        }
         Part::Plenum => {
             // the top face: lifting it by h adds its area × h
             let (s, _, _) = p.model.to_scale_rotation_translation();
@@ -431,6 +511,12 @@ pub fn editable(part: Part) -> &'static [Field] {
             Field::ExhaustDuration,
             Field::ExhaustOpens,
         ],
+        Part::IntakeCam => &[Field::IntakeLift, Field::IntakeDuration, Field::IntakeOpens],
+        Part::ExhaustCam => &[
+            Field::ExhaustLift,
+            Field::ExhaustDuration,
+            Field::ExhaustOpens,
+        ],
         Part::Runner | Part::Trumpet => &[Field::RunnerLength, Field::RunnerDiameter],
         Part::Plenum => &[Field::PlenumVolume],
         _ => &[],
@@ -485,6 +571,126 @@ mod tests {
             h[1].at
         );
         assert_eq!(h[1].field, Field::Stroke);
+    }
+
+    fn kinds(def: &EngineDef, f: Field) -> Vec<Part> {
+        let (_, parts) = frame(def);
+        let mut v: Vec<Part> = (0..parts.len())
+            .filter(|&k| f.changes(def, &parts, k))
+            .map(|k| parts[k].part)
+            .collect();
+        v.sort_by_key(|p| format!("{p:?}"));
+        v.dedup();
+        v
+    }
+
+    #[test]
+    fn a_field_tints_the_parts_whose_shape_it_changes() {
+        let d = EngineDef::inline4();
+        assert_eq!(
+            kinds(&d, Field::Bore),
+            [Part::Charge, Part::Liner, Part::Piston, Part::PistonRing]
+        );
+        assert_eq!(kinds(&d, Field::Rod), [Part::Rod, Part::RodEye]);
+        assert_eq!(kinds(&d, Field::PlenumVolume), [Part::Plenum]);
+        assert_eq!(
+            kinds(&d, Field::IntakeOpens),
+            [Part::IntakeCam, Part::IntakeStem, Part::IntakeValve]
+        );
+        assert_eq!(
+            kinds(&d, Field::ExhaustLift),
+            [
+                Part::ExhaustCam,
+                Part::ExhaustSpring,
+                Part::ExhaustStem,
+                Part::ExhaustValve
+            ]
+        );
+        assert_eq!(
+            kinds(&d, Field::IntakeValveDiameter),
+            [Part::IntakeStem, Part::IntakeValve]
+        );
+        assert!(kinds(&d, Field::CompressionRatio).contains(&Part::Head));
+        assert!(kinds(&d, Field::PrimaryLength).contains(&Part::Pipe));
+    }
+
+    #[test]
+    fn a_silencer_field_tints_only_its_own_can() {
+        let d = two_cans();
+        let (_, parts) = frame(&d);
+        let n0 = (0..parts.len())
+            .filter(|&k| Field::SilencerLength(1).changes(&d, &parts, k))
+            .count();
+        let n1 = (0..parts.len())
+            .filter(|&k| Field::SilencerLength(3).changes(&d, &parts, k))
+            .count();
+        let cans = parts.iter().filter(|i| i.part == Part::Silencer).count();
+        assert!(n0 >= 1 && n1 >= 1 && n0 + n1 <= cans, "{n0} {n1} of {cans}");
+        assert!(n0 < cans && n1 < cans, "not every can");
+    }
+
+    #[test]
+    fn a_cam_has_a_phase_arrow_across_its_lobe_that_moves_the_timing_the_right_way() {
+        use crate::view3d::scene::moving;
+        use engine_core::engine::CylinderView;
+        let d = EngineDef::inline4();
+        let (s, parts) = frame(&d);
+        for (cam, field) in [
+            (Part::IntakeCam, Field::IntakeOpens),
+            (Part::ExhaustCam, Field::ExhaustOpens),
+        ] {
+            let k = parts.iter().position(|i| i.part == cam).unwrap();
+            let h = handles(&d, &s, &parts, k);
+            assert_eq!(h.len(), 1, "{cam:?}");
+            assert_eq!(h[0].field, field);
+            let b = d.geometry.bore_m as f32;
+            let centre = parts[k].model.w_axis.truncate();
+            let rho = 1.15 * 0.22 * b;
+            // over the cam's base circle, its axis square to the camshaft (along the crank, x)
+            assert!(((h[0].at - centre).length() - rho).abs() < 1e-5);
+            assert!(h[0].axis.x.abs() < 1e-5 && (h[0].axis.length() - 1.0).abs() < 1e-5);
+            assert!(h[0].axis.dot(h[0].at - centre).abs() < 1e-5, "a tangent");
+            // the same engine 10 deg later on the cycle's timing: the cam, at a phase on its
+            // base circle, has turned a half of it (5 deg), the handle's point travelling along
+            // its axis, a tenth of a degree per ... per_metre degrees of timing a metre
+            let mut later = d.clone();
+            let cur = field.get(&later);
+            field.set(&mut later, cur + 10.0);
+            // (300 deg after the lobe's centre: the cam is on its base circle, turning with the
+            // crank; the cylinders share the cycle angle)
+            let v = if cam == Part::IntakeCam {
+                &d.intake_valve
+            } else {
+                &d.exhaust_valve
+            };
+            let centre_deg = v.open_deg + 0.5 * v.duration_deg;
+            let cyl: Vec<CylinderView> = (0..d.cylinders)
+                .map(|_| CylinderView {
+                    cycle_deg: (centre_deg + 300.0).rem_euclid(720.0),
+                    piston_m: 0.0,
+                    pressure_pa: 1e5,
+                    temperature_k: 300.0,
+                    intake_lift_m: 0.0,
+                    exhaust_lift_m: 0.0,
+                    burning: false,
+                })
+                .collect();
+            let (mut a, mut c) = (Vec::new(), Vec::new());
+            moving(&d, &cyl, &mut a);
+            moving(&later, &cyl, &mut c);
+            let at = |v: &[Instance]| v.iter().find(|i| i.part == cam).unwrap().model;
+            let (m0, m1) = (at(&a), at(&c));
+            let local = m0.inverse().transform_point3(h[0].at);
+            let moved = m1.transform_point3(local) - h[0].at;
+            // moved the way the arrow points, and by 10 deg of timing at per_metre
+            let along = moved.dot(h[0].axis) as f64;
+            assert!(along > 0.0, "{cam:?}: {moved}");
+            assert!(
+                (h[0].per_metre * along - 10.0).abs() < 0.1,
+                "{cam:?}: {} deg for 10",
+                h[0].per_metre * along
+            );
+        }
     }
 
     #[test]
@@ -622,6 +828,11 @@ mod tests {
             editable(Part::Piston),
             [Field::Bore, Field::Stroke, Field::CompressionRatio]
         );
+        assert_eq!(
+            editable(Part::IntakeCam),
+            [Field::IntakeLift, Field::IntakeDuration, Field::IntakeOpens]
+        );
+        assert_eq!(editable(Part::ExhaustCam)[2], Field::ExhaustOpens);
         assert!(editable(Part::Block).is_empty());
     }
 

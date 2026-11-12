@@ -4,7 +4,7 @@ The user's priority order, kept current: **every session reads it when it starts
 when a milestone lands** (with the CHANGELOG row and the tag). Everything is physics, with every
 constant cited; nothing is set by ear. Each item has its design in `docs/superpowers/specs/` and,
 once planned, its plan in `docs/superpowers/plans/`; verified facts live in `docs/FACTS.md`.
-Last updated: 2026-11-04.
+Last updated: 2026-11-09.
 
 ## Done (details in `CHANGELOG.md`)
 
@@ -12,6 +12,8 @@ Last updated: 2026-11-04.
   (single, inline-4, K20A, K20C1, LFA V10, V8s, EJ25 boxer, TDI/SDI diesels, Renesis/13B rotaries)
   — up to v0.41.
 - Turbo (v0.39.0), diesel (#88).
+- Physics formulas tested against their references (v0.56.0, `docs/physics-validation.md`);
+  open findings there: wall loss at 1 kHz (−11 %), Toro test 2, open end at ka = 2 (+13 %).
 - **3D view** (spec `2026-11-03-3d-view-design.md`), all five phases:
   - scene and camera (v0.40.0);
   - pipes (v0.42.0);
@@ -30,11 +32,16 @@ Last updated: 2026-11-04.
    `2026-11-04-3d-parts-integration.md`):
    - ✅ v0.47.0: piston, rod, crank throws, valves and the Wankel rotor, stretched by bore,
      stroke and rod;
-   - next: the valve springs, the cam lobes and camshaft, the Wankel housing, side plate and
-     eccentric shaft.
-3. **Editing fluid and visible:**
-   - the dots are confusing; edits should feel continuous and be easy to see;
-   - the engine should answer while dragging, not only on release, if the rebuild allows it.
+   - ✅ v0.50.0: the Wankel housing, side plate and eccentric shaft;
+   - ✅ v0.51.0: the valve springs, the cam lobes and camshaft.
+3. **Editing fluid and visible** (the user chose arrows + card, 2026-11-04):
+   - ✅ each editable measure an arrow with its name and value, lit under the pointer, grabbed
+     anywhere along it; the engine follows while dragging; the camera stays put on an edit;
+   - ✅ an exhaust edit rebuilds in 0.1 s on the LFA (#97);
+   - ✅ v0.52.0: the edited part tinted amber while it changes (and 0.5 s after); an arrow on
+     each cam for the timing (the valve's opening angle).
+   - ✅ v0.56.0: the turbo seen working in the 2D and 3D views (spec
+     `2026-11-08-turbo-views-design.md`); its cut-away layer is still to do.
 4. **Typical parts and typical sizes:** a catalogue of real components with their real
    dimensions, so an engine built from them sounds good. Examples:
    - road and race exhaust manifolds;
@@ -47,6 +54,17 @@ Last updated: 2026-11-04.
    or the physics: measure edited engines against real ones of the same sizes. If the model
    is wrong, fix it; if the engine really is badly sized, the editor says so and the catalogue
    offers the real parts.
+
+## Open from the night of 2026-11-06/07 (agent)
+
+- **Rotary port exchange at any step** (FINDINGS 2026-11-07): the intake port as a characteristic
+  boundary of its runner. Unblocks the RENESIS at Low/Medium quality and the parked **Mazda 787B
+  R26B** preset (branch `feat/mazda-787b-r26b`: stalls at Ultra, idle hunts, 6500 rpm torque hole).
+- **Intake vs exhaust at high speed** (FINDINGS 2026-11-07): the road LFA's intake masks its
+  limiter cut. Needs measured data before touching the approved LFA.
+- **Alternator load at idle** (local branch `fix/idle-holds-accessory-load`, WIP): 300 W of
+  electrics through a 55 % alternator; K20/EJ25 idle fill into the real range. Waits for the
+  user's ear.
 
 ## Next: transmissions and hybrid
 

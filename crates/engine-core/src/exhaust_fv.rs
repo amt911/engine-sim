@@ -32,6 +32,11 @@ struct Branch {
     sent: [f64; 2],
     /// The wave arriving from the duct, read at each pipe step for the collector's end.
     arriving: f64,
+    /// A turbine between the collector and the designed path, once the engine has said so
+    /// ([`ExhaustFv::set_turbine_resistance`]), and the wave it last sent back towards the
+    /// collector (a port of the collector's area).
+    turbine: Option<crate::waveguide::TurbineJunction>,
+    to_collector: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +61,14 @@ pub struct ExhaustFv {
     tails: Vec<f64>,
     /// Mass that left the FV pipes for the designed path in the last physics step, kg.
     vented: f64,
+    /// The duct the branches' tails join, its open end or valved silencer
+    /// ([`ExhaustDef::merge`]): the same linear path as the waveguide's after the collectors.
+    shared: Option<crate::exhaust::Shared>,
+    /// The merge junction's scratch (areas, incoming, outgoing): no allocation per step.
+    merge_scratch: [Vec<f64>; 3],
+    /// The exhaust's area expansions ([`crate::exhaust::expansion_sites`]), for
+    /// [`ExhaustFv::site_flows`].
+    sites: Vec<crate::exhaust::ExpansionSite>,
 }
 
 /// The node at a collector's far end between the FV collector (its last cell `inner`, area
@@ -250,6 +263,24 @@ pub(crate) fn throttled_ghost(cell: Prim, p_j: f64, rho_j: f64, sigma: f64, psi:
 }
 
 /// Keep a 0D volume physical under extreme forcing (explicit coupling can overdraw it).
+impl Branch {
+    /// The wave `sent` from the collector's end into the designed path, through the turbine
+    /// when there is one (the collector's area upstream, the duct's downstream, in the duct's
+    /// gas); what the turbine sends back is kept for the collector's next pipe step.
+    fn through_turbine(&mut self, sent: f64) -> f64 {
+        match &mut self.turbine {
+            None => sent,
+            Some(t) => {
+                let areas = [self.out.end_areas().1, self.duct.end_areas().0];
+                let mut out = [0.0; 2];
+                t.process(&areas, &[sent, self.duct.at_near()], C_TAIL, &mut out);
+                self.to_collector = out[0];
+                out[1]
+            }
+        }
+    }
+}
+
 pub(crate) fn guard(v: &mut GasVolume) {
     let floor = 1e-6 * v.volume_m3;
     if v.mass_kg.is_nan() || v.mass_kg <= floor {
@@ -344,15 +375,25 @@ impl ExhaustFv {
                     end: OpenEnd::new(def.outlet_diameter(), dt),
                     sent: [0.0; 2],
                     arriving: 0.0,
+                    turbine: None,
+                    to_collector: 0.0,
                 }
             })
-            .collect();
+            .collect::<Vec<Branch>>();
+        let shared = crate::exhaust::Shared::new(
+            def,
+            branches.len(),
+            dt,
+            crate::exhaust::LINING_SEGMENT_M,
+            memo,
+        );
         // 0.8 · cell / (|u| + c)_max with 800 m/s for hot, fast exhaust
         let dt_target = 0.8 * CELL_M / 800.0;
         let substeps = ((dt_target / dt).floor() as usize).max(1);
         Self {
+            // each cylinder's own runner: the manifold's unequal lengths
             primaries: (0..cylinders)
-                .map(|_| pipe(def.primary_length_m, def.primary_diameter_m, init))
+                .map(|i| pipe(def.primary_length(i), def.primary_diameter_m, init))
                 .collect(),
             a_primary: area(def.primary_diameter_m),
             branches,
@@ -366,6 +407,47 @@ impl ExhaustFv {
             acc_t: vec![0.0; cylinders],
             tails: vec![0.0; def.groups(cylinders).len()],
             vented: 0.0,
+            sites: crate::exhaust::expansion_sites(def, cylinders),
+            shared,
+            merge_scratch: Default::default(),
+        }
+    }
+
+    /// The mass flow out of each branch's open end at the last step, kg/s (the designed path's
+    /// reference gas).
+    pub fn exit_flows(&self, out: &mut Vec<f64>) {
+        out.clear();
+        out.extend(self.branches.iter().map(|b| b.duct.far_flow()));
+    }
+
+    /// Each expansion site's mass flow this instant, kg/s (+ towards the tail), in
+    /// [`crate::exhaust::expansion_sites`] order: a primary's jet from its last cell, the
+    /// path's first step from the collector's last cell, its inner steps and its exit from the
+    /// designed path's waves there, a merge's from all the paths' ends.
+    pub fn site_flows(&self, out: &mut Vec<f64>) {
+        let outflow = |pipe: &Pipe1d| match (pipe.cells.last(), pipe.area.last()) {
+            (Some(c), Some(&a)) => {
+                let w = c.to_prim();
+                w.rho * w.u * a
+            }
+            _ => 0.0,
+        };
+        out.clear();
+        for site in &self.sites {
+            use crate::exhaust::SiteAt;
+            out.push(match (site.at, site.branch) {
+                (SiteAt::Collector { primary }, _) => {
+                    self.primaries.get(primary).map_or(0.0, outflow)
+                }
+                (SiteAt::Segment { index }, Some(b)) => self.branches.get(b).map_or(0.0, |br| {
+                    // inside the designed path: the flow through that node of its duct
+                    br.duct
+                        .segment_node(index)
+                        .map_or_else(|| outflow(&br.out), |node| br.duct.node_flow(node))
+                }),
+                (_, Some(b)) => self.branches.get(b).map_or(0.0, |br| br.duct.far_flow()),
+                (_, None) => self.branches.iter().map(|br| br.duct.far_flow()).sum(),
+            });
         }
     }
 
@@ -433,18 +515,79 @@ impl ExhaustFv {
         // the designed paths: what each collector sends, on its line between pipe steps
         let f = self.count as f64 / self.substeps as f64;
         let mut radiated = 0.0;
-        for (b, tail) in self.branches.iter_mut().zip(self.tails.iter_mut()) {
-            let sent = between(b.sent, f);
-            let (reflected, out) = b.end.process(b.duct.at_far());
-            b.duct.send(sent, reflected);
-            *tail = out;
-            radiated += out;
+        match &mut self.shared {
+            None => {
+                for (b, tail) in self.branches.iter_mut().zip(self.tails.iter_mut()) {
+                    let sent = b.through_turbine(between(b.sent, f));
+                    let (reflected, out) = b.end.process(b.duct.at_far());
+                    b.duct.send(sent, reflected);
+                    *tail = out;
+                    radiated += out;
+                }
+            }
+            Some(sh) => {
+                // the tails' far ends join the shared duct as on the waveguide
+                let [areas, incoming, outgoing] = &mut self.merge_scratch;
+                sh.solve_merge(
+                    self.branches
+                        .iter()
+                        .map(|b| (b.duct.end_areas().1, b.duct.at_far())),
+                    areas,
+                    incoming,
+                    outgoing,
+                );
+                let n = self.branches.len();
+                radiated = sh.radiate(outgoing[n], 0.0, self.dt);
+                let share = radiated / n.max(1) as f64;
+                for ((b, tail), back) in self
+                    .branches
+                    .iter_mut()
+                    .zip(self.tails.iter_mut())
+                    .zip(outgoing.iter())
+                {
+                    let sent = b.through_turbine(between(b.sent, f));
+                    b.duct.send(sent, crate::exhaust::clamp_wave(*back));
+                    *tail = share;
+                }
+            }
         }
         radiated
     }
 
+    /// A turbine follows each collector, its inlet's pressure rising with the flow at `dp_dm` Pa
+    /// per kg/s, as on the waveguide ([`crate::exhaust::ExhaustNet::set_turbine_resistance`]).
+    pub fn set_turbine_resistance(&mut self, dp_dm: f64) {
+        let dt = self.dt;
+        for b in &mut self.branches {
+            match &mut b.turbine {
+                Some(t) => t.set_resistance(dp_dm),
+                None if dp_dm > 0.0 => {
+                    let mut t = crate::waveguide::TurbineJunction::new(dt);
+                    t.set_resistance(dp_dm);
+                    b.turbine = Some(t);
+                }
+                None => {}
+            }
+        }
+    }
+
+    /// The engine speed, rpm, that a bypass valve follows (it opens above its `open_rpm`).
+    pub fn set_engine_speed(&mut self, rpm: f64) {
+        if let Some(sh) = &mut self.shared {
+            sh.set_engine_speed(rpm);
+        }
+    }
+
+    /// A bypass valve's opening fraction (0 shut … 1 open), if the exhaust has one.
+    pub fn bypass_opening(&self) -> Option<f64> {
+        self.shared.as_ref()?.bypass_opening()
+    }
+
     /// Mean outflow Mach number at each tail's open end ([`OpenEnd::set_outflow_mach`]).
     pub fn set_outflow_mach(&mut self, mach: &[f64]) {
+        if let Some(sh) = &mut self.shared {
+            sh.set_outflow_mach(mach);
+        }
         for (b, m) in self.branches.iter_mut().zip(mach) {
             b.end.set_outflow_mach(*m);
         }
@@ -488,7 +631,10 @@ impl ExhaustFv {
         let n = ((dt / limit).ceil() as usize).clamp(1, MAX_SUBCYCLES);
         let h = dt / n as f64;
         for b in &mut self.branches {
-            b.arriving = b.duct.at_near();
+            b.arriving = match b.turbine {
+                Some(_) => b.to_collector,
+                None => b.duct.at_near(),
+            };
             b.sent[0] = b.sent[1];
         }
         for _ in 0..n {
@@ -524,7 +670,12 @@ impl ExhaustFv {
                 crate::gas::GAMMA * ATM_PA / C_TAIL,
                 crate::exhaust::tail_reference_density(),
             );
-            let (ghost, sent) = duct_node(last, a_fv, b.arriving, b.duct.end_areas().0, duct_gas);
+            // through a turbine the collector's end meets a port of its own area
+            let a_duct = match b.turbine {
+                Some(_) => a_fv,
+                None => b.duct.end_areas().0,
+            };
+            let (ghost, sent) = duct_node(last, a_fv, b.arriving, a_duct, duct_gas);
             b.out.right = Boundary::State(ghost);
             b.sent[1] = sent;
         }
@@ -615,6 +766,25 @@ mod tests {
             model: ExhaustModel::Fv,
             ..ExhaustDef::default()
         }
+    }
+
+    #[test]
+    fn each_primary_is_as_long_as_its_cylinders_deviation_makes_it() {
+        // 0.60 m primaries, the second 0.12 m longer (a manifold's unequal runners): 0.60 and
+        // 0.72 m, to within half a 4 cm cell
+        let d = ExhaustDef {
+            primary_length_m: 0.60,
+            primary_length_deviation_m: vec![0.0, 0.12],
+            ..def()
+        };
+        let net = ExhaustFv::new(&d, 2, DT);
+        let len = |p: &Pipe1d| p.cells.len() as f64 * p.dx;
+        assert!((len(&net.primaries[0]) - 0.60).abs() < 0.02);
+        assert!(
+            (len(&net.primaries[1]) - 0.72).abs() < 0.02,
+            "{}",
+            len(&net.primaries[1])
+        );
     }
 
     #[test]

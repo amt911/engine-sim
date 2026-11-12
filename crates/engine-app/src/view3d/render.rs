@@ -39,6 +39,10 @@ pub struct MeshKey {
     pub rod_over_bore: f32,
     /// Half the stroke over the bore (the realistic throw is stretched to it).
     pub throw_over_bore: f32,
+    /// The tallest lift of the intake and exhaust lobes over the bore (the realistic cams are built
+    /// for them).
+    pub intake_lobe_over_bore: f32,
+    pub exhaust_lobe_over_bore: f32,
 }
 
 /// The frame's scene, written by the UI thread and read by `prepare`.
@@ -395,12 +399,28 @@ impl Resources {
 /// The unit mesh of each kind at the key's detail (an exhaustive match: a new kind cannot be
 /// left without its mesh, as the pipes' ball joints once were).
 pub fn unit_mesh(kind: MeshKind, key: MeshKey) -> Mesh {
+    use super::parts::TurboHousing;
     let s = key.segments;
     match kind {
         MeshKind::Cylinder => mesh::cylinder(s),
         MeshKind::Cuboid => mesh::cuboid(),
-        MeshKind::Housing => mesh::housing(key.e_over_r, 4 * s),
-        MeshKind::HousingRing => mesh::housing_ring(key.e_over_r, 4 * s),
+        // the side plate and the rotor housing (with its plugs), when realistic
+        MeshKind::Housing => match super::parts::side_plate(key.e_over_r) {
+            Some(m) if key.realistic => m,
+            _ => mesh::housing(key.e_over_r, 4 * s),
+        },
+        MeshKind::HousingRing => match super::parts::housing(key.e_over_r) {
+            Some(m) if key.realistic => m,
+            _ => mesh::housing_ring(key.e_over_r, 4 * s),
+        },
+        MeshKind::Plug => match super::parts::housing(key.e_over_r) {
+            Some(_) if key.realistic => Mesh::nothing(),
+            _ => mesh::cylinder(s),
+        },
+        MeshKind::Eccentric => match super::parts::eccentric(key.e_over_r) {
+            Some(m) if key.realistic => m,
+            _ => mesh::cylinder(s),
+        },
         MeshKind::Rotor => match super::parts::rotor(key.e_over_r) {
             Some(m) if key.realistic => m,
             _ => mesh::rotor(s.div_ceil(2)),
@@ -443,11 +463,49 @@ pub fn unit_mesh(kind: MeshKind, key: MeshKey) -> Mesh {
             Some(_) if key.realistic => Mesh::nothing(),
             _ => mesh::cylinder(s),
         },
+        // the valve train exists at the realistic detail only
+        MeshKind::ValveSpring => match super::parts::spring() {
+            Some(m) if key.realistic => m.clone(),
+            _ => Mesh::nothing(),
+        },
+        MeshKind::IntakeCam => match super::parts::cam(key.intake_lobe_over_bore) {
+            Some(m) if key.realistic => m,
+            _ => Mesh::nothing(),
+        },
+        MeshKind::ExhaustCam => match super::parts::cam(key.exhaust_lobe_over_bore) {
+            Some(m) if key.realistic => m,
+            _ => Mesh::nothing(),
+        },
         // the realistic rod carries its eyes
         MeshKind::RodEye => match super::parts::rod_asset() {
             Some(_) if key.realistic => Mesh::nothing(),
             _ => mesh::cylinder(s),
         },
+        // the turbo: plain drums at Low, the realistic housings and moving parts otherwise
+        MeshKind::TurboDrum => match super::parts::turbo_housing(TurboHousing::Turbine) {
+            Some(_) if key.realistic => Mesh::nothing(),
+            _ => mesh::cylinder(s),
+        },
+        MeshKind::TurbineHousing => {
+            realistic_only(key, super::parts::turbo_housing(TurboHousing::Turbine))
+        }
+        MeshKind::CompressorHousing => {
+            realistic_only(key, super::parts::turbo_housing(TurboHousing::Compressor))
+        }
+        MeshKind::CentreHousing => {
+            realistic_only(key, super::parts::turbo_housing(TurboHousing::Centre))
+        }
+        MeshKind::CompressorWheel => realistic_only(key, super::parts::compressor_wheel()),
+        MeshKind::TurbineWheel => realistic_only(key, super::parts::turbine_wheel()),
+        MeshKind::WastegateFlap => realistic_only(key, super::parts::wastegate_flap()),
+    }
+}
+
+/// A part drawn at the realistic detail only (nothing at Low, or without its asset).
+fn realistic_only(key: MeshKey, mesh: Option<Mesh>) -> Mesh {
+    match mesh {
+        Some(m) if key.realistic => m,
+        _ => Mesh::nothing(),
     }
 }
 
@@ -553,6 +611,8 @@ mod tests {
             realistic,
             rod_over_bore: 143.0 / 86.0,
             throw_over_bore: 0.5,
+            intake_lobe_over_bore: 0.11,
+            exhaust_lobe_over_bore: 0.11,
         };
         let cylinder = mesh::cylinder(12).vertices.len();
         // Low: the primitives; Medium and High: the realistic piston, which carries its own
@@ -582,6 +642,23 @@ mod tests {
         let primitive = unit_mesh(MeshKind::Rotor, rotary(false)).vertices.len();
         assert!(unit_mesh(MeshKind::Rotor, rotary(true)).vertices.len() > 10 * primitive);
         assert_eq!(unit_mesh(MeshKind::ApexSeal, rotary(true)).indices.len(), 3);
+        assert_eq!(unit_mesh(MeshKind::Plug, rotary(true)).indices.len(), 3);
+        for kind in [
+            MeshKind::Housing,
+            MeshKind::HousingRing,
+            MeshKind::Eccentric,
+        ] {
+            let primitive = unit_mesh(kind, rotary(false)).vertices.len();
+            assert!(
+                unit_mesh(kind, rotary(true)).vertices.len() > 5 * primitive,
+                "{kind:?}"
+            );
+        }
+        assert_eq!(
+            unit_mesh(MeshKind::Plug, key(true)),
+            mesh::cylinder(12),
+            "not a rotary"
+        );
         assert_eq!(
             unit_mesh(MeshKind::ApexSeal, key(true)),
             mesh::cuboid(),
@@ -609,6 +686,8 @@ mod tests {
             realistic: true,
             rod_over_bore: 1.6,
             throw_over_bore: 0.5,
+            intake_lobe_over_bore: 0.11,
+            exhaust_lobe_over_bore: 0.11,
         };
         for kind in MeshKind::ALL {
             let m = unit_mesh(kind, key);
