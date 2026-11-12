@@ -50,6 +50,9 @@ pub struct SoundDef {
     /// A turbo's blow-off valve venting on a lift-off ([`crate::turbo`]): the jet of the air it
     /// lets out. 1 = physical, 0 = off.
     pub blow_off: f64,
+    /// The jet the air makes through a nearly shut throttle (idle, part load), heard through the
+    /// air cleaner from its mouth (`throttle_jet` in [`crate::engine`]). 1 = physical, 0 = off.
+    pub throttle_hiss: f64,
     /// A turbo's compressor tone ([`crate::turbo::CompressorTone`]). 1 = its estimated level,
     /// 0 = off.
     pub compressor_whine: f64,
@@ -121,6 +124,7 @@ impl Default for SoundDef {
             block_modes: 0.0,
             combustion_jitter: 1.0,
             blow_off: 1.0,
+            throttle_hiss: 1.0,
             compressor_whine: 1.0,
             reverb: 0.0,
             leveling: 0.0,

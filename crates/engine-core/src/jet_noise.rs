@@ -19,12 +19,12 @@
 use std::f64::consts::PI;
 
 /// Speed of sound and density of the ambient air, m/s and kg/m³ (20 °C, 1 atm).
-const C_AMBIENT: f64 = 343.0;
+pub(crate) const C_AMBIENT: f64 = 343.0;
 const RHO_AMBIENT: f64 = 1.204;
 /// Reference sound pressure, Pa.
 const P_REF: f64 = 20e-6;
 /// Strouhal number of the spectrum's peak, f·D/V.
-const PEAK_STROUHAL: f64 = 0.2;
+pub(crate) const PEAK_STROUHAL: f64 = 0.2;
 /// Quality factor of the band-pass: about two octaves between its −3 dB points.
 const BAND_Q: f64 = 0.7;
 
@@ -47,7 +47,7 @@ pub fn jet_oaspl_db(v: f64, d: f64, rho_jet: f64, r: f64) -> f64 {
 /// [`jet_oaspl_db`] as an rms pressure, Pa, worked out in linear terms for the per-step path
 /// (one `powf` where the decibel form takes four and five logarithms):
 /// p = P_REF·10^7.05·(ρⱼ/ρₐ)^(w/2)·M^3.75/√(1 + 0.01·M^4.5)·√Aⱼ/R. No outflow: 0.
-fn jet_p_rms(v: f64, d: f64, rho_jet: f64, r: f64) -> f64 {
+pub(crate) fn jet_p_rms(v: f64, d: f64, rho_jet: f64, r: f64) -> f64 {
     if v <= 0.0 || d <= 0.0 || r <= 0.0 {
         return 0.0;
     }
@@ -62,6 +62,37 @@ fn jet_p_rms(v: f64, d: f64, rho_jet: f64, r: f64) -> f64 {
         / (1.0 + 0.01 * m35 * m).sqrt()
         * area.sqrt()
         / r
+}
+
+/// The share of a jet's sound that leaves through its upstream hemisphere, against the same
+/// hemisphere at its 90° level, and the frequency it is heard at along the upstream axis against
+/// 90°: (power ratio, frequency ratio) at convective Mach number `mc`. Ffowcs Williams' convective
+/// amplification (Phil. Trans. R. Soc. A 255, 1963), I(θ) ∝ C⁻⁵, C = √((1 − M_c·cosθ)² + α²M_c²),
+/// α = 0.3 (Goldstein, *Aeroacoustics*, 1976, ch. 2): with u = −cosθ over the upstream half,
+/// ∫₀¹ ((1 + M_c·u)² + b)^(−5/2) du, b = α²M_c², normalised by C(90°)⁻⁵; the Doppler factor of the frequency is C(90°)/C(180°).
+pub fn upstream_share(mc: f64) -> (f64, f64) {
+    // 8-point Gauss–Legendre on [0, 1] (Abramowitz & Stegun, table 25.4): the closed form loses
+    // every digit to cancellation at small M_c (b ≪ 1), the integrand is smooth
+    const GL: [(f64, f64); 4] = [
+        (0.183_434_642_495_649_8, 0.362_683_783_378_362),
+        (0.525_532_409_916_329, 0.313_706_645_877_887_3),
+        (0.796_666_477_413_626_7, 0.222_381_034_453_374_5),
+        (0.960_289_856_497_536_2, 0.101_228_536_290_376_3),
+    ];
+    let b = 0.09 * mc * mc;
+    let c5 = |x: f64| {
+        let q = x * x + b;
+        1.0 / (q * q * q.sqrt())
+    };
+    let c90 = (1.0 + b).sqrt();
+    let integral: f64 = GL
+        .iter()
+        .map(|&(x, w)| 0.5 * w * (c5(1.0 + mc * 0.5 * (1.0 - x)) + c5(1.0 + mc * 0.5 * (1.0 + x))))
+        .sum();
+    (
+        integral * c90.powi(5),
+        c90 / ((1.0 + mc).powi(2) + b).sqrt(),
+    )
 }
 
 /// The jet noise of one tail pipe as a pressure signal at the listener: seeded white noise
@@ -90,8 +121,20 @@ impl JetNoise {
 
     /// One step of `dt`: the jet's sound pressure at the listener, Pa.
     pub fn step(&mut self, v: f64, d: f64, rho_jet: f64, r: f64, dt: f64) -> f64 {
-        let n = self.white();
         let p_rms = jet_p_rms(v, d, rho_jet, r);
+        let peak = if p_rms == 0.0 {
+            0.0
+        } else {
+            PEAK_STROUHAL * v / d
+        };
+        self.step_at(p_rms, peak, dt)
+    }
+
+    /// One step of `dt` of noise of rms `p_rms` Pa in the jet's band peaking at `peak` Hz — for a
+    /// listener the level and the peak of [`JetNoise::step`]'s 90° do not suit (the throttle's
+    /// upstream half, [`upstream_share`]). Zero `p_rms`: silence.
+    pub fn step_at(&mut self, p_rms: f64, peak: f64, dt: f64) -> f64 {
+        let n = self.white();
         if p_rms == 0.0 {
             // nothing blows out: no jet, no sound. The band-pass runs down on silence, so the
             // next outflow starts from rest (its state is unit noise, not pascals)
@@ -99,12 +142,20 @@ impl JetNoise {
             return 0.0;
         }
         let fs = 1.0 / dt;
-        let fc = (PEAK_STROUHAL * v / d).clamp(20.0, 0.2 * fs);
+        let fc = peak.clamp(20.0, 0.2 * fs);
+        // a peak past the band's ceiling: what reaches the band is the jet's own skirt there,
+        // its band-pass's |H| at r = fc/peak (a microphone hears no ultrasound)
+        let skirt = if peak > fc {
+            let r = fc / peak;
+            (r / BAND_Q) / ((1.0 - r * r).powi(2) + (r / BAND_Q).powi(2)).sqrt()
+        } else {
+            1.0
+        };
         // white noise through the peak-gain-1 band-pass keeps α/(1 + α) of its variance (the
         // sum of its squared impulse response, exact; π·fc/(Q·fs) only while fc ≪ fs)
         let alpha = band_alpha(fc, dt);
         let norm = ((1.0 + alpha) / alpha).sqrt();
-        p_rms * norm * self.band(n, fc, dt)
+        p_rms * skirt * norm * self.band(n, fc, dt)
     }
 
     /// Band-pass (0 dB peak) at `fc`, Q = BAND_Q: the trapezoidal state-variable filter of
@@ -375,6 +426,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_upstream_half_of_a_jet_is_quieter_and_lower() {
+        // ∫₀¹ D(u) du and C(90°)/C(180°) of Ffowcs Williams' convective factor with α = 0.3,
+        // by numerical quadrature outside the code (scipy.integrate.quad, 2026-11-12)
+        for (mc, power, freq) in [
+            (0.0, 1.0, 1.0),
+            // a slow jet: the closed form cancels to garbage here (NaN in the engine, 2026-11-12)
+            (0.01, 0.975_491_6, 0.990_099_1),
+            (0.3, 0.543_598_5, 0.770_495_6),
+            (0.751_6, 0.307_709_5, 0.580_450_0),
+        ] {
+            let (p, f) = upstream_share(mc);
+            assert!((p - power).abs() < 1e-6, "Mc {mc}: power {p} vs {power}");
+            assert!((f - freq).abs() < 1e-6, "Mc {mc}: frequency {f} vs {freq}");
+        }
+    }
+
+    #[test]
     fn a_choked_exhaust_valve_jet_by_hand() {
         // 3 bar, 1200 K in the cylinder, the port at 1 bar, 900 K: choked (1/3 < 0.528), the jet
         // at c* = √(2γRT/(γ + 1)) = 633.9 m/s with the throat's 0.8711·0.6339 = 0.5522 kg/m³,
@@ -580,9 +648,13 @@ mod tests {
     }
 
     #[test]
-    fn a_thin_fast_jet_keeps_its_level_with_its_peak_past_nyquist() {
+    fn a_thin_fast_jet_past_nyquist_keeps_only_its_audible_skirt() {
         // V = 300 m/s through D = 2 mm peaks at 0.2·V/D = 30 kHz, past the 24 kHz Nyquist of a
-        // 48 kHz step: the band is held at 0.2·fs and the signal still carries the level
+        // 48 kHz step: the band is held at 0.2·fs = 9.6 kHz, where the jet's own band-pass
+        // (Q 0.7) sits at r = 0.32 of its peak: |H| = (r/Q)/√((1 − r²)² + (r/Q)²) =
+        // 0.45714/√(0.80572 + 0.20898) = 0.45383. A microphone hears that skirt, not the
+        // ultrasonic peak's power (before: the whole level moved into the audible band, the
+        // throttle's idle jet then a 0 dB hiss at 8–16 kHz over the LFA's idle)
         let dt = 1.0 / 48_000.0;
         let mut j = JetNoise::new(3);
         let xs: Vec<f64> = (0..200_000)
@@ -591,7 +663,7 @@ mod tests {
             .collect();
         let rms = (xs.iter().map(|x| x * x).sum::<f64>() / xs.len() as f64).sqrt();
         let level = 20e-6 * 10f64.powf(jet_oaspl_db(300.0, 0.002, 1.204, 7.5) / 20.0);
-        assert_relative_eq!(rms, level, max_relative = 0.1);
+        assert_relative_eq!(rms, 0.45383 * level, max_relative = 0.1);
     }
 
     #[test]
