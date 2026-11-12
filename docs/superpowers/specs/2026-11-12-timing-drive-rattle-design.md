@@ -58,3 +58,13 @@ base on any preset (`scripts/realism/gates.sh`). Then clips (idle, drive) for th
 
 Injector and high-pressure pump ticking (periodic; SAE 2011-01-0930) and accessory drives — next,
 if the idle still lacks them.
+
+## Outcome (2026-11-12): rejected by its own test
+
+Implemented the cam torque (closed-form tests pass) and the sprocket in its backlash. Over a grid
+(backlash 0.05–0.3 mm, friction 0.5–8 N·m, crank ripple 0–10 %, firing-to-firing COV 0–10 %) the
+rattle locks to the cam torque: cycle correlation of its 1–8 kHz envelope 0.85–1.00 (hnr +7 to
++40 dB), never the recordings' ≤ 0.40. The idle's random 1–8 kHz is not this rattle. Real diesels'
+idles read more periodic (Ram +1.7, Volvo −1.8 dB) than petrol ones (−1.7 to −10.8): the next
+candidate is the petrol's own source, the choked throttle at idle (Lighthill: ~0.02 W of jet noise
+from a ~5 mm sonic jet before the air box and bay). Code kept on this branch for reference only.
