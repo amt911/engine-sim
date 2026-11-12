@@ -316,7 +316,7 @@ impl GearPull {
             PullPhase::Pull if !locked && self.gear == 1 => {
                 let launch = LAUNCH_SHARE * self.redline;
                 (
-                    ((1.15 * launch - rpm) / (0.3 * launch)).clamp(0.0, 1.0),
+                    ((1.15 * launch - rpm) / (0.3 * launch)).clamp(FEATHER_THROTTLE, 1.0),
                     false,
                 )
             }
@@ -787,9 +787,11 @@ mod tests {
         let (thr, d) = p.next(2700.0, false, 0.01);
         assert_eq!((d.gear, d.clutch_pedal), (1, false));
         assert!(thr > 0.0);
-        // flared to the shift point with the clutch still slipping: throttle off, no shift
+        // flared to the shift point with the clutch still slipping: off to a feathering foot's
+        // [`FEATHER_THROTTLE`] (shut, the overrun cut-off switched a bridge-ported 13B's
+        // injection off and on through its launch), no shift
         let (thr, d) = p.next(5900.0, false, 0.01);
-        assert_eq!((thr, d.gear, d.clutch_pedal), (0.0, 1, false));
+        assert_eq!((thr, d.gear, d.clutch_pedal), (FEATHER_THROTTLE, 1, false));
         // slipping for long does not count as a plateau
         for _ in 0..400 {
             p.next(3000.0, false, 0.01);

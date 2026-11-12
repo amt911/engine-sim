@@ -35,6 +35,7 @@ usage
   expect.py presets                                   every preset's new-build renders (renders/<preset>-new)
 """
 import glob
+import hashlib
 import json
 import os
 import re
@@ -68,7 +69,10 @@ def load_def(path):
     """The engine definition as a dict (a yaml goes through the simulator's own --save to json)."""
     if path.endswith(".json"):
         return json.load(open(path))["engine"]
-    out = os.path.join(rdata.DATA, "wind", "defs", "_" + os.path.basename(path).rsplit(".", 1)[0] + ".json")
+    # one cache per file, by its full path: every render's definition is called engine.yaml, and
+    # a cache named by the base name judged each engine with the last one written (2026-11-12)
+    key = hashlib.sha1(os.path.abspath(path).encode()).hexdigest()[:12]
+    out = os.path.join(rdata.DATA, "wind", "defs", "_" + os.path.basename(path).rsplit(".", 1)[0] + "-" + key + ".json")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     if not os.path.exists(out) or os.path.getmtime(out) < os.path.getmtime(path):
         subprocess.run([BIN, "--engine", path, "--save", out], check=True, capture_output=True)
