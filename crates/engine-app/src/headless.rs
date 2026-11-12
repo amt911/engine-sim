@@ -16,6 +16,9 @@ pub struct RenderReport {
     pub final_rpm: f64,
 }
 
+/// RMS under which a render is silent: 55 dB SPL, 10^((55 − 120)/20) of full scale.
+const SILENT_RMS: f64 = 5.62e-4;
+
 impl RenderReport {
     /// The audio is usable: finite, in range, audible, and the engine is running.
     pub fn check(&self) -> Result<(), String> {
@@ -25,7 +28,9 @@ impl RenderReport {
         if self.peak > 1.0 {
             return Err(format!("peak {} out of [-1, 1]", self.peak));
         }
-        if self.rms < 0.003 {
+        // silent: under 55 dB SPL at the ear (0 dBFS = 120 dB SPL, engine_audio's
+        // FULL_SCALE_PA), quieter than any engine running 3 m away
+        if self.rms < SILENT_RMS {
             return Err(format!("silent: rms {:.5}", self.rms));
         }
         if self.final_rpm < 300.0 {
@@ -92,6 +97,16 @@ mod tests {
     fn check_accepts_good_and_rejects_each_failure() {
         assert!(report(0.1, 0.8, true, 900.0).check().is_ok());
         assert!(report(0.0001, 0.8, true, 900.0).check().is_err(), "silent");
+        // 0 dBFS is 120 dB SPL (engine_audio::dsp::FULL_SCALE_PA): a diesel at 1765 rpm 3 m
+        // behind its car, 69 dB SPL (rms 0.0028), is running and heard; 50 dB SPL is not an engine
+        assert!(
+            report(0.0028, 0.016, true, 1765.0).check().is_ok(),
+            "a quiet diesel"
+        );
+        assert!(
+            report(0.000_316, 0.8, true, 900.0).check().is_err(),
+            "50 dB SPL: silent"
+        );
         assert!(
             report(0.1, 1.5, true, 900.0).check().is_err(),
             "clipping out of range"
