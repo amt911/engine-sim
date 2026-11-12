@@ -3874,7 +3874,18 @@ impl Engine {
             };
             let (v, d, rho) =
                 throttle_jet(p_up, t_up, self.plenum_pressure_pa(), drawn.max(0.0) / n);
-            let p = self.throttle_noise.step(v, d, rho, 1.0, dt) * (0.5 * n).sqrt();
+            // the half heard up the throttle body is the jet's upstream hemisphere: convected
+            // away from it, quieter and lower than the correlation's 90° (`upstream_share`,
+            // convection at 0.62 Vⱼ as ARP876 takes it)
+            let (share, shift) =
+                crate::jet_noise::upstream_share(0.62 * v / crate::jet_noise::C_AMBIENT);
+            let p_rms = crate::jet_noise::jet_p_rms(v, d, rho, 1.0) * (0.5 * n * share).sqrt();
+            let peak = if v > 0.0 {
+                crate::jet_noise::PEAK_STROUHAL * v / d * shift
+            } else {
+                0.0
+            };
+            let p = self.throttle_noise.step_at(p_rms, peak, dt);
             match cleaner {
                 Some(def) => {
                     if self.hiss_cleaner.as_ref().is_none_or(|c| c.0 != dt) {
