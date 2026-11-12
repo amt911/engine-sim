@@ -467,7 +467,9 @@ mod tests {
                 let f = f0 * 16f64.powf(k as f64 / 63.0);
                 let w0 = 2.0 * PI * f * dt;
                 let p: f64 = x[x.len() / 4..]
-                    .chunks_exact(8192)
+                    .as_chunks::<8192>()
+                    .0
+                    .iter()
                     .map(|seg| {
                         let (mut s1, mut s2) = (0.0, 0.0);
                         for (i, &v) in seg.iter().enumerate() {

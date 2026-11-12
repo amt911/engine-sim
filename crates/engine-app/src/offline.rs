@@ -710,10 +710,12 @@ mod tests {
         let (thr, d) = step(5000.0, false);
         assert_eq!((d.gear, d.clutch_pedal), (2, false));
         assert_eq!(thr, FEATHER_THROTTLE);
-        assert!(
-            FEATHER_THROTTLE > 0.01,
-            "over the ECU's closed-throttle threshold"
-        );
+        const {
+            assert!(
+                FEATHER_THROTTLE > 0.01,
+                "over the ECU's closed-throttle threshold"
+            )
+        };
         assert!((step(4750.0, false).0 - 0.5).abs() < 1e-9);
         assert_eq!(step(5600.0, false).0, FEATHER_THROTTLE);
         assert_eq!(step(4500.0, false).0, 1.0);
