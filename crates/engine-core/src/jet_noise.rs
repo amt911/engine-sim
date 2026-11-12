@@ -99,12 +99,21 @@ impl JetNoise {
             return 0.0;
         }
         let fs = 1.0 / dt;
-        let fc = (PEAK_STROUHAL * v / d).clamp(20.0, 0.2 * fs);
+        let peak = PEAK_STROUHAL * v / d;
+        let fc = peak.clamp(20.0, 0.2 * fs);
+        // a peak past the band's ceiling: what reaches the band is the jet's own skirt there,
+        // its band-pass's |H| at r = fc/peak (a microphone hears no ultrasound)
+        let skirt = if peak > fc {
+            let r = fc / peak;
+            (r / BAND_Q) / ((1.0 - r * r).powi(2) + (r / BAND_Q).powi(2)).sqrt()
+        } else {
+            1.0
+        };
         // white noise through the peak-gain-1 band-pass keeps α/(1 + α) of its variance (the
         // sum of its squared impulse response, exact; π·fc/(Q·fs) only while fc ≪ fs)
         let alpha = band_alpha(fc, dt);
         let norm = ((1.0 + alpha) / alpha).sqrt();
-        p_rms * norm * self.band(n, fc, dt)
+        p_rms * skirt * norm * self.band(n, fc, dt)
     }
 
     /// Band-pass (0 dB peak) at `fc`, Q = BAND_Q: the trapezoidal state-variable filter of
@@ -580,9 +589,13 @@ mod tests {
     }
 
     #[test]
-    fn a_thin_fast_jet_keeps_its_level_with_its_peak_past_nyquist() {
+    fn a_thin_fast_jet_past_nyquist_keeps_only_its_audible_skirt() {
         // V = 300 m/s through D = 2 mm peaks at 0.2·V/D = 30 kHz, past the 24 kHz Nyquist of a
-        // 48 kHz step: the band is held at 0.2·fs and the signal still carries the level
+        // 48 kHz step: the band is held at 0.2·fs = 9.6 kHz, where the jet's own band-pass
+        // (Q 0.7) sits at r = 0.32 of its peak: |H| = (r/Q)/√((1 − r²)² + (r/Q)²) =
+        // 0.45714/√(0.80572 + 0.20898) = 0.45383. A microphone hears that skirt, not the
+        // ultrasonic peak's power (before: the whole level moved into the audible band, the
+        // throttle's idle jet then a 0 dB hiss at 8–16 kHz over the LFA's idle)
         let dt = 1.0 / 48_000.0;
         let mut j = JetNoise::new(3);
         let xs: Vec<f64> = (0..200_000)
@@ -591,7 +604,7 @@ mod tests {
             .collect();
         let rms = (xs.iter().map(|x| x * x).sum::<f64>() / xs.len() as f64).sqrt();
         let level = 20e-6 * 10f64.powf(jet_oaspl_db(300.0, 0.002, 1.204, 7.5) / 20.0);
-        assert_relative_eq!(rms, level, max_relative = 0.1);
+        assert_relative_eq!(rms, 0.45383 * level, max_relative = 0.1);
     }
 
     #[test]
