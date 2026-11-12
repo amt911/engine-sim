@@ -196,9 +196,13 @@ impl MeshDynamics {
         self.phase = (self.phase + mesh_hz * dt).rem_euclid(1.0);
         let k = c_face * contact_length(self.phase, ea, eb);
         let c = 2.0 * MESH_DAMPING * (k_mean * self.m_eff).sqrt();
-        self.v += dt * (load_n - k * self.x - c * self.v) / self.m_eff;
+        // the force that accelerates the mass this step (−m·a): returned from the state it acts
+        // on, not the updated one, whose k·dt·v lag would leak the load's own pulsing (a firing
+        // rate's 100 Hz at dt·ω ≈ −44 dB of it) into the whine as a rumble
+        let force = k * self.x + c * self.v - load_n;
+        self.v -= dt * force / self.m_eff;
         self.x += dt * self.v;
-        k * self.x + c * self.v - load_n
+        force
     }
 }
 
@@ -463,14 +467,13 @@ impl GearboxNoise {
         if let Some(i) = engaged {
             let (mesh, ratio) = (&self.meshes[i], self.ratios[i]);
             let load = s.input_torque_nm.abs() / mesh.base_radius_m(0);
-            force += self.mesh_dyn[i].step(mesh, s.input_omega, load, dt).abs();
+            // the signed force: the mesh's wave is zero-mean (Welbourn 1979); rectifying it would
+            // radiate its mean and the load's envelope (firing pulses, shuffle) as a low rumble
+            force += self.mesh_dyn[i].step(mesh, s.input_omega, load, dt);
             // the final pinion sits on the output shaft: slower by the ratio, torque higher
             let fm = &self.final_mesh;
             let load = s.input_torque_nm.abs() * ratio / fm.base_radius_m(0);
-            force += self
-                .final_dyn
-                .step(fm, s.input_omega / ratio, load, dt)
-                .abs();
+            force += self.final_dyn.step(fm, s.input_omega / ratio, load, dt);
         }
         // the loose gears of the other pairs, driven through the constant mesh at z1/z2
         if s.input_omega.abs() > 1.0 {
@@ -780,6 +783,50 @@ pub(crate) mod tests {
                 assert!(margin >= 20.0, "{label} vs {off}: {margin} dB");
             }
         }
+    }
+
+    #[test]
+    fn a_pulsing_load_whines_only_around_the_mesh_orders() {
+        // Welbourn (1979): the mesh force is k(t)·x − W, a zero-mean wave at the mesh orders; a
+        // load pulsing at the firing rate (100 Hz here) only puts sidebands at mesh ± 100 Hz.
+        // The lowest line is then the final drive's 653.8 − 100 = 553.8 Hz, so the box radiates
+        // nothing below 200 Hz: a rectified force would put its mean and its load envelope there.
+        let v = box_vehicle();
+        let mut g = GearboxNoise::new(&v);
+        let dt = 1.0 / 96_000.0;
+        let out: Vec<f64> = (0..96_000)
+            .map(|i| {
+                let t = i as f64 * dt;
+                let s = DriveState {
+                    gear: 3,
+                    input_omega: 2.0 * std::f64::consts::PI * 50.0,
+                    input_torque_nm: 150.0 + 100.0 * (2.0 * std::f64::consts::PI * 100.0 * t).sin(),
+                    clutch_locked: true,
+                };
+                g.step(&v, &s, dt)
+            })
+            .collect();
+        let tail = &out[9_600..];
+        // the DFT's bins up to 200 Hz (k = 0..=180 over 86 400 samples: 1.11 Hz apart), their
+        // share of the whole by Parseval: Σ|X_k|² over all k = N·Σx²
+        let n = tail.len();
+        let bin = |k: usize| {
+            let w = 2.0 * std::f64::consts::PI * k as f64 / n as f64;
+            let (re, im) = tail
+                .iter()
+                .enumerate()
+                .fold((0.0, 0.0), |(re, im), (i, &x)| {
+                    (re + x * (w * i as f64).cos(), im - x * (w * i as f64).sin())
+                });
+            re * re + im * im
+        };
+        let low = bin(0) + 2.0 * (1..=180).map(bin).sum::<f64>();
+        let whole = n as f64 * tail.iter().map(|x| x * x).sum::<f64>();
+        let margin = db(whole, low);
+        assert!(
+            margin >= 30.0,
+            "under 200 Hz only {margin} dB below the whole"
+        );
     }
 
     #[test]
