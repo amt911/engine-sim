@@ -23,6 +23,19 @@ jobs=${PHYSGATE_JOBS:-2}                # renders at once per preset; 13 presets
 py() { uv run -q --with numpy --with scipy --with matplotlib python -I "$@"; }
 label() { local p=$1; [ "$p" = lfa-v10 ] && p=lfa; echo "$p-$sfx"; }
 
+# A label's renders belong to one binary: physgate skips a WAV that exists, so a suffix reused
+# with another build would judge that build's old renders as this one's (2026-11-13: six presets
+# of "dir" were renders of 10-11 Nov). LABEL.bin holds the binary's path and sha256.
+sum=$(sha256sum "$bin" | cut -d' ' -f1)
+for p in "${presets[@]}"; do
+  l=$(label "$p"); d=$data/renders/$l
+  if compgen -G "$d/*.wav" >/dev/null && [ "$(sed -n 2p "$d.bin" 2>/dev/null)" != "$sum" ]; then
+    echo "gates.sh: $d holds renders of another binary (or of an unknown one); pick a new" \
+      "suffix or move that folder away" >&2
+    exit 2
+  fi
+done
+
 if [ -z "${GATES_IN_SCOPE:-}" ]; then   # re-enter inside the memory ceiling (AGENTS.md: heavy jobs)
   GATES_IN_SCOPE=1 exec systemd-run --user --scope --quiet -p MemoryHigh=5G -p MemoryMax=6G \
     -p MemorySwapMax=0 nice -n19 "$0" "$bin" "$sfx" "${presets[@]}"
@@ -31,7 +44,7 @@ fi
 out=$data/renders/gates-$sfx.txt
 labels=()
 for p in "${presets[@]}"; do
-  l=$(label "$p"); labels+=("$l"); echo "$bin" > "$data/renders/$l.bin"
+  l=$(label "$p"); labels+=("$l"); printf '%s\n%s\n' "$bin" "$sum" > "$data/renders/$l.bin"
   PHYSGATE_JOBS=$jobs py "$here/physgate.py" run "$bin" "$p" --out "$data/renders/$l" \
     > "$data/renders/$l.physgate.txt" 2>&1 &
 done
