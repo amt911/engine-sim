@@ -1312,9 +1312,25 @@ impl OpenEnd {
         self.s[0] = self.b[1] * arriving - self.a[0] * y + self.s[1];
         self.s[1] = self.b[2] * arriving - self.a[1] * y;
         let reflected = -self.jet * y;
-        (reflected, arriving - reflected)
+        let w = arriving - reflected;
+        if w >= 0.0 {
+            return (reflected, w);
+        }
+        // Inflow: the flow separates at the pipe's edge and loses ½ρ·c_d·u² there (outflow
+        // leaves as a jet, with no such loss): the end's pressure falls by
+        // κ·w², κ = c_d/(2γp) on the wave variable w = ρc·u (ρc² = γp). The linear end gives w₀;
+        // with the loss in series κ·w² − w + w₀ = 0, the root that tends to w₀ as κ → 0
+        // (Peters, Hirschberg, Reijnen & Wijnands, JFM 256, 1993: c_d = 2 for an unflanged pipe
+        // at low Strouhal number; Disselhorst & van Wijngaarden, JFM 99, 1980).
+        const KAPPA: f64 = INFLOW_LOSS_CD / (2.0 * crate::gas::GAMMA * crate::units::ATM_PA);
+        let w = 2.0 * w / (1.0 + (1.0 - 4.0 * KAPPA * w).sqrt());
+        (arriving - w, w)
     }
 }
+
+/// Loss coefficient of the flow entering an unflanged pipe end at low Strouhal number, of its
+/// dynamic head (Peters, Hirschberg, Reijnen & Wijnands, JFM 256, 1993).
+const INFLOW_LOSS_CD: f64 = 2.0;
 
 #[cfg(test)]
 mod tests {
@@ -1773,6 +1789,42 @@ mod tests {
         let whole = (duct.pipes[1].at_far() - before).abs();
         assert!(whole > 1.0, "{whole}");
         assert!(first < 0.1 * whole, "{first} of {whole}");
+    }
+
+    #[test]
+    fn a_loud_wave_sheds_vortices_at_the_open_end_on_inflow() {
+        // At low Strouhal number the flow entering an unflanged pipe separates at its edge and
+        // loses ½ρ·c_d·u² (c_d = 2), the outflow leaves as a free jet without loss; over a
+        // sinusoidal cycle of velocity amplitude û that dissipates c_d·ρ·A·û³/(3π) (Peters,
+        // Hirschberg, Reijnen & Wijnands, JFM 256, 1993; Disselhorst & van Wijngaarden, JFM 99,
+        // 1980). A 70 mm end in air (ρc = γp/c = 413.6 Pa·s/m at 343 m/s, ρ = 1.2058) fed a 50 Hz
+        // wave of 3 kPa (ka = 0.032: the radiation takes 0.05 % of it).
+        let (dt, d, f) = (1.0 / 48_000.0, 0.07, 50.0);
+        let (rho_c, rho) = (413.6, 1.2058);
+        let area = std::f64::consts::PI * 0.25 * d * d;
+        let mut end = OpenEnd::new(d, dt);
+        let n = (1.0 / dt) as usize;
+        let per = (1.0 / (f * dt)) as usize;
+        let (mut inc, mut refl, mut u_max) = (0.0, 0.0, 0.0f64);
+        for k in 0..n {
+            let p_in = 3000.0 * (2.0 * std::f64::consts::PI * f * k as f64 * dt).sin();
+            let (r, w) = end.process(p_in);
+            if k >= n - 20 * per {
+                inc += p_in * p_in;
+                refl += r * r;
+                // inflow: the flow into the pipe, ρc·u < 0
+                if w < 0.0 {
+                    u_max = u_max.max(-w / rho_c);
+                }
+            }
+        }
+        let lost = area * (inc - refl) / rho_c * dt / (20.0 / f);
+        let want = 2.0 * rho * area * u_max.powi(3) / (3.0 * std::f64::consts::PI);
+        assert!(u_max > 5.0, "a loud wave: û {u_max} m/s");
+        assert!(
+            (lost / want - 1.0).abs() < 0.2,
+            "lost {lost:.4} W, Peters et al. {want:.4} W (û {u_max:.2} m/s)"
+        );
     }
 
     #[test]
