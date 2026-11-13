@@ -1452,7 +1452,13 @@ mod tests {
         // the first sample past `level` (falling or rising), interpolated between samples
         let cross = |from: usize, level: f64, falling: bool| -> f64 {
             let n = (from..out.len())
-                .find(|&n| if falling { out[n] <= level } else { out[n] >= level })
+                .find(|&n| {
+                    if falling {
+                        out[n] <= level
+                    } else {
+                        out[n] >= level
+                    }
+                })
                 .unwrap();
             n as f64 - 1.0 + (level - out[n - 1]) / (out[n] - out[n - 1])
         };
