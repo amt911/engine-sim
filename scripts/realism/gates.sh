@@ -6,6 +6,7 @@
 #   2 spectral_gate.py order structure, texture and wind against real recordings
 #   3 expect.py        what the engine's kinematics must and must not make (K1-K3)
 #   4 blind2.py        cycle-to-cycle periodicity and discrete echo, ratchet on ear-approved builds
+#   5 ear_gate.py      what the ear named: bank orders, wind, lift-off hiss, clip peak (same-family recordings)
 #
 # Labels are PRESET-SUFFIX (lfa-v10 -> lfa-SUFFIX). Renders and caches live in $REALISM_DATA (see
 # rdata.py; never in the repository). Summary: $REALISM_DATA/renders/gates-SUFFIX.txt.
@@ -50,6 +51,9 @@ for l in "${labels[@]}"; do
     printf '%s expect: %s\n%s\n' "$l" "$e" "$b" > "$data/renders/$l.gates34.txt" ) &
 done
 wait
-{ cat "$out.12"; for l in "${labels[@]}"; do cat "$data/renders/$l.gates34.txt"; done; } > "$out"
+uv run -q --no-project --with numpy,scipy,soundfile python -I "$here/ear_gate.py" gate "${labels[@]}" \
+  > "$out.5" 2>&1 || true
+{ cat "$out.12"; for l in "${labels[@]}"; do cat "$data/renders/$l.gates34.txt"; done; cat "$out.5"; } > "$out"
+rm -f "$out.5"
 rm -f "$out.12"
 cat "$out"
