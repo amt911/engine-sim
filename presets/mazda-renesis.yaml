@@ -45,16 +45,16 @@ engine:
     - - 1
       - 2
       - 3
-    - - 4
+      - 4
       - 5
       - 6
     collector_length_m: 0.45
-    collector_diameter_m: 0.05
+    collector_diameter_m: 0.07071067811865477
     collector_extra_length_m: []
     primary_length_deviation_m: []
     tail_length_m: 1.6
-    tail_diameter_m: 0.055
-    tail_outlets: 1
+    tail_diameter_m: 0.06
+    tail_outlets: 2
     muffler_transmission: 1.0
     model: waveguide
     muffler_volume_m3: 0.006
@@ -66,33 +66,33 @@ engine:
     after_collector:
     - kind: pipe
       length_m: 0.4
-      diameter_m: 0.055
+      diameter_m: 0.06
     - kind: catalyst
       length_m: 0.13
-      diameter_m: 0.1387
+      diameter_m: 0.1961
       cells_per_in2: 400.0
       wall_m: 0.000165
     - kind: pipe
       length_m: 1.0
-      diameter_m: 0.055
+      diameter_m: 0.06
     - kind: muffler
       length_m: 0.35
-      diameter_m: 0.1195
-      tube_diameter_m: 0.055
+      diameter_m: 0.1691
+      tube_diameter_m: 0.06
       packing_resistivity: 16000.0
       packing_porosity: 0.95
     - kind: pipe
       length_m: 0.8
-      diameter_m: 0.055
+      diameter_m: 0.06
     - kind: muffler
       length_m: 0.45
-      diameter_m: 0.2109
-      tube_diameter_m: 0.055
+      diameter_m: 0.2982
+      tube_diameter_m: 0.06
       packing_resistivity: 16000.0
       packing_porosity: 0.95
     - kind: pipe
       length_m: 0.3
-      diameter_m: 0.055
+      diameter_m: 0.06
     merge: null
     steepening: true
     gas_temperature: false

@@ -438,16 +438,24 @@ impl EngineDef {
             idle_throttle: 0.0,
             idle_rpm: 800.0,
             // each rotor's three chambers share its exhaust port: their "primaries" are port
-            // stubs joined at once; the rotor's own pipe is the collector (ESTIMATES)
+            // stubs joined at once (ESTIMATES), and both rotors' ports into the one collector
             exhaust: ExhaustDef {
                 primary_length_m: 0.06,
                 primary_diameter_m: 0.045,
-                collectors: vec![vec![1, 2, 3], vec![4, 5, 6]],
+                // both rotors' ports join in one manifold and one line runs to one main
+                // silencer with two outlets (Mazda N3H1-40-100H, "Silencer, Main"; the
+                // aftermarket kit for OE N3H1-40-600A: a "rear dual outlet muffler")
+                collectors: vec![vec![1, 2, 3, 4, 5, 6]],
                 collector_length_m: 0.45,
-                collector_diameter_m: 0.05,
+                // the one manifold pipe carries what each rotor's 50 mm pipe did: their two
+                // areas (ESTIMATE; one 50 mm pipe choked it to 196 hp against Mazda's 247)
+                collector_diameter_m: 0.05 * std::f64::consts::SQRT_2,
                 tail_length_m: 1.6,
-                tail_diameter_m: 0.055,
-                tail_outlets: 1,
+                // the line about 60 mm (2.25-2.36 in): aftermarket 3 in cat-backs are sold as
+                // larger than the stock piping, one maker's rear section steps down to 60.5 mm
+                // (ESTIMATE from parts listings, no factory figure found)
+                tail_diameter_m: 0.060,
+                tail_outlets: 2,
                 // Steepening, as every preset: linear pipes (or the exact finite-volume solver)
                 // left a rotary 98–99 % pure tones at 8000 rpm, "a wind instrument", where
                 // recordings of ported 13Bs pulling are 29–51 % (their rasp is the port jet's
@@ -505,6 +513,12 @@ impl EngineDef {
             idle_rpm: 1200.0,
             idle_throttle: 0.018,
             exhaust: ExhaustDef {
+                // each rotor keeps its own pipe here: with both rotors in this short-primary,
+                // open pipe the waveguide sustains a free ~69 Hz oscillation at 6200-7100 rpm
+                // that is no order of the engine (expect.py K3 -15.6 dB, rule -20; issue #145),
+                // so the build stays as it was until that is understood
+                collectors: vec![vec![1, 2, 3], vec![4, 5, 6]],
+                collector_diameter_m: 0.05,
                 tail_diameter_m: 0.065,
                 tail_outlets: 1,
                 ..base.exhaust.clone()
@@ -7860,6 +7874,46 @@ mod tests {
             "idles at {:.0}",
             e.rpm()
         );
+    }
+
+    #[test]
+    fn the_renesis_rotors_leave_through_one_pipe_and_its_firing_leads() {
+        // the RX-8 carries both rotors' gas down one line to one dual-outlet main silencer
+        // (Mazda N3H1-40-100H, "Silencer, Main"; the aftermarket kit for OE N3H1-40-600A lists
+        // a "rear dual outlet muffler"): one collector, two outlets
+        let d = EngineDef::mazda_renesis();
+        assert_eq!(d.exhaust.collectors.len(), 1);
+        assert_eq!(d.exhaust.tail_outlets, 2);
+        // the rotors fire half a shaft turn apart: in one pipe their pulses alternate, so the
+        // firing order (twice a turn) stands over the shaft's own (once a turn), which only
+        // the rotors' differences make. Two separate lines left the shaft order on top (−0.6 dB
+        // of the exhaust's whole at 6800 rpm, the firing −10)
+        let mut d = d;
+        let s = &mut d.sound;
+        (
+            s.flow_noise,
+            s.intake,
+            s.valve_jet,
+            s.duct_flow,
+            s.main_bearings,
+            s.piston_slap,
+            s.block,
+            s.mechanical,
+            s.combustion_jitter,
+            s.chamber_ring,
+        ) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let rpm = 6800.0;
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(rpm),
+            ..Controls::default()
+        };
+        let mut e = Engine::new(d, rpm, 1);
+        run(&mut e, 0.5, &c);
+        let x = run(&mut e, 0.3, &c);
+        let shaft = rpm / 60.0;
+        let over = lines_db(&x, &[2.0 * shaft], shaft);
+        assert!(over > 6.0, "firing {over:.1} dB over the shaft order");
     }
 
     #[test]
