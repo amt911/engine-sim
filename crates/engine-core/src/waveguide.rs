@@ -1543,6 +1543,35 @@ mod tests {
         assert!(h.0.hypot(h.1) / h1.0.hypot(h1.1) < 1e-6);
     }
 
+    #[test]
+    fn past_its_shocks_a_loud_tone_loses_its_fundamental_as_fay_found() {
+        // Once the shocks have formed the sawtooth's shocks dissipate it: far past x̄, in a
+        // lossless gas, B_n = 2/(n(1 + σ)) (Fay's solution at large Gol'dberg number; Hamilton &
+        // Blackstock, *Nonlinear Acoustics*, ch. 4, eq. 4.40). Air as in the Fubini test above,
+        // 20 kPa at 200 Hz: x̄ = 1.6133 m; a pipe of 6.4532 m is σ = 4: B₁ = 0.4, B₂ = 0.2.
+        let dt = 1e-5;
+        let mut pipe = Pipe::new(6.4532, 0.05, 343.0, dt, 0.0).nonlinear();
+        let w = 2.0 * std::f64::consts::PI * 200.0;
+        let (mut h1, mut h2) = ((0.0, 0.0), (0.0, 0.0));
+        let n_all = 60_000;
+        for n in 0..n_all {
+            let t = n as f64 * dt;
+            let out = pipe.at_far();
+            pipe.send(20_000.0 * (w * t).sin(), 0.0);
+            // the last 0.2 s (40 periods), long after the wave has crossed
+            if n >= n_all - 20_000 {
+                h1.0 += out * (w * t).cos();
+                h1.1 += out * (w * t).sin();
+                h2.0 += out * (2.0 * w * t).cos();
+                h2.1 += out * (2.0 * w * t).sin();
+            }
+        }
+        let amp = |h: (f64, f64)| 2.0 * h.0.hypot(h.1) / 20_000.0 / 20_000.0;
+        let (b1, b2) = (amp(h1), amp(h2));
+        assert!((b1 - 0.4).abs() < 0.03, "B1 {b1}, B2 {b2}");
+        assert!((b2 - 0.2).abs() < 0.02, "B1 {b1}, B2 {b2}");
+    }
+
     /// Steady transmitted amplitude (re a unit incident sine at `f`) through `duct` with an
     /// anechoic source and termination.
     fn transmission(mut duct: Duct, f: f64, dt: f64) -> f64 {
