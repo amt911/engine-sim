@@ -164,7 +164,7 @@ impl AWeighting {
 
 /// The A-weighted energy at 1 m of one unit impact (a half-sine of unit peak pseudo-pressure
 /// over the seat strikes' width, `crate::engine::seat_pulse`) through the block's modes at one
-/// of its points and its response ([`crate::structure::StructureResponse`]), Pa²·s, at step
+/// of its points and their radiation ([`crate::structure::PointForceRadiation`]), Pa²·s, at step
 /// `dt`: a train of impacts at a rate R and peak a has power R·a²·this.
 pub fn unit_impact_energy(dt: f64) -> f64 {
     // averaged over the points an impact may strike ([`IMPACT_POINTS`])
@@ -172,7 +172,7 @@ pub fn unit_impact_energy(dt: f64) -> f64 {
     (0..IMPACT_POINTS)
         .map(|at| {
             let mut modes = crate::structure::BlockModes::new(IMPACT_POINTS, dt);
-            let mut block = crate::structure::StructureResponse::new(dt);
+            let mut block = crate::structure::PointForceRadiation::new(dt);
             let mut a = AWeighting::new(dt);
             (0..n)
                 .map(|k| {

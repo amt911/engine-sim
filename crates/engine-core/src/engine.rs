@@ -2323,7 +2323,7 @@ pub struct Engine {
     /// The A-weighted energy at 1 m of one unit impact through the block, Pa²·s, for its step.
     impact_unit: Option<(f64, f64)>,
     /// The impacts' own path through the block's response (one per bank), at its step.
-    impact_structure: Option<(f64, Vec<StructureResponse>)>,
+    impact_structure: Option<(f64, Vec<crate::structure::PointForceRadiation>)>,
     /// The combustion's A-weighting at its step, its A-weighted power summed and counted since
     /// the impacts' rate was last taken, and that last cycle's mean power, Pa² at 1 m: the
     /// impacts make up the rest of the measured curve's ([`crate::mechanical`]).
@@ -3910,7 +3910,9 @@ impl Engine {
         self.seat_strikes.retain(|(t, _)| *t <= SEAT_PULSE_S);
         // The mechanical impacts: one level for all of them, the measured petrol engine's at
         // this speed and load (`mechanical_dba_at_1m_loaded`), shared among the impacts of the last cycle — each
-        // a half-sine of the seat strikes' width through the block's response, A-weighted
+        // a half-sine of the seat strikes' width through the block's modes, radiated as a point
+        // force radiates (`structure::PointForceRadiation`, not the response to cylinder
+        // pressure, which the crank takes back inside the engine), A-weighted
         // energy `impact_unit` at 1 m, so their train's power is the curve's.
         let mut impact = [0.0; 2];
         {
@@ -3996,7 +3998,9 @@ impl Engine {
         {
             self.impact_structure = Some((
                 dt,
-                (0..n_banks).map(|_| StructureResponse::new(dt)).collect(),
+                (0..n_banks)
+                    .map(|_| crate::structure::PointForceRadiation::new(dt))
+                    .collect(),
             ));
         }
         if self.combustion_weight.as_ref().is_none_or(|w| w.0 != dt) {
@@ -10048,6 +10052,60 @@ mod tests {
         let nb: f64 = b.iter().map(|p| p * p).sum::<f64>().sqrt();
         let corr = dot / (na * nb);
         assert!(corr.abs() < 0.5, "cycle-to-cycle correlation {corr:.2}");
+    }
+
+    #[test]
+    fn idling_the_impacts_fill_the_mids_as_engine_microphones_hear_them() {
+        // A strike puts a net force into a wall, which radiates flat in power above its first
+        // mode (`structure::PointForceRadiation`). Microphones by idling engines (an Alfa
+        // Romeo 159 and a Ford Escort RS1800, onboard engine takes, real_engine_sounds/, local)
+        // read the 400–630 Hz third-octaves 4–14 dB under the 1.25–2 kHz ones; through the
+        // measured response to cylinder pressure the impacts sat ~20 dB under there.
+        let mut d = EngineDef::inline4();
+        (d.sound.block, d.sound.mechanical) = (0.0, 0.0);
+        d.vehicle.engine_bay = None;
+        let rpm = 800.0;
+        let mut e = Engine::new(d, rpm, 1);
+        let c = Controls {
+            throttle: 0.0,
+            hold_rpm: Some(rpm),
+            ..Controls::default()
+        };
+        run(&mut e, 0.3, &c);
+        let x: Vec<f64> = (0..(2.0 / DT) as usize)
+            .map(|_| {
+                e.step(DT, &c);
+                e.structure_out
+            })
+            .collect();
+        // power in a third-octave: two cascaded constant-peak band-passes (RBJ), Q 4.32
+        let band = |f0: f64| {
+            let w = 2.0 * PI * f0 * DT;
+            let alpha = w.sin() / (2.0 * 4.32);
+            let a0 = 1.0 + alpha;
+            let (b0, a1, a2) = (alpha / a0, -2.0 * w.cos() / a0, (1.0 - alpha) / a0);
+            let mut st = [[0.0f64; 4]; 2];
+            let mut sum = 0.0;
+            for (i, &v) in x.iter().enumerate() {
+                let mut u = v;
+                for s in st.iter_mut() {
+                    let y = b0 * u - b0 * s[1] - a1 * s[2] - a2 * s[3];
+                    s[1] = s[0];
+                    s[0] = u;
+                    s[3] = s[2];
+                    s[2] = y;
+                    u = y;
+                }
+                if i > x.len() / 4 {
+                    sum += u * u;
+                }
+            }
+            sum
+        };
+        let mids: f64 = [400.0, 500.0, 630.0].iter().map(|&f| band(f)).sum();
+        let highs: f64 = [1250.0, 1600.0, 2000.0].iter().map(|&f| band(f)).sum();
+        let gap = 10.0 * (highs / mids).log10();
+        assert!(gap < 14.0, "400–630 Hz sit {gap:.1} dB under 1.25–2 kHz");
     }
 
     #[test]
