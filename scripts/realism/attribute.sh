@@ -15,7 +15,7 @@ lab=$1; shift
 srcs=("$@"); [ $# -eq 0 ] && srcs=(intake block mechanical flow_noise valve_jet duct_flow combustion_jitter)
 data=$(cd "$here" && python3 -c 'import rdata; print(rdata.DATA)')
 base=$data/renders/$lab
-bin=${ENGINE_SIM_BIN:-$(cat "$base.bin" 2>/dev/null || true)}
+bin=${ENGINE_SIM_BIN:-$(head -1 "$base.bin" 2>/dev/null || true)}
 [ -x "$bin" ] || { echo "no binary: set ENGINE_SIM_BIN" >&2; exit 2; }
 py() { uv run -q --with numpy --with scipy --with matplotlib python -I "$@"; }
 
