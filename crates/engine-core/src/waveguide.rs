@@ -1422,6 +1422,55 @@ mod tests {
     }
 
     #[test]
+    fn a_rarefaction_spreads_its_front_and_steepens_its_tail() {
+        // A simple wave's value x rides at c·(1 + k·x) (Riemann; Whitham, *Linear and Nonlinear
+        // Waves*, §2.1): a pressure drop's deeper values lag, so its front spreads and the
+        // recompression behind it closes up — the expansion fan and the tail shock of an N-wave.
+        // −20 kPa in gas at c = 500 (k = 1.2/(283.71·500), k·A = 0.16920) over a 200-step line:
+        // x arrives 200/(1 + k·x) steps after it is sent, −0.1 A at 203.43 and −0.9 A at 235.88
+        // (hand). A front falling 0 → −A in 10 steps crosses −0.1 A → −0.9 A in 8 + 32.45 =
+        // 40.45 steps; a tail rising −A → 0 in 80 crosses −0.9 A → −0.1 A in 64 − 32.45 = 31.55.
+        let k = 1.2 / (283.71 * 500.0);
+        let a = 20_000.0;
+        let sent = |n: usize| -> f64 {
+            match n {
+                0..500 => 0.0,
+                500..510 => -a * (n - 500) as f64 / 10.0,
+                510..610 => -a,
+                610..690 => -a * (690 - n) as f64 / 80.0,
+                _ => 0.0,
+            }
+        };
+        let mut line = DelayLine::nonlinear(200.0, k);
+        let out: Vec<f64> = (0..1200)
+            .map(|n| {
+                let y = line.read();
+                line.push(sent(n));
+                y
+            })
+            .collect();
+        // the first sample past `level` (falling or rising), interpolated between samples
+        let cross = |from: usize, level: f64, falling: bool| -> f64 {
+            let n = (from..out.len())
+                .find(|&n| {
+                    if falling {
+                        out[n] <= level
+                    } else {
+                        out[n] >= level
+                    }
+                })
+                .unwrap();
+            n as f64 - 1.0 + (level - out[n - 1]) / (out[n] - out[n - 1])
+        };
+        let f10 = cross(1, -0.1 * a, true);
+        let f90 = cross(1, -0.9 * a, true);
+        let t90 = cross(f90 as usize + 50, -0.9 * a, false);
+        let t10 = cross(f90 as usize + 50, -0.1 * a, false);
+        assert!((f90 - f10 - 40.45).abs() < 1.5, "front {}", f90 - f10);
+        assert!((t10 - t90 - 31.55).abs() < 1.5, "tail {}", t10 - t90);
+    }
+
+    #[test]
     fn a_shock_keeps_the_waves_content() {
         // what a line carries in is what comes out, ∫p dt, shocks or not: the merged samples keep
         // their sum (Brenier & Grenier, SIAM J. Numer. Anal. 35, 1998). Reading the shock at the
