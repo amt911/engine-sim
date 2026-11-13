@@ -52,14 +52,6 @@ import rdata  # noqa: E402
 
 GATE_TIERS = ("order", "texture")
 WATCH_TIERS = ("watch", "trend")
-# Periodicity beyond EVERY real recording fails on its own, whatever the engine's own recordings say
-# (2026-11-13). Engine lines where every real engine has noise is the 'synthetic' the user hears
-# ("suena sintético", LFA pf build); before, the texture tier excused it whenever the engine had
-# recordings of its own and the line forest was only watched, so every LFA build passed with 1-2 kHz
-# 13 dB more periodic than any real recording. 'Beyond' is past the pool's extreme by more than the
-# most extreme real recording reaches past the others (Tables.periodic_margin), so no real one fails.
-PERIODIC_TIERS = ("texture", "watch")
-PERIODIC_FEATS = ("per1000", "per2000", "per4000", "for2000", "for4000")
 
 
 def binname(b, e=None):
@@ -86,28 +78,11 @@ class Tier:
             self.Sstar[t], self.L[t] = S.sstar(self.real, (t,), S.TIER_ALPHA[t])
         self.scales, self.pairs = S.pair_scales(self.real)
         self.Estar, self.E = S.sig_star(self.real, self.scales)
-        self._pmargin = None
-
-    def periodic_margin(self):
-        """{feat: dB} how far the most extreme real recording reaches past all the others (leave one out),
-        at least 0: a build beyond the real pool's extreme by more than this is beyond what any real
-        recording does to the others, so no real recording can fail the periodicity rule."""
-        if self._pmargin is None:
-            m = {f: 0.0 for f in PERIODIC_FEATS}
-            for i, it in self.real.items():
-                for r in S.judge(it, self.real, exclude=(i,), tiers=PERIODIC_TIERS):
-                    if r["feat"] in m and r["side"] == "hi":
-                        m[r["feat"]] = max(m[r["feat"]], r["value"] - r["ext"])
-            self._pmargin = m
-        return self._pmargin
 
     def state(self, r, sig=False):
         """' ok ', 'EDGE' (rarer than 97 % of real recordings), 'OVER' (beyond what real recordings reach
         on this tier, but the tier does not decide here) or 'FAIL'. sig: the engine has recordings of its
         own, so its texture is judged against them (signature), not against other engines."""
-        if (r["tier"] in PERIODIC_TIERS and r["feat"] in PERIODIC_FEATS and r["side"] == "hi"
-                and r["value"] > r["ext"] + self.periodic_margin()[r["feat"]]):
-            return "FAIL"
         if r["tier"] in GATE_TIERS and r["score"] > self.Sstar[r["tier"]]:
             return "OVER" if (sig and r["tier"] == "texture") else "FAIL"
         return "EDGE" if r["p"] < S.EDGE_P else " ok "
