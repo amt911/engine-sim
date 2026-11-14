@@ -333,6 +333,11 @@ pub struct Pipe {
     dt: f64,
     /// The walls' loss above 200 Hz on each line ([`Pipe::viscothermal`]).
     walls: Option<Box<[WallLoss; 2]>>,
+    /// Each direction's slow mean wave (its mean flow's DC part), which the per-trip loss leaves
+    /// alone ([`Pipe::lose`]).
+    mean_wave: [f64; 2],
+    /// `mean_wave`'s share of the way to each new arrival per step.
+    mean_follow: f64,
     /// Further segments after `fwd` and `bwd` ([`Pipe::steepening`]), each direction's in order.
     chain: Option<Box<[Vec<Stage>; 2]>>,
     /// A silencer's transmission on each direction's waves as they enter (forward, backward).
@@ -481,6 +486,8 @@ impl Pipe {
             walls: None,
             chain: None,
             filter: None,
+            mean_wave: [0.0; 2],
+            mean_follow: (dt / crate::fv::MEAN_FLOW_TAU_S).min(1.0),
         }
     }
     /// The waves crossing this pipe, either way, pass `transmission` (a silencer's, as
@@ -640,13 +647,21 @@ impl Pipe {
         self.gain = self.still_gain * (-alpha * self.length_m).exp();
     }
 
+    /// The per-trip loss on a wave `x` arriving in direction `dir`: the walls' and the flow's
+    /// friction wear the waves, the motion about the slow mean, not the mean itself. A steady
+    /// flow crosses a uniform pipe whole (continuity); the FV pipes treat their acoustic loss
+    /// the same way (a sink on u − ū, [`crate::fv::Pipe1d::acoustic_loss`]).
+    fn lose(&self, dir: usize, x: f64) -> f64 {
+        let m = self.mean_wave[dir];
+        m + (x - m) * self.gain_now
+    }
     /// Wave arriving at the far end this step.
     pub fn at_far(&self) -> f64 {
-        self.last(0).read() * self.gain_now
+        self.lose(0, self.last(0).read())
     }
     /// Wave arriving back at the near end this step.
     pub fn at_near(&self) -> f64 {
-        self.last(1).read() * self.gain_now
+        self.lose(1, self.last(1).read())
     }
     /// The line a direction ends in (`0` away from the near end, `1` back to it).
     fn last(&self, dir: usize) -> &DelayLine {
@@ -659,12 +674,21 @@ impl Pipe {
     /// [`Pipe::at_near`] as it will read after the next `send` (at the current gain), if the
     /// pipe is at least two steps long.
     pub fn at_near_next(&self) -> Option<f64> {
-        self.last(1).read_next().map(|x| x * self.gain_now)
+        self.last(1).read_next().map(|x| self.lose(1, x))
     }
     /// [`Pipe::at_near`] as it will read after `ahead` more `send`s (at the current gain), if
     /// those sends are not among the values it interpolates.
     pub fn at_near_ahead(&self, ahead: usize) -> Option<f64> {
-        self.bwd.read_ahead(ahead).map(|x| x * self.gain_now)
+        self.raw_near_ahead(ahead).map(|x| self.lose(1, x))
+    }
+    /// The near end's slow mean wave follows `raw`, the wave (before its loss) that arrived
+    /// there this step, as [`Pipe::send`] does: for a copy that only reads the pipe's lines.
+    pub(crate) fn follow_mean_near(&mut self, raw: f64) {
+        self.mean_wave[1] += (raw - self.mean_wave[1]) * self.mean_follow;
+    }
+    /// [`Pipe::at_near_ahead`] before the per-trip loss.
+    pub(crate) fn raw_near_ahead(&self, ahead: usize) -> Option<f64> {
+        self.bwd.read_ahead(ahead)
     }
     /// Send this step's outgoing waves: `from_near` into `fwd`, `from_far` into `bwd`.
     /// One step of the friction following its mean flow ([`GAIN_TAU_S`]); [`Pipe::send`] takes
@@ -675,6 +699,10 @@ impl Pipe {
 
     pub fn send(&mut self, from_near: f64, from_far: f64) {
         self.follow_gain();
+        for dir in 0..2 {
+            let x = self.last(dir).read();
+            self.mean_wave[dir] += (x - self.mean_wave[dir]) * self.mean_follow;
+        }
         if let Some(chain) = &mut self.chain {
             // each segment takes what the one before it delivers this step (read before pushed)
             for (dir, stages) in chain.iter_mut().enumerate() {
@@ -1810,31 +1838,67 @@ mod tests {
     }
 
     #[test]
+    fn a_steady_flow_crosses_a_lossy_pipe_whole_and_its_waves_still_wear() {
+        // The walls' loss is the waves' (Kirchhoff's boundary layers, an acoustic loss): a
+        // steady flow is no wave, and a uniform pipe passes all of its mass (continuity), so a
+        // held wave of 1 leaves 3 m of 3 %/m pipe as 1. A 200 Hz wave, the band LOSS_PER_M
+        // stands for, still keeps (1 − 0.03)³ = 0.912673 of itself.
+        let dt = 1.0 / 48_000.0;
+        let mut p = Pipe::new(3.0, 0.05, 500.0, dt, 0.03);
+        for _ in 0..(2.0 / dt) as usize {
+            p.send(1.0, 0.0);
+        }
+        assert!((p.at_far() - 1.0).abs() < 1e-3, "steady {}", p.at_far());
+        let mut q = Pipe::new(3.0, 0.05, 500.0, dt, 0.03);
+        let mut peak = 0.0_f64;
+        let n = (2.0 / dt) as usize;
+        for i in 0..n {
+            let t = i as f64 * dt;
+            q.send((2.0 * std::f64::consts::PI * 200.0 * t).sin(), 0.0);
+            if t > 1.9 {
+                peak = peak.max(q.at_far().abs());
+            }
+        }
+        assert!((peak / 0.912_673 - 1.0).abs() < 0.005, "200 Hz {peak}");
+    }
+
+    #[test]
     fn a_pipes_friction_moves_without_a_click() {
-        // The mean flows arrive every few dozen steps; a pipe carrying a strong mean (its
-        // flow's DC wave, 75 kPa in a boosted collector) stepped by each new friction was a click
-        // train at the update rate. The loss follows over 2 ms: one step at 192 kHz moves it
-        // 1/384 of the way.
+        // The mean flows arrive every few dozen steps; a strong wave in a pipe stepped by each
+        // new friction was a click train at the update rate. The loss follows over 2 ms: one
+        // step at 192 kHz moves it 1/384 of the way. (The friction wears the waves, not the
+        // mean flow's DC wave: that crosses whole, `a_steady_flow_crosses_a_lossy_pipe_whole…`;
+        // so the click is measured on a 1000 Pa, 200 Hz wave, against the same pipe unchanged.)
         let dt = 1.0 / 192_000.0;
         let a = std::f64::consts::PI * 0.25 * 0.05 * 0.05;
         let mut p = Pipe::new(1.0, 0.05, 500.0, dt, 0.03);
+        let mut q = p.clone();
+        let wave = |i: usize| 1000.0 * (2.0 * std::f64::consts::PI * 200.0 * i as f64 * dt).sin();
+        let mut i = 0;
         for _ in 0..2000 {
-            p.send(1000.0, 0.0);
+            p.send(wave(i), 0.0);
+            q.send(wave(i), 0.0);
+            i += 1;
         }
-        let before = p.at_far();
         p.set_mean_flow(0.2 * 283.71 * a);
-        p.send(1000.0, 0.0);
-        let step = (p.at_far() - before).abs();
-        // the whole change is 1000·0.97·(1 − 0.951229) ≈ 47 Pa
+        p.send(wave(i), 0.0);
+        q.send(wave(i), 0.0);
+        i += 1;
+        // the whole change is up to 1000·0.97·(1 − 0.951229) ≈ 47 Pa
+        let step = (p.at_far() - q.at_far()).abs();
         assert!(step < 0.5, "{step}");
-        for _ in 0..20_000 {
-            p.send(1000.0, 0.0);
+        let (mut pk, mut qk) = (0.0_f64, 0.0_f64);
+        for k in 0..20_000 {
+            p.send(wave(i), 0.0);
+            q.send(wave(i), 0.0);
+            i += 1;
+            if k >= 20_000 - 960 {
+                pk = pk.max(p.at_far().abs());
+                qk = qk.max(q.at_far().abs());
+            }
         }
-        assert!(
-            (p.at_far() - 1000.0 * 0.97 * 0.951_229).abs() < 0.05,
-            "{}",
-            p.at_far()
-        );
+        // it settles at the flowing pipe's e^(−0.05) = 0.951229 of the still one's wave
+        assert!((pk / qk - 0.951_229).abs() < 1e-3, "{}", pk / qk);
     }
 
     #[test]
