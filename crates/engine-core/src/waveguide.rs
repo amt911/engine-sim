@@ -1086,11 +1086,7 @@ impl Duct {
                     _ if self.mean_now != 0.0 && areas[0] != areas[1] => {
                         // the mean flow loses pressure crossing the change: a resistance
                         let c = self.pipes[k].sound_speed;
-                        let r = area_change_resistance(areas[0], areas[1], self.mean_now, c);
-                        let rho_c = crate::gas::GAMMA * crate::units::ATM_PA / c;
-                        let (z1, z2) = (rho_c / areas[0], rho_c / areas[1]);
-                        let q = 2.0 * (incoming[0] - incoming[1]) / (z1 + z2 + r);
-                        out = [incoming[0] - z1 * q, incoming[1] + z2 * q];
+                        out = area_change_node(areas, incoming, self.mean_now, c);
                     }
                     _ => {
                         junction(&areas, &incoming, &mut out);
@@ -1204,6 +1200,23 @@ pub fn area_change_resistance(a_from: f64, a_to: f64, mass_flow: f64, c: f64) ->
         (0.42 * (1.0 - down / up), down)
     };
     rho * k * (m / (rho * a)) / a
+}
+
+/// What an area change `areas` = [before, after] sends back into each pipe when the waves
+/// `incoming` reach it with mean mass flow `mass_flow` (kg/s, signed along the duct) of gas at
+/// sound speed `c`: a series element in the flow's way whose drop is
+/// Δp = R·q − ½R·Q̄, q the volume flow through it, Q̄ = ṁ/ρ the mean one and R = ρKU/A the
+/// acoustic resistance ([`area_change_resistance`]). The waves ride on the tangent of the loss
+/// law ½ρK·U|U|, dΔp/dq = R; the mean flow itself takes the quasi-steady loss ½ρKU² = ½R·Q̄
+/// (the tangent applied to the mean flow too would double it). q = (2(p₁ − p₂) + ½R·Q̄)/(z₁ + z₂ + R).
+pub fn area_change_node(areas: [f64; 2], incoming: [f64; 2], mass_flow: f64, c: f64) -> [f64; 2] {
+    let r = area_change_resistance(areas[0], areas[1], mass_flow, c);
+    let rho_c = crate::gas::GAMMA * crate::units::ATM_PA / c;
+    let rho = rho_c / c;
+    let q_mean = mass_flow / rho;
+    let (z1, z2) = (rho_c / areas[0], rho_c / areas[1]);
+    let q = (2.0 * (incoming[0] - incoming[1]) + 0.5 * r * q_mean) / (z1 + z2 + r);
+    [incoming[0] - z1 * q, incoming[1] + z2 * q]
 }
 
 /// Newton iterations of [`lossy_junction`].
@@ -1670,6 +1683,71 @@ mod tests {
         assert_eq!(area_change_resistance(0.002, 0.008, 0.0, 500.0), 0.0);
     }
 
+    /// The pressure drop across an area change that a steady mean flow `mass_flow` makes the
+    /// node's waves carry: the node is fed the incoming waves that make its flow q equal the mean
+    /// volume flow, and the drop p₁ − p₂ (each side's incoming plus outgoing wave) is read.
+    fn steady_drop(areas: [f64; 2], mass_flow: f64, c: f64) -> (f64, f64) {
+        let rho = crate::gas::GAMMA * crate::units::ATM_PA / (c * c);
+        let rho_c = rho * c;
+        let r = area_change_resistance(areas[0], areas[1], mass_flow, c);
+        let (z1, z2) = (rho_c / areas[0], rho_c / areas[1]);
+        let q_mean = mass_flow / rho;
+        // search the incoming difference that gives q = q_mean (monotonic, bisection)
+        let flow = |d: f64| {
+            let out = area_change_node(areas, [d, 0.0], mass_flow, c);
+            (d - out[0]) / z1
+        };
+        let (mut lo, mut hi) = (0.0, 2.0 * q_mean * (z1 + z2 + r));
+        for _ in 0..80 {
+            let mid = 0.5 * (lo + hi);
+            if flow(mid) < q_mean {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let d = 0.5 * (lo + hi);
+        let out = area_change_node(areas, [d, 0.0], mass_flow, c);
+        let q = (d - out[0]) / z1;
+        ((d + out[0]) - out[1], q / q_mean)
+    }
+
+    #[test]
+    fn a_steady_flow_drops_half_rho_k_u_squared_across_an_area_change() {
+        // 0.05 kg/s of 500 m/s gas (ρ = 0.567420) between 0.002 and 0.008 m², U = 44.059 m/s in
+        // the narrow side. Expansion: Borda-Carnot K = (1 − 0.25)² = 0.5625 on the narrow U,
+        // ½ρKU² = 0.5·0.56742·0.5625·44.059² = 309.8 Pa. Contraction (the flow the other way):
+        // K = 0.42(1 − 0.25) = 0.315 (White, Fluid Mechanics §6.9), ½ρKU² = 173.5 Pa (hand).
+        // The quasi-steady loss of the mean flow; the acoustic resistance ρKU/A is its tangent.
+        let (c, m) = (500.0, 0.05);
+        let (up, qr) = steady_drop([0.002, 0.008], m, c);
+        assert!((qr - 1.0).abs() < 1e-6, "{qr}");
+        assert!((up - 309.8).abs() < 1.5, "expansion {up} Pa");
+        let (dn, _) = steady_drop([0.008, 0.002], m, c);
+        assert!((dn - 173.5).abs() < 1.0, "contraction {dn} Pa");
+    }
+
+    #[test]
+    fn a_wave_on_the_flow_sees_the_tangent_resistance() {
+        // a flow perturbation dq across the expansion changes the drop by R·dq, R = ρKU/A =
+        // 7031.3 Pa·s/m³ (hand, above): the waves keep the tangent
+        let (areas, m, c) = ([0.002, 0.008], 0.05, 500.0);
+        let rho = crate::gas::GAMMA * crate::units::ATM_PA / (c * c);
+        let rho_c = rho * c;
+        let (z1, z2) = (rho_c / areas[0], rho_c / areas[1]);
+        let drop_at = |q: f64| {
+            let r = area_change_resistance(areas[0], areas[1], m, c);
+            // the incoming difference that gives flow q here (the node is linear in it)
+            let d = 0.5 * q * (z1 + z2 + r);
+            let base = area_change_node(areas, [0.0, 0.0], m, c);
+            let out = area_change_node(areas, [d, 0.0], m, c);
+            ((d + out[0]) - out[1]) - ((base[0]) - base[1])
+        };
+        let dq = 1e-4;
+        let slope = (drop_at(0.088 + dq) - drop_at(0.088)) / dq;
+        assert!((slope - 7031.3).abs() < 1.0, "{slope}");
+    }
+
     #[test]
     fn a_duct_in_flow_passes_less_across_its_area_change() {
         // A wave from a 0.002 m² pipe into a 0.008 m² one: lossless it passes 2z₂/(z₁ + z₂) =
@@ -1690,10 +1768,13 @@ mod tests {
                 duct.send(0.0, 0.0);
             }
             let gains = duct.pipes[0].gain * duct.pipes[1].gain;
+            // the mean flow's own drop stands as a constant pressure in the waves (the node's
+            // ½R·Q̄ term): the pulse is measured from it
+            let base = duct.pipes[1].at_far();
             let mut peak: f64 = 0.0;
             for k in 0..64 {
                 duct.send(if k == 0 { 1.0 } else { 0.0 }, 0.0);
-                peak = peak.max(duct.pipes[1].at_far().abs());
+                peak = peak.max((duct.pipes[1].at_far() - base).abs());
             }
             peak / gains
         };
