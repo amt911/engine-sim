@@ -1656,11 +1656,15 @@ impl ExhaustLink for LocalLink {
 #[derive(Debug, Clone)]
 pub struct ArrivalProbe {
     pipes: Vec<Pipe>,
+    /// The waves (before their loss) [`ArrivalProbe::arriving`] last read, which the next
+    /// [`ArrivalProbe::advance`] hands the primaries' slow means, as the net's `send` does.
+    raw: Vec<f64>,
 }
 
 impl ArrivalProbe {
     pub fn new(net: &ExhaustNet) -> Self {
         Self {
+            raw: net.primaries.iter().map(|p| p.bwd.read()).collect(),
             pipes: net.primaries.clone(),
         }
     }
@@ -1693,15 +1697,17 @@ impl ArrivalProbe {
     /// One step taken: the primaries' friction follows its mean flow as the net's does
     /// ([`Pipe::follow_gain`]); once per step, where the net sends.
     pub fn advance(&mut self) {
-        for p in &mut self.pipes {
+        for (p, &x) in self.pipes.iter_mut().zip(&self.raw) {
             p.follow_gain();
+            p.follow_mean_near(x);
         }
     }
 
     /// The wave arriving at each valve now, with `ahead` steps' results not pushed yet.
     /// `ahead` must stay below [`ExhaustNet::max_block`]`·2`.
-    pub fn arriving(&self, ahead: usize, out: &mut [f64]) {
-        for (o, p) in out.iter_mut().zip(&self.pipes) {
+    pub fn arriving(&mut self, ahead: usize, out: &mut [f64]) {
+        for ((o, p), r) in out.iter_mut().zip(&self.pipes).zip(self.raw.iter_mut()) {
+            *r = p.raw_near_ahead(ahead).unwrap_or(0.0);
             *o = p.at_near_ahead(ahead).unwrap_or(0.0);
         }
     }
@@ -2362,9 +2368,11 @@ mod tests {
         // captured again when the open end took Levine & Schwinger's end correction
         // (fix/open-end-levine-schwinger, 2026-11-08: every open end's reflection changed on
         // purpose, the duct noise path untouched), and when the open end took the inflow's
-        // vortex-shedding loss (fix/open-end-vortex-loss, 2026-11-13: same reason)
+        // vortex-shedding loss (fix/open-end-vortex-loss, 2026-11-13: same reason), and when the
+        // pipes' wall loss left the mean flow's DC wave alone (fix/wall-loss-sound-only,
+        // 2026-11-15: every pipe's DC changed on purpose, the duct noise path untouched)
         let h = bits_hash(&pulsed_inline4(|n| n.set_duct_flow(0.0)));
-        assert_eq!(h, 0xd071_fcbf_6917_5906, "hash {h:#x}");
+        assert_eq!(h, 0x6562_5557_be36_3653, "hash {h:#x}");
     }
 
     /// Mean square of `x` between `lo` and `hi` Hz, from Goertzel bins every 50 Hz.

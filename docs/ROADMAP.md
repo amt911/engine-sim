@@ -66,6 +66,15 @@ Last updated: 2026-11-09.
   electrics through a 55 % alternator; K20/EJ25 idle fill into the real range. Waits for the
   user's ear.
 
+## Next after the reactive silencers: turbo sounds on lift-off (user, 2026-11-15)
+
+- **Compressor flutter ("stututu")**: closing the throttle on boost with no blow-off valve sends
+  the compressor into surge; the air reverses through it in bursts, heard as a fast flutter.
+- **Blow-off (dump) valve ("pssht")**: the valve the K20C1-style turbo engines vent the boost
+  through on lift-off, heard as a short hiss of air.
+
+Both start from the existing turbocharger model (`turbo`) and are judged against real recordings.
+
 ## Next: transmissions and hybrid
 
 Spec `2026-11-04-transmissions-hybrid-design.md`, approved 2026-11-04 with **transmission noise**
