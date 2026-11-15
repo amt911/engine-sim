@@ -11,7 +11,10 @@
 //! low-pass above it. Past the box's first axial mode (the box taken as a cube, c/2L) the
 //! lumped parts no longer hold and a box passes as an expansion chamber does on average, at
 //! its peak loss 20·log₁₀((m + 1/m)/2), m the box's section over the snorkel's (Munjal §3.3):
-//! a flat path of that gain, high-passed at the mode, in parallel. A diesel truck's standard
+//! a flat path of that gain, high-passed at the mode, in parallel, and through the element, a
+//! resistive sheet across the box (its specific resistance R·A, the box's section as its face),
+//! which passes 2ρc/(2ρc + R·A) of a plane wave (continuity of u, p₁ − p₂ = R·A·u): the
+//! lumped path has its resistance in R already. A diesel truck's standard
 //! air cleaner took 8.5 dB(A) off its open intake (Raff & Perry, JSV 28(3), 1973, Fig. 14).
 
 use serde::{Deserialize, Serialize};
@@ -153,7 +156,10 @@ impl AirCleaner {
             chamber: {
                 let side = def.volume_m3.cbrt();
                 let m = side * side / def.mouth_area().max(1e-9);
-                2.0 / (m + 1.0 / m)
+                // the element across the box (face = the box's section) is a resistive sheet in
+                // the waves' way: R_s = R·A_face, passing 2ρc/(2ρc + R_s) of a plane wave
+                let r_s = r * side * side;
+                2.0 / (m + 1.0 / m) / (1.0 + r_s / (2.0 * RHO * C))
             },
             hp: {
                 let f_mode = C / (2.0 * def.volume_m3.cbrt().max(1e-3));
@@ -283,5 +289,34 @@ mod tests {
         }
         let db = 20.0 * (2.0 * (re * re + im * im).sqrt() / (n - n / 2 - 1) as f64).log10();
         assert!((db + 17.0).abs() < 3.0, "{db:.1} dB");
+    }
+    #[test]
+    fn the_element_is_a_screen_to_the_chambers_waves() {
+        // The rule-sized 2.0 L / 7000 rev/min cleaner: 12 857 Pa*s/m3 of element at the snorkel's
+        // flow; the box a 0.2 m cube, so the element's face is its section, 0.04 m2, and its
+        // specific resistance 12 857 * 0.04 = 514.3 Pa*s/m. A resistive sheet in a duct passes
+        // 2*rho*c/(2*rho*c + R_s) of a plane wave (continuity of u, p1 - p2 = R_s*u): rho*c =
+        // 1.204 * 343 = 413.0, so 826.0/(826.0 + 514.3) = 0.6163, -4.2 dB, against the same box
+        // without its element, at 4 kHz where only the chamber's path is left.
+        let with = AirCleanerDef::rule_sized(2.0e-3, 7000.0, 0.06);
+        let mut without = with;
+        without.filter_resistance_pa_s_m3 = 0.0;
+        let hf = |d: &AirCleanerDef| {
+            let dt = 1.0 / 96_000.0;
+            let mut b = AirCleaner::new(d, dt);
+            let n = (1.0 / dt) as usize;
+            let (mut re, mut im) = (0.0, 0.0);
+            for k in 0..n {
+                let ph = std::f64::consts::TAU * 4000.0 * k as f64 * dt;
+                let y = b.process(ph.sin());
+                if k > n / 2 {
+                    re += y * ph.sin();
+                    im += y * ph.cos();
+                }
+            }
+            (re * re + im * im).sqrt()
+        };
+        let ratio_db = 20.0 * (hf(&with) / hf(&without)).log10();
+        assert!((ratio_db + 4.2).abs() < 0.4, "{ratio_db:.2} dB");
     }
 }
