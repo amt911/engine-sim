@@ -170,7 +170,7 @@ pub struct Pipe1d {
 
 /// Time constant of the cells' mean velocity ū under the acoustic wall loss, s: slower than any
 /// engine order (an idling four-cylinder fires at ~27 Hz), so the loss acts on the waves only.
-pub(crate) const MEAN_FLOW_TAU_S: f64 = 0.2;
+const MEAN_FLOW_TAU_S: f64 = 0.2;
 
 impl Pipe1d {
     pub fn new(length: f64, n: usize, init: Prim) -> Self {
