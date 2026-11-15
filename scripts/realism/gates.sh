@@ -7,6 +7,7 @@
 #   3 expect.py        what the engine's kinematics must and must not make (K1-K3)
 #   4 blind2.py        cycle-to-cycle periodicity and discrete echo, ratchet on ear-approved builds
 #   5 ear_gate.py      what the ear named: bank orders, wind, lift-off hiss, clip peak (same-family recordings)
+#   6 regress.py       with GATES_BASE=<main's suffix>: wind, hump, lift, static no worse than main
 #
 # Labels are PRESET-SUFFIX (lfa-v10 -> lfa-SUFFIX). Renders and caches live in $REALISM_DATA (see
 # rdata.py; never in the repository). Summary: $REALISM_DATA/renders/gates-SUFFIX.txt.
@@ -69,4 +70,11 @@ uv run -q --no-project --with numpy,scipy,soundfile python -I "$here/ear_gate.py
 { cat "$out.12"; for l in "${labels[@]}"; do cat "$data/renders/$l.gates34.txt"; done; cat "$out.5"; } > "$out"
 rm -f "$out.5"
 rm -f "$out.12"
+# 6 regress.py: no worse than the main it replaces (GATES_BASE=suffix of main's run). Absolute bounds
+# main already fails can't see a change that makes it worse (#147: +5 dB wind, FAIL -> FAIL).
+if [ -n "${GATES_BASE:-}" ]; then
+  (cd "$here" && python3 regress.py "$sfx" "$GATES_BASE") >> "$out" 2>&1 || true
+else
+  echo "regress: GATES_BASE not set - no comparison with main (set it to main's suffix)" >> "$out"
+fi
 cat "$out"
