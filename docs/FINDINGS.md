@@ -1607,3 +1607,20 @@ source is not identified. Phone and YouTube recordings cannot judge below about 
   the listener placed those `tail_spacing_m` apart: one tail pipe heard as two sources 0.9 m apart
   combed every 1.3 ms (cepstrum 40 dB on the catalogue's 4-2-1 configs; a real K20A 4-2-1 reads
   24–32). With a merge the tails now radiate from one place.
+
+## The air cleaner's element only damped the Helmholtz resonance, so an intake click came through (2026-11-15)
+
+**Symptom.** With the reactive road silencers (wip/rs-car-pipe) the K20A sounded "like static":
+4-10 kHz excess kurtosis 3.8 held at 6200 rpm WOT (real exteriors: median 0.19, p90 1.29). Intake
+mouth source off: -0.02; air cleaner unfitted: 12.5. So the click is the reversion pulse the
+intake runner steepens, reaching the mouth; the exhaust is only quieter, no longer masking it.
+**Cause.** `AirCleaner` carried the element's resistance only in the lumped (Helmholtz) path,
+where it sits under 60 Hz. Above the box's first mode the chamber path passed the click at the
+expansion chamber's gain (-17 dB for 8 L) with the element ignored.
+**Fix.** The element is a resistive sheet across the box (face = the cube's section, R_s = R·A):
+it passes 2ρc/(2ρc + R_s) of the waves, -4.2 dB for the rule-sized 2 L engine
+(`the_element_is_a_screen_to_the_chambers_waves`). Held 6200 K20A: 3.8 -> 1.45 on the reactive
+build, main unchanged (0.36 -> 0.34); the dyno is untouched (acoustic only: the cleaner's mean
+restriction is not applied, the presets are fitted without it).
+**Ruled out, measured earlier:** the body as a diffracting screen (2026-10-30 entry above: worse
+for the LFA; the default ear clears the deck).
