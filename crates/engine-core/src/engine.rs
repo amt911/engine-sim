@@ -2986,6 +2986,7 @@ impl Engine {
                     ));
                     if let Some(n) = &mut self.net {
                         n.set_duct_flow(self.def.sound.duct_flow);
+                        n.set_duct_exit(false);
                     }
                 }
             }
@@ -3014,6 +3015,7 @@ impl Engine {
                     ));
                     if let Some(n) = &mut self.jet_net {
                         n.set_duct_flow(self.def.sound.duct_flow);
+                        n.set_duct_exit(false);
                     }
                     self.jet_flows = vec![0.0; self.cyl.len()];
                 }
@@ -10303,6 +10305,24 @@ mod tests {
             .expect("a waveguide net");
         assert_eq!(net.duct_sites(), want);
         assert_eq!(net.duct_flow_gain(), 1.0);
+    }
+
+    #[test]
+    fn the_engine_leaves_the_tail_jet_to_the_free_jet() {
+        // the open end's flow noise is `sound.flow_noise`'s free jet, on both exhaust models
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(3000.0),
+            ..Controls::default()
+        };
+        for model in [ExhaustModel::Waveguide, ExhaustModel::Fv] {
+            let mut d = EngineDef::inline4();
+            d.exhaust.model = model;
+            let mut e = Engine::new(d, 3000.0, 1);
+            run(&mut e, 0.02, &c);
+            let net = e.net.as_ref().or(e.jet_net.as_ref()).expect("a net");
+            assert!(!net.duct_exit(), "{model:?}");
+        }
     }
 
     #[test]
