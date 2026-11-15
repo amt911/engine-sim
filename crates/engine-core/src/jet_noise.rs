@@ -311,6 +311,11 @@ pub fn plane_wave_rms_pa(w: f64, rho_c: f64, a: f64) -> f64 {
     (0.5 * w * rho_c / a).sqrt()
 }
 
+/// Uniform white noise of unit variance (xorshift64*), one step of `rng` (for other sources).
+pub fn white_noise(rng: &mut u64) -> f64 {
+    white(rng)
+}
+
 /// Uniform white noise of unit variance (xorshift64*), one step of `rng`.
 fn white(rng: &mut u64) -> f64 {
     *rng ^= *rng >> 12;

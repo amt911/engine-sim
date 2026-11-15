@@ -89,6 +89,18 @@ pub struct Simulation {
     runner_thread: Option<crate::exhaust_thread::RunnerThread>,
     /// One block's physics-step sound, before the anti-alias filter (kept: no allocation).
     steps: Vec<f64>,
+    /// The tyres on the road as the listener hears them, and their distance to the ear, m.
+    rolling: engine_core::rolling_noise::RollingNoise,
+    rolling_r: f64,
+}
+
+/// Where the listener hears the tyres from ([`engine_core::rolling_noise::tyre_distance_m`]).
+fn tyre_distance(def: &EngineDef) -> f64 {
+    engine_core::rolling_noise::tyre_distance_m(
+        def.sound.listener_distance_m,
+        def.sound.listener_angle_deg,
+        def.sound.listener_height_m,
+    )
 }
 
 impl Simulation {
@@ -114,6 +126,8 @@ impl Simulation {
         let mut car = Vehicle::new(vehicle);
         car.set_engine_inertia(def.flywheel_inertia_kgm2);
         Self {
+            rolling: engine_core::rolling_noise::RollingNoise::new(sample_rate, seed),
+            rolling_r: tyre_distance(&def),
             vehicle: car,
             drive: DriveInput::default(),
             voice: voice_for(&def, sample_rate),
@@ -174,6 +188,7 @@ impl Simulation {
     pub fn replace_engine(&mut self, def: EngineDef) {
         self.voice.reverb_mix = def.sound.reverb;
         self.voice.leveler.amount = def.sound.leveling;
+        self.rolling_r = tyre_distance(&def);
         self.def = def.clone();
         let Some(def) = self.try_retune(self.quality.apply(&def)) else {
             return;
@@ -288,10 +303,14 @@ impl Simulation {
         } else {
             0
         };
+        let (v_kmh, rolling) = (self.vehicle.speed_m_s() * 3.6, self.def.sound.rolling);
         for (s, chunk) in out.iter_mut().zip(self.steps[first..].chunks(substeps)) {
             let mut p = 0.0;
             for &x in chunk {
                 p = self.anti_alias.process(x);
+            }
+            if rolling > 0.0 {
+                p += rolling * self.rolling.sample(v_kmh, self.rolling_r);
             }
             *s = self.voice.process(p);
             self.scope[self.scope_pos] = *s;
@@ -1004,6 +1023,30 @@ pub(crate) mod tests {
         sim.replace_vehicle(VehicleDef::inline4());
         sim.vehicle_mut_for_test().set_gear(1);
         assert_eq!(sim.vehicle().stiffness_nm_rad(), v.stiffness_nm_rad());
+    }
+
+    #[test]
+    fn a_moving_car_adds_its_tyres_and_a_standing_one_does_not() {
+        // the same engine, seed and drive with and without `sound.rolling`: standing (the
+        // pedal down in neutral) they are the same samples; once the car rolls they differ
+        let quiet = |rolling: f64, launch: bool| {
+            let mut def = EngineDef::inline4();
+            def.sound.rolling = rolling;
+            let mut sim = if launch {
+                driven(def, VehicleDef::inline4(), 1, 0.6)
+            } else {
+                Simulation::with_quality(def, VehicleDef::inline4(), FS, 1, Quality::Ultra)
+            };
+            render_secs(&mut sim, 3.0)
+        };
+        assert_eq!(quiet(0.0, false), quiet(1.0, false));
+        let (off, on) = (quiet(0.0, true), quiet(1.0, true));
+        let diff: f64 = off[off.len() / 2..]
+            .iter()
+            .zip(&on[on.len() / 2..])
+            .map(|(a, b)| f64::from(a - b).powi(2))
+            .sum();
+        assert!(diff > 0.0, "rolling noise left no trace on a moving car");
     }
 
     #[test]
