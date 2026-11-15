@@ -7,6 +7,7 @@
 #   3 expect.py        what the engine's kinematics must and must not make (K1-K3)
 #   4 blind2.py        cycle-to-cycle periodicity and discrete echo, ratchet on ear-approved builds
 #   5 ear_gate.py      what the ear named: bank orders, wind, lift-off hiss, clip peak (same-family recordings)
+#   6 static_gate.py   impulsive 4-10 kHz treble (a click per exhaust pulse, 'suena a estatica'), kurtosis vs real recordings
 #
 # Labels are PRESET-SUFFIX (lfa-v10 -> lfa-SUFFIX). Renders and caches live in $REALISM_DATA (see
 # rdata.py; never in the repository). Summary: $REALISM_DATA/renders/gates-SUFFIX.txt.
@@ -66,7 +67,9 @@ done
 wait
 uv run -q --no-project --with numpy,scipy,soundfile python -I "$here/ear_gate.py" gate "${labels[@]}" \
   > "$out.5" 2>&1 || true
-{ cat "$out.12"; for l in "${labels[@]}"; do cat "$data/renders/$l.gates34.txt"; done; cat "$out.5"; } > "$out"
-rm -f "$out.5"
+uv run -q --no-project --with numpy,scipy,soundfile python -I "$here/static_gate.py" gate "${labels[@]}" \
+  > "$out.6" 2>&1 || true
+{ cat "$out.12"; for l in "${labels[@]}"; do cat "$data/renders/$l.gates34.txt"; done; cat "$out.5"; cat "$out.6"; } > "$out"
+rm -f "$out.5" "$out.6"
 rm -f "$out.12"
 cat "$out"
