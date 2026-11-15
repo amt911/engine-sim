@@ -1413,8 +1413,8 @@ impl EngineDef {
     /// A road car's exhaust after each collector from one rule for every car
     /// ([`crate::exhaust::road_exhaust`]): a close-coupled catalyst and silencers of ten times
     /// the collector's swept volume, on the car's own pipe. With the finite-volume pipes and
-    /// the duct flow noise it reads Davies & Holland's production car (1999, Fig. 1(c)) at
-    /// 6000 rpm (`a_production_silenced_exhaust_reads_davies_at_6000`).
+    /// the free tail jet it reads the 2nd order of Davies & Holland's production car (1999,
+    /// Fig. 1(c)) at 6000 rpm (`a_production_exhaust_keeps_the_second_order_of_davies_at_6000`).
     fn with_road_exhaust(mut self) -> Self {
         let branches = self.exhaust.groups(self.cylinders).len().max(1);
         self.exhaust.after_collector = crate::exhaust::road_exhaust(
@@ -9908,46 +9908,151 @@ mod tests {
         );
     }
 
+    /// The Davies scene: the exhaust's own sources alone (FV exhaust, the rule-sized road
+    /// silencers of [`crate::exhaust::road_exhaust`], the open end left to the free jet
+    /// `sound.flow_noise`), WOT held at `rpm`, the listener's 3 m with the ground under it
+    /// (Davies' bench had a floor; in the free field these sit about 4 dB lower, FINDINGS
+    /// 2026-11-10). Returns 1 s of the listener signal, spread to 0.25 m by 1/r (+21.6 dB),
+    /// the firing frequency, and the mean exit speed of the tail jet, m/s.
+    fn davies_scene(mut d: EngineDef, rpm: f64) -> (Vec<f64>, f64, f64) {
+        let branches = d.exhaust.groups(d.cylinders).len().max(1);
+        let swept = d.displacement_m3() / branches as f64;
+        d.exhaust.after_collector = crate::exhaust::road_exhaust(swept, d.exhaust.tail_diameter_m);
+        d.exhaust.model = ExhaustModel::Fv;
+        let s = &mut d.sound;
+        (s.intake, s.block, s.mechanical) = (0.0, 0.0, 0.0);
+        (s.piston_slap, s.main_bearings) = (0.0, 0.0);
+        s.ground = true;
+        let f = rpm / 60.0 * d.cylinders as f64 / 2.0;
+        let mut e = Engine::new(d, rpm, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(rpm),
+            ..Controls::default()
+        };
+        run(&mut e, 0.5, &c);
+        // a whole number of firing periods near 1 s
+        let n = ((f.floor() / f) / DT) as usize;
+        let (mut x, mut u) = (Vec::with_capacity(n), 0.0);
+        for _ in 0..n {
+            x.push(e.step(DT, &c));
+            u += e.tail_u[0];
+        }
+        (x, f, u / n as f64)
+    }
+
+    /// Amplitude of `x` at `f` Hz (Hann-windowed lock-in; `x` sampled at [`DT`]).
+    fn line_amplitude(x: &[f64], f: f64) -> f64 {
+        let n = x.len() as f64;
+        let (mut re, mut im, mut sw) = (0.0, 0.0, 0.0);
+        for (i, v) in x.iter().enumerate() {
+            let h = 0.5 - 0.5 * (2.0 * PI * i as f64 / n).cos();
+            let w = 2.0 * PI * f * i as f64 * DT;
+            (re, im, sw) = (re + h * v * w.cos(), im + h * v * w.sin(), sw + h);
+        }
+        2.0 * re.hypot(im) / sw
+    }
+
+    const DAVIES_SPREAD_DB: f64 = 21.583_124_951_194_2; // 20 log10(3 / 0.25)
+
     #[test]
-    fn a_production_silenced_exhaust_reads_davies_at_6000() {
-        // Davies & Holland, JSV 223(3), 1999, Fig. 1(c): a production 4-cylinder exhaust at
-        // 0.25 m, 45°, full load: ≈ 107 dB(A) at 6000 rpm, where the flow noise of its expansions
-        // carries the highs (§1, §4). Three 4-cylinders on the FV exhaust with the rule-sized road
-        // silencers (`road_exhaust`), the exhaust's sources alone, at the listener's 3 m brought
-        // to 0.25 m by spherical spreading (+21.6 dB): their mean within 3 dB of it
-        let mut sum = 0.0;
+    fn a_production_exhaust_keeps_the_second_order_of_davies_at_6000() {
+        // Davies & Holland, JSV 223(3), 1999, Fig. 1(c): a production 4-cylinder at 0.25 m,
+        // 45 deg, full load, the 2nd order's level in dB (linear) ≈ 99 at 6000 rpm (read off
+        // the figure; ≈ 98 at 3000, the dip ≈ 84 at 4000). The three 4-cylinders of the
+        // exhaust's tests, the mean of their 2nd order at 6000 rpm, within 6 dB of it: the
+        // figure's reading (±2) and the ground's 4 dB (it sits ≈ 4 dB lower in the free field)
+        // leave no tighter bound honest. Measured: inline-4 89.4, K20A 97.1, EJ25 95.4: mean
+        // 94.0 (5.0 short of the digitised value).
+        //
+        // Why not the 107 dB(A) OVERALL this test used to hold (FINDINGS 2026-11-15): the 2nd
+        // order is a 200 Hz line, 88 dB(A) after weighting; the 19 dB between it and 107 is
+        // broadband, and the tail jet cannot make it (the next test: it would need 182 m/s
+        // at the exit, the engine's flow gives 107). The in-duct flow-noise law at the open
+        // end (K = 2.5e-5, one point fitted to that 107) was making it up, a second source
+        // for the same jet. The user decided (2026-11-14) that the bound follows what the
+        // physics gives, with the reason here.
         let defs = [
             EngineDef::inline4(),
             EngineDef::honda_k20a(),
             EngineDef::subaru_ej25(),
         ];
-        for mut d in defs.clone() {
-            let branches = d.exhaust.groups(d.cylinders).len().max(1);
-            let swept = d.displacement_m3() / branches as f64;
-            d.exhaust.after_collector =
-                crate::exhaust::road_exhaust(swept, d.exhaust.tail_diameter_m);
-            d.exhaust.model = ExhaustModel::Fv;
-            let s = &mut d.sound;
-            (s.intake, s.block, s.mechanical) = (0.0, 0.0, 0.0);
-            (s.piston_slap, s.main_bearings) = (0.0, 0.0);
-            // the bound was set with the ground under the 3 m listener (Davies' bench had a
-            // floor too); in the free field these three sit ≈ 4 dB lower (FINDINGS 2026-11-10)
-            s.ground = true;
-            let rpm = 6000.0;
-            let mut e = Engine::new(d, rpm, 1);
-            let c = Controls {
-                throttle: 1.0,
-                hold_rpm: Some(rpm),
-                ..Controls::default()
-            };
-            run(&mut e, 0.5, &c);
-            let mut a = crate::mechanical::AWeighting::new(DT);
-            let x = run(&mut e, 0.5, &c);
-            let p2 = x.iter().map(|v| a.process(*v).powi(2)).sum::<f64>() / x.len() as f64;
-            sum += 10.0 * (p2 / 4e-10).log10() + 20.0 * (3.0f64 / 0.25).log10();
-        }
+        let sum: f64 = std::thread::scope(|sc| {
+            let hs: Vec<_> = defs
+                .iter()
+                .map(|d| {
+                    sc.spawn(move || {
+                        let (x, f, _) = davies_scene(d.clone(), 6000.0);
+                        let a = line_amplitude(&x, f);
+                        20.0 * (a / 2f64.sqrt() / 2e-5).log10() + DAVIES_SPREAD_DB
+                    })
+                })
+                .collect();
+            hs.into_iter().map(|h| h.join().unwrap()).sum()
+        });
         let mean = sum / defs.len() as f64;
-        assert!((mean - 107.0).abs() < 3.0, "{mean:.1} dB(A) at 0.25 m");
+        assert!(
+            (mean - 99.0).abs() < 6.0,
+            "2nd order {mean:.1} dB Lin at 0.25 m"
+        );
+    }
+
+    #[test]
+    fn the_tail_broadband_reads_the_jet_law_at_6000() {
+        // The broadband at the tail, 0.25 m, = the A-weighted overall less the firing orders
+        // (every harmonic of the firing frequency up to 16 kHz), against the free jet's
+        // textbook level for the exit the engine really has. Hand calculation, SAE ARP876
+        // (Stone), as in arXiv:0804.4135 eq. 4, 90 deg to the axis:
+        //   OASPL = 141 + 10 w log10(rho_j/rho_a) + 75 log10 M - 10 log10(1 + 0.01 M^4.5)
+        //           + 10 log10 A_j - 20 log10 R,  M = U/343, w = 3 M^3.5/(0.6 + M^3.5) - 1.
+        // K20A at 6000 rpm WOT: D = 0.05 m, T = 622 K (rho_j = 101325/(287 · 622) = 0.567,
+        // rho_a = 1.204), R = 0.25 m, U = 107 m/s (mdot 0.12 kg/s / (0.567 · 1.96e-3 m²)):
+        // M = 0.312, w = -0.935, 141 + 3.0 - 38.0 - 0.0 - 27.1 + 12.0 = 91.0 dB. Lighthill's
+        // eighth-power law (K = 3e-5) gives 86 dB spherical, 90 dB at 45 deg. Each engine
+        // against the formula at ITS mean exit speed, within 3 dB (a dB(A) against an
+        // overall level: the jet's band peaks near 0.2 U/D = 430 Hz, A ≈ -1 dB).
+        // Davies' 107 dB(A) overall cannot be the tail jet: ARP876 needs U = 182 m/s for it.
+        let arp876 = |u: f64| {
+            let (d, rho_j, rho_a, r) = (0.05f64, 0.567f64, 1.204f64, 0.25f64);
+            let m = u / 343.0;
+            let w = 3.0 * m.powf(3.5) / (0.6 + m.powf(3.5)) - 1.0;
+            141.0 + 10.0 * w * (rho_j / rho_a).log10() + 75.0 * m.log10()
+                - 10.0 * (1.0 + 0.01 * m.powf(4.5)).log10()
+                + 10.0 * (PI * 0.25 * d * d).log10()
+                - 20.0 * r.log10()
+        };
+        assert!((arp876(107.0) - 91.0).abs() < 0.1, "the hand calculation");
+        let defs = [
+            EngineDef::inline4(),
+            EngineDef::honda_k20a(),
+            EngineDef::subaru_ej25(),
+        ];
+        let rows: Vec<(String, f64, f64)> = std::thread::scope(|sc| {
+            let hs: Vec<_> = defs
+                .iter()
+                .map(|d| {
+                    sc.spawn(move || {
+                        let (x, f, u) = davies_scene(d.clone(), 6000.0);
+                        let mut a = crate::mechanical::AWeighting::new(DT);
+                        let xa: Vec<f64> = x.iter().map(|v| a.process(*v)).collect();
+                        let total = xa.iter().map(|v| v * v).sum::<f64>() / xa.len() as f64;
+                        let orders: f64 = (1..=(16_000.0 / f) as usize)
+                            .map(|k| line_amplitude(&xa, f * k as f64).powi(2) / 2.0)
+                            .sum();
+                        let db =
+                            10.0 * ((total - orders).max(1e-30) / 4e-10).log10() + DAVIES_SPREAD_DB;
+                        (d.name.clone(), db, arp876(u))
+                    })
+                })
+                .collect();
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        for (name, sim, hand) in &rows {
+            assert!(
+                (sim - hand).abs() < 3.0,
+                "{name}: broadband {sim:.1} dB(A) against ARP876 {hand:.1} dB"
+            );
+        }
     }
 
     #[test]
@@ -10402,14 +10507,17 @@ mod tests {
 
     #[test]
     fn the_fv_engines_hiss_at_their_expansions_too() {
+        // the inner sites only (the open end is the free jet's, FINDINGS 2026-11-15): at 3000 rpm
+        // they read 0.9 mPa rms, under the 1 mPa that says they exist; at 6000 the flow is twice
+        // and U^4 sixteen times the power
         let heard = |gain: f64| {
             let mut d = EngineDef::inline4();
             d.exhaust.model = ExhaustModel::Fv;
             d.sound.duct_flow = gain;
-            let mut e = Engine::new(d, 3000.0, 1);
+            let mut e = Engine::new(d, 6000.0, 1);
             let c = Controls {
                 throttle: 1.0,
-                hold_rpm: Some(3000.0),
+                hold_rpm: Some(6000.0),
                 ..Controls::default()
             };
             run(&mut e, 0.3, &c);

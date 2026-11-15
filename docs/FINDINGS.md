@@ -37,6 +37,15 @@ Found: <YYYY-MM-DD> · <area: build | tests | db | ci | deploy | env>
 
 ## Findings
 
+### The open end made noise twice, and Davies' 107 dB(A) is not a tone
+
+**Symptom.** "Estática" (hiss) on the road cars; wind -12 to -15 dB on inline-4, K20A, EJ25 against real -24.7.
+**Cause.** The tail's free jet is already `sound.flow_noise` (ARP876/Lighthill, `jet_noise.rs`); the duct-flow law (W ∝ U⁴/c, Davies & Holland's law for plane-wave ducts) was also applied at the open end (`SiteAt::Exit`): the same jet counted twice, 6-12 dB louder than the first. Its K = 2.5e-5 was a one-point fit to Davies Fig. 1(c) 107 dB(A) at 0.25 m, 6000 rpm. That overall is broadband: the 2nd order is a 200 Hz line, 88 dB(A) of it; the free jet at the real exit (U 107 m/s, D 0.05 m, 622 K) gives 91 dB (ARP876), Lighthill 86-90; 107 needs 182 m/s. The fit was making up a broadband no far-field jet makes at that flow.
+**Fix / workaround.** `ExhaustNet::set_duct_exit(false)` in the engine (the exit is left to `flow_noise`); wind -18.1 / -21.6 / -24.5. The Davies test is split: the 2nd order in dB Lin (99 ±6) and the tail broadband against the ARP876 hand calculation (±3 dB).
+**Why it isn't obvious.** The attribution (`attribute.sh`) showed `flow_noise` moving wind < 1 dB and `duct_flow` 6-12 dB, which reads as "the duct source matters", not "it is the same jet again"; and the old anchor passed because the fit carried it.
+
+Found: 2026-11-15 · sound
+
 ### An empty `after_collector` is not a straight pipe: it adds a packed can
 
 **Symptom.** A "straight pipe" preset (PowerFist 212 bench) had a 300–1250 Hz hole and no pipe ring.
