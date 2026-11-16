@@ -69,14 +69,16 @@ impl Quality {
                 d.exhaust.model = ExhaustModel::Waveguide;
             }
             // the most realistic: every engine on finite-volume pipes, intake and exhaust
-            // Reference keeps the engine's own until the FV pipes hold the bridge-port 13B's
-            // idle at its 8× rate: there it sank to a stall (at Ultra's 4× it holds), the
-            // valves' per-step mass limit binding differently with the step
+            // (Reference keeps the engine's own intake: the bridge-port 13B's idle sank to a
+            // stall on FV pipes at its 8× rate, at Ultra's 4× it holds)
             Quality::Ultra => {
                 d.intake.model = IntakeModel::Fv;
                 d.exhaust.model = ExhaustModel::Fv;
             }
-            Quality::Medium | Quality::High | Quality::Reference => {}
+            // an offline render is heard as Ultra plays it: the exhaust on its FV pipes (the
+            // waveguide's raised a 6-16 kHz hiss); the intake stays the engine's own
+            Quality::Reference => d.exhaust.model = ExhaustModel::Fv,
+            Quality::Medium | Quality::High => {}
         }
         d
     }
@@ -264,11 +266,30 @@ mod tests {
         back.intake.model = IntakeModel::ZeroD;
         back.exhaust.model = ExhaustModel::Waveguide;
         assert_eq!(back, def, "{q:?}");
-        // High, Medium and (until the bridge-port 13B holds its idle there) Reference keep
-        // the engine's own
-        for q in [Quality::Medium, Quality::High, Quality::Reference] {
+        // High and Medium keep the engine's own
+        for q in [Quality::Medium, Quality::High] {
             assert_eq!(q.apply(&def), def, "{q:?}");
         }
+    }
+
+    #[test]
+    fn reference_renders_the_exhaust_as_ultra_plays_it() {
+        // an offline render is heard as the app plays the engine (Ultra, `QualityChoice::Auto`):
+        // the exhaust on its finite-volume pipes. The waveguide exhaust raised a hiss from 6 to
+        // 16 kHz no source of the engine makes (K20A 6300 rpm WOT, 8-12 kHz -81 dB against -99
+        // on FV; a real S2000 falls on, docs/FINDINGS.md 2026-11-16). The intake stays the
+        // engine's own (the bridge-port 13B's idle sank to a stall at the 8x rate on FV pipes).
+        let mut def = EngineDef::honda_k20a();
+        def.intake.model = IntakeModel::ZeroD;
+        assert_eq!(def.exhaust.model, ExhaustModel::Waveguide);
+        let d = Quality::Reference.apply(&def);
+        assert_eq!(
+            (d.intake.model, d.exhaust.model),
+            (IntakeModel::ZeroD, ExhaustModel::Fv)
+        );
+        let mut back = d.clone();
+        back.exhaust.model = ExhaustModel::Waveguide;
+        assert_eq!(back, def);
     }
 
     #[test]
