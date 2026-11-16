@@ -2338,11 +2338,6 @@ pub struct Engine {
     impact_unit: Option<(f64, f64)>,
     /// The impacts' own path through the block's response (one per bank), at its step.
     impact_structure: Option<(f64, Vec<StructureResponse>)>,
-    /// The combustion's A-weighting at its step, its A-weighted power summed and counted since
-    /// the impacts' rate was last taken, and that last cycle's mean power, Pa² at 1 m: the
-    /// impacts make up the rest of the measured curve's ([`crate::mechanical`]).
-    combustion_weight: Option<(f64, crate::mechanical::AWeighting)>,
-    combustion_power: (f64, usize, f64),
     /// Impacts begun this step (for tests and probes).
     pub(crate) impacts_this_step: usize,
     /// What the structure radiated this step, Pa at 1 m, all banks (for tests and probes).
@@ -2630,8 +2625,6 @@ impl Engine {
             impact_count: (0, 0.0, 0.0),
             impact_unit: None,
             impact_structure: None,
-            combustion_weight: None,
-            combustion_power: (0.0, 0, 0.0),
             impacts_this_step: 0,
             structure_out: 0.0,
             bay: Vec::new(),
@@ -3941,19 +3934,17 @@ impl Engine {
                 self.impact_count.2 = self.impact_count.0 as f64 / self.impact_count.1;
                 self.impact_count.0 = 0;
                 self.impact_count.1 = 0.0;
-                let (sum, n, _) = self.combustion_power;
-                self.combustion_power = (0.0, 0, if n > 0 { sum / n as f64 } else { 0.0 });
             } else if !period.is_finite() {
                 self.impact_count = (0, 0.0, 0.0);
-                self.combustion_power = (0.0, 0, 0.0);
             }
             if self.impact_unit.is_none_or(|u| u.0 != dt) {
                 self.impact_unit = Some((dt, crate::mechanical::unit_impact_energy(dt)));
             }
             let unit = self.impact_unit.map_or(0.0, |u| u.1);
             let rate = self.impact_count.2;
-            // the measured curve is the whole engine's: the impacts carry what the combustion
-            // (its last cycle) leaves of it, in power
+            // the measured curve is the mechanism's own: a gasoline engine's noise is mechanical
+            // (Raff & Perry 1973 Fig. 11: motored without its head, as loud as fired; Anderton,
+            // SAE 790270), so the impacts carry all of it whether the engine fires or not,
             // at the load the manifold says: shut (no load) at NO_LOAD_MAP_RATIO of an
             // atmosphere, full at one (a boosted engine reads full)
             let map = self.plenum_pressure_pa() / crate::units::ATM_PA;
@@ -3961,7 +3952,7 @@ impl Engine {
             let whole = crate::mechanical::rms_pa_from_dba(
                 crate::mechanical::mechanical_dba_at_1m_loaded(rpm_now, load),
             );
-            let target = (whole * whole - self.combustion_power.2).max(0.0);
+            let target = whole * whole;
             let amp = if rate > 0.0 && unit > 0.0 {
                 (target / (rate * unit)).sqrt()
             } else {
@@ -4004,7 +3995,6 @@ impl Engine {
         // what one bank fires and the other does not stays apart to be heard from either side).
         let n_banks = self.n_banks.clamp(1, 2);
         let mut block = [0.0; 2];
-        let mut combustion = 0.0;
         if self
             .impact_structure
             .as_ref()
@@ -4014,9 +4004,6 @@ impl Engine {
                 dt,
                 (0..n_banks).map(|_| StructureResponse::new(dt)).collect(),
             ));
-        }
-        if self.combustion_weight.as_ref().is_none_or(|w| w.0 != dt) {
-            self.combustion_weight = Some((dt, crate::mechanical::AWeighting::new(dt)));
         }
         {
             if self
@@ -4084,16 +4071,10 @@ impl Engine {
                     let inside = ticks + struck;
                     let inside = self.bay.get_mut(b).map_or(inside, |f| f.process(inside));
                     let burn = comb[b].process(snd.block * p);
-                    combustion += burn;
                     *out = burn + inside;
                 }
             }
         };
-        if let Some((_, w)) = &mut self.combustion_weight {
-            let a = w.process(combustion);
-            self.combustion_power.0 += a * a;
-            self.combustion_power.1 += 1;
-        }
         self.structure_out = block.iter().sum();
         // the engine's own sources, heard from where it sits: each bank's side of the block, and
         // the intake mouth on the centre line. The mouth is the air box's inlet ducts if there
@@ -10179,6 +10160,47 @@ mod tests {
                 "{rpm}: {db:.1} dB(A) against {want:.1}"
             );
         }
+    }
+
+    #[test]
+    fn the_impacts_keep_their_level_while_the_engine_fires() {
+        // Raff & Perry (JSV 28(3), 1973, Fig. 11): a 1500 cc engine motored without its head and
+        // valvetrain made 88.5 dB(A) at 4000 rev/min, the same as fired — the mechanism's noise
+        // does not wait for the combustion to fall silent; Anderton (SAE 790270): in gasoline
+        // engines "mechanical noise tends to dominate the total noise". So the impacts read the
+        // measured curve with the block's combustion heard too, not what it leaves of it. The
+        // impacts alone: the same engine and seed with and without them (the rest identical).
+        let rpm = 4000.0;
+        let heard = |slap: f64| {
+            let mut d = EngineDef::inline4();
+            d.vehicle.engine_bay = None;
+            d.sound.mechanical = 0.0;
+            (d.sound.piston_slap, d.sound.main_bearings) = (slap, slap);
+            let mut e = Engine::new(d, rpm, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(rpm),
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &c);
+            let mut a = crate::mechanical::AWeighting::new(DT);
+            (0..(0.5 / DT) as usize)
+                .map(|_| {
+                    e.step(DT, &c);
+                    a.process(e.structure_out)
+                })
+                .collect::<Vec<f64>>()
+        };
+        let (with, without) = (heard(1.0), heard(0.0));
+        let power = with
+            .iter()
+            .zip(&without)
+            .map(|(x, y)| (x - y) * (x - y))
+            .sum::<f64>()
+            / with.len() as f64;
+        let db = 10.0 * (power / 4e-10).log10();
+        let want = crate::mechanical::mechanical_dba_at_1m(rpm);
+        assert!((db - want).abs() < 1.0, "{db:.1} dB(A) against {want:.1}");
     }
 
     #[test]
