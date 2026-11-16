@@ -11043,3 +11043,32 @@ mod probe {
         );
     }
 }
+
+#[cfg(test)]
+mod scratch_dump {
+    use super::*;
+    #[test]
+    #[ignore]
+    fn scratch_dump_pressure() {
+        let rpm = 4000.0;
+        let dt = 1.0 / 96_000.0;
+        let mut e = Engine::new(EngineDef::honda_k20a(), rpm, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(rpm),
+            ..Controls::default()
+        };
+        for _ in 0..96_000 {
+            e.step(dt, &c);
+        }
+        let mut s = String::new();
+        for _ in 0..(33 * 2880) {
+            e.step(dt, &c);
+            s += &format!("{} {}\n", e.cyl[0].cycle_deg, e.cyl[0].gas.pressure());
+        }
+        let _ = std::fs::write(
+            "/home/andres/repos/engine-sim/target/scratch-refs/p-k20a-4000.txt",
+            s,
+        );
+    }
+}
