@@ -45,7 +45,7 @@ pub struct SoundDef {
     /// its estimated level, 0 = off. No effect on a spark engine.
     pub chamber_ring: f64,
     /// How much the block answers each cylinder with its own voice
-    /// ([`crate::structure::BlockModes`]): 0 = all alike, 1 = by its wall modes (the default).
+    /// ([`crate::structure::BlockModes`]): 0 = all alike, 1 = by its wall modes.
     pub block_modes: f64,
     /// A turbo's blow-off valve venting on a lift-off ([`crate::turbo`]): the jet of the air it
     /// lets out. 1 = physical, 0 = off.
@@ -123,7 +123,7 @@ impl Default for SoundDef {
             block: 1.0,
             mechanical: 1.0,
             chamber_ring: 1.0,
-            block_modes: 1.0,
+            block_modes: 0.0,
             combustion_jitter: 1.0,
             blow_off: 1.0,
             compressor_whine: 1.0,
@@ -257,11 +257,7 @@ mod tests {
             block_modes: 0.5,
             ..SoundDef::default()
         };
-        // the block rings in its own wall modes unless a file says otherwise: its smoothed SRF
-        // alone answers each firing with a short pulse and falls silent between them, the
-        // treble riding the firing rhythm at 48 % (K20A 6300 rpm WOT) against ≈ 12 % in 209 real
-        // steady recordings (`scripts/realism/modulation.py`); with its modes 23 %
-        assert_eq!(old.block_modes, 1.0);
+        assert_eq!(old.block_modes, 0.0);
         let json: SoundDef = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         let yaml: SoundDef =
             serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&s).unwrap()).unwrap();
