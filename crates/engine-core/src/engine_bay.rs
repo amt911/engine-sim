@@ -8,9 +8,12 @@
 //! fraction of its surface. The hood's fibre liner is what absorbs, and only in the highs
 //! (Delany & Bazley, *Applied Acoustics* 3, 1970: a rigid-backed porous layer); bare metal and
 //! the engine hardly do. So the bay takes a few dB of the block's lows and some 14 dB of its
-//! valve ticking — measured hoods take 16–27 dB at the positions they shield (Ibarra et al.,
-//! "Noise attenuation of the engine compartment of a vehicle", *Int. J. Vehicle Noise and
-//! Vibration* 13(2), 2017).
+//! valve ticking — as measured: Ibarra ("Noise attenuation of the engine compartment of a
+//! vehicle", *Int. J. Vehicle Noise and Vibration* 13(1), 2017, Fig. 5b and Table 1) puts a
+//! van's bay's insertion loss (closed against open) at 12.9 dB overall above it and 3.7 dB
+//! beside it, rising from ≈ 0 below 200 Hz to 5–15 dB (beside) and 20–27 dB (above) from 1 to
+//! 10 kHz. His 16–27 dB is the transmission loss (inside against outside), not what the bay
+//! adds.
 
 use serde::{Deserialize, Serialize};
 

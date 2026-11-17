@@ -1660,3 +1660,14 @@ Tested, not assumed (scratch probes, K20A 5000 rpm WOT unless said):
 - **Radiation**: tails and intake mouth share the monopole p = ρ₀/(4πr)·dQ/dt (tails Q = A·x/ρc).
   The K20A's intake reads 7 dB over its silenced exhaust behind the car (77.7 vs 70.6 dB(A) at
   3 m), the boxes taking 25–58 dB off the exhaust's 0.5–4 kHz against the cleaner's ≈17 dB.
+
+## 2026-11-17 — the engine bay already attenuates as measured; 16–27 dB was the wrong quantity
+
+Ibarra (IJVNV 13(1) 2017, Table 1, Fig. 5): a van's bay's *insertion* loss (bay closed against
+open, what the bay adds) is 12.9 dB overall above it and 3.7 dB beside it (≈ 0 below 200 Hz,
+5–15 dB beside and 20–27 dB above at 1–10 kHz). The 16–27 dB quoted in `engine_bay.rs` and here
+before is his *transmission* loss (inside against outside). Our bay (4 dB at 63 Hz, 14 dB at
+4 kHz) sits between his two positions: no evidence to raise it. With the impacts at Lalor's
+level and Raff's spectrum, the K20A at 6300 rpm WOT 3 m behind reads impacts 80, intake 79,
+block 76, exhaust pulses 66 (with the tail jet 70) dB(A): the engine's own noise dominates and a
+lift-off drops 2.5 dB (real FK8s 9–14).
