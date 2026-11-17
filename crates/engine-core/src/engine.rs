@@ -10715,8 +10715,9 @@ mod tests {
         // 0.47, 0.16 Pa at 1 m: 0.43 Pa rms, × (86/100 mm)^2.5 = 0.686 for the bore (the curve is
         // for 100 mm, noise ∝ bore⁵): 0.29 Pa, 0.089 Pa at the 3.27 m to the ear. Raised by the
         // 6.3 dB (×2.07) that bring the curve to Anderton's eq. 9, and the four cylinders summed
-        // over √4 (×2 at the firing orders): 0.37 Pa. The real pulse rises faster than a
-        // Gaussian (more above 300 Hz), so up to a few times that
+        // over √4 (×2 at the firing orders): 0.37 Pa; a petrol block attenuates 13.4 dB more
+        // (×0.214, `structure::PETROL_EXTRA_SA_DB`, Yoon & Yoon 2005): 0.079 Pa. The real pulse
+        // rises faster than a Gaussian (more above 300 Hz), so up to a few times that
         let heard = |block: f64, distance: f64| {
             let mut d = EngineDef::inline4();
             d.sound.block = block;
@@ -10734,7 +10735,7 @@ mod tests {
         };
         let (m, near) = mean_rms_of_difference(&heard(1.0, 3.0), &heard(0.0, 3.0));
         assert!(
-            (0.15..1.1).contains(&near) && m.abs() < 0.05 * near,
+            (0.032..0.235).contains(&near) && m.abs() < 0.05 * near,
             "block: mean {m} rms {near} Pa"
         );
         // a spherical spreader, 1/r: the ear 1.3 m above the tails, so 3 m and 6 m out are
