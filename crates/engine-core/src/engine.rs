@@ -3919,7 +3919,7 @@ impl Engine {
         self.seat_strikes.retain(|(t, _)| *t <= SEAT_PULSE_S);
         // The mechanical impacts: one level for all of them, the measured petrol engine's at
         // this speed and load (`mechanical_dba_at_1m_loaded`), shared among the impacts of the last cycle — each
-        // a half-sine of the seat strikes' width through the block's response, A-weighted
+        // Ungar & Ross's decaying pulse (`mechanical::impact_pulse`) through the block's response, A-weighted
         // energy `impact_unit` at 1 m, so their train's power is the curve's.
         let mut impact = [0.0; 2];
         {
@@ -3976,8 +3976,10 @@ impl Engine {
                     self.impact_inputs.clear();
                     for (t, weight, bank, at) in &self.impacts {
                         if (*bank).min(n_banks - 1) == b {
-                            self.impact_inputs
-                                .push((*at, *weight * amp * seat_pulse(1.0, *t)));
+                            self.impact_inputs.push((
+                                *at,
+                                *weight * amp * crate::mechanical::impact_pulse(1.0, *t),
+                            ));
                         }
                     }
                     impact[b] = m.process_at(&self.impact_inputs);
@@ -3986,7 +3988,8 @@ impl Engine {
             for i in self.impacts.iter_mut() {
                 i.0 += dt;
             }
-            self.impacts.retain(|(t, _, _, _)| *t <= SEAT_PULSE_S);
+            self.impacts
+                .retain(|(t, _, _, _)| *t <= 12.0 * crate::mechanical::IMPACT_TAU_S);
         }
         // (always run: a few multiplies a step, and an engine without either is silent here).
         // Per bank: a bank's side of the block carries its own cylinders' combustion (Anderton's
@@ -11052,5 +11055,62 @@ mod probe {
             out.iter()
                 .all(|p| p.temperature_k > 300.0 && p.velocity_m_s.is_finite())
         );
+    }
+}
+
+#[cfg(test)]
+mod scratch_priede {
+    use super::*;
+    #[test]
+    #[ignore]
+    fn scratch_bare_engine_spectrum() {
+        for (name, d) in [
+            ("k20a", EngineDef::honda_k20a()),
+            ("inline4", EngineDef::inline4()),
+        ] {
+            for rpm in [4000.0, 6000.0] {
+                let dt = 1.0 / 96_000.0;
+                let mut dd = d.clone();
+                dd.vehicle.engine_bay = None;
+                let mut e = Engine::new(dd, rpm, 1);
+                let c = Controls {
+                    throttle: 1.0,
+                    hold_rpm: Some(rpm),
+                    ..Controls::default()
+                };
+                for _ in 0..(0.5 / dt) as usize {
+                    e.step(dt, &c);
+                }
+                let mut x = Vec::new();
+                for _ in 0..(1.0 / dt) as usize {
+                    e.step(dt, &c);
+                    x.push(e.structure_out);
+                }
+                let n = x.len();
+                let s: String = [
+                    125.0f64, 200.0, 315.0, 500.0, 800.0, 1000.0, 1600.0, 2000.0, 3150.0, 5000.0,
+                    8000.0, 10000.0,
+                ]
+                .iter()
+                .map(|&fc| {
+                    let (lo, hi) = (fc / 2f64.powf(1.0 / 6.0), fc * 2f64.powf(1.0 / 6.0));
+                    let mut p = 0.0;
+                    let mut f = lo.ceil();
+                    while f < hi {
+                        let (mut re, mut im) = (0.0, 0.0);
+                        for (i, v) in x.iter().enumerate() {
+                            let ph = 2.0 * std::f64::consts::PI * f * i as f64 * dt;
+                            re += v * ph.cos();
+                            im += v * ph.sin();
+                        }
+                        p += 2.0 * (re * re + im * im) / (n as f64 * n as f64);
+                        f += 1.0;
+                    }
+                    format!(" {fc}:{:.1}", 10.0 * (p / 4e-10).log10())
+                })
+                .collect();
+                eprintln!("{name} {rpm}{s}");
+            }
+        }
     }
 }

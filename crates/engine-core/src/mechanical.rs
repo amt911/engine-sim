@@ -162,8 +162,8 @@ impl AWeighting {
     }
 }
 
-/// The A-weighted energy at 1 m of one unit impact (a half-sine of unit peak pseudo-pressure
-/// over the seat strikes' width, `crate::engine::seat_pulse`) through the block's modes at one
+/// The A-weighted energy at 1 m of one unit impact ([`impact_pulse`] of unit peak
+/// pseudo-pressure) through the block's modes at one
 /// of its points and its response ([`crate::structure::StructureResponse`]), Pa²·s, at step
 /// `dt`: a train of impacts at a rate R and peak a has power R·a²·this.
 pub fn unit_impact_energy(dt: f64) -> f64 {
@@ -176,7 +176,7 @@ pub fn unit_impact_energy(dt: f64) -> f64 {
             let mut a = AWeighting::new(dt);
             (0..n)
                 .map(|k| {
-                    let p = crate::engine::seat_pulse(1.0, k as f64 * dt);
+                    let p = impact_pulse(1.0, k as f64 * dt);
                     let y = a.process(block.process(modes.process_at(&[(at, p)])));
                     y * y * dt
                 })
@@ -184,6 +184,25 @@ pub fn unit_impact_energy(dt: f64) -> f64 {
         })
         .sum::<f64>()
         / IMPACT_POINTS as f64
+}
+
+/// Decay time of a piston's or a journal's impact on the block, s: Ungar & Ross (JSV 2(2),
+/// 1965, eq. 1), the struck mass and the wall moving together at v = V0·e^(−t/τ), τ = M/Z, with
+/// M the piston set of an 86 mm bore ([`RECIP_MASS_PER_BORE3`]·B³ = 0.3816 kg) and Z = 8√(B·ρh)
+/// a cast-iron wall 5 mm thick (an infinite plate, Cremer & Heckl: 1682.7 N·s/m; ESTIMATE the
+/// thickness): 0.2268 ms, its spectrum flat to 700 Hz and falling 6 dB per octave above. It
+/// replaced the valve seat's 0.15 ms half-sine, flat to ~4 kHz, which put the bare engine's
+/// noise in a 2–3 kHz peak 20 dB over its 500 Hz where petrol car engines measure flat from
+/// 200 Hz to 3 kHz (Priede, SAE 800534, Fig. 30).
+pub const IMPACT_TAU_S: f64 = 0.381_633_6 / 1_682.677_3;
+
+/// One impact of unit `peak` at `t` s after it began ([`IMPACT_TAU_S`]); held to 12 τ.
+pub fn impact_pulse(peak: f64, t: f64) -> f64 {
+    if (0.0..=12.0 * IMPACT_TAU_S).contains(&t) {
+        peak * (-t / IMPACT_TAU_S).exp()
+    } else {
+        0.0
+    }
 }
 
 /// Points of the block an impact may strike, each its own voice of the block's modes
@@ -196,6 +215,34 @@ pub const IMPACT_POINTS: usize = 32;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_impact_strikes_as_ungar_and_ross_say() {
+        // Ungar & Ross, JSV 2(2) 1965, eqs. (1)-(2): a mass striking a structure of real input
+        // impedance Z moves with it at v = V0·e^(−t/τ), τ = M/Z, a spectrum flat below 1/(2πτ)
+        // and falling 6 dB per octave above. Hand values: a cast-iron wall 5 mm thick,
+        // B = Eh³/(12(1−ν²)) = 110e9·1.25e-7/(12·0.9324) = 1228.9 N·m, Z = 8√(B·ρh) =
+        // 8√(1228.9·36) = 1682.7 N·s/m (an infinite plate, Cremer & Heckl); the piston set of
+        // an 86 mm bore at 600 kg/m³·B³: 0.3816 kg; τ = 0.3816/1682.7 = 0.2268 ms. Its
+        // spectrum at 3 kHz against 100 Hz: √(1 + (2π·100·τ)²)/√(1 + (2π·3000·τ)²)
+        // = 1.0101/4.3905 = 0.2301.
+        assert!((IMPACT_TAU_S - 2.268e-4).abs() < 2e-6, "{IMPACT_TAU_S}");
+        let dt = 1.0 / 384_000.0;
+        let n = (0.01 / dt) as usize;
+        let x: Vec<f64> = (0..n).map(|k| impact_pulse(1.0, k as f64 * dt)).collect();
+        let mag = |f: f64| {
+            let (mut re, mut im) = (0.0, 0.0);
+            for (k, v) in x.iter().enumerate() {
+                let ph = 2.0 * std::f64::consts::PI * f * k as f64 * dt;
+                re += v * ph.cos();
+                im += v * ph.sin();
+            }
+            re.hypot(im)
+        };
+        let ratio = mag(3000.0) / mag(100.0);
+        assert!((ratio - 0.2301).abs() < 0.01, "{ratio}");
+        assert_eq!(impact_pulse(1.0, -1e-9), 0.0);
+    }
 
     #[test]
     fn unloaded_it_is_quieter_only_below_the_critical_speed() {
