@@ -1638,3 +1638,25 @@ source is not identified. Phone and YouTube recordings cannot judge below about 
 - K20C1 "tiembla al subir": the gears scene's driver lifted at every clutch slip after bite
   (15 Hz limit cycle, ±190 rpm); fixed in `GearPull`. Reference renders keep the preset's exhaust
   (on FV the LFA lost its shock fronts: "desastroso").
+
+## 2026-11-17 — audit: what is numerically sound and what is model
+
+Tested, not assumed (scratch probes, K20A 5000 rpm WOT unless said):
+- **Anti-alias** (`AntiAlias`, 4th-order Butterworth at 0.42·48 kHz before keeping one step in 8):
+  the decimated 384 kHz render equals an ideal brick-wall decimation within 0.2 dB per band.
+  No aliasing.
+- **Non-linear line** (`DelayLine::nonlinear`): a 200 Hz sine at σ = 0.5 gives Fubini's
+  B1..B4 = 0.9688/0.2303/0.0821/0.0349 (0.9691/0.2298/0.0813/0.0333) at 48–384 kHz; shocked
+  (σ = 3), its d/dt harmonics tend to the sawtooth's (6.6 of 7.07 at 384 kHz), no floor between.
+- **Packed muffler EQ** (`transmission_eq`): the same at 96/192/384 kHz, on its 2D target
+  (−25.6/−50.3/−51.2/−35.6/−12.8/−6.9/−4.3 dB at 0.5–16 kHz).
+- **Steepening converges slowly**: the exhaust's 8–16 kHz re 0.5–2 kHz is +4.8/+18.4/+22.0 dB at
+  96/192/384 kHz (a lone pipe +1.0/+4.5/+5.7). Live Ultra (192 kHz) and the 384 kHz Reference
+  renders differ by the shock's resolution, not by a bug. Linear pipes are flat in fs.
+- What gives the renders their 8–16 kHz: the shock fronts the primaries form pass the packed
+  boxes, whose 2D loss falls above the tube's first cut-on (1.84c/πD ≈ 5.7 kHz hot): 51–58 dB at
+  1–2 kHz, 4 dB at 16 kHz. The real S2000's spectrum keeps falling there. Model, not bug: the
+  open question is the packed box's high-frequency loss.
+- **Radiation**: tails and intake mouth share the monopole p = ρ₀/(4πr)·dQ/dt (tails Q = A·x/ρc).
+  The K20A's intake reads 7 dB over its silenced exhaust behind the car (77.7 vs 70.6 dB(A) at
+  3 m), the boxes taking 25–58 dB off the exhaust's 0.5–4 kHz against the cleaner's ≈17 dB.
