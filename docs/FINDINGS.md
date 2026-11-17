@@ -1616,3 +1616,25 @@ source is not identified. Phone and YouTube recordings cannot judge below about 
   the listener placed those `tail_spacing_m` apart: one tail pipe heard as two sources 0.9 m apart
   combed every 1.3 ms (cepstrum 40 dB on the catalogue's 4-2-1 configs; a real K20A 4-2-1 reads
   24–32). With a merge the tails now radiate from one place.
+
+## 2026-11-17 — "se corta como una radio": the block's combustion pulse rides the treble
+
+- The ear-validated measure (`scripts/realism/modulation.py`, real ≈ 12 % in 0.8–5 kHz): K20A WOT
+  48–55 %; with `sound.block = 0` 12 % at 6300 rpm, 5 % at 8100. Intake, jets, valves, impacts:
+  none moves it (the random impacts *lower* it; at 4200 rpm without the block the intake gives the
+  rest, 41 → 22 %).
+- The block's combustion through the structure equals the whole of Lalor's measured engine
+  curve at full load (K20A 4000 rpm: 96.7 dB(A) at 1 m vs 96.2); Anderton eq. 9 with his average
+  gasoline pressure gives 89.1. Our cylinder pressure is Anderton-like from 2 kHz up but +9 / +14
+  dB at 500 Hz / 1 kHz (33 whole cycles; a 33.33-cycle FFT once read a false 24–40 dB HF floor:
+  leakage). The burn itself is ordinary (Wiebe 5/2, 10–90 % ≈ 27°, 2.35 bar/° at 2000 rpm).
+  Open: which is wrong, the pressure's 0.5–1 kHz or the SRF level (diesel median + 6.3 dB).
+- `block_modes = 1` takes the modulation to 23 % but each cylinder's random voice puts the
+  cylinder-to-cylinder orders at +6.8 dB (real −15.6); common shapes make the treble periodic
+  (+16 dB). Left off.
+- The impacts used to fill "curve − combustion": silenced on a pull, at full level on a lift-off
+  (the 'soplido al soltar' of the FV build). Now they carry the curve (Raff 1973 Fig. 11); the old
+  test `the_whole_structure_reads_the_measured_curve` fails until the block's level is settled.
+- K20C1 "tiembla al subir": the gears scene's driver lifted at every clutch slip after bite
+  (15 Hz limit cycle, ±190 rpm); fixed in `GearPull`. Reference renders keep the preset's exhaust
+  (on FV the LFA lost its shock fronts: "desastroso").
