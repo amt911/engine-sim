@@ -4011,8 +4011,18 @@ impl Engine {
                 .as_ref()
                 .is_none_or(|s| s.0 != dt || s.1.len() != 2 * n_banks)
             {
+                // the combustion's block (the first n_banks) a petrol one when the engine
+                // fires by spark ([`crate::structure::PETROL_EXTRA_SA_DB`]); the valve seats'
+                // ticks (the rest) keep the structure their level was set through
+                let spark = self.def.combustion.is_spark();
                 let s = (0..2 * n_banks)
-                    .map(|_| StructureResponse::new(dt))
+                    .map(|i| {
+                        if spark && i < n_banks {
+                            StructureResponse::petrol(dt)
+                        } else {
+                            StructureResponse::new(dt)
+                        }
+                    })
                     .collect();
                 self.structure = Some((dt, s));
             }
