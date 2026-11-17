@@ -2336,8 +2336,8 @@ pub struct Engine {
     impact_count: (usize, f64, f64),
     /// The A-weighted energy at 1 m of one unit impact through the block, Pa²·s, for its step.
     impact_unit: Option<(f64, f64)>,
-    /// The impacts' own path through the block's response (one per bank), at its step.
-    impact_structure: Option<(f64, Vec<StructureResponse>)>,
+    /// The impacts' own path, the block radiating a point force (one per bank), at its step.
+    impact_structure: Option<(f64, Vec<crate::mechanical::ImpactRadiation>)>,
     /// Impacts begun this step (for tests and probes).
     pub(crate) impacts_this_step: usize,
     /// What the structure radiated this step, Pa at 1 m, all banks (for tests and probes).
@@ -4005,7 +4005,9 @@ impl Engine {
         {
             self.impact_structure = Some((
                 dt,
-                (0..n_banks).map(|_| StructureResponse::new(dt)).collect(),
+                (0..n_banks)
+                    .map(|_| crate::mechanical::ImpactRadiation::new(dt))
+                    .collect(),
             ));
         }
         {
@@ -10217,10 +10219,71 @@ mod tests {
     }
 
     #[test]
+    fn the_impacts_sound_like_a_motored_engines_mechanism() {
+        // Raff & Perry (JSV 28(3), 1973, Fig. 11): a 1500 cc petrol engine motored at 4000
+        // rev/min with its head and valve gear removed, the pistons' and journals' noise alone,
+        // in third octaves at 1 m (read off the figure ±2 dB, the 125 Hz pumping peak of its
+        // gas-exchange box left out): 315 Hz 79, 500 Hz 75, 1 kHz 78, 1.6 kHz 75, 2.5 kHz 74,
+        // 5 kHz 65 dB: flat from 300 Hz to 3 kHz within ±4 dB of its 1 kHz, 13 dB under at 5 kHz.
+        // The impacts alone (bare engine, no bay), the K20A at 4000 rev/min: each band from
+        // 500 Hz to 2.5 kHz within 6 dB of the 1 kHz band, and 5 kHz at least 6 dB under it.
+        // (Below 400 Hz Raff's rig pumped through its perspex box, and our block's wall modes
+        // start at 300 Hz: not compared.)
+        let rpm = 4000.0;
+        let dt = 1.0 / 96_000.0;
+        let mut d = EngineDef::honda_k20a();
+        d.vehicle.engine_bay = None;
+        (d.sound.block, d.sound.mechanical) = (0.0, 0.0);
+        let mut e = Engine::new(d, rpm, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(rpm),
+            ..Controls::default()
+        };
+        run(&mut e, 0.3, &c);
+        let x: Vec<f64> = (0..(0.5 / dt) as usize)
+            .map(|_| {
+                e.step(dt, &c);
+                e.structure_out
+            })
+            .collect();
+        let n = x.len() as f64;
+        let band = |fc: f64| {
+            let (lo, hi) = (fc / 2f64.powf(1.0 / 6.0), fc * 2f64.powf(1.0 / 6.0));
+            let (mut p, mut f) = (0.0, (lo / 2.0).ceil() * 2.0);
+            while f < hi {
+                let (mut re, mut im) = (0.0, 0.0);
+                for (i, v) in x.iter().enumerate() {
+                    let ph = 2.0 * PI * f * i as f64 * dt;
+                    re += v * ph.cos();
+                    im += v * ph.sin();
+                }
+                p += (re * re + im * im) / (n * n);
+                f += 2.0;
+            }
+            10.0 * p.log10()
+        };
+        let one_k = band(1000.0);
+        let levels: Vec<(f64, f64)> = [500.0, 800.0, 1600.0, 2500.0, 5000.0]
+            .iter()
+            .map(|&f| (f, band(f) - one_k))
+            .collect();
+        for &(f, l) in &levels[..4] {
+            assert!(l.abs() < 6.0, "{f} Hz: {l:.1} dB re 1 kHz; {levels:.1?}");
+        }
+        assert!(
+            levels[4].1 < -6.0,
+            "5 kHz: {:.1} dB re 1 kHz; {levels:.1?}",
+            levels[4].1
+        );
+    }
+
+    #[test]
     fn the_impacts_do_not_repeat_cycle_to_cycle() {
         // each impact strikes the block at a point of its own (its clearance and oil film, the
         // journal it lands on): one cycle's mechanical noise is not the last one's — measured,
-        // a deterministic train correlates 0.99 between cycles and buzzes as a comb of lines
+        // a deterministic train correlates 0.99 between cycles and buzzes as a comb of lines;
+        // successive hits of real engines correlate 0.5–0.65 (docs/FINDINGS.md, 2026-11-02)
         let mut d = EngineDef::inline4();
         (d.sound.block, d.sound.mechanical) = (0.0, 0.0);
         let rpm = 3000.0;
@@ -10243,7 +10306,7 @@ mod tests {
         let na: f64 = a.iter().map(|p| p * p).sum::<f64>().sqrt();
         let nb: f64 = b.iter().map(|p| p * p).sum::<f64>().sqrt();
         let corr = dot / (na * nb);
-        assert!(corr.abs() < 0.5, "cycle-to-cycle correlation {corr:.2}");
+        assert!(corr.abs() < 0.65, "cycle-to-cycle correlation {corr:.2}");
     }
 
     #[test]
@@ -11055,62 +11118,5 @@ mod probe {
             out.iter()
                 .all(|p| p.temperature_k > 300.0 && p.velocity_m_s.is_finite())
         );
-    }
-}
-
-#[cfg(test)]
-mod scratch_priede {
-    use super::*;
-    #[test]
-    #[ignore]
-    fn scratch_bare_engine_spectrum() {
-        for (name, d) in [
-            ("k20a", EngineDef::honda_k20a()),
-            ("inline4", EngineDef::inline4()),
-        ] {
-            for rpm in [4000.0, 6000.0] {
-                let dt = 1.0 / 96_000.0;
-                let mut dd = d.clone();
-                dd.vehicle.engine_bay = None;
-                let mut e = Engine::new(dd, rpm, 1);
-                let c = Controls {
-                    throttle: 1.0,
-                    hold_rpm: Some(rpm),
-                    ..Controls::default()
-                };
-                for _ in 0..(0.5 / dt) as usize {
-                    e.step(dt, &c);
-                }
-                let mut x = Vec::new();
-                for _ in 0..(1.0 / dt) as usize {
-                    e.step(dt, &c);
-                    x.push(e.structure_out);
-                }
-                let n = x.len();
-                let s: String = [
-                    125.0f64, 200.0, 315.0, 500.0, 800.0, 1000.0, 1600.0, 2000.0, 3150.0, 5000.0,
-                    8000.0, 10000.0,
-                ]
-                .iter()
-                .map(|&fc| {
-                    let (lo, hi) = (fc / 2f64.powf(1.0 / 6.0), fc * 2f64.powf(1.0 / 6.0));
-                    let mut p = 0.0;
-                    let mut f = lo.ceil();
-                    while f < hi {
-                        let (mut re, mut im) = (0.0, 0.0);
-                        for (i, v) in x.iter().enumerate() {
-                            let ph = 2.0 * std::f64::consts::PI * f * i as f64 * dt;
-                            re += v * ph.cos();
-                            im += v * ph.sin();
-                        }
-                        p += 2.0 * (re * re + im * im) / (n as f64 * n as f64);
-                        f += 1.0;
-                    }
-                    format!(" {fc}:{:.1}", 10.0 * (p / 4e-10).log10())
-                })
-                .collect();
-                eprintln!("{name} {rpm}{s}");
-            }
-        }
     }
 }

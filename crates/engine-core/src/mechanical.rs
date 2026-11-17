@@ -164,7 +164,7 @@ impl AWeighting {
 
 /// The A-weighted energy at 1 m of one unit impact ([`impact_pulse`] of unit peak
 /// pseudo-pressure) through the block's modes at one
-/// of its points and its response ([`crate::structure::StructureResponse`]), Pa²·s, at step
+/// of its points and its radiation ([`ImpactRadiation`]), Pa²·s, at step
 /// `dt`: a train of impacts at a rate R and peak a has power R·a²·this.
 pub fn unit_impact_energy(dt: f64) -> f64 {
     // averaged over the points an impact may strike ([`IMPACT_POINTS`])
@@ -172,7 +172,7 @@ pub fn unit_impact_energy(dt: f64) -> f64 {
     (0..IMPACT_POINTS)
         .map(|at| {
             let mut modes = crate::structure::BlockModes::new(IMPACT_POINTS, dt);
-            let mut block = crate::structure::StructureResponse::new(dt);
+            let mut block = ImpactRadiation::new(dt);
             let mut a = AWeighting::new(dt);
             (0..n)
                 .map(|k| {
@@ -196,12 +196,57 @@ pub fn unit_impact_energy(dt: f64) -> f64 {
 /// 200 Hz to 3 kHz (Priede, SAE 800534, Fig. 30).
 pub const IMPACT_TAU_S: f64 = 0.381_633_6 / 1_682.677_3;
 
-/// One impact of unit `peak` at `t` s after it began ([`IMPACT_TAU_S`]); held to 12 τ.
+/// Rise time of an impact through the oil film, s: the film squeezes out before the parts
+/// touch, so the force builds over a time rather than at once, a second pole on Ungar & Ross's
+/// spectrum. ESTIMATE fitted to Raff & Perry's motored mechanism (JSV 28(3) 1973, Fig. 11, third
+/// octaves re 1 kHz: 2.5 kHz −4, 4 kHz −10, 5 kHz −13, 6.3 kHz −18 dB; with this rise and the
+/// radiation's high-pass, −4.7, −9.6, −12.1, −14.9).
+pub const IMPACT_RISE_S: f64 = 1.0e-4;
+
+/// One impact of unit-scale `peak` at `t` s after it began: e^(−t/τ) − e^(−t/τr) (decay
+/// [`IMPACT_TAU_S`], rise [`IMPACT_RISE_S`]), spectrum (τ − τr)/((1 + jωτ)(1 + jωτr)); held to
+/// 12 τ.
 pub fn impact_pulse(peak: f64, t: f64) -> f64 {
     if (0.0..=12.0 * IMPACT_TAU_S).contains(&t) {
-        peak * (-t / IMPACT_TAU_S).exp()
+        peak * ((-t / IMPACT_TAU_S).exp() - (-t / IMPACT_RISE_S).exp())
     } else {
         0.0
+    }
+}
+
+/// Corner of the block's radiation efficiency for a point force, Hz. A force on a plate-like
+/// wall drives it at a velocity independent of frequency (an infinite plate's point mobility
+/// 1/(8√(B·m″)), Cremer & Heckl), and the wall radiates that velocity with an efficiency σ that
+/// grows to 1 near its critical frequency: Yoon & Yoon (IJVD 2005, Fig. 8) compute a petrol
+/// block's at −16 dB at 200 Hz, −8.5 at 400, −4 at 1 kHz, −2 at 2 kHz and ≈ 0 above;
+/// σ = (f/f₀)²/(1 + (f/f₀)²) with f₀ = 800 Hz gives −12.3, −7.0, −2.1, −0.6 (ESTIMATE, fitted by
+/// eye). Combustion's pressure takes the measured structure response instead
+/// ([`crate::structure`]), which holds the gas loading's own path.
+pub const RADIATION_CORNER_HZ: f64 = 800.0;
+
+/// An impact's force as the block radiates it: the radiation efficiency's first-order
+/// high-pass ([`RADIATION_CORNER_HZ`]), bilinear.
+#[derive(Debug, Clone)]
+pub struct ImpactRadiation {
+    a: f64,
+    x1: f64,
+    y1: f64,
+}
+
+impl ImpactRadiation {
+    pub fn new(dt: f64) -> Self {
+        let w = (std::f64::consts::PI * RADIATION_CORNER_HZ * dt).tan();
+        Self {
+            a: (1.0 - w) / (1.0 + w),
+            x1: 0.0,
+            y1: 0.0,
+        }
+    }
+
+    pub fn process(&mut self, x: f64) -> f64 {
+        let y = 0.5 * (1.0 + self.a) * (x - self.x1) + self.a * self.y1;
+        (self.x1, self.y1) = (x, y);
+        y
     }
 }
 
@@ -223,9 +268,10 @@ mod tests {
         // and falling 6 dB per octave above. Hand values: a cast-iron wall 5 mm thick,
         // B = Eh³/(12(1−ν²)) = 110e9·1.25e-7/(12·0.9324) = 1228.9 N·m, Z = 8√(B·ρh) =
         // 8√(1228.9·36) = 1682.7 N·s/m (an infinite plate, Cremer & Heckl); the piston set of
-        // an 86 mm bore at 600 kg/m³·B³: 0.3816 kg; τ = 0.3816/1682.7 = 0.2268 ms. Its
-        // spectrum at 3 kHz against 100 Hz: √(1 + (2π·100·τ)²)/√(1 + (2π·3000·τ)²)
-        // = 1.0101/4.3905 = 0.2301.
+        // an 86 mm bore at 600 kg/m³·B³: 0.3816 kg; τ = 0.3816/1682.7 = 0.2268 ms. Through
+        // the oil film it rises over τr = 0.1 ms (`IMPACT_RISE_S`): the spectrum
+        // 1/(|1 + jωτ|·|1 + jωτr|) at 3 kHz against 100 Hz: (1.0101·1.0020)/(4.3906·2.1338)
+        // = 0.10803.
         assert!((IMPACT_TAU_S - 2.268e-4).abs() < 2e-6, "{IMPACT_TAU_S}");
         let dt = 1.0 / 384_000.0;
         let n = (0.01 / dt) as usize;
@@ -240,7 +286,7 @@ mod tests {
             re.hypot(im)
         };
         let ratio = mag(3000.0) / mag(100.0);
-        assert!((ratio - 0.2301).abs() < 0.01, "{ratio}");
+        assert!((ratio - 0.10803).abs() < 0.005, "{ratio}");
         assert_eq!(impact_pulse(1.0, -1e-9), 0.0);
     }
 
