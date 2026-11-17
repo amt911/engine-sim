@@ -435,6 +435,15 @@ impl Listener {
         self
     }
 
+    /// The engine's source `k` heard in the open, out of [`Listener::with_body`]'s screen (an
+    /// intake mouth out of the bay, in front of the body).
+    pub fn unscreened(mut self, k: usize) -> Self {
+        if let Some(s) = self.engine.get_mut(k) {
+            s.barrier = None;
+        }
+        self
+    }
+
     /// How many places the engine is heard from ([`Listener::with_engine_at`]).
     pub fn engine_sources(&self) -> usize {
         self.engine.len()
@@ -589,6 +598,22 @@ mod tests {
             .with_engine_ahead(3.0)
             .with_body(1.2, 0.6, 4.0);
         assert_eq!(over.from_engine(1.0), free_first(dt));
+    }
+
+    #[test]
+    fn a_source_left_out_of_the_body_s_screen_is_heard_in_the_open() {
+        // the engine's own noise behind the body, its intake's mouth out of it: a source
+        // `unscreened` hears exactly the free field
+        let dt = 1.0 / 48_000.0;
+        let mut l = Listener::new(1, 0.0, 3.0, 0.0, 1e-3, dt, None)
+            .with_engine_ahead(3.0)
+            .with_body(1.2, 0.6, 1.6)
+            .unscreened(0);
+        let mut free = Listener::new(1, 0.0, 3.0, 0.0, 1e-3, dt, None).with_engine_ahead(3.0);
+        for j in 0..2000 {
+            let x = (j as f64 * 0.37).sin();
+            assert_eq!(l.from_engine(x), free.from_engine(x), "step {j}");
+        }
     }
 
     fn free_first(dt: f64) -> f64 {

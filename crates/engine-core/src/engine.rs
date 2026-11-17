@@ -3717,11 +3717,16 @@ impl Engine {
             // sources at half the roof's height (ESTIMATE: the bay's middle)
             let v = &self.def.vehicle;
             let l = if v.engine_bay.is_some() && v.body_height_m > 0.0 {
+                // the screen is on the engine's own noise (the block's sides); the intake's
+                // mouth, its last source, is heard as before (user, 2026-11-17: the body's
+                // test isolated, intake and exhaust untouched)
+                let mouth = l.engine_sources().saturating_sub(1);
                 l.with_body(
                     v.body_height_m,
                     0.5 * v.body_height_m,
                     snd.listener_height_m,
                 )
+                .unscreened(mouth)
             } else {
                 l
             };
@@ -10299,6 +10304,58 @@ mod tests {
             "5 kHz: {:.1} dB re 1 kHz; {levels:.1?}",
             levels[4].1
         );
+    }
+
+    #[test]
+    fn the_body_screens_the_engines_own_noise_and_not_its_intake() {
+        // the intake alone sounds the same with the car's body as without it; the block's
+        // impacts (their 0.5–3 kHz, where Maekawa's loss over the roof's rear edge is several
+        // dB; its hand values are the barrier's own test) are quieter behind it
+        let heard = |intake: bool, body: f64| {
+            let mut d = EngineDef::honda_k20a();
+            let s = &mut d.sound;
+            (s.flow_noise, s.valve_jet, s.duct_flow) = (0.0, 0.0, 0.0);
+            (s.mechanical, s.block) = (0.0, 0.0);
+            let i = if intake { 1.0 } else { 0.0 };
+            (s.intake, s.main_bearings, s.piston_slap) = (i, 1.0 - i, 1.0 - i);
+            d.vehicle.body_height_m = body;
+            let mut e = Engine::new(d, 5000.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(5000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &c);
+            run(&mut e, 0.2, &c)
+        };
+        let rms = |x: &[f64]| (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
+        let (open, screened) = (heard(true, 0.0), heard(true, 1.4));
+        for (a, b) in open.iter().zip(&screened) {
+            assert!((a - b).abs() <= 1e-12 * a.abs().max(1e-9), "{a} vs {b}");
+        }
+        // the impacts' part: with them less without them (the exhaust's pulses are always on)
+        let base = |body: f64| {
+            let mut d = EngineDef::honda_k20a();
+            let s = &mut d.sound;
+            (s.flow_noise, s.valve_jet, s.duct_flow, s.intake) = (0.0, 0.0, 0.0, 0.0);
+            (s.main_bearings, s.piston_slap, s.mechanical, s.block) = (0.0, 0.0, 0.0, 0.0);
+            d.vehicle.body_height_m = body;
+            let mut e = Engine::new(d, 5000.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(5000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &c);
+            run(&mut e, 0.2, &c)
+        };
+        let part = |body: f64| {
+            let (w, o) = (heard(false, body), base(body));
+            rms(&w.iter().zip(&o).map(|(a, b)| a - b).collect::<Vec<_>>())
+        };
+        let (open, screened) = (part(0.0), part(1.4));
+        // Maekawa's loss is 4.8 dB at the least (|H|² ≤ 1/3)
+        assert!(screened < 0.6 * open, "impacts {screened} vs {open} Pa");
     }
 
     #[test]
