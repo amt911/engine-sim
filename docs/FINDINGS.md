@@ -1671,3 +1671,18 @@ before is his *transmission* loss (inside against outside). Our bay (4 dB at 63 
 level and Raff's spectrum, the K20A at 6300 rpm WOT 3 m behind reads impacts 80, intake 79,
 block 76, exhaust pulses 66 (with the tail jet 70) dB(A): the engine's own noise dominates and a
 lift-off drops 2.5 dB (real FK8s 9–14).
+
+## 2026-11-18 — "se diluye a altas rpm": the road exhaust falls with rpm while the mechanism rises
+
+- Tonal share of the K20A (held WOT renders, cycle orders over 50 Hz–10 kHz): −0.1 dB at 4200 rpm,
+  −6.4 at 8100 (the LFA stays at −0.1). The impacts follow Lalor's inertia law (I ∝ M²N⁶, SAE
+  800402 eq. 13; his measured slope 49.8 dB/decade), while the road exhaust heard 3 m behind goes
+  68.9/73.2/71.2/67.8/62.4 dB(A) at 3000/4000/5000/6000/7000 rpm.
+- Raff & Perry (JSV 28(3) 1973, §3.3): exhaust noise I ∝ N^4.5 (+13.5 dB per octave of speed);
+  Vineeth et al. (SAE 2018, Fig. 7) a production car's tail-pipe overall, 1 kHz and 2 kHz bands
+  rising steadily with rpm. A straight 3.2 m pipe in place of the road boxes does rise: +8.6 dB
+  (steepening), +12.5 (linear), +17 (FV) from 3000 to 7000 rpm.
+- What eats it: the road path's insertion loss against the straight pipe grows with the orders'
+  frequency: firing order 14.5 dB at 133 Hz (4000 rpm) but 40 dB at 233 Hz (7000), the 16th order
+  55 → 73 dB (533 → 933 Hz). The packing density barely matters (σ 16 000 vs 4 896). Open: why
+  the road boxes and the catalyst take 40 dB at 233 Hz (the catalyst alone 14 dB there, 0 at 133).
