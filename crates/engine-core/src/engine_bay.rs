@@ -42,8 +42,9 @@ pub struct EngineBay {
 }
 
 impl Default for EngineBay {
-    /// A road car's bay. ESTIMATES: an open share of 1 % puts the liner's 14 dB at 4 kHz at the
-    /// low end of Ibarra et al.'s measured 16–27 dB; a 20 mm fibre liner (the packing's
+    /// A road car's bay. ESTIMATES: an open share of 1 % puts the liner's 14 dB at 4 kHz
+    /// between Ibarra's measured insertion losses beside (5–15 dB) and above (20–27 dB) the bay
+    /// at 1–10 kHz; a 20 mm fibre liner (the packing's
     /// resistivity, [`crate::lining::Packing`]) over the hood, a quarter of a bay's surface.
     fn default() -> Self {
         Self {
