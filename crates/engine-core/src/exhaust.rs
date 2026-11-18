@@ -1274,16 +1274,16 @@ pub struct ExhaustNet {
 
 /// The gas of each cycle at its own temperature (Heywood, *ICE Fundamentals*, §6.6: the
 /// exhaust's temperature varies through each pulse and from cycle to cycle; cycle-to-cycle COV
-/// 1.5–2.4 % at the port, Morey & Seers, *Applied Thermal Engineering* 30, 2010). Each primary
-/// carries its last cycle's slug; a branch's collector and tail the slugs mixed in by mass
-/// (each new slug's mass over the gas the branch holds). Their sound speeds follow, c ∝ √T,
+/// 1.5–2.4 % at the port, Morey & Seers, *Applied Thermal Engineering* 30, 2010). A branch's
+/// collector and tail carry the slugs mixed in by mass (each new slug's mass over the gas the
+/// branch holds). The primaries keep their speed: crossed in ≈ 1 ms, a 1 % slug moves a wave
+/// by ≈ 10 µs, nothing under 10 kHz (and the copy of them the engine reads while the net runs
+/// on another thread, [`ArrivalProbe`], stays exact). Their sound speeds follow, c ∝ √T,
 /// eased in over [`SLUG_EASE_S`] so a delay never jumps (a click). With the gas temperature
 /// model on ([`ExhaustDef::gas_temperature`]) its walls set the speeds and slugs are not used.
 #[derive(Debug, Clone, Default)]
 struct Slugs {
-    /// T/T̄ of each primary's slug: wanted, and as eased in so far.
-    primary: Vec<(f64, f64)>,
-    /// The same for each branch's mixed gas.
+    /// T/T̄ of each branch's mixed gas: wanted, and as eased in so far.
     branch: Vec<(f64, f64)>,
     /// Each cylinder's branch, and each branch's gas mass, kg (at the tail's reference density).
     branch_of: Vec<usize>,
@@ -1594,6 +1594,8 @@ pub struct BlockIn {
     /// Per step: the mean flows follow in `mean` (cylinders, then tails, then the engine speed).
     pub has_mean: Vec<bool>,
     pub mean: Vec<f64>,
+    /// Slugs released ([`ExhaustNet::set_slug`]): (step within the block, cylinder, T/T̄, kg).
+    pub slugs: Vec<(usize, usize, f64, f64)>,
 }
 
 impl BlockIn {
@@ -1603,6 +1605,7 @@ impl BlockIn {
         self.mach.clear();
         self.has_mean.clear();
         self.mean.clear();
+        self.slugs.clear();
     }
 }
 
@@ -1851,7 +1854,6 @@ impl ExhaustNet {
         };
         self.for_each_pipe(room);
         self.slugs = Slugs {
-            primary: vec![(1.0, 1.0); cylinders],
             branch: vec![(1.0, 1.0); self.branches.len()],
             branch_of,
             branch_mass,
@@ -1861,14 +1863,13 @@ impl ExhaustNet {
     }
 
     /// Cylinder `cyl` has just released a slug of `mass_kg` at `ratio` times its mean exhaust
-    /// temperature: its primary takes it, its branch mixes it in ([`Slugs`]).
+    /// temperature: its branch mixes it in ([`Slugs`]).
     pub fn set_slug(&mut self, cyl: usize, ratio: f64, mass_kg: f64) {
         let s = &mut self.slugs;
-        if !s.on || cyl >= s.primary.len() || !ratio.is_finite() {
+        if !s.on || cyl >= s.branch_of.len() || !ratio.is_finite() {
             return;
         }
         let ratio = ratio.max(SLUG_MIN_RATIO);
-        s.primary[cyl].0 = ratio;
         let b = s.branch_of[cyl];
         let w = (mass_kg / s.branch_mass[b].max(1e-12)).clamp(0.0, 1.0);
         s.branch[b].0 += w * (ratio - s.branch[b].0);
@@ -1881,12 +1882,6 @@ impl ExhaustNet {
         }
         let k = 1.0 - (-self.dt / SLUG_EASE_S).exp();
         let s = &mut self.slugs;
-        for (i, (want, now)) in s.primary.iter_mut().enumerate() {
-            if (*want - *now).abs() > 1e-9 {
-                *now += k * (*want - *now);
-                self.primaries[i].set_sound_speed(C_PRIMARY * now.sqrt());
-            }
-        }
         for (b, (want, now)) in s.branch.iter_mut().enumerate() {
             if (*want - *now).abs() > 1e-9 {
                 *now += k * (*want - *now);
@@ -2195,6 +2190,9 @@ impl ExhaustNet {
             } else {
                 None
             };
+            for &(_, cyl, ratio, mass) in input.slugs.iter().filter(|e| e.0 == s) {
+                self.set_slug(cyl, ratio, mass);
+            }
             self.prepare(&input.mach[s * m..(s + 1) * m], mean);
             self.step(&input.flows[s * n..(s + 1) * n]);
             out.from_far.extend_from_slice(&self.scratch.from_far);
@@ -2484,11 +2482,43 @@ mod tests {
     }
 
     #[test]
+    fn a_branch_mixes_each_slug_in_by_its_mass() {
+        // one collector 0.25 m × 55 mm and one tail pipe 1 m × 50 mm: π/4·(0.055²·0.25 + 0.05²·1)
+        // = 2.5567e-3 m³ of gas at the tail's reference density (1 atm, 622 K: 101325/(287·622)
+        // = 0.56760 kg/m³), 1.4512e-3 kg. A slug of half that mass at T/T̄ = 1.10 moves the
+        // branch's gas halfway: 1.05, its sound speed √1.05 = 1.02470 times the tail's, once
+        // eased in (10 ms ≫ the 1 ms ease)
+        let dt = 1.0 / 48_000.0;
+        let def = super::ExhaustDef {
+            collectors: Vec::new(),
+            collector_length_m: 0.25,
+            collector_diameter_m: 0.055,
+            after_collector: vec![super::Segment::Pipe {
+                length_m: 1.0,
+                diameter_m: 0.05,
+            }],
+            ..super::ExhaustDef::default()
+        };
+        let mut net = super::ExhaustNet::new(&def, 4, dt);
+        net.set_slug(0, 1.10, 0.5 * 1.4512e-3);
+        for _ in 0..(0.01 / dt) as usize {
+            net.step(&[0.0; 4]);
+        }
+        let c = net.branches[0].tail.pipes()[0].gas_sound_speed();
+        assert!(
+            (c / super::C_TAIL / 1.02470 - 1.0).abs() < 2e-4,
+            "{}",
+            c / super::C_TAIL
+        );
+    }
+
+    #[test]
     fn each_cycles_hotter_or_cooler_gas_blurs_the_treble_lines() {
         // Each cycle's exhaust leaves at its own temperature: cycle-to-cycle COV 1.5–2.4 % at
         // the port (Morey & Seers, Applied Thermal Eng. 30, 2010, Figs. 3–5); its sound speed
         // c ∝ √T then varies ≈ 1 %, and a wave crossing the ≈ 4 m after the collector (≈ 8 ms)
-        // arrives ≈ 30–80 µs early or late from cycle to cycle. Gaussian timing jitter σ keeps
+        // arrives ≈ 30–80 µs early or late from cycle to cycle. (Each slug here fills the branch
+        // whole: the mixing by mass is the next test's.) Gaussian timing jitter σ keeps
         // exp(−(2πfσ)²) of a line's power: at 6 kHz and 40 µs, 0.15 (−8 dB); at 200 Hz, 0.9998.
         // The inline-4's pulsed net with each pulse at a ratio T/T̄ drawn with σ = 2.2 %, against
         // all at 1: the 6 kHz region's lines (harmonics 28–32 of 200 Hz) lose more than 3 dB, the
@@ -2518,7 +2548,8 @@ mod tests {
                     for k in 0..4 {
                         let on = ((t + 0.005 * k as f64) / 0.02).fract() < 0.2;
                         if on && !was[k] {
-                            net.set_slug(k, 1.0 + sigma * gauss(), 2.4e-4);
+                            // a slug as heavy as the branch's gas: the mechanism alone, unmixed
+                            net.set_slug(k, 1.0 + sigma * gauss(), 1.0);
                         }
                         was[k] = on;
                         flows[k] = if on { 0.06 } else { 0.0 };
