@@ -53,6 +53,11 @@ pub struct SoundDef {
     /// A turbo's compressor tone ([`crate::turbo::CompressorTone`]). 1 = its estimated level,
     /// 0 = off.
     pub compressor_whine: f64,
+    /// The tyres on the road (aerodynamic noise included) of the moving car
+    /// ([`crate::rolling_noise`], CNOSSOS-EU): 1 = the Directive's level, 0 = off (the default:
+    /// an engine is heard on its own). Silent with
+    /// the car at rest.
+    pub rolling: f64,
     /// Wet level of a room / car-body reverb applied in the voice; 0 (outdoors) by default.
     pub reverb: f64,
     /// How much the voice lifts quiet passages (idle) toward the full-load level, in dB:
@@ -122,6 +127,7 @@ impl Default for SoundDef {
             combustion_jitter: 1.0,
             blow_off: 1.0,
             compressor_whine: 1.0,
+            rolling: 0.0,
             reverb: 0.0,
             leveling: 0.0,
             listener_distance_m: 3.0,
@@ -160,6 +166,18 @@ mod tests {
         );
         let old: SoundDef = serde_yaml_ng::from_str("reverb: 0.0\n").unwrap();
         assert_eq!(old.street(), None);
+    }
+
+    #[test]
+    fn the_tyres_are_there_only_when_asked_for() {
+        // an engine is heard on its own: the tyres of a moving car (`rolling`) are an option a
+        // file turns on, off by default and in every built-in engine (user, 2026-11-16: "quitarlos
+        // de los motores, pero que la opción exista"); old files without the field get it off
+        assert_eq!(SoundDef::default().rolling, 0.0);
+        let old: SoundDef = serde_yaml_ng::from_str("reverb: 0.0\n").unwrap();
+        assert_eq!(old.rolling, 0.0);
+        let on: SoundDef = serde_yaml_ng::from_str("rolling: 1.0\n").unwrap();
+        assert_eq!(on.rolling, 1.0);
     }
 
     #[test]
