@@ -3940,7 +3940,7 @@ impl Engine {
         }
         self.seat_strikes.retain(|(t, _)| *t <= SEAT_PULSE_S);
         // The mechanical impacts: one level for all of them, the measured petrol engine's at
-        // this speed and load (`mechanical_dba_at_1m_loaded`), shared among the impacts of the last cycle — each
+        // this speed and load (`mechanism_dba_at_1m_loaded`: Raff's crank mechanism alone), shared among the impacts of the last cycle — each
         // Ungar & Ross's decaying pulse (`mechanical::impact_pulse`) through the block's response, A-weighted
         // energy `impact_unit` at 1 m, so their train's power is the curve's.
         let mut impact = [0.0; 2];
@@ -3972,7 +3972,7 @@ impl Engine {
             let map = self.plenum_pressure_pa() / crate::units::ATM_PA;
             let load = (map - NO_LOAD_MAP_RATIO) / (1.0 - NO_LOAD_MAP_RATIO);
             let whole = crate::mechanical::rms_pa_from_dba(
-                crate::mechanical::mechanical_dba_at_1m_loaded(rpm_now, load),
+                crate::mechanical::mechanism_dba_at_1m_loaded(rpm_now, load),
             );
             let target = whole * whole;
             let amp = if rate > 0.0 && unit > 0.0 {
@@ -10191,12 +10191,17 @@ mod tests {
 
     #[test]
     fn an_impact_train_reads_the_measured_curve() {
-        // a bare engine, as Lalor et al. measured on the test bed
-        for rpm in [3000.0, 6000.0] {
+        // a bare engine on the test bed: the pistons' and journals' noise as Raff & Perry
+        // measured it alone (JSV 28(3) 1973, Fig. 11: a 1500 cc petrol engine motored without
+        // its head and valve gear, 88.5 dB(A) at 4000 rev/min), with Lalor et al.'s slopes
+        for rpm in [3000.0, 4000.0, 6000.0] {
             let mut d = EngineDef::inline4();
             d.vehicle.engine_bay = None;
             let (db, strikes) = impacts_dba(d, rpm);
-            let want = crate::mechanical::mechanical_dba_at_1m(rpm);
+            let want = crate::mechanical::mechanism_dba_at_1m(rpm);
+            if rpm == 4000.0 {
+                assert!((want - 88.5).abs() < 0.05, "{want}");
+            }
             assert!(strikes > 0);
             assert!(
                 (db - want).abs() < 1.0,
@@ -10242,7 +10247,7 @@ mod tests {
             .sum::<f64>()
             / with.len() as f64;
         let db = 10.0 * (power / 4e-10).log10();
-        let want = crate::mechanical::mechanical_dba_at_1m(rpm);
+        let want = crate::mechanical::mechanism_dba_at_1m(rpm);
         assert!((db - want).abs() < 1.0, "{db:.1} dB(A) against {want:.1}");
     }
 
@@ -10391,35 +10396,35 @@ mod tests {
 
     #[test]
     fn the_whole_structure_reads_the_measured_curve() {
-        // Lalor et al.'s curve is the engine's whole measured noise, combustion and mechanical
-        // together: with the block's combustion noise on, the impacts make up the rest, so the
-        // structure's total A-weighted level at 1 m is the curve's (±1 dB), not curve + block
-        for rpm in [3000.0, 6000.0] {
-            let mut d = EngineDef::inline4();
-            d.sound.mechanical = 0.0;
-            d.vehicle.engine_bay = None;
-            let mut e = Engine::new(d, rpm, 1);
-            let c = Controls {
-                throttle: 1.0,
-                hold_rpm: Some(rpm),
-                ..Controls::default()
-            };
-            run(&mut e, 0.3, &c);
-            let mut a = crate::mechanical::AWeighting::new(DT);
-            let n = (0.5 / DT) as usize;
-            let s: f64 = (0..n)
-                .map(|_| {
-                    e.step(DT, &c);
-                    a.process(e.structure_out).powi(2)
-                })
-                .sum();
-            let db = 10.0 * (s / n as f64 / 4e-10).log10();
-            let want = crate::mechanical::mechanical_dba_at_1m(rpm);
-            assert!(
-                (db - want).abs() < 1.0,
-                "{rpm}: {db:.1} dB(A) against {want:.1}"
-            );
-        }
+        // The bare engine's whole structure-borne noise (the block's combustion, the crank
+        // mechanism's impacts and the valve gear) at 1 m, 4000 rev/min full load, between the
+        // measured petrol engines: Raff & Perry's two fired 1500 cc engines (JSV 28(3) 1973,
+        // Fig. 11: 87 and 89 dB(A)) and Lalor et al.'s larger one (SAE 800402 Fig. 7: 96.2),
+        // a dB either side
+        let rpm = 4000.0;
+        let mut d = EngineDef::inline4();
+        d.vehicle.engine_bay = None;
+        let mut e = Engine::new(d, rpm, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(rpm),
+            ..Controls::default()
+        };
+        run(&mut e, 0.3, &c);
+        let mut a = crate::mechanical::AWeighting::new(DT);
+        let n = (0.5 / DT) as usize;
+        let s: f64 = (0..n)
+            .map(|_| {
+                e.step(DT, &c);
+                a.process(e.structure_out).powi(2)
+            })
+            .sum();
+        let db = 10.0 * (s / n as f64 / 4e-10).log10();
+        let lalor = crate::mechanical::mechanical_dba_at_1m(rpm);
+        assert!(
+            (86.0..lalor + 1.0).contains(&db),
+            "{db:.1} dB(A) against 87–{lalor:.1}"
+        );
     }
 
     #[test]
@@ -10431,7 +10436,7 @@ mod tests {
         d.vehicle.engine_bay = None;
         let rpm = 1000.0;
         let (db, _) = impacts_dba_at(d, rpm, 0.0);
-        let want = crate::mechanical::mechanical_dba_at_1m_loaded(rpm, 0.0);
+        let want = crate::mechanical::mechanism_dba_at_1m_loaded(rpm, 0.0);
         assert!((db - want).abs() < 1.0, "{db:.1} dB(A) against {want:.1}");
     }
 

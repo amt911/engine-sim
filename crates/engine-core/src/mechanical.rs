@@ -57,6 +57,26 @@ pub fn mechanical_dba_at_1m_loaded(rpm: f64, load: f64) -> f64 {
     full - drop * (1.0 - load.clamp(0.0, 1.0))
 }
 
+/// The pistons' and journals' noise alone against [`mechanical_dba_at_1m`], dB: Lalor et al.'s
+/// curve is a whole engine's overall noise (valve gear, timing drive and ancillaries with it),
+/// while the impacts are the crank mechanism only, which Raff & Perry measured by itself (JSV
+/// 28(3), 1973, Fig. 11: a 1500 cc petrol engine motored with its head replaced by a gas
+/// exchange box and its valve and timing gear removed, 88.5 dB(A) at 4000 rev/min, its noise
+/// curve keeping the same two slopes). Lalor's curve there: 90 + 49.8·log₁₀(4/3) = 96.22.
+/// The valve gear is its own source (`sound.mechanical`).
+pub const MECHANISM_RE_WHOLE_DB: f64 = 88.5 - 96.221_949;
+
+/// The crank mechanism's own noise at `rpm` and `load` ([`mechanical_dba_at_1m_loaded`] at
+/// [`MECHANISM_RE_WHOLE_DB`]), dB(A) at 1 m.
+pub fn mechanism_dba_at_1m_loaded(rpm: f64, load: f64) -> f64 {
+    mechanical_dba_at_1m_loaded(rpm, load) + MECHANISM_RE_WHOLE_DB
+}
+
+/// [`mechanism_dba_at_1m_loaded`] at full load.
+pub fn mechanism_dba_at_1m(rpm: f64) -> f64 {
+    mechanism_dba_at_1m_loaded(rpm, 1.0)
+}
+
 /// The rms sound pressure of a level `db` re 20 µPa, Pa (0 for −∞).
 pub fn rms_pa_from_dba(db: f64) -> f64 {
     20e-6 * 10f64.powf(db / 20.0)
