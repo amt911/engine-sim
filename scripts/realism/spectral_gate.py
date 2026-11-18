@@ -68,6 +68,9 @@ def show(feat, v):
     return f"{v:.1f} {S.UNIT.get(feat, 'dB')}"
 
 
+NOISE_LABEL = {"nz28": "wind", "nzlo": "lowmid", "hfprom": "hump"}
+
+
 class Tier:
     """The pools and thresholds, computed once."""
 
@@ -107,13 +110,16 @@ class Tier:
                     S={t: max([r["score"] for r in res if r["tier"] == t], default=np.nan) for t in GATE_TIERS},
                     E=max([r["e"] for r in sig], default=np.nan))
 
+    # the summary's name for each gated noise band (regress.py reads them by these): 2-8 kHz,
+    # 150 Hz-2 kHz, the hump above 4.5 kHz. One name each: both of the last two once printed as
+    # 'hump' and regress.py compared only the first (ChatGPT audit, 2026-11-18)
     def sline(self, J):
         out = [f"{t} {J['S'][t]:.2f}/{self.Sstar[t]:.2f}" for t in GATE_TIERS if np.isfinite(J["S"][t])]
         if J["by_sig"]:
             out.append(f"signature {J['E']:.2f}/{self.Estar:.2f}")
         for r in J.get("noise", []):
             if r["gates"]:
-                out.append(f"{'wind' if r['feat'] == 'nz28' else 'hump'} {r['value']:.1f}/{r['bound']:.1f} dB"
+                out.append(f"{NOISE_LABEL.get(r['feat'], r['feat'])} {r['value']:.1f}/{r['bound']:.1f} dB"
                            + (f" & {r['also']['value']:.1f}/{r['also']['bound']:.1f} dB" if r.get("also") else ""))
         return ", ".join(out)
 
