@@ -612,6 +612,10 @@ impl Pipe {
     pub fn gas_sound_speed(&self) -> f64 {
         self.gas_c
     }
+    /// The speed of sound it was built for, m/s.
+    pub fn built_sound_speed(&self) -> f64 {
+        self.sound_speed
+    }
     /// The pipe's length, m, and diameter, m.
     pub fn size(&self) -> (f64, f64) {
         (self.length_m, self.diameter_m)
@@ -1053,6 +1057,10 @@ impl Duct {
     /// Its pipes, near end first.
     pub fn pipes_mut(&mut self) -> &mut [Pipe] {
         &mut self.pipes
+    }
+    /// Its pipes, near end first.
+    pub fn pipes(&self) -> &[Pipe] {
+        &self.pipes
     }
     pub fn set_mean_flow(&mut self, mass_flow: f64) {
         self.mean_flow = mass_flow;

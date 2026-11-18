@@ -1530,6 +1530,9 @@ pub struct CylinderView {
     pub burning: bool,
 }
 
+/// Cycles over which a cylinder's mean exhaust temperature is followed (each slug is measured
+/// against it): long against one cycle's scatter, short against a change of load.
+const SLUG_MEAN_CYCLES: f64 = 20.0;
 /// Ignition delay between spark and the start of the Wiebe burn, degrees.
 const IGNITION_DELAY_DEG: f64 = 5.0;
 /// Half-burned point of an MBT-timed burn, ° after top centre (Heywood §9.2.2: 8–10°).
@@ -2330,6 +2333,11 @@ pub struct Engine {
     air_cleaner: Option<(f64, crate::air_cleaner::AirCleaner)>,
     /// Each cylinder's rod and side force at the last step, N (their sign changes are impacts).
     impact_forces: Vec<(f64, f64)>,
+    /// Each cylinder's running mean exhaust temperature at EVO, K: what each cycle's slug is
+    /// measured against ([`crate::exhaust::ExhaustNet::set_slug`]).
+    slug_mean_k: Vec<f64>,
+    /// The slugs released this step, handed to the exhaust with its flows: (cylinder, T/T̄, kg).
+    slug_events: Vec<(usize, f64, f64)>,
     /// Impacts counted (each at a point of its own: they add in power, one unit energy each),
     /// the time counted over since the rate was last taken, and that rate, per second
     /// ([`crate::mechanical`]: the level is shared among them).
@@ -2622,6 +2630,8 @@ impl Engine {
             impact_rng: seed.wrapping_mul(0xD1B5_4A32_D192_ED03) | 1,
             air_cleaner: None,
             impact_forces: Vec::new(),
+            slug_mean_k: Vec::new(),
+            slug_events: Vec::new(),
             impact_count: (0, 0.0, 0.0),
             impact_unit: None,
             impact_structure: None,
@@ -2917,6 +2927,7 @@ impl Engine {
         let crank_deg = self.theta.to_degrees() * shaft_k;
         let rpm_now = self.rpm();
         self.impacts_this_step = 0;
+        self.slug_events.clear();
         // the ECU's throttle demand: the pedal, trimmed by a torque cut's air channel towards
         // the charge whose most retarded burn gives the cut's share
         let cut = c.torque_cut.clamp(0.0, 1.0);
@@ -3079,6 +3090,19 @@ impl Engine {
             // opens; a cut decided after it started no longer reaches this charge
             if crossed(prev, cur, evo) {
                 self.cyl[i].injected = inject;
+                // the cycle's gas leaves at its own temperature: its slug against the cylinder's
+                // running mean (over ≈ 20 cycles), the mass it carries ≈ what the cylinder holds
+                if self.slug_mean_k.len() != n_cyl {
+                    self.slug_mean_k = vec![0.0; n_cyl];
+                }
+                let (t, m) = (self.cyl[i].gas.temperature(), self.cyl[i].gas.mass_kg);
+                let mean = &mut self.slug_mean_k[i];
+                if *mean <= 0.0 {
+                    *mean = t;
+                }
+                let ratio = t / *mean;
+                *mean += (t - *mean) / SLUG_MEAN_CYCLES;
+                self.slug_events.push((i, ratio, m));
             }
 
             // Piston motion: adiabatic work p·dV.
@@ -3653,6 +3677,9 @@ impl Engine {
                 if due {
                     net.set_port_temperature(&self.cyl_port_k);
                 }
+                for &(cyl, ratio, mass) in &self.slug_events {
+                    net.set_slug(cyl, ratio, mass);
+                }
                 net.prepare(&self.tail_mach, mean);
                 net.step(&self.flows);
             }
@@ -3664,6 +3691,10 @@ impl Engine {
                 if due {
                     self.friction_age = 0;
                 }
+                let at = r.stage.steps;
+                r.stage
+                    .slugs
+                    .extend(self.slug_events.iter().map(|&(c, t, m)| (at, c, t, m)));
                 r.stage.steps += 1;
                 r.stage.flows.extend_from_slice(&self.flows);
                 r.stage.mach.extend_from_slice(&self.tail_mach);
@@ -9001,7 +9032,9 @@ mod tests {
         // The valves' mixing noise rides down the primaries in both exhaust models. With every
         // other random source off, an engine held at speed repeats every cycle; the jets' hiss
         // is what does not: the energy of x(t) − x(t + one cycle) must rise with them on the FV
-        // exhaust as it does on the waveguide.
+        // exhaust as it does on the waveguide. A second of running first: each cycle's slug is
+        // measured against its cylinder's running mean (20 cycles, 0.4 s here), and until that
+        // mean settles the waveguide's tail speed drifts from cycle to cycle.
         let aperiodic = |model: ExhaustModel, jet: f64| {
             let mut d = EngineDef::inline4();
             d.exhaust.model = model;
@@ -9017,7 +9050,7 @@ mod tests {
                 hold_rpm: Some(rpm),
                 ..Controls::default()
             };
-            run(&mut e, 0.3, &c);
+            run(&mut e, 1.0, &c);
             let x = run(&mut e, 0.2, &c);
             let cycle = (120.0 / rpm / DT).round() as usize;
             x.windows(cycle + 1)
