@@ -1607,3 +1607,21 @@ source is not identified. Phone and YouTube recordings cannot judge below about 
   the listener placed those `tail_spacing_m` apart: one tail pipe heard as two sources 0.9 m apart
   combed every 1.3 ms (cepstrum 40 dB on the catalogue's 4-2-1 configs; a real K20A 4-2-1 reads
   24–32). With a merge the tails now radiate from one place.
+
+## 2026-11-18 — audit of the render chain and the engine's own sources (what is sound, what is open)
+
+Measured with probes, each against an outside reference (details on branch `scratch/cx-reffv`):
+- **Sound:** the anti-alias decimation (384 → 48 kHz equals a brick-wall within 0.2 dB per band);
+  the non-linear line (Fubini's B1..B4 at σ = 0.5 to 0.003; shocked, the sawtooth's harmonics,
+  no floor); the packed silencer's EQ (identical at 96/192/384 kHz, on its 2D target); the
+  tails' and the intake mouth's radiation (one monopole law, p = ρ₀/(4πr)·dQ/dt); steepening
+  converges with the step (slowly: a shock better resolved, not noise).
+- **The K20C1 "trembling" in the gears scene** was the scene's driver lifting at every clutch
+  slip after bite (15 Hz limit cycle, ±190 rpm, the sound dipping 10 dB every 70 ms): fixed here.
+- **Open, model:** the road exhaust heard 3 m behind falls with rpm (K20A 73 → 62 dB(A) from 4000
+  to 7000) where measured exhausts rise (Raff & Perry 1973 §3.3: I ∝ N^4.5; Vineeth et al. SAE
+  2018 Fig. 7): a straight pipe rises, the two packed road boxes take 40 dB at the firing order
+  at 233 Hz and 73 dB at the 16th order (each box within 7.5 dB of Selamet's measured TL). The
+  missing measurement: a production car's tail-pipe order levels against rpm.
+- **The engine bay** already attenuates as Ibarra measured it (IJVNV 13(1) 2017: insertion loss
+  3.7 dB beside, 12.9 above; his 16–27 dB is transmission loss, inside against outside).
