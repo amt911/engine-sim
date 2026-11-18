@@ -43,6 +43,8 @@ pub struct MeshKey {
     /// for them).
     pub intake_lobe_over_bore: f32,
     pub exhaust_lobe_over_bore: f32,
+    /// The cut-away layer is on: the turbo's housings are drawn opened ([`super::parts::cut_housing`]).
+    pub cutaway: bool,
 }
 
 /// The frame's scene, written by the UI thread and read by `prepare`.
@@ -486,19 +488,33 @@ pub fn unit_mesh(kind: MeshKind, key: MeshKey) -> Mesh {
             Some(_) if key.realistic => Mesh::nothing(),
             _ => mesh::cylinder(s),
         },
-        MeshKind::TurbineHousing => {
-            realistic_only(key, super::parts::turbo_housing(TurboHousing::Turbine))
-        }
-        MeshKind::CompressorHousing => {
-            realistic_only(key, super::parts::turbo_housing(TurboHousing::Compressor))
-        }
-        MeshKind::CentreHousing => {
-            realistic_only(key, super::parts::turbo_housing(TurboHousing::Centre))
-        }
+        MeshKind::TurbineHousing => realistic_only(
+            key,
+            opened(key, super::parts::turbo_housing(TurboHousing::Turbine)),
+        ),
+        MeshKind::CompressorHousing => realistic_only(
+            key,
+            opened(key, super::parts::turbo_housing(TurboHousing::Compressor)),
+        ),
+        MeshKind::CentreHousing => realistic_only(
+            key,
+            opened(key, super::parts::turbo_housing(TurboHousing::Centre)),
+        ),
         MeshKind::CompressorWheel => realistic_only(key, super::parts::compressor_wheel()),
         MeshKind::TurbineWheel => realistic_only(key, super::parts::turbine_wheel()),
         MeshKind::WastegateFlap => realistic_only(key, super::parts::wastegate_flap()),
     }
+}
+
+/// A turbo housing as the cut-away layer wants it: opened when it is on.
+fn opened(key: MeshKey, housing: Option<Mesh>) -> Option<Mesh> {
+    housing.map(|m| {
+        if key.cutaway {
+            super::parts::cut_housing(&m)
+        } else {
+            m
+        }
+    })
 }
 
 /// A part drawn at the realistic detail only (nothing at Low, or without its asset).
@@ -613,6 +629,7 @@ mod tests {
             throw_over_bore: 0.5,
             intake_lobe_over_bore: 0.11,
             exhaust_lobe_over_bore: 0.11,
+            cutaway: false,
         };
         let cylinder = mesh::cylinder(12).vertices.len();
         // Low: the primitives; Medium and High: the realistic piston, which carries its own
@@ -678,6 +695,41 @@ mod tests {
     }
 
     #[test]
+    fn the_cut_away_opens_the_turbo_housings_and_leaves_the_wheels() {
+        // spec 2026-11-08: "the cut-away layer opens the housings to show the wheels"
+        let key = |cutaway| MeshKey {
+            def_version: 1,
+            segments: 12,
+            e_over_r: 0.0,
+            realistic: true,
+            rod_over_bore: 1.6,
+            throw_over_bore: 0.5,
+            intake_lobe_over_bore: 0.11,
+            exhaust_lobe_over_bore: 0.11,
+            cutaway,
+        };
+        for kind in [
+            MeshKind::CompressorHousing,
+            MeshKind::CentreHousing,
+            MeshKind::TurbineHousing,
+        ] {
+            let (whole, cut) = (unit_mesh(kind, key(false)), unit_mesh(kind, key(true)));
+            assert!(cut.indices.len() < whole.indices.len(), "{kind:?}");
+        }
+        for kind in [
+            MeshKind::CompressorWheel,
+            MeshKind::TurbineWheel,
+            MeshKind::WastegateFlap,
+        ] {
+            assert_eq!(
+                unit_mesh(kind, key(false)),
+                unit_mesh(kind, key(true)),
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
     fn every_kind_has_a_mesh() {
         let key = MeshKey {
             def_version: 1,
@@ -688,6 +740,7 @@ mod tests {
             throw_over_bore: 0.5,
             intake_lobe_over_bore: 0.11,
             exhaust_lobe_over_bore: 0.11,
+            cutaway: false,
         };
         for kind in MeshKind::ALL {
             let m = unit_mesh(kind, key);

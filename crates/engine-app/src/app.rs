@@ -546,7 +546,14 @@ mod tests {
                         .find(|i| i.part == Part::TurbineHousing)
                         .map(|i| i.model.w_axis.truncate())
                 });
-                for (yaw, name) in [(0.0f32, "turbo"), (std::f32::consts::PI, "turbo-back")] {
+                // the last, from the exhaust's side again, cut open (spec 2026-11-08: the
+                // cut-away layer opens the housings to show the wheels)
+                for (yaw, name, cut) in [
+                    (0.0f32, "turbo", false),
+                    (std::f32::consts::PI, "turbo-back", false),
+                    (std::f32::consts::PI, "turbo-cut", true),
+                ] {
+                    state.view3d.layers.cutaway = cut;
                     if let (Some(c), Some(p)) = (state.view3d.camera.as_mut(), at) {
                         c.target = p;
                         c.distance = 0.45;
