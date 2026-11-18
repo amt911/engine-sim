@@ -441,8 +441,10 @@ pub enum Segment {
     Pipe { length_m: f64, diameter_m: f64 },
     /// A silencer: a shell of `diameter_m` × `length_m`. With a `tube_diameter_m` > 0 a
     /// perforated straight-through tube of that bore runs inside, the annulus packed with fibre
-    /// of `packing_resistivity` (Pa·s/m²) and `packing_porosity` (an absorptive silencer); with
-    /// 0 the shell is an empty expansion chamber.
+    /// of `packing_resistivity` (Pa·s/m²) (an absorptive silencer); with 0 the shell is an empty
+    /// expansion chamber. `packing_porosity` is kept for the files that set it but moves
+    /// nothing: the packing's acoustics are Delany & Bazley's (*Applied Acoustics* 3, 1970),
+    /// fitted on the flow resistivity alone (DeepSeek audit, 2026-11-18, H10).
     Muffler {
         length_m: f64,
         diameter_m: f64,
@@ -758,14 +760,12 @@ impl ExhaustDef {
         }
     }
 
-    /// Bore of the open end, m (the last segment's).
+    /// Bore of the open end, m: the last segment's (a silencer's tube when it has one).
     pub fn outlet_diameter(&self) -> f64 {
-        match self.path().last() {
-            Some(Segment::Pipe { diameter_m, .. })
-            | Some(Segment::Muffler { diameter_m, .. })
-            | Some(Segment::Catalyst { diameter_m, .. }) => *diameter_m,
-            Some(Segment::Measured { bore_m, .. }) => *bore_m,
-            Some(Segment::Resonator { .. }) | None => self.tail_diameter_m,
+        // a silencer's tube if it has one ([`exit_diameter`]); no bore: the tail's field
+        match exit_diameter(&self.path()) {
+            d if d > 0.0 => d,
+            _ => self.tail_diameter_m,
         }
     }
 
@@ -1279,6 +1279,8 @@ struct DuctFlow {
     /// Each site's mass flow handed in from outside ([`ExhaustNet::set_site_flows`]), kg/s;
     /// empty: the net's own.
     given: Vec<f64>,
+    /// Whether the open end (`SiteAt::Exit`) makes noise ([`ExhaustNet::set_duct_exit`]).
+    exit: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1301,6 +1303,7 @@ impl DuctFlow {
             gain: 0.0,
             sites,
             given: Vec::new(),
+            exit: true,
         }
     }
 
@@ -1308,8 +1311,11 @@ impl DuctFlow {
     /// its mass flow `own` (kg/s, + towards the tail) unless one was given, in gas of sound
     /// speed `c` at an atmosphere.
     fn pressure(&mut self, i: usize, own: f64, c: f64, dt: f64) -> f64 {
-        let m_dot = self.given.get(i).copied().unwrap_or(own);
         let src = &mut self.sites[i];
+        if !self.exit && src.site.at == SiteAt::Exit {
+            return 0.0;
+        }
+        let m_dot = self.given.get(i).copied().unwrap_or(own);
         let rho = crate::gas::GAMMA * crate::units::ATM_PA / (c * c);
         let a_jet = 0.25 * std::f64::consts::PI * src.site.d_jet * src.site.d_jet;
         let u = m_dot / (rho * a_jet);
@@ -2098,6 +2104,19 @@ impl ExhaustNet {
         self.duct_flow.gain = gain.max(0.0);
     }
 
+    /// Whether the open end makes duct flow noise (default yes). The engine turns it off: what
+    /// leaves a tail pipe into the air is a free jet, whose mixing noise is `sound.flow_noise`'s
+    /// ([`crate::jet_noise::JetNoise`], SAE ARP876); the in-duct law of the other sites does not
+    /// describe it, and counting both made the exit's hiss 6–12 dB over the recordings' wind.
+    pub fn set_duct_exit(&mut self, on: bool) {
+        self.duct_flow.exit = on;
+    }
+
+    /// Whether the open end makes duct flow noise ([`ExhaustNet::set_duct_exit`]).
+    pub fn duct_exit(&self) -> bool {
+        self.duct_flow.exit
+    }
+
     /// Each expansion site's instantaneous mass flow, kg/s (+ towards the tail), in
     /// [`expansion_sites`] order, from outside (an FV exhaust's cells) for the coming steps;
     /// until then the net uses the flow its own waves carry.
@@ -2406,6 +2425,32 @@ mod tests {
             band_power(&on[19_200..], dt, 1000.0, 5000.0),
         );
         assert!(b > 2.0 * a && b > 0.0, "on {b:.3e} off {a:.3e}");
+    }
+
+    #[test]
+    fn the_open_end_is_left_to_the_free_jet() {
+        // Measured on K20A, EJ25 and the inline-4 (2026-11-15): with only the open end's site on
+        // the engine's 2-8 kHz floor was what all sites made together, with every other site on
+        // and the exit off it was the floor without any (the others' noise passes the silencers'
+        // loss). The exit off leaves the net with the inner sites only: the 1-5 kHz power it adds
+        // over no duct noise is under a tenth of what the exit adds
+        let dt = 1.0 / 48_000.0;
+        let off = steady_inline4(|n| n.set_duct_flow(0.0), 0.03);
+        let on = steady_inline4(|n| n.set_duct_flow(1.0), 0.03);
+        let inner = steady_inline4(
+            |n| {
+                n.set_duct_flow(1.0);
+                n.set_duct_exit(false);
+                assert!(!n.duct_exit());
+            },
+            0.03,
+        );
+        let band = |x: &[f64]| band_power(&x[19_200..], dt, 1000.0, 5000.0);
+        let (a, b, c) = (band(&off), band(&on), band(&inner));
+        assert!(
+            b - a > 0.0 && (c - a).abs() < 0.1 * (b - a),
+            "off {a:.3e} on {b:.3e} no exit {c:.3e}"
+        );
     }
 
     #[test]
@@ -2745,6 +2790,31 @@ mod tests {
         );
         probe.set_mean_pressure(1.5e5);
         assert!(probe.pipes.iter().all(|p| p.mean_pressure() == 1.5e5));
+    }
+
+    #[test]
+    fn a_path_ending_in_a_packed_silencer_radiates_from_its_tube() {
+        // the gas leaves a straight-through silencer by its perforated tube, not its shell
+        // (ChatGPT audit, 2026-11-18, #8: the shell's 212.7 mm against the 50 mm tube was a
+        // ×18 in the radiated flow); the open end is the tube's bore, as for the outlets
+        let def = ExhaustDef {
+            after_collector: vec![
+                Segment::Pipe {
+                    length_m: 1.0,
+                    diameter_m: 0.05,
+                },
+                Segment::Muffler {
+                    length_m: 0.45,
+                    diameter_m: 0.2127,
+                    tube_diameter_m: 0.05,
+                    packing_resistivity: 16_000.0,
+                    packing_porosity: 0.95,
+                },
+            ],
+            ..ExhaustDef::default()
+        };
+        assert_eq!(def.outlet_diameter(), 0.05);
+        assert_eq!(def.radiating_diameter(), 0.05);
     }
 
     #[test]

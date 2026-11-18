@@ -57,6 +57,26 @@ pub fn mechanical_dba_at_1m_loaded(rpm: f64, load: f64) -> f64 {
     full - drop * (1.0 - load.clamp(0.0, 1.0))
 }
 
+/// The pistons' and journals' noise alone against [`mechanical_dba_at_1m`], dB: Lalor et al.'s
+/// curve is a whole engine's overall noise (valve gear, timing drive and ancillaries with it),
+/// while the impacts are the crank mechanism only, which Raff & Perry measured by itself (JSV
+/// 28(3), 1973, Fig. 11: a 1500 cc petrol engine motored with its head replaced by a gas
+/// exchange box and its valve and timing gear removed, 88.5 dB(A) at 4000 rev/min, its noise
+/// curve keeping the same two slopes). Lalor's curve there: 90 + 49.8·log₁₀(4/3) = 96.22.
+/// The valve gear is its own source (`sound.mechanical`).
+pub const MECHANISM_RE_WHOLE_DB: f64 = 88.5 - 96.221_949;
+
+/// The crank mechanism's own noise at `rpm` and `load` ([`mechanical_dba_at_1m_loaded`] at
+/// [`MECHANISM_RE_WHOLE_DB`]), dB(A) at 1 m.
+pub fn mechanism_dba_at_1m_loaded(rpm: f64, load: f64) -> f64 {
+    mechanical_dba_at_1m_loaded(rpm, load) + MECHANISM_RE_WHOLE_DB
+}
+
+/// [`mechanism_dba_at_1m_loaded`] at full load.
+pub fn mechanism_dba_at_1m(rpm: f64) -> f64 {
+    mechanism_dba_at_1m_loaded(rpm, 1.0)
+}
+
 /// The rms sound pressure of a level `db` re 20 µPa, Pa (0 for −∞).
 pub fn rms_pa_from_dba(db: f64) -> f64 {
     20e-6 * 10f64.powf(db / 20.0)
@@ -162,9 +182,9 @@ impl AWeighting {
     }
 }
 
-/// The A-weighted energy at 1 m of one unit impact (a half-sine of unit peak pseudo-pressure
-/// over the seat strikes' width, `crate::engine::seat_pulse`) through the block's modes at one
-/// of its points and its response ([`crate::structure::StructureResponse`]), Pa²·s, at step
+/// The A-weighted energy at 1 m of one unit impact ([`impact_pulse`] of unit peak
+/// pseudo-pressure) through the block's modes at one
+/// of its points and its radiation ([`ImpactRadiation`]), Pa²·s, at step
 /// `dt`: a train of impacts at a rate R and peak a has power R·a²·this.
 pub fn unit_impact_energy(dt: f64) -> f64 {
     // averaged over the points an impact may strike ([`IMPACT_POINTS`])
@@ -172,11 +192,11 @@ pub fn unit_impact_energy(dt: f64) -> f64 {
     (0..IMPACT_POINTS)
         .map(|at| {
             let mut modes = crate::structure::BlockModes::new(IMPACT_POINTS, dt);
-            let mut block = crate::structure::StructureResponse::new(dt);
+            let mut block = ImpactRadiation::new(dt);
             let mut a = AWeighting::new(dt);
             (0..n)
                 .map(|k| {
-                    let p = crate::engine::seat_pulse(1.0, k as f64 * dt);
+                    let p = impact_pulse(1.0, k as f64 * dt);
                     let y = a.process(block.process(modes.process_at(&[(at, p)])));
                     y * y * dt
                 })
@@ -184,6 +204,70 @@ pub fn unit_impact_energy(dt: f64) -> f64 {
         })
         .sum::<f64>()
         / IMPACT_POINTS as f64
+}
+
+/// Decay time of a piston's or a journal's impact on the block, s: Ungar & Ross (JSV 2(2),
+/// 1965, eq. 1), the struck mass and the wall moving together at v = V0·e^(−t/τ), τ = M/Z, with
+/// M the piston set of an 86 mm bore ([`RECIP_MASS_PER_BORE3`]·B³ = 0.3816 kg) and Z = 8√(B·ρh)
+/// a cast-iron wall 5 mm thick (an infinite plate, Cremer & Heckl: 1682.7 N·s/m; ESTIMATE the
+/// thickness): 0.2268 ms, its spectrum flat to 700 Hz and falling 6 dB per octave above. It
+/// replaced the valve seat's 0.15 ms half-sine, flat to ~4 kHz, which put the bare engine's
+/// noise in a 2–3 kHz peak 20 dB over its 500 Hz where petrol car engines measure flat from
+/// 200 Hz to 3 kHz (Priede, SAE 800534, Fig. 30).
+pub const IMPACT_TAU_S: f64 = 0.381_633_6 / 1_682.677_3;
+
+/// Rise time of an impact through the oil film, s: the film squeezes out before the parts
+/// touch, so the force builds over a time rather than at once, a second pole on Ungar & Ross's
+/// spectrum. ESTIMATE fitted to Raff & Perry's motored mechanism (JSV 28(3) 1973, Fig. 11, third
+/// octaves re 1 kHz: 2.5 kHz −4, 4 kHz −10, 5 kHz −13, 6.3 kHz −18 dB; with this rise and the
+/// radiation's high-pass, −4.7, −9.6, −12.1, −14.9).
+pub const IMPACT_RISE_S: f64 = 1.0e-4;
+
+/// One impact of unit-scale `peak` at `t` s after it began: e^(−t/τ) − e^(−t/τr) (decay
+/// [`IMPACT_TAU_S`], rise [`IMPACT_RISE_S`]), spectrum (τ − τr)/((1 + jωτ)(1 + jωτr)); held to
+/// 12 τ.
+pub fn impact_pulse(peak: f64, t: f64) -> f64 {
+    if (0.0..=12.0 * IMPACT_TAU_S).contains(&t) {
+        peak * ((-t / IMPACT_TAU_S).exp() - (-t / IMPACT_RISE_S).exp())
+    } else {
+        0.0
+    }
+}
+
+/// Corner of the block's radiation efficiency for a point force, Hz. A force on a plate-like
+/// wall drives it at a velocity independent of frequency (an infinite plate's point mobility
+/// 1/(8√(B·m″)), Cremer & Heckl), and the wall radiates that velocity with an efficiency σ that
+/// grows to 1 near its critical frequency: Yoon & Yoon (IJVD 2005, Fig. 8) compute a petrol
+/// block's at −16 dB at 200 Hz, −8.5 at 400, −4 at 1 kHz, −2 at 2 kHz and ≈ 0 above;
+/// σ = (f/f₀)²/(1 + (f/f₀)²) with f₀ = 800 Hz gives −12.3, −7.0, −2.1, −0.6 (ESTIMATE, fitted by
+/// eye). Combustion's pressure takes the measured structure response instead
+/// ([`crate::structure`]), which holds the gas loading's own path.
+pub const RADIATION_CORNER_HZ: f64 = 800.0;
+
+/// An impact's force as the block radiates it: the radiation efficiency's first-order
+/// high-pass ([`RADIATION_CORNER_HZ`]), bilinear.
+#[derive(Debug, Clone)]
+pub struct ImpactRadiation {
+    a: f64,
+    x1: f64,
+    y1: f64,
+}
+
+impl ImpactRadiation {
+    pub fn new(dt: f64) -> Self {
+        let w = (std::f64::consts::PI * RADIATION_CORNER_HZ * dt).tan();
+        Self {
+            a: (1.0 - w) / (1.0 + w),
+            x1: 0.0,
+            y1: 0.0,
+        }
+    }
+
+    pub fn process(&mut self, x: f64) -> f64 {
+        let y = 0.5 * (1.0 + self.a) * (x - self.x1) + self.a * self.y1;
+        (self.x1, self.y1) = (x, y);
+        y
+    }
 }
 
 /// Points of the block an impact may strike, each its own voice of the block's modes
@@ -196,6 +280,35 @@ pub const IMPACT_POINTS: usize = 32;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_impact_strikes_as_ungar_and_ross_say() {
+        // Ungar & Ross, JSV 2(2) 1965, eqs. (1)-(2): a mass striking a structure of real input
+        // impedance Z moves with it at v = V0·e^(−t/τ), τ = M/Z, a spectrum flat below 1/(2πτ)
+        // and falling 6 dB per octave above. Hand values: a cast-iron wall 5 mm thick,
+        // B = Eh³/(12(1−ν²)) = 110e9·1.25e-7/(12·0.9324) = 1228.9 N·m, Z = 8√(B·ρh) =
+        // 8√(1228.9·36) = 1682.7 N·s/m (an infinite plate, Cremer & Heckl); the piston set of
+        // an 86 mm bore at 600 kg/m³·B³: 0.3816 kg; τ = 0.3816/1682.7 = 0.2268 ms. Through
+        // the oil film it rises over τr = 0.1 ms (`IMPACT_RISE_S`): the spectrum
+        // 1/(|1 + jωτ|·|1 + jωτr|) at 3 kHz against 100 Hz: (1.0101·1.0020)/(4.3906·2.1338)
+        // = 0.10803.
+        assert!((IMPACT_TAU_S - 2.268e-4).abs() < 2e-6, "{IMPACT_TAU_S}");
+        let dt = 1.0 / 384_000.0;
+        let n = (0.01 / dt) as usize;
+        let x: Vec<f64> = (0..n).map(|k| impact_pulse(1.0, k as f64 * dt)).collect();
+        let mag = |f: f64| {
+            let (mut re, mut im) = (0.0, 0.0);
+            for (k, v) in x.iter().enumerate() {
+                let ph = 2.0 * std::f64::consts::PI * f * k as f64 * dt;
+                re += v * ph.cos();
+                im += v * ph.sin();
+            }
+            re.hypot(im)
+        };
+        let ratio = mag(3000.0) / mag(100.0);
+        assert!((ratio - 0.10803).abs() < 0.005, "{ratio}");
+        assert_eq!(impact_pulse(1.0, -1e-9), 0.0);
+    }
 
     #[test]
     fn unloaded_it_is_quieter_only_below_the_critical_speed() {

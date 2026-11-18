@@ -69,13 +69,15 @@ impl Quality {
                 d.exhaust.model = ExhaustModel::Waveguide;
             }
             // the most realistic: every engine on finite-volume pipes, intake and exhaust
-            // Reference keeps the engine's own until the FV pipes hold the bridge-port 13B's
-            // idle at its 8× rate: there it sank to a stall (at Ultra's 4× it holds), the
-            // valves' per-step mass limit binding differently with the step
+            // (Reference keeps the engine's own intake: the bridge-port 13B's idle sank to a
+            // stall on FV pipes at its 8× rate, at Ultra's 4× it holds)
             Quality::Ultra => {
                 d.intake.model = IntakeModel::Fv;
                 d.exhaust.model = ExhaustModel::Fv;
             }
+            // Reference keeps the engine's own pipes: on FV exhaust pipes the LFA lost the shock
+            // fronts its approved sound carries ("desastroso", 2026-11-16), and the bridge-port
+            // 13B's idle sank to a stall at the 8x rate
             Quality::Medium | Quality::High | Quality::Reference => {}
         }
         d
@@ -264,8 +266,7 @@ mod tests {
         back.intake.model = IntakeModel::ZeroD;
         back.exhaust.model = ExhaustModel::Waveguide;
         assert_eq!(back, def, "{q:?}");
-        // High, Medium and (until the bridge-port 13B holds its idle there) Reference keep
-        // the engine's own
+        // High, Medium and Reference keep the engine's own
         for q in [Quality::Medium, Quality::High, Quality::Reference] {
             assert_eq!(q.apply(&def), def, "{q:?}");
         }
