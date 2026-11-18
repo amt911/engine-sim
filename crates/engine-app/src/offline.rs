@@ -192,6 +192,9 @@ pub struct GearPull {
     cut: f64,
     /// Engine speed when the shift was requested, rpm: held while the clutch opens.
     hold: f64,
+    /// The clutch has locked in this gear's pull: a slip after that is the driveline's, and the
+    /// driver keeps the pedal down through it.
+    bitten: bool,
 }
 
 /// The speed loop's proportional band while the clutch opens, as a share of the held speed: the
@@ -227,6 +230,7 @@ impl GearPull {
             shift_time: shift_time_s.max(0.0),
             cut: 0.0,
             hold: 0.0,
+            bitten: false,
         }
     }
 
@@ -260,8 +264,10 @@ impl GearPull {
             p.t = 0.0;
             p.best = 0.0;
             p.since_best = 0.0;
+            p.bitten = false;
         };
         if self.phase == PullPhase::Pull && locked {
+            self.bitten = true;
             if rpm > self.best * (1.0 + PLATEAU_GAIN) {
                 self.best = rpm;
                 self.since_best = 0.0;
@@ -307,15 +313,19 @@ impl GearPull {
             // of its torque.
             // An automated gearbox holds the engine's torque low until its clutch locks
             // (Glielmo et al. 2006, Fig. 10). Locked, flat out
-            PullPhase::Pull if !locked && self.gear == 1 => {
+            PullPhase::Pull if !locked && !self.bitten && self.gear == 1 => {
                 let launch = LAUNCH_SHARE * self.redline;
                 (
                     ((1.15 * launch - rpm) / (0.3 * launch)).clamp(0.0, 1.0),
                     false,
                 )
             }
-            PullPhase::Pull if !locked && self.shift_time > 0.0 && self.gear > 1 => (1.0, false),
-            PullPhase::Pull if !locked => (
+            PullPhase::Pull
+                if !locked && !self.bitten && self.shift_time > 0.0 && self.gear > 1 =>
+            {
+                (1.0, false)
+            }
+            PullPhase::Pull if !locked && !self.bitten => (
                 ((self.takeup - rpm) / (0.1 * self.takeup)).clamp(0.0, 1.0),
                 false,
             ),
@@ -332,7 +342,7 @@ impl GearPull {
                 let loop_ = (rpm - self.hold) / (SHIFT_SPEED_BAND * self.hold.max(1.0));
                 ramp.max(loop_).min(1.0)
             }
-            PullPhase::Pull if !locked && self.gear > 1 => 1.0,
+            PullPhase::Pull if !locked && !self.bitten && self.gear > 1 => 1.0,
             PullPhase::Pull => (self.cut - ramp).max(0.0),
             _ => 0.0,
         };
@@ -785,6 +795,25 @@ mod tests {
         assert_eq!(p.next(3000.0, false, 0.01).1.gear, 1);
         // locked: full throttle
         assert_eq!(p.next(3000.0, true, 0.01).0, 1.0);
+    }
+
+    #[test]
+    fn a_clutch_that_slips_once_locked_keeps_the_foot_down() {
+        // once the clutch has bitten in a gear, a driver pulling flat out keeps the pedal down
+        // through a moment's slip (the driveline's shuffle taking the torque past the clutch's
+        // capacity): lifting there and planting it again when it relocks made a 15 Hz limit
+        // cycle, ±190 rpm and the sound dipping 10 dB every 70 ms (K20C1 in 5th, 2026-11-16,
+        // heard as "tiembla cuando sube de rpm")
+        let mut p = GearPull::new(5, 6000.0, 0.0);
+        for _ in 0..140 {
+            p.next(900.0, false, 0.01);
+        }
+        // launched, then locked in first and pulling
+        p.next(2700.0, false, 0.01);
+        assert_eq!(p.next(3000.0, true, 0.01).0, 1.0);
+        // a moment's slip above where the clutch first bit
+        let (thr, d) = p.next(3300.0, false, 0.01);
+        assert_eq!((thr, d.gear, d.clutch_pedal), (1.0, 1, false));
     }
 
     #[test]

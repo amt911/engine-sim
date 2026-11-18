@@ -695,8 +695,8 @@ mod tests {
                 p: 1.0,
             },
         );
-        for i in n / 2..n {
-            p.cells[i] = Prim {
+        for cell in &mut p.cells[n / 2..n] {
+            *cell = Prim {
                 rho: 0.125,
                 u: 0.0,
                 p: 0.1,
@@ -960,8 +960,8 @@ mod tests {
     #[test]
     fn variable_area_pipe_conserves_mass() {
         let mut p = stepped(1e-3, 4e-3);
-        for i in 10..20 {
-            p.cells[i] = Prim {
+        for cell in &mut p.cells[10..20] {
+            *cell = Prim {
                 rho: 1.5,
                 u: 0.0,
                 p: 140_000.0,
@@ -987,9 +987,9 @@ mod tests {
     fn transmitted_peak(a1: f64, a2: f64) -> f64 {
         let mut p = stepped(a1, a2);
         let base = 101_325.0;
-        for i in 20..30 {
+        for (i, cell) in p.cells.iter_mut().enumerate().take(30).skip(20) {
             let s = (std::f64::consts::PI * (i - 20) as f64 / 10.0).sin();
-            p.cells[i] = Prim {
+            *cell = Prim {
                 rho: 1.2 * (1.0 + 0.001 * s / 1.4),
                 u: 0.001 * s * 343.8 / 1.4,
                 p: base * (1.0 + 0.001 * s),
@@ -1145,8 +1145,8 @@ mod tests {
             };
             let mut p = Pipe1d::segmented(&[(1.0, 1.26e-3)], 0.02, air);
             p.friction = f;
-            for i in 0..10 {
-                p.cells[i] = Prim {
+            for cell in &mut p.cells[0..10] {
+                *cell = Prim {
                     p: 111_325.0,
                     rho: 1.29,
                     ..air
@@ -1213,8 +1213,8 @@ mod tests {
             p: 101_325.0,
         };
         let mut p = Pipe1d::new(1.0, 500, air);
-        for i in 95..105 {
-            p.cells[i] = Prim {
+        for cell in &mut p.cells[95..105] {
+            *cell = Prim {
                 p: 101_325.0 + 500.0,
                 ..air
             }
@@ -1423,8 +1423,8 @@ mod tests {
                 p: 1e5,
             },
         );
-        for i in 20..40 {
-            p.cells[i] = Prim {
+        for cell in &mut p.cells[20..40] {
+            *cell = Prim {
                 rho: 1.2e-4,
                 u: 0.0,
                 p: 10.0,

@@ -376,11 +376,14 @@ mod tests {
     #[test]
     fn a_petrol_pressure_spectrum_makes_andertons_noise() {
         // Anderton, SAE 790270: a gasoline engine's reduced cylinder pressure spectrum is
-        // CP_R(1.0) = 133 dB with combustion index n = 6.3 (Fig. 14): the level in each
-        // one-third octave is 133 + 10·n·log₁₀(N/f) dB re 20 µPa. Its combustion noise at 1 m
+        // CP_R(1.0) = 130 dB with combustion index n = 6.3 (the text's list of averages beside
+        // Fig. 14; this test once read 133 off the figure): the level in each one-third octave
+        // is 130 + 10·n·log₁₀(N/f) dB re 20 µPa. Its combustion noise at 1 m
         // is eq. (9): CP_R + 50·log₁₀B + 10·n·log₁₀(N/1000) − K₁, K₁ = 175.5 dB(A) at n = 6.3
         // (Fig. 13, read ±0.5): for B = 86 mm at 3000 rev/min,
-        // 133 + 96.7 + 30.1 − 175.5 = 84.3 dB(A).
+        // 130 + 96.7 + 30.1 − 175.5 = 81.3 dB(A). Anderton adds that in gasoline engines
+        // "mechanical noise tends to dominate the total noise" (as Raff & Perry 1973 measured:
+        // motored without its head, 88.5 dB(A) at 4000 rev/min, the same as fired).
         // One cylinder's pressure, its cycle harmonics given each band's level, through the
         // block as the engine drives it.
         let dt = 1.0 / 96_000.0;
@@ -396,7 +399,7 @@ mod tests {
             }
             // the band's power shared among the harmonics in it: a third octave holds
             // 0.2316·f/f_cycle of them
-            let band_db = 133.0 + 63.0 * (rpm / f).log10();
+            let band_db = 130.0 + 63.0 * (rpm / f).log10();
             let p_rms = 20e-6 * 10f64.powf(band_db / 20.0) / (0.2316 * f / f_cycle).max(1.0).sqrt();
             rng ^= rng << 13;
             rng ^= rng >> 7;
@@ -424,8 +427,8 @@ mod tests {
         }
         let db = 10.0 * (sum / (n - n / 4 - 1) as f64 / 4e-10).log10();
         assert!(
-            (db - 84.3).abs() < 2.0,
-            "{db:.1} dB(A) against Anderton's 84.3"
+            (db - 81.3).abs() < 2.0,
+            "{db:.1} dB(A) against Anderton's 81.3"
         );
     }
 }
