@@ -854,8 +854,8 @@ pub(crate) mod tests {
 
     #[test]
     fn the_voice_stands_in_the_engines_room() {
-        // a dyno cell (240 m³, RT60 1.0 s) heard 3 m away: the voice carries its reverberant
-        // field (11.71 times the direct energy, `RoomDef`); outdoors it has none
+        // the default room (800 m³, RT60 0.6 s) heard 3 m away: the voice carries its reverberant
+        // field (2.107 times the direct energy, `RoomDef`); outdoors it has none
         let mut def = EngineDef::inline4();
         def.sound.room = Some(engine_core::sound::RoomDef::default());
         let mut sim = Simulation::new(def.clone(), FS, 1);
@@ -864,7 +864,7 @@ pub(crate) mod tests {
         let e: f64 = (0..(4.0 * FS) as usize)
             .map(|i| room.process(if i == 0 { 1.0 } else { 0.0 }).powi(2))
             .sum();
-        assert!((e / 11.71 - 1.0).abs() < 0.02, "{e}");
+        assert!((e / 2.107 - 1.0).abs() < 0.02, "{e}");
         def.sound.room = None;
         sim.replace_engine(def);
         assert!(sim.voice.room.is_none());

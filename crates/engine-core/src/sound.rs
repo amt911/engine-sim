@@ -17,12 +17,12 @@ pub struct RoomDef {
 }
 
 impl Default for RoomDef {
-    /// A chassis-dyno cell: 10 × 6 × 4 m (ESTIMATE, a common bay), RT60 1.0 s (the low end of
-    /// the measured 1.0–1.4 s: the user found 1.4 s too reverberant, 2026-11-18).
+    /// A large, treated workshop: 800 m³, RT60 0.6 s. The user's choice by ear (2026-11-18): the
+    /// measured dyno cells (1.0–1.4 s in 240 m³) sounded too reverberant twice. Both editable.
     fn default() -> Self {
         Self {
-            volume_m3: 240.0,
-            rt60_s: 1.0,
+            volume_m3: 800.0,
+            rt60_s: 0.6,
         }
     }
 }
@@ -186,11 +186,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_dyno_cell_drowns_the_direct_sound_at_three_metres() {
-        // V = 240 m³, RT60 1.0 s: A = 0.161·240/1.0 = 38.64 m²; at 3 m, 16π·9/38.64 = 11.71
-        // (10.7 dB reverberant over direct). Outdoors (no room): none
+    fn a_room_adds_its_reverberant_field_to_the_direct_sound() {
+        // V = 800 m³, RT60 0.6 s: A = 0.161·800/0.6 = 214.67 m²; at 3 m, 16π·9/214.67 = 2.107
+        // (3.2 dB reverberant over direct). Outdoors (no room): none
         let room = RoomDef::default();
-        assert!((room.reverberant_to_direct(3.0) - 11.71).abs() < 0.01);
+        assert!((room.reverberant_to_direct(3.0) - 2.107).abs() < 0.001);
         assert_eq!(SoundDef::default().room, None);
     }
 

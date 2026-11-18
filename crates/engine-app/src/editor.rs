@@ -690,7 +690,7 @@ fn vtec_lobe(ui: &mut egui::Ui, name: &str, v: &mut engine_core::valve::ValveTim
 fn room_switch(ui: &mut egui::Ui, room: &mut Option<engine_core::sound::RoomDef>) {
     let mut on = room.is_some();
     if ui
-        .checkbox(&mut on, "In a room (dyno cell)")
+        .checkbox(&mut on, "In a room (workshop)")
         .on_hover_text(
             "The listener inside a room: its walls add a reverberant field (Sabine), as in \
              chassis-dyno recordings. Off: outdoors.",
@@ -1074,7 +1074,7 @@ mod tests {
         // outdoors by default; ticked, a dyno cell whose reverberation time can be dragged
         let mut h = harness(EngineDef::inline4());
         assert!(h.state().def.sound.room.is_none());
-        press(&mut h, "In a room (dyno cell)");
+        press(&mut h, "In a room (workshop)");
         let room = h.state().def.sound.room.expect("a room");
         assert_eq!(room, engine_core::sound::RoomDef::default());
         nudge(&mut h, "Room reverberation time (s)");
@@ -1082,7 +1082,7 @@ mod tests {
         nudge(&mut h, "Room volume (m³)");
         assert!(h.state().def.sound.room.unwrap().volume_m3 > room.volume_m3);
         assert!(h.state().engine_dirty);
-        press(&mut h, "In a room (dyno cell)");
+        press(&mut h, "In a room (workshop)");
         assert!(h.state().def.sound.room.is_none());
     }
 
