@@ -1722,3 +1722,22 @@ trend (Young, SAE 810020: it rises slightly with speed, as modelled), the intake
 (the DC5's snorkel draws behind the grille, the bay's diffuse-field loss overstates it; worse by ear).
 A first version of `same_engine.py` masked lines 1.5 % wide, which covered the whole spectrum above
 ≈ 3.3 kHz at 6000 rpm; its self-test (a synthetic engine of known noise share) caught it.
+
+## 2026-11-19 — the treble lines: exhaust slugs, the intake's, and the LFA's shift gap (night, agent)
+
+- **Exhaust:** each cycle's gas leaves at its own temperature (Morey & Seers 2010: COV 1.5–2.4 % at
+  the port; the model's own 2.1–2.3 %). With the collector and tail taking the slugs' sound speed,
+  the K20A's exhaust alone keeps no coherent 4–8 kHz harmonics (24.0 % of the band on its lines
+  against 21.9 % for noise; 32.7 % before), as the stock DC5/EP3 dyno clips show (pure noise
+  there). The primaries are left out: crossed in ≈ 1 ms their jitter is ≈ 10 µs, and the copy of
+  them the engine reads while the net runs on another thread must stay bit-exact.
+- **Intake:** the rest of the K20A's whistle is its intake mouth's coherent treble. In a real
+  intake (Alfa 159 onboard intake microphone) 4–8 kHz is pure noise as well. Kang & Ih 2018's
+  measured element only lifts the box's troughs 5–10 dB, so a filter element does not explain it;
+  open: what makes a real intake's treble incoherent (data asked for in PAPERS.md).
+- **LFA upshifts:** main's torque cut closes the (individual) throttles, the runners empty and every
+  shift dips 15–20 dB for ≈ 150 ms; the exterior dyno clip WS5vCsgCFB0 dips ≈ 5 dB for 50–100 ms.
+  Blanking charges out (Bosch's fast path) made motoring cylinders three times louder than firing
+  ones (4.07 against 1.40 Pa rms) and retarded ones afterburn: ugly treble spikes (user). The spark
+  retard alone, throttles open, dips 2–5 dB like the real car but its late burns add a peak at each
+  shift (99th-percentile peak 2.47× the median against main's 1.57×). Parked on fix/shift-cut.
