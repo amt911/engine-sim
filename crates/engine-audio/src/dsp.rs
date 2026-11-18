@@ -180,6 +180,81 @@ impl Reverb {
     }
 }
 
+/// A room's reverberant field: an 8-line feedback delay network (Jot & Chaigne 1991; J. O. Smith,
+/// PASP, "FDN reverberation"), Householder mixing, each line's loss set so the tail falls 60 dB
+/// in `rt60` s, the highs a little faster (a one-pole at [`ROOM_DAMP_HZ`] in each line: air and
+/// walls absorb more of them). Its output carries, for a unit impulse in, the energy
+/// `reverberant_to_direct` (the room's diffuse field over the direct sound's, `RoomDef`):
+/// scaled at construction from its own impulse response.
+#[derive(Debug, Clone)]
+pub struct RoomReverb {
+    lines: [Vec<f64>; 8],
+    pos: [usize; 8],
+    g: [f64; 8],
+    damp: [f64; 8],
+    damp_k: f64,
+    scale: f64,
+}
+
+/// Where a room's lines start losing their highs, Hz.
+pub const ROOM_DAMP_HZ: f64 = 8_000.0;
+
+impl RoomReverb {
+    pub fn new(sample_rate: f64, rt60: f64, reverberant_to_direct: f64) -> Self {
+        // mutually prime-ish lengths (ms) of a hall's first reflections, 41–113 ms
+        const MS: [f64; 8] = [41.1, 47.3, 53.9, 61.7, 71.3, 83.9, 97.1, 113.3];
+        let len = MS.map(|ms| ((ms * 1e-3 * sample_rate) as usize).max(1));
+        let mut r = Self {
+            lines: len.map(|n| vec![0.0; n]),
+            pos: [0; 8],
+            g: len.map(|n| 10f64.powf(-3.0 * n as f64 / (rt60.max(1e-3) * sample_rate))),
+            damp: [0.0; 8],
+            damp_k: 1.0 - (-2.0 * PI * ROOM_DAMP_HZ / sample_rate).exp(),
+            scale: 1.0,
+        };
+        // its own impulse response's energy, then the scale that gives the room's
+        let mut probe = r.clone();
+        let n = (rt60.max(1e-3) * 1.5 * sample_rate) as usize;
+        let energy: f64 = (0..n)
+            .map(|i| probe.process(if i == 0 { 1.0 } else { 0.0 }).powi(2))
+            .sum();
+        r.scale = if energy > 0.0 {
+            (reverberant_to_direct.max(0.0) / energy).sqrt()
+        } else {
+            0.0
+        };
+        r
+    }
+
+    /// The same room, silent (its lines emptied).
+    pub fn cleared(mut self) -> Self {
+        for l in &mut self.lines {
+            l.fill(0.0);
+        }
+        self.damp = [0.0; 8];
+        self
+    }
+
+    /// The reverberant sound for input `x` (the direct sound at the listener).
+    pub fn process(&mut self, x: f64) -> f64 {
+        let mut v = [0.0; 8];
+        let mut wet = 0.0;
+        for i in 0..8 {
+            let o = self.lines[i][self.pos[i]];
+            wet += o;
+            self.damp[i] += self.damp_k * (o - self.damp[i]);
+            v[i] = self.g[i] * self.damp[i];
+        }
+        let sum: f64 = v.iter().sum::<f64>() * 0.25; // Householder: v − (2/N)·Σv
+        for (i, vi) in v.iter().enumerate() {
+            let len = self.lines[i].len();
+            self.lines[i][self.pos[i]] = x + vi - sum;
+            self.pos[i] = (self.pos[i] + 1) % len;
+        }
+        self.scale * wet
+    }
+}
+
 /// Fourth-order Butterworth low-pass (two biquads, Q = 0.5412 and 1.3066): the anti-alias
 /// filter before keeping one physics step in `SUBSTEPS` as an audio sample. Taking every 4th
 /// sample of a 192 kHz signal unfiltered folds everything between 24 and 96 kHz back into the
@@ -318,6 +393,9 @@ pub struct Voice {
     limiter: Limiter,
     /// Wet level of the body/room reverb (0 = dry).
     pub reverb_mix: f64,
+    /// The room the listener stands in, its reverberant field added to the direct sound
+    /// ([`RoomReverb`]); None outdoors.
+    pub room: Option<RoomReverb>,
     sample_rate: f64,
     /// Pressure that maps to full scale before soft clipping, Pa.
     pub full_scale_pa: f64,
@@ -339,6 +417,7 @@ impl Voice {
             reverb: Reverb::new(sample_rate, 0.35),
             limiter: Limiter::new(sample_rate),
             reverb_mix: 0.0,
+            room: None,
             sample_rate,
             full_scale_pa: FULL_SCALE_PA,
             leveler: Leveler::new(LEVELER_REFERENCE, sample_rate),
@@ -350,15 +429,21 @@ impl Voice {
             return 0.0;
         }
         let dry = self.dc.process(pressure_pa);
+        let dry = match &mut self.room {
+            Some(r) => dry + r.process(dry),
+            None => dry,
+        };
         let y = self
             .leveler
             .process((dry + self.reverb_mix * self.reverb.process(dry)) / self.full_scale_pa);
         if !y.is_finite() {
             // A runaway filter state is reset rather than left to poison every later sample.
             let amount = self.leveler.amount;
+            let room = self.room.take().map(|r| r.cleared());
             *self = Voice {
                 full_scale_pa: self.full_scale_pa,
                 limit: self.limit,
+                room,
                 ..Voice::new(self.sample_rate)
             };
             self.leveler.amount = amount;
@@ -529,6 +614,49 @@ mod tests {
             max_relative = 0.03
         );
         assert!(gain(40_000.0) < 0.0624, "40 kHz: {}", gain(40_000.0));
+    }
+
+    #[test]
+    fn a_room_carries_the_energy_it_is_given_and_falls_at_its_rt60() {
+        // a unit impulse: the room's output energy is the reverberant-to-direct ratio asked
+        // (16.39, a dyno cell at 3 m) within 2 %, and its Schroeder decay (backward-integrated
+        // energy) in the 1 kHz octave falls from −5 to −25 dB in a third of RT60 = 1.4 s (T20 × 3,
+        // ISO 3382-1 §6: reverberation times are given per octave band), within 10 %
+        let (rt60, ratio) = (1.4, 16.39);
+        let mut r = RoomReverb::new(FS, rt60, ratio);
+        let n = (3.0 * rt60 * FS) as usize;
+        let y: Vec<f64> = (0..n)
+            .map(|i| r.process(if i == 0 { 1.0 } else { 0.0 }))
+            .collect();
+        let e: f64 = y.iter().map(|v| v * v).sum();
+        assert!((e / ratio - 1.0).abs() < 0.02, "energy {e}");
+        // the 1 kHz octave: RBJ band-pass (constant 0 dB peak), Q = √2 (one octave)
+        let w0 = 2.0 * PI * 1000.0 / FS;
+        let alpha = w0.sin() / (2.0 * 2f64.sqrt());
+        let a0 = 1.0 + alpha;
+        let (b0, b2, a1, a2) = (
+            alpha / a0,
+            -alpha / a0,
+            -2.0 * w0.cos() / a0,
+            (1.0 - alpha) / a0,
+        );
+        let (mut x1, mut x2, mut y1, mut y2) = (0.0, 0.0, 0.0, 0.0);
+        let band: Vec<f64> = y
+            .iter()
+            .map(|&x| {
+                let o = b0 * x + b2 * x2 - a1 * y1 - a2 * y2;
+                (x2, x1, y2, y1) = (x1, x, y1, o);
+                o
+            })
+            .collect();
+        let mut back = vec![0.0; n + 1];
+        for i in (0..n).rev() {
+            back[i] = back[i + 1] + band[i] * band[i];
+        }
+        let db = |i: usize| 10.0 * (back[i] / back[0]).log10();
+        let at = |level: f64| (0..n).find(|&i| db(i) <= level).unwrap() as f64 / FS;
+        let t20 = 3.0 * (at(-25.0) - at(-5.0));
+        assert!((t20 / rt60 - 1.0).abs() < 0.1, "T20·3 = {t20:.2} s");
     }
 
     #[test]

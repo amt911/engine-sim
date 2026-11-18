@@ -6,6 +6,39 @@
 use serde::{Deserialize, Serialize};
 
 /// Levels of each texture source; 0 disables it, 1 is the calibrated default.
+/// A room round the car and the listener: its volume, m³, and reverberation time, s (the time
+/// its sound takes to fall 60 dB once the source stops). A dyno cell recorded at 3 m: 1.0–1.4 s
+/// measured off the shifts of two YouTube chassis-dyno clips (2026-11-18).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RoomDef {
+    pub volume_m3: f64,
+    pub rt60_s: f64,
+}
+
+impl Default for RoomDef {
+    /// A chassis-dyno cell: 10 × 6 × 4 m (ESTIMATE, a common bay), RT60 1.4 s (measured, above).
+    fn default() -> Self {
+        Self {
+            volume_m3: 240.0,
+            rt60_s: 1.4,
+        }
+    }
+}
+
+impl RoomDef {
+    /// The reverberant field's energy over the direct sound's at `distance_m` from the source:
+    /// 16πr²/A, A = 0.161·V/RT60 the room's absorption area (Sabine; Kinsler et al.,
+    /// *Fundamentals of Acoustics*, 4th ed., §12.4: ⟨p²⟩ = ρcW·(1/(4πr²) + 4/A) for A ≪ S).
+    pub fn reverberant_to_direct(&self, distance_m: f64) -> f64 {
+        if self.volume_m3 <= 0.0 || self.rt60_s <= 0.0 {
+            return 0.0;
+        }
+        let a = 0.161 * self.volume_m3 / self.rt60_s;
+        16.0 * std::f64::consts::PI * distance_m * distance_m / a
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SoundDef {
@@ -60,6 +93,10 @@ pub struct SoundDef {
     pub rolling: f64,
     /// Wet level of a room / car-body reverb applied in the voice; 0 (outdoors) by default.
     pub reverb: f64,
+    /// The room the car stands in, if any (a dyno cell, a workshop): its reverberant field
+    /// at the listener from its volume and reverberation time ([`RoomDef`]). None: outdoors
+    /// (the default).
+    pub room: Option<RoomDef>,
     /// How much the voice lifts quiet passages (idle) toward the full-load level, in dB:
     /// 1 = up to +12 dB, 0 = the raw dynamics of the physics (the default: idle, overrun and
     /// full load keep their real level differences).
@@ -129,6 +166,7 @@ impl Default for SoundDef {
             compressor_whine: 1.0,
             rolling: 0.0,
             reverb: 0.0,
+            room: None,
             leveling: 0.0,
             listener_distance_m: 3.0,
             listener_angle_deg: 30.0,
@@ -145,6 +183,27 @@ impl Default for SoundDef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dyno_cell_drowns_the_direct_sound_at_three_metres() {
+        // V = 240 m³, RT60 1.4 s: A = 0.161·240/1.4 = 27.6 m²; at 3 m, 16π·9/27.6 = 16.39
+        // (12.1 dB reverberant over direct). Outdoors (no room): none
+        let room = RoomDef::default();
+        assert!((room.reverberant_to_direct(3.0) - 16.39).abs() < 0.01);
+        assert_eq!(SoundDef::default().room, None);
+    }
+
+    #[test]
+    fn a_room_round_trips() {
+        let s = SoundDef {
+            room: Some(RoomDef::default()),
+            ..SoundDef::default()
+        };
+        let json: SoundDef = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        let yaml: SoundDef =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&s).unwrap()).unwrap();
+        assert_eq!((json, yaml), (s.clone(), s));
+    }
 
     #[test]
     fn a_street_round_trips_and_old_files_stand_in_the_open() {
