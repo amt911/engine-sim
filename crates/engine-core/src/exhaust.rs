@@ -441,8 +441,10 @@ pub enum Segment {
     Pipe { length_m: f64, diameter_m: f64 },
     /// A silencer: a shell of `diameter_m` × `length_m`. With a `tube_diameter_m` > 0 a
     /// perforated straight-through tube of that bore runs inside, the annulus packed with fibre
-    /// of `packing_resistivity` (Pa·s/m²) and `packing_porosity` (an absorptive silencer); with
-    /// 0 the shell is an empty expansion chamber.
+    /// of `packing_resistivity` (Pa·s/m²) (an absorptive silencer); with 0 the shell is an empty
+    /// expansion chamber. `packing_porosity` is kept for the files that set it but moves
+    /// nothing: the packing's acoustics are Delany & Bazley's (*Applied Acoustics* 3, 1970),
+    /// fitted on the flow resistivity alone (DeepSeek audit, 2026-11-18, H10).
     Muffler {
         length_m: f64,
         diameter_m: f64,
