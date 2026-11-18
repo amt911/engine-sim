@@ -758,14 +758,12 @@ impl ExhaustDef {
         }
     }
 
-    /// Bore of the open end, m (the last segment's).
+    /// Bore of the open end, m: the last segment's (a silencer's tube when it has one).
     pub fn outlet_diameter(&self) -> f64 {
-        match self.path().last() {
-            Some(Segment::Pipe { diameter_m, .. })
-            | Some(Segment::Muffler { diameter_m, .. })
-            | Some(Segment::Catalyst { diameter_m, .. }) => *diameter_m,
-            Some(Segment::Measured { bore_m, .. }) => *bore_m,
-            Some(Segment::Resonator { .. }) | None => self.tail_diameter_m,
+        // a silencer's tube if it has one ([`exit_diameter`]); no bore: the tail's field
+        match exit_diameter(&self.path()) {
+            d if d > 0.0 => d,
+            _ => self.tail_diameter_m,
         }
     }
 
@@ -2745,6 +2743,31 @@ mod tests {
         );
         probe.set_mean_pressure(1.5e5);
         assert!(probe.pipes.iter().all(|p| p.mean_pressure() == 1.5e5));
+    }
+
+    #[test]
+    fn a_path_ending_in_a_packed_silencer_radiates_from_its_tube() {
+        // the gas leaves a straight-through silencer by its perforated tube, not its shell
+        // (ChatGPT audit, 2026-11-18, #8: the shell's 212.7 mm against the 50 mm tube was a
+        // ×18 in the radiated flow); the open end is the tube's bore, as for the outlets
+        let def = ExhaustDef {
+            after_collector: vec![
+                Segment::Pipe {
+                    length_m: 1.0,
+                    diameter_m: 0.05,
+                },
+                Segment::Muffler {
+                    length_m: 0.45,
+                    diameter_m: 0.2127,
+                    tube_diameter_m: 0.05,
+                    packing_resistivity: 16_000.0,
+                    packing_porosity: 0.95,
+                },
+            ],
+            ..ExhaustDef::default()
+        };
+        assert_eq!(def.outlet_diameter(), 0.05);
+        assert_eq!(def.radiating_diameter(), 0.05);
     }
 
     #[test]
