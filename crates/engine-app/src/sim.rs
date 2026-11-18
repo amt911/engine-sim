@@ -743,7 +743,11 @@ pub(crate) mod tests {
         // 6700 rpm (a whole cycle in 860 samples), the render may not drift further from them
         // than it stands: RMS 13.3 dB (2026-10-29), 11.7 with the banks 10 cm apart, 10.8 with
         // the silencer's shell and the valve ticking behind the engine bay (2026-11-01). A ratchet:
-        // lower it as the sound comes closer, never raise it.
+        // lower it as the sound comes closer, never raise it — raised once, 10.9 → 11.0, by the
+        // user (2026-11-18): the crank mechanism's impacts made physical (Ungar & Ross's pulse,
+        // the block's measured radiation, Raff's level) strike at the same crank angles every
+        // cycle and lift the firing order 3 dB over its half order 5 (10.47 without them), and
+        // the user heard that LFA as good.
         let rpm = 120.0 * FS / 860.0;
         let mut sim = Simulation::new(EngineDef::lfa_v10(), FS, 1);
         sim.controls = Controls {
@@ -772,7 +776,7 @@ pub(crate) mod tests {
         ];
         let errs: Vec<(f64, f64)> = real.iter().map(|&(k, r)| (k, db(k) - r)).collect();
         let rms = (errs.iter().map(|e| e.1 * e.1).sum::<f64>() / errs.len() as f64).sqrt();
-        assert!(rms <= 10.9, "RMS {rms:.1} dB off the real car: {errs:?}");
+        assert!(rms <= 11.0, "RMS {rms:.1} dB off the real car: {errs:?}");
     }
 
     #[test]
