@@ -277,9 +277,7 @@ impl ValveJet {
 /// the fraction of ρ·A·U³ (the jet's kinetic power flux, scaled by M) radiated as sound. Set
 /// once against a measured production exhaust: Davies & Holland (JSV 223(3), 1999, Fig. 1(c)), a
 /// 4-cylinder at 0.25 m reading ≈ 80 / 88 / 107 dB(A) at 1000 / 3000 / 6000 rpm full load.
-/// (The open end no longer uses it, FINDINGS 2026-11-15: the free jet is [`jet_oaspl_db`]; 107 dB(A)
-/// is broadband the far-field jet cannot make.) Three 4-cylinder presets with the rule-sized road
-/// silencers on the FV exhaust fit it best at
+/// Three 4-cylinder presets with the rule-sized road silencers on the FV exhaust fit it best at
 /// 2.5·10⁻⁵ (6000 rpm: −1.2 dB mean; rms over the three speeds 5.7 dB, the rest the pulses'
 /// own +8 dB at 3000; `scripts/realism/` and `docs/FINDINGS.md`, 2026-11-06). The treble's
 /// firing-rhythm modulation does not set it: the flow noise follows the pulses it rides on.
@@ -311,11 +309,6 @@ pub fn duct_cut_on_hz(c: f64, d: f64) -> f64 {
 /// in gas of impedance `rho_c`: W/2 = p²·A/(ρc), p = √(½·W·ρc/A).
 pub fn plane_wave_rms_pa(w: f64, rho_c: f64, a: f64) -> f64 {
     (0.5 * w * rho_c / a).sqrt()
-}
-
-/// Uniform white noise of unit variance (xorshift64*), one step of `rng` (for other sources).
-pub fn white_noise(rng: &mut u64) -> f64 {
-    white(rng)
 }
 
 /// Uniform white noise of unit variance (xorshift64*), one step of `rng`.

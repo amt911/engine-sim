@@ -169,7 +169,6 @@ engine:
     block_modes: 0.0
     blow_off: 1.0
     compressor_whine: 1.0
-    rolling: 0.0
     reverb: 0.0
     leveling: 0.0
     listener_distance_m: 3.0

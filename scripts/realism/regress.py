@@ -21,8 +21,7 @@ import rdata
 STEP_DB = 1.0
 METRICS = {  # name: (regex on the summary, higher-is-worse)
     "wind": (re.compile(r"^(\S+) \(.*?wind (-?[\d.]+)/"), True),
-    "lowmid": (re.compile(r"^(\S+) \(.*?lowmid (-?[\d.]+)/"), True),
-    "hump": (re.compile(r"^(\S+) \(.*? hump (-?[\d.]+)/"), True),
+    "hump": (re.compile(r"^(\S+) \(.*?hump (-?[\d.]+)/"), True),
     "lift": (re.compile(r"^(\S+)\s+(?:PASS|FAIL)\s+bank .*?lift\s+([-+][\d.]+)>"), True),
     "static": (re.compile(r"^(\S+) static: (?:PASS|FAIL) (-?[\d.]+) <="), True),
 }

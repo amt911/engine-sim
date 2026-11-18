@@ -37,15 +37,6 @@ Found: <YYYY-MM-DD> · <area: build | tests | db | ci | deploy | env>
 
 ## Findings
 
-### The open end made noise twice, and Davies' 107 dB(A) is not a tone
-
-**Symptom.** "Estática" (hiss) on the road cars; wind -12 to -15 dB on inline-4, K20A, EJ25 against real -24.7.
-**Cause.** The tail's free jet is already `sound.flow_noise` (ARP876/Lighthill, `jet_noise.rs`); the duct-flow law (W ∝ U⁴/c, Davies & Holland's law for plane-wave ducts) was also applied at the open end (`SiteAt::Exit`): the same jet counted twice, 6-12 dB louder than the first. Its K = 2.5e-5 was a one-point fit to Davies Fig. 1(c) 107 dB(A) at 0.25 m, 6000 rpm. That overall is broadband: the 2nd order is a 200 Hz line, 88 dB(A) of it; the free jet at the real exit (U 107 m/s, D 0.05 m, 622 K) gives 91 dB (ARP876), Lighthill 86-90; 107 needs 182 m/s. The fit was making up a broadband no far-field jet makes at that flow.
-**Fix / workaround.** `ExhaustNet::set_duct_exit(false)` in the engine (the exit is left to `flow_noise`); wind -18.1 / -21.6 / -24.5. The Davies test is split: the 2nd order in dB Lin (99 ±6) and the tail broadband against the ARP876 hand calculation (±3 dB).
-**Why it isn't obvious.** The attribution (`attribute.sh`) showed `flow_noise` moving wind < 1 dB and `duct_flow` 6-12 dB, which reads as "the duct source matters", not "it is the same jet again"; and the old anchor passed because the fit carried it.
-
-Found: 2026-11-15 · sound
-
 ### An empty `after_collector` is not a straight pipe: it adds a packed can
 
 **Symptom.** A "straight pipe" preset (PowerFist 212 bench) had a 300–1250 Hz hole and no pipe ring.
@@ -1634,73 +1625,3 @@ Measured with probes, each against an outside reference (details on branch `scra
   missing measurement: a production car's tail-pipe order levels against rpm.
 - **The engine bay** already attenuates as Ibarra measured it (IJVNV 13(1) 2017: insertion loss
   3.7 dB beside, 12.9 above; his 16–27 dB is transmission loss, inside against outside).
-
-## 2026-11-17 — "se corta como una radio": the block's combustion pulse rides the treble
-
-- The ear-validated measure (`scripts/realism/modulation.py`, real ≈ 12 % in 0.8–5 kHz): K20A WOT
-  48–55 %; with `sound.block = 0` 12 % at 6300 rpm, 5 % at 8100. Intake, jets, valves, impacts:
-  none moves it (the random impacts *lower* it; at 4200 rpm without the block the intake gives the
-  rest, 41 → 22 %).
-- The block's combustion through the structure equals the whole of Lalor's measured engine
-  curve at full load (K20A 4000 rpm: 96.7 dB(A) at 1 m vs 96.2); Anderton eq. 9 with his average
-  gasoline pressure gives 89.1. Our cylinder pressure is Anderton-like from 2 kHz up but +9 / +14
-  dB at 500 Hz / 1 kHz (33 whole cycles; a 33.33-cycle FFT once read a false 24–40 dB HF floor:
-  leakage). The burn itself is ordinary (Wiebe 5/2, 10–90 % ≈ 27°, 2.35 bar/° at 2000 rpm).
-  Open: which is wrong, the pressure's 0.5–1 kHz or the SRF level (diesel median + 6.3 dB).
-- `block_modes = 1` takes the modulation to 23 % but each cylinder's random voice puts the
-  cylinder-to-cylinder orders at +6.8 dB (real −15.6); common shapes make the treble periodic
-  (+16 dB). Left off.
-- The impacts used to fill "curve − combustion": silenced on a pull, at full level on a lift-off
-  (the 'soplido al soltar' of the FV build). Now they carry the curve (Raff 1973 Fig. 11); the old
-  test `the_whole_structure_reads_the_measured_curve` fails until the block's level is settled.
-- K20C1 "tiembla al subir": the gears scene's driver lifted at every clutch slip after bite
-  (15 Hz limit cycle, ±190 rpm); fixed in `GearPull`. Reference renders keep the preset's exhaust
-  (on FV the LFA lost its shock fronts: "desastroso").
-
-## 2026-11-17 — audit: what is numerically sound and what is model
-
-Tested, not assumed (scratch probes, K20A 5000 rpm WOT unless said):
-- **Anti-alias** (`AntiAlias`, 4th-order Butterworth at 0.42·48 kHz before keeping one step in 8):
-  the decimated 384 kHz render equals an ideal brick-wall decimation within 0.2 dB per band.
-  No aliasing.
-- **Non-linear line** (`DelayLine::nonlinear`): a 200 Hz sine at σ = 0.5 gives Fubini's
-  B1..B4 = 0.9688/0.2303/0.0821/0.0349 (0.9691/0.2298/0.0813/0.0333) at 48–384 kHz; shocked
-  (σ = 3), its d/dt harmonics tend to the sawtooth's (6.6 of 7.07 at 384 kHz), no floor between.
-- **Packed muffler EQ** (`transmission_eq`): the same at 96/192/384 kHz, on its 2D target
-  (−25.6/−50.3/−51.2/−35.6/−12.8/−6.9/−4.3 dB at 0.5–16 kHz).
-- **Steepening converges slowly**: the exhaust's 8–16 kHz re 0.5–2 kHz is +4.8/+18.4/+22.0 dB at
-  96/192/384 kHz (a lone pipe +1.0/+4.5/+5.7). Live Ultra (192 kHz) and the 384 kHz Reference
-  renders differ by the shock's resolution, not by a bug. Linear pipes are flat in fs.
-- What gives the renders their 8–16 kHz: the shock fronts the primaries form pass the packed
-  boxes, whose 2D loss falls above the tube's first cut-on (1.84c/πD ≈ 5.7 kHz hot): 51–58 dB at
-  1–2 kHz, 4 dB at 16 kHz. The real S2000's spectrum keeps falling there. Model, not bug: the
-  open question is the packed box's high-frequency loss.
-- **Radiation**: tails and intake mouth share the monopole p = ρ₀/(4πr)·dQ/dt (tails Q = A·x/ρc).
-  The K20A's intake reads 7 dB over its silenced exhaust behind the car (77.7 vs 70.6 dB(A) at
-  3 m), the boxes taking 25–58 dB off the exhaust's 0.5–4 kHz against the cleaner's ≈17 dB.
-
-## 2026-11-17 — the engine bay already attenuates as measured; 16–27 dB was the wrong quantity
-
-Ibarra (IJVNV 13(1) 2017, Table 1, Fig. 5): a van's bay's *insertion* loss (bay closed against
-open, what the bay adds) is 12.9 dB overall above it and 3.7 dB beside it (≈ 0 below 200 Hz,
-5–15 dB beside and 20–27 dB above at 1–10 kHz). The 16–27 dB quoted in `engine_bay.rs` and here
-before is his *transmission* loss (inside against outside). Our bay (4 dB at 63 Hz, 14 dB at
-4 kHz) sits between his two positions: no evidence to raise it. With the impacts at Lalor's
-level and Raff's spectrum, the K20A at 6300 rpm WOT 3 m behind reads impacts 80, intake 79,
-block 76, exhaust pulses 66 (with the tail jet 70) dB(A): the engine's own noise dominates and a
-lift-off drops 2.5 dB (real FK8s 9–14).
-
-## 2026-11-18 — "se diluye a altas rpm": the road exhaust falls with rpm while the mechanism rises
-
-- Tonal share of the K20A (held WOT renders, cycle orders over 50 Hz–10 kHz): −0.1 dB at 4200 rpm,
-  −6.4 at 8100 (the LFA stays at −0.1). The impacts follow Lalor's inertia law (I ∝ M²N⁶, SAE
-  800402 eq. 13; his measured slope 49.8 dB/decade), while the road exhaust heard 3 m behind goes
-  68.9/73.2/71.2/67.8/62.4 dB(A) at 3000/4000/5000/6000/7000 rpm.
-- Raff & Perry (JSV 28(3) 1973, §3.3): exhaust noise I ∝ N^4.5 (+13.5 dB per octave of speed);
-  Vineeth et al. (SAE 2018, Fig. 7) a production car's tail-pipe overall, 1 kHz and 2 kHz bands
-  rising steadily with rpm. A straight 3.2 m pipe in place of the road boxes does rise: +8.6 dB
-  (steepening), +12.5 (linear), +17 (FV) from 3000 to 7000 rpm.
-- What eats it: the road path's insertion loss against the straight pipe grows with the orders'
-  frequency: firing order 14.5 dB at 133 Hz (4000 rpm) but 40 dB at 233 Hz (7000), the 16th order
-  55 → 73 dB (533 → 933 Hz). The packing density barely matters (σ 16 000 vs 4 896). Open: why
-  the road boxes and the catalyst take 40 dB at 233 Hz (the catalyst alone 14 dB there, 0 at 133).

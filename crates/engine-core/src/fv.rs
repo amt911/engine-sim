@@ -166,30 +166,6 @@ pub struct Pipe1d {
     /// Each cell's slow mean velocity ū (time constant [`MEAN_FLOW_TAU_S`]), for the acoustic
     /// loss.
     u_mean: Vec<f64>,
-    /// The wall loss above 200 Hz ([`WALL_CORNERS_HZ`]): each cell's high-passed u − ū (the last
-    /// input and the four outputs) and the velocity its √f loss acts on this step.
-    wall_hp: Vec<[f64; 5]>,
-    wall_u: Vec<f64>,
-}
-
-/// Corners of the high-passes that grow the wall loss above the flat `acoustic_loss` (its
-/// 200 Hz value) as Kirchhoff's √f, Hz, and their weights: Σ wₖ·(f/fₖ)²/(1 + (f/fₖ)²) fits
-/// √f − √200 (√Hz) within 2.6 % from 500 Hz to 20 kHz (non-negative least squares on 200
-/// log-spaced points, 200 Hz–20 kHz).
-const WALL_CORNERS_HZ: [f64; 4] = [500.0, 2000.0, 8000.0, 32_000.0];
-const WALL_WEIGHTS: [f64; 4] = [12.4951, 30.5687, 51.1703, 144.0549];
-
-/// Kirchhoff's wall loss per √Hz, Np/(m·√Hz), of a pipe of `area` holding gas at `p`, `rho`:
-/// α(f) = √(πfν)·(1 + (γ−1)/√Pr)/(a·c) (Kinsler et al., *Fundamentals of Acoustics*, 4th ed.,
-/// §9.9), ν from Sutherland's viscosity at T = p/(ρR).
-fn kirchhoff_per_root_hz(area: f64, p: f64, rho: f64) -> f64 {
-    let gamma = crate::gas::GAMMA;
-    let t = p / (rho * crate::gas::R_AIR);
-    let nu = crate::exhaust::gas_viscosity(t) / rho;
-    let c = (gamma * p / rho).sqrt();
-    let radius = (area / std::f64::consts::PI).sqrt();
-    let thermal = 1.0 + (gamma - 1.0) / crate::narrow_tube::PRANDTL.sqrt();
-    (std::f64::consts::PI * nu).sqrt() * thermal / (radius * c)
 }
 
 /// Time constant of the cells' mean velocity ū under the acoustic wall loss, s: slower than any
@@ -223,8 +199,6 @@ impl Pipe1d {
             friction: 0.0,
             acoustic_loss: 0.0,
             u_mean: Vec::new(),
-            wall_hp: Vec::new(),
-            wall_u: Vec::new(),
         }
     }
     /// Largest stable step for Courant number `cfl`.
@@ -273,18 +247,6 @@ impl Pipe1d {
         let n = self.cells.len();
         if self.acoustic_loss > 0.0 && self.u_mean.len() != n {
             self.u_mean = self.cells.iter().map(|c| c.mom / c.rho).collect();
-            self.wall_hp = vec![[0.0; 5]; n];
-            self.wall_u = vec![0.0; n];
-        }
-        if self.acoustic_loss > 0.0 {
-            // the √f part of the wall loss, on the high-passed motion about the mean, as this
-            // step starts (Kirchhoff's α per √Hz from each cell's own gas)
-            for (j, c) in self.cells.iter().enumerate() {
-                let pr = c.to_prim();
-                let h = &self.wall_hp[j];
-                let shaped: f64 = (0..4).map(|k| WALL_WEIGHTS[k] * h[k + 1]).sum();
-                self.wall_u[j] = kirchhoff_per_root_hz(self.area[j], pr.p, pr.rho) * shaped;
-            }
         }
         self.u0.copy_from_slice(&self.cells);
         let mut ends = (Cons::default(), Cons::default());
@@ -307,21 +269,7 @@ impl Pipe1d {
         self.end_flux = ends;
         if self.acoustic_loss > 0.0 {
             let k = (dt / MEAN_FLOW_TAU_S).min(1.0);
-            let poles: [f64; 4] = std::array::from_fn(|i| {
-                (-2.0 * std::f64::consts::PI * WALL_CORNERS_HZ[i] * dt).exp()
-            });
-            for ((m, c), h) in self
-                .u_mean
-                .iter_mut()
-                .zip(&self.cells)
-                .zip(&mut self.wall_hp)
-            {
-                let x = c.mom / c.rho - *m;
-                // one-pole high-passes y = a·(y₁ + x − x₁)
-                for i in 0..4 {
-                    h[i + 1] = poles[i] * (h[i + 1] + x - h[0]);
-                }
-                h[0] = x;
+            for (m, c) in self.u_mean.iter_mut().zip(&self.cells) {
                 *m += k * (c.mom / c.rho - *m);
             }
         }
@@ -657,10 +605,7 @@ impl Pipe1d {
             };
             if self.acoustic_loss > 0.0 {
                 let c = (crate::gas::GAMMA * cell.p / cell.rho).sqrt();
-                wall -= 2.0
-                    * c
-                    * cell.rho
-                    * (self.acoustic_loss * (cell.u - self.u_mean[j]) + self.wall_u[j]);
+                wall -= 2.0 * self.acoustic_loss * c * cell.rho * (cell.u - self.u_mean[j]);
             }
             *r = Cons {
                 rho: -(fb * b.rho - fa * a.rho) * inv,
@@ -1142,59 +1087,6 @@ mod tests {
         };
         let ratio = peak(alpha) / peak(0.0);
         assert!((ratio - 0.939_22).abs() < 0.006, "{ratio}");
-    }
-
-    #[test]
-    fn the_wall_loss_grows_with_frequency_as_kirchhoffs() {
-        // The walls' viscous and thermal boundary layers take a wave at α(f) = √(πfν)·(1 +
-        // (γ−1)/√Pr)/(a·c) (Kinsler et al., Fundamentals of Acoustics, 4th ed., §9.9); the flat
-        // `acoustic_loss` stands for it at 200 Hz and the rest grows as √f. Hand calculation,
-        // still air ρ = 1.2, p = 101 325 (c = 343.82 m/s, T = 294.2 K, Sutherland μ = 1.818e-5,
-        // ν = 1.5154e-5), Pr = 0.71, a = 25 mm: α(200) = 0.016741, α(1000) = 0.037434,
-        // α(6000) = 0.091695 Np/m. With the flat 0.030459 at 200 Hz: α = 0.051152 at 1 kHz and
-        // 0.105413 at 6 kHz; over d = c·3 ms = 1.0315 m a tone packet keeps e^(−αd) = 0.94861
-        // and 0.89697 of its loss-free peak (the flat loss alone: 0.96907 at both).
-        use std::f64::consts::PI;
-        let area = PI * 0.025 * 0.025;
-        let peak = |loss: f64, f: f64| {
-            let air = Prim {
-                rho: 1.2,
-                u: 0.0,
-                p: 101_325.0,
-            };
-            let mut p = Pipe1d::segmented(&[(3.0, area)], 0.0025, air);
-            p.acoustic_loss = loss;
-            let k = 2.0 * PI * f / 343.82;
-            for (i, c) in p.cells.iter_mut().enumerate() {
-                let x = (i as f64 + 0.5) * 0.0025 - 1.0;
-                // a right-running packet: p' = ρc·u', six periods wide
-                let env = (-(x * f / (343.82 * 3.0)).powi(2)).exp();
-                let dp = 100.0 * env * (k * x).cos();
-                *c = Prim {
-                    rho: 1.2 * (1.0 + dp / (1.4 * 101_325.0)),
-                    u: dp / (1.2 * 343.82),
-                    p: 101_325.0 + dp,
-                }
-                .to_cons();
-            }
-            let mut t = 0.0;
-            while t < 0.003 {
-                let dt = p.max_dt(0.5).min(0.003 - t);
-                p.step(dt);
-                t += dt;
-            }
-            (0..p.cells.len())
-                .map(|i| (p.prim(i).p - 101_325.0).abs())
-                .fold(0.0, f64::max)
-        };
-        let flat = -(0.97f64).ln();
-        for (f, want) in [(1000.0, 0.948_61), (6000.0, 0.896_97)] {
-            let ratio = peak(flat, f) / peak(0.0, f);
-            assert!(
-                (ratio - want).abs() < 0.012,
-                "{f} Hz: {ratio:.5} against {want}"
-            );
-        }
     }
 
     #[test]

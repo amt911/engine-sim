@@ -22,15 +22,6 @@ use std::f64::consts::PI;
 /// eq. 9, ±2.5 dB(A) against measured engines; test
 /// `a_petrol_pressure_spectrum_makes_andertons_noise`). The review's curve shape stays.
 const GAIN_DB: f64 = 114.15;
-/// How much more a petrol engine's block attenuates its combustion than [`GAIN_DB`]'s (the
-/// diesels' median, raised to Anderton's eq. 9), dB: one constant fitted to the measured
-/// structure attenuation of a petrol block (Yoon & Yoon, Int. J. Vehicle Design 2005, Fig. 5,
-/// 500 Hz–2.5 kHz; test `a_petrol_block_attenuates_as_yoons_measured_one`). Without it a
-/// petrol block's combustion equalled the whole of its measured noise (K20A 4000 rpm: 96.7
-/// against Lalor's 96.2 dB(A) at 1 m) where in petrol engines the mechanism's noise dominates
-/// (Anderton, SAE 790270; Raff & Perry 1973 Fig. 11: motored as loud as fired), and its pulse
-/// rode the treble at 48 % against ≈ 12 % in recordings.
-pub const PETROL_EXTRA_SA_DB: f64 = 13.4;
 /// Triple pole of the rising flank, Hz.
 const FA_HZ: f64 = 3291.4;
 /// Single pole, Hz.
@@ -87,14 +78,6 @@ pub struct StructureResponse {
 }
 
 impl StructureResponse {
-    /// A petrol engine's block, stepped every `dt` seconds: the same shape, attenuating
-    /// [`PETROL_EXTRA_SA_DB`] more.
-    pub fn petrol(dt: f64) -> Self {
-        let mut s = Self::new(dt);
-        s.gain *= 10f64.powf(-PETROL_EXTRA_SA_DB / 20.0);
-        s
-    }
-
     /// Stepped every `dt` seconds.
     pub fn new(dt: f64) -> Self {
         let wa = 2.0 * PI * FA_HZ;
@@ -254,47 +237,6 @@ pub fn combustion_drive(cylinders_pa: impl IntoIterator<Item = f64>, bore_m: f64
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_petrol_block_attenuates_as_yoons_measured_one() {
-        // Yoon & Yoon, Int. J. Vehicle Design 2005, Fig. 5: the structure attenuation of a
-        // 0.8 L three-cylinder petrol engine's cast iron block measured on the running engine
-        // at 1 m (circles; read off the figure ±1 dB): SA = L_pressure − L_noise per third
-        // octave. Its bore is not printed: ESTIMATE 68.5 mm, the 0.8 L three-cylinder of the
-        // time (Daewoo F8C). Through the petrol block a 1 kPa tone at each centre: the mean
-        // over 500 Hz–2.5 kHz within 1.5 dB of the measured, each band within 10 dB (the
-        // diesel median's shape is kept, the measured curve's 500 Hz dip is not).
-        let measured = [
-            (500.0, 116.0),
-            (630.0, 122.0),
-            (800.0, 117.0),
-            (1000.0, 115.0),
-            (1250.0, 111.0),
-            (1600.0, 109.0),
-            (2000.0, 103.0),
-            (2500.0, 98.0),
-        ];
-        let dt = 1.0 / 96_000.0;
-        let sa = |f: f64| {
-            let mut s = StructureResponse::petrol(dt);
-            let n = 96_000usize;
-            let mut sum = 0.0;
-            for i in 0..n {
-                let p = 1000.0 * std::f64::consts::SQRT_2 * (2.0 * PI * f * i as f64 * dt).sin();
-                let y = s.process(combustion_drive([p], 0.0685));
-                if i >= n / 2 {
-                    sum += y * y;
-                }
-            }
-            154.0 - 10.0 * (sum / (n - n / 2) as f64 / 4e-10).log10()
-        };
-        let diffs: Vec<f64> = measured.iter().map(|&(f, m)| sa(f) - m).collect();
-        let mean = diffs.iter().sum::<f64>() / diffs.len() as f64;
-        assert!(mean.abs() < 1.5, "mean {mean:.1} dB; {diffs:.1?}");
-        for (d, (f, _)) in diffs.iter().zip(&measured) {
-            assert!(d.abs() < 10.0, "{f} Hz: {d:.1} dB; {diffs:.1?}");
-        }
-    }
 
     /// Mean output power of a unit sine of `f` Hz into cylinder `c` of 4, alone (undoing the mean).
     fn modal_power(f: f64, c: usize) -> f64 {

@@ -9,12 +9,6 @@ firing-rhythm modulation (scripts/realism/modulation.py) is measured on every re
 chosen g* puts the presets' median at the real steady recordings' median. K = K_now · g*²
 (the mix scales pressure, K power).
 
-NOTE (2026-11-15): K is NOT set this way any more. The modulation cannot set it (the noise
-follows the pulses it rides on; FINDINGS 2026-11-06), and K = 2.5e-5 was one point fitted to
-Davies & Holland's 107 dB(A) at 6000 rpm, which is broadband no far-field jet makes (FINDINGS
-2026-11-15). The open end no longer takes the law at all (the free jet `sound.flow_noise` is
-its source); K now only sets the inner sites. This script is kept for the measurement itself.
-
 usage: calibrate_duct_flow.py BINARY OUTDIR [--real-median 9.6] [--jobs 6]
        calibrate_duct_flow.py BINARY OUTDIR --check PRESET RPM LOAD G
 """

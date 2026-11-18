@@ -23,7 +23,6 @@ pub mod listener;
 pub mod mechanical;
 pub mod narrow_tube;
 pub mod pipe_heat;
-pub mod rolling_noise;
 pub mod silencer2d;
 pub mod sound;
 pub mod structure;
