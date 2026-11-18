@@ -556,6 +556,7 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
                     .step_by(0.01)
                     .text("Room reverb"),
             );
+            room_switch(ui, &mut snd.room);
             ui.add(
                 slider(&mut snd.leveling, 0.0..=1.0)
                     .step_by(0.05)
@@ -681,6 +682,36 @@ fn vtec_lobe(ui: &mut egui::Ui, name: &str, v: &mut engine_core::valve::ValveTim
             0.1,
             &format!("{name} VTEC lobe lift (mm)"),
         );
+    }
+}
+
+/// The room the listener stands in: off (outdoors) or a dyno cell of a volume and a
+/// reverberation time ([`engine_core::sound::RoomDef`]).
+fn room_switch(ui: &mut egui::Ui, room: &mut Option<engine_core::sound::RoomDef>) {
+    let mut on = room.is_some();
+    if ui
+        .checkbox(&mut on, "In a room (dyno cell)")
+        .on_hover_text(
+            "The listener inside a room: its walls add a reverberant field (Sabine), as in \
+             chassis-dyno recordings. Off: outdoors.",
+        )
+        .changed()
+    {
+        *room = on.then(engine_core::sound::RoomDef::default);
+    }
+    if let Some(r) = room {
+        ui.add(
+            slider(&mut r.rt60_s, 0.2..=3.0)
+                .step_by(0.05)
+                .text("Room reverberation time (s)"),
+        )
+        .on_hover_text("Time the room's sound takes to fall 60 dB: shorter = less echo");
+        ui.add(
+            slider(&mut r.volume_m3, 30.0..=3000.0)
+                .step_by(10.0)
+                .text("Room volume (m³)"),
+        )
+        .on_hover_text("A bigger room, at the same reverberation time, sounds drier up close");
     }
 }
 
@@ -1036,6 +1067,23 @@ mod tests {
         let v = h.state().def.plenum_volume_m3;
         nudge(&mut h, "Plenum (L)");
         assert_eq!(h.state().def.plenum_volume_m3, v);
+    }
+
+    #[test]
+    fn the_room_can_be_switched_on_and_sized() {
+        // outdoors by default; ticked, a dyno cell whose reverberation time can be dragged
+        let mut h = harness(EngineDef::inline4());
+        assert!(h.state().def.sound.room.is_none());
+        press(&mut h, "In a room (dyno cell)");
+        let room = h.state().def.sound.room.expect("a room");
+        assert_eq!(room, engine_core::sound::RoomDef::default());
+        nudge(&mut h, "Room reverberation time (s)");
+        assert!(h.state().def.sound.room.unwrap().rt60_s > room.rt60_s);
+        nudge(&mut h, "Room volume (m³)");
+        assert!(h.state().def.sound.room.unwrap().volume_m3 > room.volume_m3);
+        assert!(h.state().engine_dirty);
+        press(&mut h, "In a room (dyno cell)");
+        assert!(h.state().def.sound.room.is_none());
     }
 
     #[test]

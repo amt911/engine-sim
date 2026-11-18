@@ -194,7 +194,17 @@ pub struct RoomReverb {
     damp: [f64; 8],
     damp_k: f64,
     scale: f64,
+    /// Series all-pass diffusers before the network: they spread each sound into a dense wash
+    /// of early reflections (Schroeder 1962), which the walls of a real room give and the
+    /// network's few lines alone do not (heard as separate echoes).
+    diffusers: [Vec<f64>; 4],
+    dpos: [usize; 4],
 }
+
+/// The diffusers' delays, ms, and their all-pass gain (Schroeder 1962: 0.7; mutually prime
+/// short delays under the network's shortest line).
+const DIFFUSER_MS: [f64; 4] = [4.7, 3.6, 12.7, 9.3];
+const DIFFUSER_G: f64 = 0.7;
 
 /// Where a room's lines start losing their highs, Hz.
 pub const ROOM_DAMP_HZ: f64 = 8_000.0;
@@ -211,6 +221,8 @@ impl RoomReverb {
             damp: [0.0; 8],
             damp_k: 1.0 - (-2.0 * PI * ROOM_DAMP_HZ / sample_rate).exp(),
             scale: 1.0,
+            diffusers: DIFFUSER_MS.map(|ms| vec![0.0; ((ms * 1e-3 * sample_rate) as usize).max(1)]),
+            dpos: [0; 4],
         };
         // its own impulse response's energy, then the scale that gives the room's
         let mut probe = r.clone();
@@ -232,11 +244,23 @@ impl RoomReverb {
             l.fill(0.0);
         }
         self.damp = [0.0; 8];
+        for d in &mut self.diffusers {
+            d.fill(0.0);
+        }
         self
     }
 
     /// The reverberant sound for input `x` (the direct sound at the listener).
     pub fn process(&mut self, x: f64) -> f64 {
+        // the diffusers: y = −g·u + d, d' = u + g·y (a Schroeder all-pass each)
+        let mut x = x;
+        for (d, p) in self.diffusers.iter_mut().zip(self.dpos.iter_mut()) {
+            let delayed = d[*p];
+            let y = -DIFFUSER_G * x + delayed;
+            d[*p] = x + DIFFUSER_G * y;
+            *p = (*p + 1) % d.len();
+            x = y;
+        }
         let mut v = [0.0; 8];
         let mut wet = 0.0;
         for i in 0..8 {
@@ -614,6 +638,24 @@ mod tests {
             max_relative = 0.03
         );
         assert!(gain(40_000.0) < 0.0624, "40 kHz: {}", gain(40_000.0));
+    }
+
+    #[test]
+    fn a_room_answers_densely_not_in_separate_echoes() {
+        // a room's early response is a dense wash, not a few distinct repeats (Schroeder 1962:
+        // ≳ 1000 reflections per second make a tail heard as reverberation, fewer as echoes).
+        // Between 20 and 120 ms after an impulse, at least 1000 samples per 100 ms carry more
+        // than 1 % of the response's peak
+        let mut r = RoomReverb::new(FS, 1.0, 11.71);
+        let y: Vec<f64> = (0..(0.2 * FS) as usize)
+            .map(|i| r.process(if i == 0 { 1.0 } else { 0.0 }))
+            .collect();
+        let peak = y.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        let dense = y[(0.02 * FS) as usize..(0.12 * FS) as usize]
+            .iter()
+            .filter(|v| v.abs() > 0.01 * peak)
+            .count();
+        assert!(dense >= 1000, "{dense} samples above 1 %");
     }
 
     #[test]
