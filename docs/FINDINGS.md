@@ -1704,3 +1704,21 @@ lift-off drops 2.5 dB (real FK8s 9–14).
   frequency: firing order 14.5 dB at 133 Hz (4000 rpm) but 40 dB at 233 Hz (7000), the 16th order
   55 → 73 dB (533 → 933 Hz). The packing density barely matters (σ 16 000 vs 4 896). Open: why
   the road boxes and the catalyst take 40 dB at 233 Hz (the catalyst alone 14 dB there, 0 at 133).
+
+## 2026-11-18 — judge a preset against its own engine, not the 26-car pass-by pool
+
+The realism gates' wind (2–8 kHz off the order lines) and low-mid bounds are the median and extreme of
+26 exterior recordings of many cars at many distances. They called the K20A windy (−15 against a
+median −24.7), and a day of physics changes chased that median. Measured identically on stock DC5 and
+EP3 chassis-dyno clips (YouTube, local only) with `scripts/realism/same_engine.py`, main's K20A at
+6000–8000 rpm reads wind −13.5 (real −9 to −21), low-mid −8 to −4 (real −9 to −2), treble line share
+45–55 % (real 54–72 %): in range; the user, hearing both, agreed ("suena bien el de main"). Below
+5000 rpm the render is much cleaner than the dyno clips (wind −32 to −17 against −9 to −14; the dyno's
+rollers and tyres add their own noise there). What the same day ruled out by measurement: the silencer
+as a reflecting chamber, the collector–tail junction (one ρc by design; "fixing" it broke mass
+balance), the catalyst's 14 dB (≈ 2 dB in the system), a valved DC5 silencer on a free straight-through
+model (worse), shell break-out (Munjal Fig. 7.32: no measurable change), combustion variability's speed
+trend (Young, SAE 810020: it rises slightly with speed, as modelled), the intake heard through the bay
+(the DC5's snorkel draws behind the grille, the bay's diffuse-field loss overstates it; worse by ear).
+A first version of `same_engine.py` masked lines 1.5 % wide, which covered the whole spectrum above
+≈ 3.3 kHz at 6000 rpm; its self-test (a synthetic engine of known noise share) caught it.
