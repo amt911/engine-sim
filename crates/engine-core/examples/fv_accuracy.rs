@@ -43,8 +43,8 @@ fn main() {
             p: 1.0,
         };
         let mut p = Pipe1d::new(1.0, n, left);
-        for i in n / 2..n {
-            p.cells[i] = Prim {
+        for cell in &mut p.cells[n / 2..n] {
+            *cell = Prim {
                 rho: 0.125,
                 u: 0.0,
                 p: 0.1,
@@ -69,9 +69,9 @@ fn main() {
         let n = (1.0 / (sigma / cells_per_sigma)) as usize;
         let mut p = Pipe1d::new(1.0, n, air);
         let x_of = |i: usize| (i as f64 + 0.5) / n as f64;
-        for i in 0..n {
+        for (i, cell) in p.cells.iter_mut().enumerate() {
             let x = x_of(i) - 0.2;
-            p.cells[i] = Prim {
+            *cell = Prim {
                 p: 101_325.0 + 500.0 * (-0.5 * (x / sigma).powi(2)).exp(),
                 ..air
             }
