@@ -1267,8 +1267,35 @@ pub struct ExhaustNet {
     heat: Option<Heat>,
     /// Flow noise at the exhaust's area expansions ([`ExhaustNet::set_duct_flow`]).
     duct_flow: DuctFlow,
+    /// Each cycle's gas at its own temperature ([`ExhaustNet::set_slug`]).
+    slugs: Slugs,
     pub dt: f64,
 }
+
+/// The gas of each cycle at its own temperature (Heywood, *ICE Fundamentals*, §6.6: the
+/// exhaust's temperature varies through each pulse and from cycle to cycle; cycle-to-cycle COV
+/// 1.5–2.4 % at the port, Morey & Seers, *Applied Thermal Engineering* 30, 2010). Each primary
+/// carries its last cycle's slug; a branch's collector and tail the slugs mixed in by mass
+/// (each new slug's mass over the gas the branch holds). Their sound speeds follow, c ∝ √T,
+/// eased in over [`SLUG_EASE_S`] so a delay never jumps (a click). With the gas temperature
+/// model on ([`ExhaustDef::gas_temperature`]) its walls set the speeds and slugs are not used.
+#[derive(Debug, Clone, Default)]
+struct Slugs {
+    /// T/T̄ of each primary's slug: wanted, and as eased in so far.
+    primary: Vec<(f64, f64)>,
+    /// The same for each branch's mixed gas.
+    branch: Vec<(f64, f64)>,
+    /// Each cylinder's branch, and each branch's gas mass, kg (at the tail's reference density).
+    branch_of: Vec<usize>,
+    branch_mass: Vec<f64>,
+    on: bool,
+}
+
+/// How fast a pipe takes a new slug's sound speed, s: under a millisecond of a pulse's rise
+/// at any speed, long against a sample.
+const SLUG_EASE_S: f64 = 1e-3;
+/// The coolest slug a pipe makes room for, T/T̄ (Morey & Seers' COV ≤ 2.4 %: 0.85 is six σ).
+const SLUG_MIN_RATIO: f64 = 0.85;
 
 /// The exhaust's duct flow noise: one [`crate::jet_noise::DuctJet`] per [`ExpansionSite`], in
 /// [`expansion_sites`] order, at a mix `gain` (0: off, nothing computed).
@@ -1790,9 +1817,89 @@ impl ExhaustNet {
             branches,
             heat: def.gas_temperature.then(Heat::default),
             duct_flow: DuctFlow::new(def, cylinders),
+            slugs: Slugs::default(),
             dt,
         }
         .with_room_for_cold_gas()
+        .with_slugs(cylinders)
+    }
+
+    /// Room in every pipe for a slug down to [`SLUG_MIN_RATIO`], and each cylinder's branch.
+    fn with_slugs(mut self, cylinders: usize) -> Self {
+        if self.heat.is_some() {
+            return self;
+        }
+        let rho = tail_reference_density();
+        let mut branch_of = vec![0; cylinders];
+        let mut branch_mass = Vec::new();
+        for (k, b) in self.branches.iter().enumerate() {
+            for &m in &b.members {
+                if m < cylinders {
+                    branch_of[m] = k;
+                }
+            }
+            let area = |p: &Pipe| {
+                let (l, d) = p.size();
+                0.25 * std::f64::consts::PI * d * d * l
+            };
+            let volume = area(&b.collector) + b.tail.pipes().iter().map(area).sum::<f64>();
+            branch_mass.push(rho * volume);
+        }
+        let room = |p: &mut Pipe| {
+            let c = p.gas_sound_speed();
+            p.make_room(c * SLUG_MIN_RATIO.sqrt());
+        };
+        self.for_each_pipe(room);
+        self.slugs = Slugs {
+            primary: vec![(1.0, 1.0); cylinders],
+            branch: vec![(1.0, 1.0); self.branches.len()],
+            branch_of,
+            branch_mass,
+            on: true,
+        };
+        self
+    }
+
+    /// Cylinder `cyl` has just released a slug of `mass_kg` at `ratio` times its mean exhaust
+    /// temperature: its primary takes it, its branch mixes it in ([`Slugs`]).
+    pub fn set_slug(&mut self, cyl: usize, ratio: f64, mass_kg: f64) {
+        let s = &mut self.slugs;
+        if !s.on || cyl >= s.primary.len() || !ratio.is_finite() {
+            return;
+        }
+        let ratio = ratio.max(SLUG_MIN_RATIO);
+        s.primary[cyl].0 = ratio;
+        let b = s.branch_of[cyl];
+        let w = (mass_kg / s.branch_mass[b].max(1e-12)).clamp(0.0, 1.0);
+        s.branch[b].0 += w * (ratio - s.branch[b].0);
+    }
+
+    /// One step of the slugs easing in: each pipe's sound speed from its slug.
+    fn ease_slugs(&mut self) {
+        if !self.slugs.on {
+            return;
+        }
+        let k = 1.0 - (-self.dt / SLUG_EASE_S).exp();
+        let s = &mut self.slugs;
+        for (i, (want, now)) in s.primary.iter_mut().enumerate() {
+            if (*want - *now).abs() > 1e-9 {
+                *now += k * (*want - *now);
+                self.primaries[i].set_sound_speed(C_PRIMARY * now.sqrt());
+            }
+        }
+        for (b, (want, now)) in s.branch.iter_mut().enumerate() {
+            if (*want - *now).abs() > 1e-9 {
+                *now += k * (*want - *now);
+                let r = now.sqrt();
+                let br = &mut self.branches[b];
+                br.collector.set_sound_speed(C_COLLECTOR * r);
+                for p in br.tail.pipes_mut() {
+                    // each tail pipe keeps the speed it was built for, scaled
+                    let c0 = p.built_sound_speed();
+                    p.set_sound_speed(c0 * r);
+                }
+            }
+        }
     }
 
     /// With [`ExhaustDef::gas_temperature`], room in every pipe for gas down to the air's
@@ -2150,6 +2257,7 @@ impl ExhaustNet {
         if let Some(h) = &mut self.heat {
             h.steps += 1;
         }
+        self.ease_slugs();
         let n = self.primaries.len();
         let Scratch {
             from_far,
@@ -2373,6 +2481,76 @@ mod tests {
         v.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, x| {
             (h ^ x.to_bits()).wrapping_mul(0x0100_0000_01b3)
         })
+    }
+
+    #[test]
+    fn each_cycles_hotter_or_cooler_gas_blurs_the_treble_lines() {
+        // Each cycle's exhaust leaves at its own temperature: cycle-to-cycle COV 1.5–2.4 % at
+        // the port (Morey & Seers, Applied Thermal Eng. 30, 2010, Figs. 3–5); its sound speed
+        // c ∝ √T then varies ≈ 1 %, and a wave crossing the ≈ 4 m after the collector (≈ 8 ms)
+        // arrives ≈ 30–80 µs early or late from cycle to cycle. Gaussian timing jitter σ keeps
+        // exp(−(2πfσ)²) of a line's power: at 6 kHz and 40 µs, 0.15 (−8 dB); at 200 Hz, 0.9998.
+        // The inline-4's pulsed net with each pulse at a ratio T/T̄ drawn with σ = 2.2 %, against
+        // all at 1: the 6 kHz region's lines (harmonics 28–32 of 200 Hz) lose more than 3 dB, the
+        // firing line under 0.5 dB
+        let run = |sigma: f64| {
+            let dt = 1.0 / 48_000.0;
+            let def = crate::engine::EngineDef::inline4().exhaust;
+            let mut net = super::ExhaustNet::new(&def, 4, dt);
+            net.set_duct_flow(0.0);
+            let mut rng = 0x2545_f491_4f6c_dd1du64;
+            let mut gauss = || {
+                // Box–Muller on two xorshift draws
+                let mut u = || {
+                    rng ^= rng << 13;
+                    rng ^= rng >> 7;
+                    rng ^= rng << 17;
+                    (rng >> 11) as f64 / (1u64 << 53) as f64
+                };
+                let (a, b) = (u().max(1e-12), u());
+                (-2.0 * a.ln()).sqrt() * (2.0 * std::f64::consts::PI * b).cos()
+            };
+            let mut was = [false; 4];
+            (0..(2.0 / dt) as usize)
+                .map(|n| {
+                    let t = n as f64 * dt;
+                    let mut flows = [0.0; 4];
+                    for k in 0..4 {
+                        let on = ((t + 0.005 * k as f64) / 0.02).fract() < 0.2;
+                        if on && !was[k] {
+                            net.set_slug(k, 1.0 + sigma * gauss(), 2.4e-4);
+                        }
+                        was[k] = on;
+                        flows[k] = if on { 0.06 } else { 0.0 };
+                    }
+                    net.step(&flows)
+                })
+                .skip((0.5 / dt) as usize)
+                .collect::<Vec<f64>>()
+        };
+        let line = |x: &[f64], f: f64| {
+            let dt = 1.0 / 48_000.0;
+            let (mut re, mut im) = (0.0, 0.0);
+            for (i, v) in x.iter().enumerate() {
+                let w = 2.0 * std::f64::consts::PI * f * i as f64 * dt;
+                re += v * w.cos();
+                im += v * w.sin();
+            }
+            re * re + im * im
+        };
+        let (still, varied) = (run(0.0), run(0.022));
+        let treble: (f64, f64) = (28..=32)
+            .map(|k| {
+                (
+                    line(&still, 200.0 * k as f64),
+                    line(&varied, 200.0 * k as f64),
+                )
+            })
+            .fold((0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1));
+        let lost = 10.0 * (treble.0 / treble.1).log10();
+        let firing = 10.0 * (line(&still, 200.0) / line(&varied, 200.0)).log10();
+        assert!(lost > 3.0, "6 kHz lines lost {lost:.1} dB");
+        assert!(firing.abs() < 0.5, "firing line {firing:+.2} dB");
     }
 
     #[test]

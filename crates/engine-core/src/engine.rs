@@ -1530,6 +1530,9 @@ pub struct CylinderView {
     pub burning: bool,
 }
 
+/// Cycles over which a cylinder's mean exhaust temperature is followed (each slug is measured
+/// against it): long against one cycle's scatter, short against a change of load.
+const SLUG_MEAN_CYCLES: f64 = 20.0;
 /// Ignition delay between spark and the start of the Wiebe burn, degrees.
 const IGNITION_DELAY_DEG: f64 = 5.0;
 /// Half-burned point of an MBT-timed burn, ° after top centre (Heywood §9.2.2: 8–10°).
@@ -2330,6 +2333,9 @@ pub struct Engine {
     air_cleaner: Option<(f64, crate::air_cleaner::AirCleaner)>,
     /// Each cylinder's rod and side force at the last step, N (their sign changes are impacts).
     impact_forces: Vec<(f64, f64)>,
+    /// Each cylinder's running mean exhaust temperature at EVO, K: what each cycle's slug is
+    /// measured against ([`crate::exhaust::ExhaustNet::set_slug`]).
+    slug_mean_k: Vec<f64>,
     /// Impacts counted (each at a point of its own: they add in power, one unit energy each),
     /// the time counted over since the rate was last taken, and that rate, per second
     /// ([`crate::mechanical`]: the level is shared among them).
@@ -2622,6 +2628,7 @@ impl Engine {
             impact_rng: seed.wrapping_mul(0xD1B5_4A32_D192_ED03) | 1,
             air_cleaner: None,
             impact_forces: Vec::new(),
+            slug_mean_k: Vec::new(),
             impact_count: (0, 0.0, 0.0),
             impact_unit: None,
             impact_structure: None,
@@ -3079,6 +3086,21 @@ impl Engine {
             // opens; a cut decided after it started no longer reaches this charge
             if crossed(prev, cur, evo) {
                 self.cyl[i].injected = inject;
+                // the cycle's gas leaves at its own temperature: its slug against the cylinder's
+                // running mean (over ≈ 20 cycles), the mass it carries ≈ what the cylinder holds
+                if self.slug_mean_k.len() != n_cyl {
+                    self.slug_mean_k = vec![0.0; n_cyl];
+                }
+                let (t, m) = (self.cyl[i].gas.temperature(), self.cyl[i].gas.mass_kg);
+                let mean = &mut self.slug_mean_k[i];
+                if *mean <= 0.0 {
+                    *mean = t;
+                }
+                let ratio = t / *mean;
+                *mean += (t - *mean) / SLUG_MEAN_CYCLES;
+                if let Some(net) = &mut self.net {
+                    net.set_slug(i, ratio, m);
+                }
             }
 
             // Piston motion: adiabatic work p·dV.
