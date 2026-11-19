@@ -212,7 +212,7 @@ engine:
     turbine_area_m2: 0.0004
     vnt_open_area_m2: 0.0
     inertia_kgm2: 0.00002
-    wastegate_pa: 160000.0
+    wastegate_pa: 135000.0
     wastegate_area_m2: 0.001
     intercooler_effectiveness: 0.75
     intercooler_drop_k: 250000.0
