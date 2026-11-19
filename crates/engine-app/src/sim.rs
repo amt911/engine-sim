@@ -61,7 +61,19 @@ fn voice_for(def: &EngineDef, sample_rate: f64) -> Voice {
     let mut v = Voice::new(sample_rate);
     v.reverb_mix = def.sound.reverb;
     v.leveler.amount = def.sound.leveling;
+    v.room = room_for(def, sample_rate);
     v
+}
+
+/// The room of the engine's definition, if any, heard from its listener's distance.
+fn room_for(def: &EngineDef, sample_rate: f64) -> Option<engine_audio::dsp::RoomReverb> {
+    def.sound.room.map(|r| {
+        engine_audio::dsp::RoomReverb::new(
+            sample_rate,
+            r.rt60_s,
+            r.reverberant_to_direct(def.sound.listener_distance_m),
+        )
+    })
 }
 
 /// Samples rendered per pass (a few milliseconds of audio).
@@ -188,6 +200,11 @@ impl Simulation {
     pub fn replace_engine(&mut self, def: EngineDef) {
         self.voice.reverb_mix = def.sound.reverb;
         self.voice.leveler.amount = def.sound.leveling;
+        if def.sound.room != self.def.sound.room
+            || def.sound.listener_distance_m != self.def.sound.listener_distance_m
+        {
+            self.voice.room = room_for(&def, self.sample_rate);
+        }
         self.rolling_r = tyre_distance(&def);
         self.def = def.clone();
         let Some(def) = self.try_retune(self.quality.apply(&def)) else {
@@ -833,6 +850,24 @@ pub(crate) mod tests {
         let flat = mean(EngineDef::flatplane_v8);
         assert!(cross > 0.005, "cross-plane low orders {cross}");
         assert!(cross > 10.0 * flat, "cross {cross} vs flat {flat}");
+    }
+
+    #[test]
+    fn the_voice_stands_in_the_engines_room() {
+        // the default room (1500 m³, RT60 0.4 s) heard 3 m away: the voice carries its reverberant
+        // field (0.7493 times the direct energy, `RoomDef`); outdoors it has none
+        let mut def = EngineDef::inline4();
+        def.sound.room = Some(engine_core::sound::RoomDef::default());
+        let mut sim = Simulation::new(def.clone(), FS, 1);
+        assert!(sim.voice.room.is_some());
+        let mut room = sim.voice.room.take().unwrap();
+        let e: f64 = (0..(4.0 * FS) as usize)
+            .map(|i| room.process(if i == 0 { 1.0 } else { 0.0 }).powi(2))
+            .sum();
+        assert!((e / 0.7493 - 1.0).abs() < 0.02, "{e}");
+        def.sound.room = None;
+        sim.replace_engine(def);
+        assert!(sim.voice.room.is_none());
     }
 
     #[test]
