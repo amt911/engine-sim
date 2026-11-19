@@ -192,10 +192,10 @@ struct Airbox {
 }
 
 impl Airbox {
-    fn new(def: &AirboxDef, init: Prim) -> Self {
+    fn new(def: &AirboxDef, init: Prim, cell: f64) -> Self {
         let a_duct = area(def.duct_diameter_m.max(1e-3));
-        let length = def.effective_duct_length().max(2.0 * CELL_M);
-        let n = (length / CELL_M).round().max(2.0);
+        let length = def.effective_duct_length().max(2.0 * cell);
+        let n = (length / cell).round().max(2.0);
         let ducts = (0..def.ducts.max(1))
             .map(|_| {
                 let mut p = Pipe1d::segmented(&[(length, a_duct)], length / n, init);
@@ -470,6 +470,18 @@ impl IntakeFv {
     }
 
     pub fn new(def: &IntakeDef, plenum_volume_m3: f64, cylinders: usize, dt: f64) -> Self {
+        Self::with_cells(def, plenum_volume_m3, cylinders, dt, CELL_M)
+    }
+
+    /// [`IntakeFv::new`] on cells of `cell` m (finer for offline renders: the trumpets' firing
+    /// harmonics a few kHz up, [`crate::exhaust_fv::ExhaustFv::with_cells`]).
+    pub fn with_cells(
+        def: &IntakeDef,
+        plenum_volume_m3: f64,
+        cylinders: usize,
+        dt: f64,
+        cell: f64,
+    ) -> Self {
         let init = Prim {
             rho: ATM_PA / (R_AIR * AMBIENT_T_K),
             u: 0.0,
@@ -478,7 +490,7 @@ impl IntakeFv {
         let a_runner = area(def.runner_diameter_m);
         let runners = (0..cylinders)
             .map(|_| {
-                let n = (def.runner_length_m / CELL_M).round().max(2.0);
+                let n = (def.runner_length_m / cell).round().max(2.0);
                 let mut p = Pipe1d::segmented(
                     &[(def.runner_length_m, a_runner)],
                     def.runner_length_m / n,
@@ -490,14 +502,14 @@ impl IntakeFv {
             })
             .collect();
         // cold air, |u| + c up to ~700 m/s at a choked trumpet: 0.8 · cell / 700
-        let dt_target = 0.8 * CELL_M / 700.0;
+        let dt_target = 0.8 * cell / 700.0;
         let substeps = ((dt_target / dt).floor() as usize).max(1);
         Self {
             runners,
             a_runner,
             individual: def.individual_throttles,
             plenum: GasVolume::at(ATM_PA, AMBIENT_T_K, plenum_volume_m3.max(1e-5)),
-            airbox: def.airbox.as_ref().map(|b| Airbox::new(b, init)),
+            airbox: def.airbox.as_ref().map(|b| Airbox::new(b, init, cell)),
             inlet: Upstream::ATMOSPHERE,
             trumpet_cd: 1.0 / (1.0 + def.trumpet_loss.max(0.0)).sqrt(),
             substeps,
@@ -999,6 +1011,17 @@ mod tests {
     use crate::gas::CP;
 
     const DT: f64 = 1.0 / 192_000.0;
+
+    #[test]
+    fn finer_cells_cut_the_runners_finer() {
+        // 0.3 m runners (the default): 8 cells of 4 cm (0.3/0.04 = 7.5, rounded), 30 of 1 cm
+        let d = IntakeDef::default();
+        assert_eq!(d.runner_length_m, 0.3);
+        let coarse = IntakeFv::with_cells(&d, 2e-3, 1, DT, 0.04);
+        let fine = IntakeFv::with_cells(&d, 2e-3, 1, DT, 0.01);
+        assert_eq!(coarse.runners[0].cells.len(), 8);
+        assert_eq!(fine.runners[0].cells.len(), 30);
+    }
 
     fn def(individual: bool) -> IntakeDef {
         IntakeDef {

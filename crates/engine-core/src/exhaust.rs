@@ -488,9 +488,13 @@ pub enum Segment {
 /// A road car's exhaust after one collector, from sizing rules rather than one car's drawings
 /// (every road preset without a drawn silencer carries it, `EngineDef::with_road_exhaust`):
 /// a close-coupled catalyst of about the swept volume (standard 400 cpsi / 0.165 mm substrate)
-/// and silencers totalling ten times it (a long-standing rule of thumb for muffler volume, e.g.
-/// US patent 3,318,412), a fifth in a centre resonator and the rest in the rear box, both
-/// straight-through and packed, joined by `pipe_d` pipes. `swept_m3` is this branch's share.
+/// and one straight-through packed rear silencer of [`ROAD_SILENCER_SWEPT`] times it, joined by
+/// `pipe_d` pipes over a 3.4 m run. `swept_m3` is this branch's share. The silencer's size is
+/// set on what production silencing takes off the open pipe at full load, 18–20 dB (Raff &
+/// Perry 1973, Fig. 15; Davies 1999, Fig. 1c), its packing at the flow through it
+/// (`a_road_exhaust_takes_what_production_silencing_takes_off_the_open_pipe`). The old
+/// rule's ten swept volumes in two packed boxes (US 3,318,412's rule of thumb) took 33 dB off:
+/// the tone under the engine's own noise, heard as wind (2026-11-19).
 pub fn road_exhaust(swept_m3: f64, pipe_d: f64) -> Vec<Segment> {
     let pipe = |length_m: f64| Segment::Pipe {
         length_m,
@@ -506,13 +510,20 @@ pub fn road_exhaust(swept_m3: f64, pipe_d: f64) -> Vec<Segment> {
     vec![
         pipe(0.4),
         close_coupled_catalyst(swept_m3, pipe_d),
-        pipe(1.0),
-        silencer(2.0 * swept_m3, 0.35),
-        pipe(0.8),
-        silencer(8.0 * swept_m3, 0.45),
+        pipe(2.15),
+        silencer(ROAD_SILENCER_SWEPT * swept_m3, 0.45),
         pipe(0.3),
     ]
 }
+
+/// The road exhaust's rear silencer, in swept volumes of its branch ([`road_exhaust`]): the
+/// one size inside both measured anchors, production silencing's 18–20 dB off the open pipe
+/// (K20A, full throttle, 5000–7000 rpm: 2 volumes take 18.0 dB, 3.9 take 22.8, 5 take 24.7;
+/// bound ±3) and the 2nd order of Davies' silenced four-cylinder, 99 dB at 0.25 m and 6000 rpm
+/// (2.5 volumes give 107.8, 3.9 give 104.8; bound ±6). They pull apart: the open pipe's tone
+/// stands higher over its other content than Davies' engine's, so a size that takes production
+/// silencing's share off leaves the 2nd order loud; 3.9 sits within 0.2 dB of both bounds.
+pub const ROAD_SILENCER_SWEPT: f64 = 3.9;
 
 /// A shell of `volume` and `length`, its diameter to a tenth of a millimetre: what a drawing
 /// would give (and a file keeps exactly).
@@ -1120,91 +1131,94 @@ fn segments_duct(
         .rposition(|s| !matches!(s, Segment::Resonator { .. }));
     for (i, seg) in path.iter().enumerate() {
         starts.push(duct.as_ref().map_or(0, Duct::pipe_count));
-        let piece =
-            match *seg {
-                Segment::Pipe {
-                    length_m,
-                    diameter_m,
-                } => {
-                    let mut p = pipe(length_m, diameter_m);
-                    if Some(i) == last_pipe {
-                        p = p.with_extra_gain(transmission);
-                    }
-                    Duct::new(vec![p])
+        let piece = match *seg {
+            Segment::Pipe {
+                length_m,
+                diameter_m,
+            } => {
+                let mut p = pipe(length_m, diameter_m);
+                if Some(i) == last_pipe {
+                    p = p.with_extra_gain(transmission);
                 }
-                Segment::Muffler {
-                    length_m,
-                    diameter_m,
-                    tube_diameter_m,
-                    packing_resistivity,
-                    packing_porosity: _,
-                } => {
-                    if tube_diameter_m > 0.0 && tube_diameter_m < diameter_m {
-                        // the packed (or empty) shell round the perforated tube, by the 2D model:
-                        // its transmission on the tube's waves both ways
-                        let silencer = crate::silencer2d::Silencer {
-                            r1: 0.5 * tube_diameter_m,
-                            r2: 0.5 * diameter_m,
-                            len: length_m,
-                            resistivity: (packing_resistivity > 0.0).then_some(packing_resistivity),
-                            perforate: crate::silencer2d::Perforate::default(),
-                        };
-                        let gas = crate::silencer2d::Gas {
-                            c: C_TAIL,
-                            rho: crate::units::ATM_PA / (crate::gas::R_AIR * TAIL_T),
-                        };
-                        // the perforated tube is no smooth wall: linear, its loss the packing's
-                        Duct::new(vec![
-                            plain(length_m, tube_diameter_m)
-                                .with_filter(silencer.transmission_eq_in(gas, 1.0 / dt, memo)),
-                        ])
-                    } else {
-                        Duct::new(vec![pipe(length_m, diameter_m)])
-                    }
-                }
-                Segment::Catalyst {
-                    length_m,
-                    diameter_m,
-                    cells_per_in2,
-                    wall_m,
-                } => {
-                    // the channels carry the waves, with their walls' viscous and thermal losses
-                    let p = crate::units::ATM_PA;
-                    let gas = DuctGas {
-                        c: C_TAIL,
-                        rho: p / (crate::gas::R_AIR * TAIL_T),
-                        mu: gas_viscosity(TAIL_T),
-                        p,
+                Duct::new(vec![p])
+            }
+            Segment::Muffler {
+                length_m,
+                diameter_m,
+                tube_diameter_m,
+                packing_resistivity,
+                packing_porosity: _,
+            } => {
+                if tube_diameter_m > 0.0 && tube_diameter_m < diameter_m {
+                    // the packed (or empty) shell round the perforated tube, by the 2D model:
+                    // its transmission on the tube's waves both ways
+                    let silencer = crate::silencer2d::Silencer {
+                        r1: 0.5 * tube_diameter_m,
+                        r2: 0.5 * diameter_m,
+                        len: length_m,
+                        resistivity: (packing_resistivity > 0.0).then_some(packing_resistivity),
+                        perforate: crate::silencer2d::Perforate::default(),
+                        mach: 0.0,
                     };
-                    catalyst_brick(length_m, diameter_m, cells_per_in2, wall_m, gas, dt)
-                }
-                Segment::Measured {
-                    length_m,
-                    bore_m,
-                    ref transmission_loss_db,
-                } => {
-                    // the published loss on the waves both ways, like a packed silencer's
-                    Duct::new(vec![plain(length_m, bore_m).with_filter(
-                        crate::silencer2d::measured_eq(transmission_loss_db, 1.0 / dt),
+                    let gas = crate::silencer2d::Gas {
+                        c: C_TAIL,
+                        rho: crate::units::ATM_PA / (crate::gas::R_AIR * TAIL_T),
+                    };
+                    // the perforated tube is no smooth wall: linear, its loss the packing's
+                    let still = silencer.transmission_eq_in(gas, 1.0 / dt, memo);
+                    Duct::new(vec![plain(length_m, tube_diameter_m).with_flow_silencer(
+                        silencer,
+                        gas,
+                        1.0 / dt,
+                        still,
                     )])
+                } else {
+                    Duct::new(vec![pipe(length_m, diameter_m)])
                 }
-                Segment::Resonator {
+            }
+            Segment::Catalyst {
+                length_m,
+                diameter_m,
+                cells_per_in2,
+                wall_m,
+            } => {
+                // the channels carry the waves, with their walls' viscous and thermal losses
+                let p = crate::units::ATM_PA;
+                let gas = DuctGas {
+                    c: C_TAIL,
+                    rho: p / (crate::gas::R_AIR * TAIL_T),
+                    mu: gas_viscosity(TAIL_T),
+                    p,
+                };
+                catalyst_brick(length_m, diameter_m, cells_per_in2, wall_m, gas, dt)
+            }
+            Segment::Measured {
+                length_m,
+                bore_m,
+                ref transmission_loss_db,
+            } => {
+                // the published loss on the waves both ways, like a packed silencer's
+                Duct::new(vec![plain(length_m, bore_m).with_filter(
+                    crate::silencer2d::measured_eq(transmission_loss_db, 1.0 / dt),
+                )])
+            }
+            Segment::Resonator {
+                neck_diameter_m,
+                neck_length_m,
+                volume_m3,
+            } => {
+                pending = Node::Shunt(Shunt::helmholtz(
                     neck_diameter_m,
                     neck_length_m,
                     volume_m3,
-                } => {
-                    pending = Node::Shunt(Shunt::helmholtz(
-                        neck_diameter_m,
-                        neck_length_m,
-                        volume_m3,
-                        0.0,
-                        rho_c,
-                        C_TAIL,
-                        dt,
-                    ));
-                    continue;
-                }
-            };
+                    0.0,
+                    rho_c,
+                    C_TAIL,
+                    dt,
+                ));
+                continue;
+            }
+        };
         let node = std::mem::replace(&mut pending, Node::Plain);
         duct = Some(match duct.take() {
             Some(d) => d.then_through(node, piece),
@@ -1405,6 +1419,35 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
+    /// The mean mass flow, kg/s, through the shared duct and what follows it.
+    pub(crate) fn set_mean_flow(&mut self, total: f64) {
+        self.duct.set_mean_flow(total);
+        if let Some(v) = &mut self.valved {
+            // the open path takes the flow in proportion to its opening (an estimate: the
+            // split follows the two paths' resistances)
+            v.open.set_mean_flow(total * v.x);
+            v.closed.set_mean_flow(total * (1.0 - v.x));
+            v.tips.set_mean_flow(total);
+            let n = v.outlets.len().max(1) as f64;
+            for (d, _) in &mut v.outlets {
+                d.set_mean_flow(total / n);
+            }
+        }
+    }
+
+    /// Its silencers' transmission follows the mean flow through them ([`Duct::follow_flow`]).
+    pub(crate) fn follow_flow(&mut self) {
+        self.duct.follow_flow();
+        if let Some(v) = &mut self.valved {
+            for d in [&mut v.open, &mut v.closed, &mut v.tips] {
+                d.follow_flow();
+            }
+            for (d, _) in &mut v.outlets {
+                d.follow_flow();
+            }
+        }
+    }
+
     /// The duct the branches' tails join and its open end, from [`ExhaustDef::merge`] (none
     /// without one), for `n_branches` tails.
     pub(crate) fn new(
@@ -1929,6 +1972,17 @@ impl ExhaustNet {
         }
     }
 
+    /// The silencers after the collectors take their transmission at the mean flow through
+    /// them from now on ([`Duct::follow_flow`]): the offline renders' fidelity.
+    pub fn follow_flow_in_silencers(&mut self) {
+        for b in &mut self.branches {
+            b.tail.follow_flow();
+        }
+        if let Some(sh) = &mut self.shared {
+            sh.follow_flow();
+        }
+    }
+
     /// Mean mass flows, kg/s: through each cylinder's primary and each branch's collector and
     /// what follows it (their turbulent friction, [`Pipe::set_mean_flow`]).
     pub fn set_mean_flow(&mut self, per_cylinder: &[f64], per_branch: &[f64]) {
@@ -1941,15 +1995,7 @@ impl ExhaustNet {
             p.set_mean_flow(*m);
         }
         if let Some(sh) = &mut self.shared {
-            let total: f64 = per_branch.iter().sum();
-            sh.duct.set_mean_flow(total);
-            if let Some(v) = &mut sh.valved {
-                // the open path takes the flow in proportion to its opening (an estimate: the
-                // split follows the two paths' resistances)
-                v.open.set_mean_flow(total * v.x);
-                v.closed.set_mean_flow(total * (1.0 - v.x));
-                v.tips.set_mean_flow(total);
-            }
+            sh.set_mean_flow(per_branch.iter().sum());
         }
         for (b, m) in self.branches.iter_mut().zip(per_branch) {
             b.collector.set_mean_flow(*m);
@@ -2404,9 +2450,12 @@ mod tests {
         // captured again when the open end took Levine & Schwinger's end correction
         // (fix/open-end-levine-schwinger, 2026-11-08: every open end's reflection changed on
         // purpose, the duct noise path untouched), and when the open end took the inflow's
-        // vortex-shedding loss (fix/open-end-vortex-loss, 2026-11-13: same reason)
+        // vortex-shedding loss (fix/open-end-vortex-loss, 2026-11-13: same reason), and when the
+        // valves sent their waves at the gas's own density and the road exhaust took production
+        // silencing (fix/duct-jet-density, 2026-11-19: every wave and the inline-4's path
+        // changed on purpose, the duct noise path untouched)
         let h = bits_hash(&pulsed_inline4(|n| n.set_duct_flow(0.0)));
-        assert_eq!(h, 0xd071_fcbf_6917_5906, "hash {h:#x}");
+        assert_eq!(h, 0x7bc8_05a0_0d19_eb6c, "hash {h:#x}");
     }
 
     /// Mean square of `x` between `lo` and `hi` Hz, from Goertzel bins every 50 Hz.
@@ -2500,7 +2549,11 @@ mod tests {
     fn a_steady_flow_leaves_by_the_exit() {
         // 0.03 kg/s into each of four primaries, held. The junctions keep A·Δp (one ρc for all
         // the pipes), so the tail's A·Δp/c reads the flow in its own reference gas:
-        // 0.12 · C_PRIMARY/C_TAIL = 0.12 · 600/500 = 0.144 kg/s (the walls' loss: ±5 %)
+        // 0.12 · C_PRIMARY/C_TAIL = 0.12 · 600/500 = 0.144 kg/s (the walls' loss: ±5 %) — of
+        // the waves the valves send at the reference density. They send them at the gas's own
+        // (Blair: [`crate::valve_boundary::sent_wave`]), denser by X⁵ in the port's standing
+        // pressure, and the linear duct carries the wave, not the mass: the tail reads
+        // 0.144 / X⁵, X = (1 + p_valve/p₀)^(1/7) (docs/FINDINGS.md, 2026-11-19)
         let dt = 1.0 / 48_000.0;
         let def = crate::engine::EngineDef::inline4().exhaust;
         let mut net = super::ExhaustNet::new(&def, 4, dt);
@@ -2510,7 +2563,13 @@ mod tests {
         let mut out = Vec::new();
         net.exit_flows(&mut out);
         assert_eq!(out.len(), 1);
-        assert!((out[0] / 0.144 - 1.0).abs() < 0.05, "{}", out[0]);
+        let x5 = (1.0 + net.valve_pressure(0) / crate::units::ATM_PA).powf(5.0 / 7.0);
+        assert!(x5 > 1.01, "the port stands over the atmosphere: X⁵ {x5}");
+        assert!(
+            (out[0] * x5 / 0.144 - 1.0).abs() < 0.05,
+            "{} (X⁵ {x5})",
+            out[0]
+        );
     }
 
     #[test]
@@ -2660,6 +2719,59 @@ mod tests {
             duct.send(x, 0.0);
         }
         peak
+    }
+
+    #[test]
+    fn a_silencer_following_the_flow_passes_more_at_full_throttle_and_the_same_at_rest() {
+        // the road silencer (Ø212.7 over 50 mm, 0.45 m, 16 kPa·s/m², tail gas) as built: at
+        // rest it takes ~50 dB off 1 kHz; a mean flow at Mach 0.2 through its tube, the
+        // perforate stiffened (`perforate_resistance`), ~35 (silencer2d's test). Only a pipe
+        // told to follow the flow changes; told, at no flow it is the silencer at rest.
+        use crate::silencer2d::{Gas, Perforate, Silencer};
+        let dt = 1.0 / 48_000.0;
+        let gas = Gas {
+            c: C_TAIL,
+            rho: crate::units::ATM_PA / (crate::gas::R_AIR * TAIL_T),
+        };
+        let s = Silencer {
+            r1: 0.025,
+            r2: 0.106_35,
+            len: 0.45,
+            resistivity: Some(16_000.0),
+            perforate: Perforate::default(),
+            mach: 0.0,
+        };
+        let build =
+            |follow: bool, mach: f64| {
+                let still = s.transmission_eq(gas, 1.0 / dt);
+                let mut d =
+                    crate::waveguide::Duct::new(vec![
+                        crate::waveguide::Pipe::new(0.45, 0.05, C_TAIL, dt, 0.0)
+                            .with_flow_silencer(s, gas, 1.0 / dt, still),
+                    ]);
+                if follow {
+                    d.follow_flow();
+                }
+                // ṁ = M·ρc·A, ρc = γp/c (the pipe's own reading of its Mach)
+                let area = std::f64::consts::PI * 0.25 * 0.05 * 0.05;
+                d.set_mean_flow(mach * crate::gas::GAMMA * crate::units::ATM_PA / C_TAIL * area);
+                d
+            };
+        let db = |d| 20.0 * transmission(d, 1000.0, dt).log10();
+        let (rest, followed, ignored) = (
+            db(build(true, 0.0)),
+            db(build(true, 0.2)),
+            db(build(false, 0.2)),
+        );
+        assert!(
+            followed > rest + 10.0,
+            "rest {rest:.1} dB, at Mach 0.2 {followed:.1}"
+        );
+        // at rest and unfollowed, the silencer is the one at rest (its friction aside: < 0.5 dB)
+        assert!(
+            (ignored - rest).abs() < 0.5,
+            "unfollowed {ignored:.1} vs {rest:.1}"
+        );
     }
 
     #[test]
@@ -3435,9 +3547,8 @@ mod tests {
 
     #[test]
     fn a_road_exhaust_follows_its_sizing_rules() {
-        // 2.0 L in one branch, 50 mm pipes: catalyst of 2.0 L over 0.13 m → Ø 0.1400 m;
-        // silencers of 10 × 2.0 L, a fifth (4 L over 0.35 m → Ø 0.1206 m) then the rest (16 L
-        // over 0.45 m → Ø 0.2128 m)
+        // 2.0 L in one branch, 50 mm pipes: catalyst of 2.0 L over 0.13 m → Ø 0.1400 m; one
+        // silencer of 3.9 × 2.0 L = 7.8 L over 0.45 m → Ø √(4 · 0.0078 / (π · 0.45)) = 0.1486 m
         let path = road_exhaust(2.0e-3, 0.05);
         let diameters: Vec<f64> = path
             .iter()
@@ -3448,8 +3559,8 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(diameters.len(), 3);
-        for (got, want) in diameters.iter().zip([0.1400, 0.1206, 0.2128]) {
+        assert_eq!(diameters.len(), 2);
+        for (got, want) in diameters.iter().zip([0.1400, 0.1486]) {
             assert!((got - want).abs() < 5e-4, "{got} vs {want}");
         }
         assert!(
@@ -4139,10 +4250,12 @@ mod tests {
     fn outflow_raises_valve_pressure_and_closed_valve_reflects() {
         let mut net = ExhaustNet::new(&ExhaustDef::default(), 1, DT);
         net.step(&[0.1]);
-        // p⁺ = c·ṁ/A = 600 · 0.1 / (π/4 · 0.04²) = 47 746 Pa of strength (hand), standing at
-        // 1 atm·((1 + 47 746/(7·101 325))^7 − 1) = 58 547 Pa gauge (finite amplitude)
+        // the wave carries the flow at its own density (Blair): ṁ = 5ρ₀cA·d·(1 + d)⁵ with
+        // ρ₀ = 1.4 · 101 325 / 600² = 0.394 kg/m³, A = π/4 · 0.04²: d(1 + d)⁵ = 0.1 / 1.4855 =
+        // 0.0673, d = 0.0522 by hand (0.0522 · 1.0522⁵ = 0.0673), standing at
+        // 1 atm · (1.0522⁷ − 1) = 43 360 Pa gauge (the reference-density wave read 58 547)
         let p = net.valve_pressure(0);
-        assert!((58_000.0..59_000.0).contains(&p), "{p}");
+        assert!((42_900.0..43_800.0).contains(&p), "{p}");
         // no flow afterwards: nothing comes back before the round trip, pressure stays bounded
         for _ in 0..50_000 {
             net.step(&[0.0]);

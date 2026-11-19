@@ -337,6 +337,25 @@ pub struct Pipe {
     chain: Option<Box<[Vec<Stage>; 2]>>,
     /// A silencer's transmission on each direction's waves as they enter (forward, backward).
     filter: Option<Box<[crate::silencer2d::Cascade; 2]>>,
+    /// The silencer behind `filter`, when its transmission may follow the mean flow.
+    flow_silencer: Option<Box<FlowSilencer>>,
+}
+
+/// Steps of the mean flow's Mach number a flow-following silencer is designed at, and the
+/// highest (Rao & Munjal measured to 0.2: [`crate::silencer2d::perforate_resistance`]).
+const SILENCER_MACH_STEP: f64 = 0.025;
+const SILENCER_MACH_MAX: f64 = 0.3;
+
+/// A packed silencer's transmission at the mean flow through it: designed at each Mach step
+/// the flow reaches (once: kept), retuned in place so the waves inside carry on.
+#[derive(Debug, Clone)]
+struct FlowSilencer {
+    silencer: crate::silencer2d::Silencer,
+    gas: crate::silencer2d::Gas,
+    fs: f64,
+    on: bool,
+    step: i32,
+    designed: Vec<(i32, crate::silencer2d::Cascade)>,
 }
 
 /// A segment of a [`Pipe::steepening`] pipe: its share of the walls' loss, then its line.
@@ -481,6 +500,7 @@ impl Pipe {
             walls: None,
             chain: None,
             filter: None,
+            flow_silencer: None,
         }
     }
     /// The waves crossing this pipe, either way, pass `transmission` (a silencer's, as
@@ -488,6 +508,35 @@ impl Pipe {
     pub fn with_filter(mut self, transmission: crate::silencer2d::Cascade) -> Self {
         self.filter = Some(Box::new([transmission.clone(), transmission]));
         self
+    }
+
+    /// [`Pipe::with_filter`] with `still`, `silencer`'s transmission at rest in `gas` at
+    /// `fs`, kept so that it can follow the mean flow ([`Pipe::follow_flow`]).
+    pub fn with_flow_silencer(
+        self,
+        silencer: crate::silencer2d::Silencer,
+        gas: crate::silencer2d::Gas,
+        fs: f64,
+        still: crate::silencer2d::Cascade,
+    ) -> Self {
+        let mut p = self.with_filter(still.clone());
+        p.flow_silencer = Some(Box::new(FlowSilencer {
+            silencer,
+            gas,
+            fs,
+            on: false,
+            step: 0,
+            designed: vec![(0, still)],
+        }));
+        p
+    }
+
+    /// A silencer pipe's transmission follows the mean flow through it from now on
+    /// ([`Pipe::set_mean_flow`]); a plain pipe is left as it was.
+    pub fn follow_flow(&mut self) {
+        if let Some(f) = &mut self.flow_silencer {
+            f.on = true;
+        }
     }
     /// The pipe's waves steepen and its walls round them off together, as they do along a real
     /// pipe: it is cut into segments of at most [`STEEPENING_SEGMENT_M`], each its share of the
@@ -638,6 +687,31 @@ impl Pipe {
         let mach = (mass_flow / (rho_c * self.area_m2)).abs();
         let alpha = crate::exhaust_fv::PIPE_FRICTION * mach / (2.0 * self.diameter_m);
         self.gain = self.still_gain * (-alpha * self.length_m).exp();
+        if let (Some(fs), Some(filter)) = (&mut self.flow_silencer, &mut self.filter)
+            && fs.on
+        {
+            // a step moves once the flow is three quarters of one away (a mean flow riding a
+            // boundary would switch the design to and fro, a click each time)
+            let at = mach.min(SILENCER_MACH_MAX) / SILENCER_MACH_STEP;
+            let step = at.round() as i32;
+            if step != fs.step && (at - f64::from(fs.step)).abs() > 0.75 {
+                let eq = match fs.designed.iter().find(|(k, _)| *k == step) {
+                    Some((_, eq)) => eq.clone(),
+                    None => {
+                        let s = crate::silencer2d::Silencer {
+                            mach: f64::from(step) * SILENCER_MACH_STEP,
+                            ..fs.silencer
+                        };
+                        let eq = s.transmission_eq(fs.gas, fs.fs);
+                        fs.designed.push((step, eq.clone()));
+                        eq
+                    }
+                };
+                filter[0].retune(&eq);
+                filter[1].retune(&eq);
+                fs.step = step;
+            }
+        }
     }
 
     /// Wave arriving at the far end this step.
@@ -1076,6 +1150,21 @@ impl Duct {
         for p in &mut self.pipes {
             p.set_mean_flow(mass_flow);
         }
+    }
+
+    /// The Mach step each of its silencer pipes is designed at, in [`SILENCER_MACH_STEP`]s
+    /// (tests).
+    #[cfg(test)]
+    pub(crate) fn silencer_steps(&self) -> Vec<i32> {
+        self.pipes
+            .iter()
+            .filter_map(|p| p.flow_silencer.as_ref().map(|f| f.step))
+            .collect()
+    }
+
+    /// Its silencers' transmission follows the mean flow through them ([`Pipe::follow_flow`]).
+    pub fn follow_flow(&mut self) {
+        self.pipes.iter_mut().for_each(Pipe::follow_flow);
     }
     /// Send this step's waves into the ends; the inner area changes scatter what arrives at
     /// them this step.

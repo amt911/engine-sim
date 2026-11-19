@@ -670,10 +670,12 @@ impl EngineDef {
         // the road exhaust's rule on the FK8's own pipe
         d = d.with_road_exhaust();
         let turbo = crate::turbo::TurboDef {
-            // the gate holds 1.6 bar (23 psi, the FK8's commonly quoted peak boost, not a
-            // factory figure); the turbine's and the gate's areas are ESTIMATES fitted to the
+            // the gate holds 1.35 bar (19.6 psi), fitted to the published 400 N·m from 2500 to
+            // 4500 rpm (398–421 here); the 23 psi commonly quoted for the FK8, not a factory
+            // figure, held 448–461 once the valves sent their waves at the gas's own density
+            // (2026-11-19). The turbine's and the gate's areas are ESTIMATES fitted to the
             // published torque (a small turbine for the low end, a large gate to hold it)
-            wastegate_pa: 1.6e5,
+            wastegate_pa: 1.35e5,
             turbine_area_m2: 4.0e-4,
             wastegate_area_m2: 1.0e-3,
             // a larger compressor than the default's for 0.22 kg/s at peak power: the stock
@@ -2143,6 +2145,12 @@ pub struct Fidelity {
     /// Length of the waveguide silencers' lined segments, m (finer is closer to the
     /// transmission line at high frequencies, and dearer).
     pub lining_segment_m: f64,
+    /// The packed silencers' transmission follows the mean flow through them (each Mach step
+    /// designed once, a few tenths of a second: offline renders), else it stays at rest.
+    pub silencer_flow: bool,
+    /// Cell length of the FV exhaust's and intake's pipes, m
+    /// ([`crate::exhaust_fv::ExhaustFv::with_cells`], [`crate::intake_fv::IntakeFv::with_cells`]).
+    pub fv_cell_m: f64,
 }
 
 impl Default for Fidelity {
@@ -2150,6 +2158,8 @@ impl Default for Fidelity {
         Self {
             pipe_scheme: crate::fv::Scheme::default(),
             lining_segment_m: crate::exhaust::LINING_SEGMENT_M,
+            silencer_flow: false,
+            fv_cell_m: crate::exhaust_fv::CELL_M,
         }
     }
 }
@@ -2954,11 +2964,12 @@ impl Engine {
             IntakeModel::Fv => {
                 if self.intake_net.as_ref().is_none_or(|n| n.dt != dt) {
                     self.intake_net = Some(
-                        IntakeFv::new(
+                        IntakeFv::with_cells(
                             &self.def.intake,
                             self.def.plenum_volume_m3,
                             self.cyl.len(),
                             dt,
+                            self.fidelity.fv_cell_m,
                         )
                         .with_scheme(self.fidelity.pipe_scheme)
                         .coupled_to_port(self.def.intake_valve.max_flow_area()),
@@ -2980,6 +2991,9 @@ impl Engine {
                     if let Some(n) = &mut self.net {
                         n.set_duct_flow(self.def.sound.duct_flow);
                         n.set_duct_exit(false);
+                        if self.fidelity.silencer_flow {
+                            n.follow_flow_in_silencers();
+                        }
                     }
                 }
             }
@@ -2987,14 +3001,20 @@ impl Engine {
                 self.net = None;
                 if self.fv.as_ref().is_none_or(|n| n.dt != dt) {
                     self.fv = Some(
-                        ExhaustFv::with_memo(
+                        ExhaustFv::with_cells(
                             &self.def.exhaust,
                             self.cyl.len(),
                             dt,
                             &mut self.eq_memo,
+                            self.fidelity.fv_cell_m,
                         )
                         .with_scheme(self.fidelity.pipe_scheme),
                     );
+                    if self.fidelity.silencer_flow
+                        && let Some(f) = &mut self.fv
+                    {
+                        f.follow_flow_in_silencers();
+                    }
                 }
                 if self.def.sound.valve_jet <= 0.0 && self.def.sound.duct_flow <= 0.0 {
                     self.jet_net = None;
@@ -3627,6 +3647,12 @@ impl Engine {
         let turbine_dp_dm = self.turbo_seen.map_or(0.0, |s| s.turbine_dp_dm);
         match (&mut self.net, &mut self.fv, &mut self.remote.0) {
             (_, Some(fv), _) => {
+                // the designed paths' friction and silencers follow the mean flow, as below
+                self.friction_age += 1;
+                if self.friction_age >= 64 {
+                    self.friction_age = 0;
+                    fv.set_mean_flow(&self.tail_mean_flow);
+                }
                 fv.set_outflow_mach(&self.tail_mach);
                 fv.set_engine_speed(rpm);
                 fv.set_turbine_resistance(turbine_dp_dm);
@@ -4566,9 +4592,114 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_road_car_carries_a_catalyst_and_silencers_of_ten_swept_volumes() {
-        // a road car has a catalyst and silencers totalling ten times its swept volume per
-        // collector (US 3,318,412's rule of thumb, `road_exhaust`), whoever drew the car; the
+    fn a_road_exhaust_takes_what_production_silencing_takes_off_the_open_pipe() {
+        // Production silencing takes 18–20 dB off the open pipe's orifice level at full load
+        // (Raff & Perry, JSV 28(3) 1973, Fig. 15; Davies, JSV 223(3) 1999, Fig. 1c: a silenced
+        // four-cylinder's orifice at 0.25 m reads 104–110 dB over 1000–6000 rpm). The road
+        // exhaust against the same run of plain pipe, the K20A held at full throttle from 5000
+        // to 7000 rpm every 500 (the mean of the five: one speed alone sits on the run's standing
+        // waves; three left it on them, ±1 dB), the gas's sound alone, its silencer at the flow
+        // through it as rendered: within 3 dB of that.
+        use crate::exhaust::Segment;
+        let quiet = |mut d: EngineDef| {
+            let s = &mut d.sound;
+            (s.flow_noise, s.intake, s.valve_jet, s.duct_flow) = (0.0, 0.0, 0.0, 0.0);
+            (s.main_bearings, s.piston_slap, s.block, s.mechanical) = (0.0, 0.0, 0.0, 0.0);
+            (s.combustion_jitter, s.chamber_ring) = (0.0, 0.0);
+            d.exhaust.model = crate::exhaust::ExhaustModel::Fv;
+            d
+        };
+        let road = quiet(EngineDef::honda_k20a());
+        let mut open = road.clone();
+        let pipe_d = road.exhaust.tail_diameter_m;
+        for s in &mut open.exhaust.after_collector {
+            if let Segment::Catalyst { length_m, .. } | Segment::Muffler { length_m, .. } = *s {
+                *s = Segment::Pipe {
+                    length_m,
+                    diameter_m: pipe_d,
+                };
+            }
+        }
+        let fidelity = Fidelity {
+            silencer_flow: true,
+            ..Fidelity::default()
+        };
+        let dt = 1.0 / 192_000.0;
+        let level = |def: &EngineDef, fidelity: Fidelity| {
+            let mut sum = 0.0;
+            for rpm in [5000.0, 5500.0, 6000.0, 6500.0, 7000.0] {
+                let mut e = Engine::with_fidelity(def.clone(), rpm, 1, fidelity);
+                let c = Controls {
+                    throttle: 1.0,
+                    hold_rpm: Some(rpm),
+                    ..Controls::default()
+                };
+                for _ in 0..(0.3 / dt) as usize {
+                    e.step(dt, &c);
+                }
+                // what is heard: the audio band, a 2nd-order Butterworth low-pass at 16 kHz (RBJ
+                // cookbook), as the render's decimation keeps it
+                let w0 = 2.0 * PI * 16_000.0 * dt;
+                let alpha = w0.sin() / std::f64::consts::SQRT_2;
+                let a0 = 1.0 + alpha;
+                let b = [(1.0 - w0.cos()) / 2.0 / a0, (1.0 - w0.cos()) / a0];
+                let a = [-2.0 * w0.cos() / a0, (1.0 - alpha) / a0];
+                let (mut x1, mut x2, mut y1, mut y2) = (0.0, 0.0, 0.0, 0.0);
+                let n = (0.3 / dt) as usize;
+                let mut ms = 0.0;
+                for _ in 0..n {
+                    let x = e.step(dt, &c);
+                    let y = b[0] * x + b[1] * x1 + b[0] * x2 - a[0] * y1 - a[1] * y2;
+                    (x2, x1, y2, y1) = (x1, x, y1, y);
+                    ms += y * y / n as f64;
+                }
+                sum += 10.0 * ms.log10() / 5.0;
+            }
+            sum
+        };
+        let il = level(&open, fidelity) - level(&road, fidelity);
+        assert!(
+            (15.0..=23.0).contains(&il),
+            "the road exhaust takes {il:.1} dB off"
+        );
+    }
+
+    #[test]
+    fn the_renders_silencers_follow_the_engines_flow() {
+        // at full throttle the K20A's 0.13 kg/s through its 50 mm silencer tube runs near
+        // Mach 0.2: the render's FV exhaust hands the mean flow to its designed path, whose
+        // silencer takes the design of that flow; real time's stays at rest
+        let mut d = EngineDef::honda_k20a();
+        d.exhaust.model = crate::exhaust::ExhaustModel::Fv;
+        let steps = |follow: bool| {
+            let fidelity = Fidelity {
+                silencer_flow: follow,
+                ..Fidelity::default()
+            };
+            let mut e = Engine::with_fidelity(d.clone(), 6500.0, 1, fidelity);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(6500.0),
+                ..Controls::default()
+            };
+            let dt = 1.0 / 192_000.0;
+            for _ in 0..(0.3 / dt) as usize {
+                e.step(dt, &c);
+            }
+            e.fv.as_ref().expect("FV").silencer_steps()
+        };
+        let followed = steps(true);
+        assert!(
+            !followed.is_empty() && followed.iter().all(|&k| k >= 4),
+            "Mach steps of 0.025: {followed:?}"
+        );
+        assert!(steps(false).iter().all(|&k| k == 0));
+    }
+
+    #[test]
+    fn every_road_car_carries_a_catalyst_and_a_silencer_of_its_road_size() {
+        // a road car has a catalyst and a rear silencer of 3.9 times its swept volume per
+        // collector (`crate::exhaust::ROAD_SILENCER_SWEPT`), whoever drew the car; the
         // LFA keeps its drawn valved silencer and the bridge-port race engine its open pipe
         use crate::exhaust::Segment;
         let road = [
@@ -4604,9 +4735,11 @@ mod tests {
                 })
                 .sum();
             assert_eq!(cats, 1, "{}: {cats} catalysts", d.name);
-            // the shells are rounded to the pipe's 1.5×: within 10 %
+            // the shells are rounded, and never narrower than the pipe's 1.5×: within 10 %
+            let pipe_d = d.exhaust.tail_diameter_m;
+            let floor = std::f64::consts::PI * 0.25 * (1.5 * pipe_d).powi(2) * 0.45;
             assert!(
-                (volume / (10.0 * per_branch) - 1.0).abs() < 0.1,
+                (volume / (3.9 * per_branch).max(floor) - 1.0).abs() < 0.1,
                 "{}: silencers {volume} m³ for {per_branch} m³ swept",
                 d.name
             );
@@ -5701,7 +5834,13 @@ mod tests {
         // tail (a series element R = dp₀₃/dṁ, transmitting 1/(1 + R·A/2c): about a fifth at a
         // lift-off's low flow and high inlet pressure). Without it they reached the tail whole and
         // every shift was 13–16 dB over the pull it interrupted; a real car's falls silent.
-        let mut e = Engine::new(EngineDef::honda_k20c1(), 6500.0, 1);
+        // On the FV exhaust, the model Ultra and the render run: since the valves send their
+        // waves at the gas's own density the waveguide's linear duct carries the wave, not the
+        // mass, and its full-throttle pull comes out under the gas dynamics' (FINDINGS,
+        // 2026-11-19), the lift-off over it.
+        let mut fv = EngineDef::honda_k20c1();
+        fv.exhaust.model = crate::exhaust::ExhaustModel::Fv;
+        let mut e = Engine::new(fv, 6500.0, 1);
         let dt = 1.0 / 48_000.0;
         let on = Controls {
             throttle: 1.0,
@@ -7783,7 +7922,8 @@ mod tests {
             .iter()
             .filter(|s| matches!(s, crate::exhaust::Segment::Muffler { .. }))
             .count();
-        assert_eq!(mufflers, 2);
+        // the road exhaust's rear silencer (`road_exhaust`)
+        assert_eq!(mufflers, 1);
     }
 
     #[test]

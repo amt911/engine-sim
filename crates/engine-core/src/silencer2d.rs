@@ -46,6 +46,20 @@ pub struct Silencer {
     pub len: f64,
     pub resistivity: Option<f64>,
     pub perforate: Perforate,
+    /// Mach number of the mean flow along the airway, grazing the perforate
+    /// ([`perforate_resistance`]); 0 for a still silencer.
+    pub mach: f64,
+}
+
+/// Resistance of a perforate per unit open area, normalised by ρc (multiply by 1/σ for the
+/// wall's): Sullivan's 0.006 at rest, and under a mean flow grazing it at Mach `mach` the rise
+/// Rao & Munjal measured, 7.337·10⁻³·72.23·M (*JSV* 108(2), 1986, 283–295, their eq. for
+/// ζ = [7.337·10⁻³(1 + 72.23M) + j…]/σ, fitted on 3–10 % open area, M ≤ 0.2; quoted in Munjal,
+/// *Acoustics of Ducts and Mufflers*, 2nd ed., §2.21). Beyond M = 0.2 it is extrapolated.
+/// The grazing flow sweeps the holes' jets aside: the wall resists, the packing behind it is
+/// reached less, and a straight-through silencer takes less off at full throttle.
+pub fn perforate_resistance(mach: f64) -> f64 {
+    0.006 + 7.337e-3 * 72.23 * mach.abs()
 }
 
 /// Airway modes and chamber modes kept in the matching (the prototype's 6 and 14).
@@ -147,13 +161,16 @@ impl Silencer {
             None => {
                 let zt = z0 * C::new(1.0, -1e-5);
                 let kt = k0 * C::new(1.0, -1e-5);
-                let zp = C::new(0.006, k0 * (pf.wall_m + 0.75 * pf.hole_m)) / pf.porosity;
+                let zp = C::new(
+                    perforate_resistance(self.mach),
+                    k0 * (pf.wall_m + 0.75 * pf.hole_m),
+                ) / pf.porosity;
                 (zt, kt, zp)
             }
             Some(res) => {
                 let (zt, kt) = fibre(f, res, z0, k0, rho0);
                 let corr = 1.0 + zt * kt / (z0 * k0);
-                let zp = (C::new(0.006, 0.0)
+                let zp = (C::new(perforate_resistance(self.mach), 0.0)
                     + C::i() * k0 * (pf.wall_m + 0.375 * pf.hole_m * corr))
                     / pf.porosity;
                 (zt, kt, zp)
@@ -427,6 +444,13 @@ impl Biquad {
 pub struct Cascade(pub Vec<Biquad>);
 
 impl Cascade {
+    /// Take `other`'s response, keeping this cascade's state (the same bands: one design's
+    /// equalizer at another flow), so the waves inside it carry on.
+    pub fn retune(&mut self, other: &Cascade) {
+        for (b, o) in self.0.iter_mut().zip(&other.0) {
+            (b.b, b.a) = (o.b, o.a);
+        }
+    }
     pub fn process(&mut self, x: f64) -> f64 {
         self.0.iter_mut().fold(x, |v, b| b.process(v))
     }
@@ -520,7 +544,7 @@ pub fn graphic_eq(target_db: &[f64], fs: f64) -> Cascade {
 /// function of those, so a remembered one is the same, bit for bit; an engine rebuilt after an
 /// edit that leaves a silencer alone takes it from here instead of solving it again.
 #[derive(Debug, Clone, Default)]
-pub struct EqMemo(Vec<([u64; 10], Cascade)>);
+pub struct EqMemo(Vec<([u64; 11], Cascade)>);
 
 /// How many designs a memo keeps (the oldest goes first): a few engines' silencers.
 const MEMO_KEEP: usize = 32;
@@ -549,6 +573,7 @@ impl Silencer {
             gas.c,
             gas.rho,
             fs,
+            self.mach,
         ]
         .map(f64::to_bits);
         if let Some((_, eq)) = memo.0.iter().find(|(k, _)| *k == key) {
@@ -668,6 +693,7 @@ mod tests {
             len: 0.2572,
             resistivity,
             perforate: Perforate::default(),
+            mach: 0.0,
         }
     }
     const AIR: Gas = Gas { c: 343.0, rho: 1.2 };
@@ -709,6 +735,51 @@ mod tests {
         assert!(zero < 2.0, "dip {zero:.1} dB");
         let dome = s.transmission_loss_db(333.4, AIR).unwrap();
         assert!((dome - 15.0).abs() < 1.5, "dome {dome:.1} dB");
+    }
+
+    #[test]
+    fn a_perforate_resists_a_grazing_flow_as_rao_and_munjal_measured() {
+        // Rao & Munjal (JSV 108, 1986): normalised resistance 7.337e-3·(1 + 72.23·M) per unit
+        // open area. By hand: M = 0.1 → 0.0603, M = 0.2 → 0.1133 (at rest our wall keeps
+        // Sullivan's 0.006, theirs reads 0.0073: the flow's share is theirs)
+        for (m, want) in [(0.1, 0.0603), (0.2, 0.1133)] {
+            let got = super::perforate_resistance(m);
+            assert!(
+                (got / want - 1.0).abs() < 0.03,
+                "M {m}: {got:.4}, Rao & Munjal {want}"
+            );
+        }
+        assert!((super::perforate_resistance(0.0) - 0.006).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_grazing_flow_takes_a_packed_silencers_loss_down_where_the_packing_works() {
+        // the wall the flow stiffens hides a dense packing: a road silencer's (Ø212.7 over
+        // 50 mm, 0.45 m, 16 kPa·s/m², tail gas) loses its dome at 1–2 kHz as the flow rises
+        let still = Silencer {
+            r1: 0.025,
+            r2: 0.106_35,
+            len: 0.45,
+            resistivity: Some(16_000.0),
+            perforate: Perforate::default(),
+            mach: 0.0,
+        };
+        let tail = Gas {
+            c: 500.0,
+            rho: 0.567,
+        };
+        let tl = |m: f64, f: f64| {
+            Silencer { mach: m, ..still }
+                .transmission_loss_db(f, tail)
+                .unwrap()
+        };
+        for f in [1000.0, 1500.0, 2000.0] {
+            let (a, b, c) = (tl(0.0, f), tl(0.1, f), tl(0.2, f));
+            assert!(
+                a > b + 3.0 && b > c + 3.0,
+                "{f} Hz: {a:.1} → {b:.1} → {c:.1} dB"
+            );
+        }
     }
 
     #[test]
@@ -768,6 +839,7 @@ mod tests {
             len: 0.4,
             resistivity: Some(16_000.0),
             perforate: Perforate::default(),
+            mach: 0.0,
         };
         let fs = 96_000.0;
         let eq = s.transmission_eq(gas, fs);

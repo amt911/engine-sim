@@ -27,6 +27,7 @@ fn main() {
                 len: length_m,
                 resistivity: (packing_resistivity > 0.0).then_some(packing_resistivity),
                 perforate: Perforate::default(),
+                mach: 0.0,
             };
             let eq = s.transmission_eq(gas, fs);
             print!("silencer L {length_m} D {diameter_m:.3} tube {tube_diameter_m}:");

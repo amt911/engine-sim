@@ -58,20 +58,11 @@ engine:
       cells_per_in2: 400.0
       wall_m: 0.000165
     - kind: pipe
-      length_m: 1.0
-      diameter_m: 0.045
-    - kind: muffler
-      length_m: 0.35
-      diameter_m: 0.0675
-      tube_diameter_m: 0.045
-      packing_resistivity: 16000.0
-      packing_porosity: 0.95
-    - kind: pipe
-      length_m: 0.8
+      length_m: 2.15
       diameter_m: 0.045
     - kind: muffler
       length_m: 0.45
-      diameter_m: 0.1063
+      diameter_m: 0.0742
       tube_diameter_m: 0.045
       packing_resistivity: 16000.0
       packing_porosity: 0.95
@@ -124,6 +115,7 @@ engine:
     compressor_whine: 1.0
     rolling: 0.0
     reverb: 0.0
+    room: null
     leveling: 0.0
     listener_distance_m: 3.0
     listener_angle_deg: 30.0

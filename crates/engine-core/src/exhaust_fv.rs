@@ -300,8 +300,8 @@ pub(crate) fn area(d: f64) -> f64 {
 /// Winterbone & Pearson use 0.02–0.03).
 pub const PIPE_FRICTION: f64 = 0.025;
 
-fn pipe(length: f64, diameter: f64, init: Prim) -> Pipe1d {
-    let n = (length / CELL_M).round().max(2.0);
+fn pipe(length: f64, diameter: f64, init: Prim, cell: f64) -> Pipe1d {
+    let n = (length / cell).round().max(2.0);
     let mut p = Pipe1d::segmented(&[(length, area(diameter))], length / n, init);
     p.floors = (1e-3, 500.0);
     p.friction = PIPE_FRICTION;
@@ -344,6 +344,19 @@ impl ExhaustFv {
         dt: f64,
         memo: &mut crate::silencer2d::EqMemo,
     ) -> Self {
+        Self::with_cells(def, cylinders, dt, memo, CELL_M)
+    }
+
+    /// [`ExhaustFv::with_memo`] on cells of `cell` m ([`CELL_M`] in real time; finer for
+    /// offline renders, where the firing harmonics a few kHz up need them: 4 cm cells hold a
+    /// 3.7 kHz wave in four and damp it 8–13 dB, docs/FINDINGS.md 2026-11-19).
+    pub fn with_cells(
+        def: &ExhaustDef,
+        cylinders: usize,
+        dt: f64,
+        memo: &mut crate::silencer2d::EqMemo,
+        cell: f64,
+    ) -> Self {
         let init = Prim {
             rho: ATM_PA / (R_AIR * INIT_T_K),
             u: 0.0,
@@ -357,14 +370,14 @@ impl ExhaustFv {
             .enumerate()
             .map(|(bi, members)| {
                 let mut out =
-                    Pipe1d::segmented(&[(def.collector_length(bi), a_collector)], CELL_M, init);
+                    Pipe1d::segmented(&[(def.collector_length(bi), a_collector)], cell, init);
                 out.floors = (1e-3, 500.0);
                 out.friction = PIPE_FRICTION;
                 out.acoustic_loss = acoustic_loss();
                 Branch {
                     members,
                     // junction: the merge region, about three collector diameters long
-                    junction: vol(a_collector * 3.0 * def.collector_diameter_m.max(CELL_M)),
+                    junction: vol(a_collector * 3.0 * def.collector_diameter_m.max(cell)),
                     out,
                     duct: crate::exhaust::after_collector(
                         def,
@@ -388,12 +401,12 @@ impl ExhaustFv {
             memo,
         );
         // 0.8 · cell / (|u| + c)_max with 800 m/s for hot, fast exhaust
-        let dt_target = 0.8 * CELL_M / 800.0;
+        let dt_target = 0.8 * cell / 800.0;
         let substeps = ((dt_target / dt).floor() as usize).max(1);
         Self {
             // each cylinder's own runner: the manifold's unequal lengths
             primaries: (0..cylinders)
-                .map(|i| pipe(def.primary_length(i), def.primary_diameter_m, init))
+                .map(|i| pipe(def.primary_length(i), def.primary_diameter_m, init, cell))
                 .collect(),
             a_primary: area(def.primary_diameter_m),
             branches,
@@ -582,6 +595,37 @@ impl ExhaustFv {
                 }
                 None => {}
             }
+        }
+    }
+
+    /// Mean mass flow, kg/s, through each branch's designed path (and the shared one after
+    /// them): the waveguide's friction and its silencers' flow ([`crate::waveguide::Duct::set_mean_flow`]).
+    pub fn set_mean_flow(&mut self, per_branch: &[f64]) {
+        for (b, m) in self.branches.iter_mut().zip(per_branch) {
+            b.duct.set_mean_flow(*m);
+        }
+        if let Some(sh) = &mut self.shared {
+            sh.set_mean_flow(per_branch.iter().sum());
+        }
+    }
+
+    /// The Mach step each designed path's silencers are designed at (tests).
+    #[cfg(test)]
+    pub(crate) fn silencer_steps(&self) -> Vec<i32> {
+        self.branches
+            .iter()
+            .flat_map(|b| b.duct.silencer_steps())
+            .collect()
+    }
+
+    /// The designed paths' silencers take their transmission at the mean flow through them
+    /// from now on ([`crate::exhaust::ExhaustNet::follow_flow_in_silencers`]).
+    pub fn follow_flow_in_silencers(&mut self) {
+        for b in &mut self.branches {
+            b.duct.follow_flow();
+        }
+        if let Some(sh) = &mut self.shared {
+            sh.follow_flow();
         }
     }
 
@@ -774,6 +818,22 @@ mod tests {
     use approx::assert_relative_eq;
 
     const DT: f64 = 1.0 / 192_000.0;
+
+    #[test]
+    fn finer_cells_cut_the_pipes_finer_and_step_them_faster() {
+        // 0.8 m primaries: 20 cells of 4 cm, 80 of 1 cm; the FV step keeps its CFL with the
+        // cell, 0.8 · cell / 800 m/s: 40 µs (7 physics steps at 192 kHz), 10 µs (1)
+        let d = ExhaustDef {
+            primary_length_m: 0.8,
+            ..ExhaustDef::default()
+        };
+        let mut memo = crate::silencer2d::EqMemo::default();
+        let coarse = ExhaustFv::with_cells(&d, 1, DT, &mut memo, 0.04);
+        let fine = ExhaustFv::with_cells(&d, 1, DT, &mut memo, 0.01);
+        assert_eq!(coarse.primaries[0].cells.len(), 20);
+        assert_eq!(fine.primaries[0].cells.len(), 80);
+        assert_eq!((coarse.substeps, fine.substeps), (7, 1));
+    }
 
     fn def() -> ExhaustDef {
         ExhaustDef {
@@ -1132,7 +1192,12 @@ mod tests {
             u: 0.0,
             p: ATM_PA,
         };
-        let mut pipe = super::pipe(d.primary_length_m + d.collector_length_m, 0.05, init);
+        let mut pipe = super::pipe(
+            d.primary_length_m + d.collector_length_m,
+            0.05,
+            init,
+            super::CELL_M,
+        );
         let mut duct = crate::exhaust::after_collector(
             &d,
             DT,
