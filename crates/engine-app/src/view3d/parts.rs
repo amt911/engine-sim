@@ -627,7 +627,7 @@ pub fn cut_housing(whole: &Mesh) -> Mesh {
             normal: lerp(a.normal, b.normal),
         }
     };
-    for tri in whole.indices.chunks_exact(3) {
+    for tri in whole.indices.as_chunks::<3>().0 {
         // Sutherland–Hodgman against the one plane: the polygon kept on z ≤ 0
         let corners: Vec<Vertex> = tri.iter().map(|&i| whole.vertices[i as usize]).collect();
         let mut poly: Vec<Vertex> = Vec::with_capacity(4);
