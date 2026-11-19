@@ -1391,8 +1391,16 @@ mod tests {
         assert_eq!(duct.node_flow(7), 0.0);
         // and the pressure there, both waves: 100 + r·100 = 50 Pa at the step, the 50 Pa going
         // on alone at the anechoic end
-        assert!((duct.node_pressure(0) - 50.0).abs() < 0.5, "{}", duct.node_pressure(0));
-        assert!((duct.far_pressure() - 50.0).abs() < 0.5, "{}", duct.far_pressure());
+        assert!(
+            (duct.node_pressure(0) - 50.0).abs() < 0.5,
+            "{}",
+            duct.node_pressure(0)
+        );
+        assert!(
+            (duct.far_pressure() - 50.0).abs() < 0.5,
+            "{}",
+            duct.far_pressure()
+        );
         assert_eq!(duct.node_pressure(7), 0.0);
     }
 

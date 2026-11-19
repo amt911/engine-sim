@@ -2101,7 +2101,8 @@ impl ExhaustNet {
     }
 
     /// Advance one step. `flows[i]`: mass flow (kg/s) from cylinder `i` into its primary
-    /// (negative = reversion). Valve end: p⁺ = p⁻ + c·ṁ/A. Returns the radiated pressure
+    /// (negative = reversion). Valve end: the wave that carries ṁ
+    /// ([`crate::valve_boundary::sent_wave`]; p⁺ = p⁻ + c·ṁ/A for small flows). Returns the radiated pressure
     /// summed over the tail pipes.
     /// The duct flow noise's mix: 1 = Davies' law at [`crate::jet_noise::DUCT_FLOW_K`], 0 = off
     /// (the net exactly as without it).
@@ -2342,7 +2343,14 @@ impl ExhaustNet {
         }
         for i in 0..n {
             let a = self.primaries[i].area_m2;
-            let p_plus = clamp_wave(self.primaries[i].at_near() + C_PRIMARY * flows[i] / a);
+            // the wave that carries the valve's flow at the wave's own density (Blair)
+            let p_plus = clamp_wave(crate::valve_boundary::sent_wave(
+                self.primaries[i].at_near(),
+                flows[i],
+                a,
+                C_PRIMARY,
+                crate::units::ATM_PA,
+            ));
             self.primaries[i].send(p_plus, from_far[i]);
             self.sent[i] = p_plus;
         }
