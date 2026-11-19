@@ -1776,3 +1776,32 @@ excess. Against stock K20A clips (`same_engine.py`, eight YouTube clips), the fi
 spread (low-mid −2.3 to −15, wind −7 to −42). Left: the V8 crossplane's low orders 3–4 dB under FV at
 full throttle, and the waveguide's overrun treble over FV's (LFA +7.8, V8 cross +10.9 dB at 4–20 kHz),
 which predates this fix.
+
+## Wind and lost harmonics after the valve fix: over-silencing, still silencers, coarse cells (2026-11-19)
+
+**Symptom.** With the valve's wave at its own density (above) the user heard the K20A "more like
+wind" and the LFA "losing harmonics, more synthetic". **Measure: order profile against same-engine
+recordings** (median level of firing harmonics 2–6 and of the other cycle orders re the firing
+order, tracked 0.2 s windows, `target/scratch-refs/ordc/oprof.py`). Real K20A (nine stock clips,
+5500–8000 rpm): −10 / −12 / −16 / −18 / −19 dB; the render −1 / −3 / −2 / −6 / −8 (main and the fix
+alike). Real LFA (12 clips, 6500–8500): −16 / −20 / −24 / −28 / −32, other orders −24.
+**Cause 1, over-silencing (found 2026-11-05 as spec A3, open since).** The K20A gas alone (every
+`sound.*` off) had the real profile; the full mix was 10 dB louder, the block and the flow noise on
+top of a tone the road exhaust had taken 33 dB off (production silencing: 18–20, Raff & Perry 1973
+Fig. 15, Davies 1999 Fig. 1c). `road_exhaust` now carries one packed rear silencer of 3.9 swept
+volumes (2+8 before): 22.8 dB off the open pipe, Davies' 2nd order at 104.8 dB (99 ± 6). The two
+anchors pull apart (2.5 volumes give 19.5 dB but a 107.8 dB 2nd order): only 3.9 is inside both.
+K20A after: −10 / −12 / −13 / −15 / −18, wind at 6–8 krpm −20 / −16 dB (real −7 … −18).
+**Cause 2, silencers at rest.** A perforate grazed by the mean flow resists 1 + 72·M times more
+(Rao & Munjal, JSV 108, 1986): the road silencer's dome falls 7–18 dB at 0.5–3 kHz at Mach 0.2–0.3
+(the K20A's tube runs near 0.27 at full throttle). The render's silencers are designed at their
+flow (Mach steps of 0.025, hysteresis: a flow riding a step boundary clicked as it switched).
+**Cause 3, coarse FV cells.** 4 cm cells hold a 3.7 kHz wave in four and damp it. LFA at 7400 rpm,
+harmonics 2–6: 4 cm −16 / −15 / −27 / −29 / −29, 1 cm −14 / −13 / −14 / −20 / −22 — but the gain was
+the FV intake's (its trumpets); the exhaust's alone moved nothing. On 1 cm intake cells the
+RENESIS starved and stalled at idle (not its port coupling's step: coupling every step still
+stalled), and the intake does not converge (5 mm: −11 / −3 / −21 / −22 / −16). The render keeps
+1 cm on the exhaust only, the intake on 4 cm: **open**, the LFA's upper harmonics with it.
+**Gotchas.** Render-derived insertion losses read 4–5 dB low against the engine's raw output (the
+render's floor): calibrate in-engine. `pgrep -f`/`pkill -f` on a pattern your own command line
+contains matches (or kills) your own shell.

@@ -2148,8 +2148,7 @@ pub struct Fidelity {
     /// The packed silencers' transmission follows the mean flow through them (each Mach step
     /// designed once, a few tenths of a second: offline renders), else it stays at rest.
     pub silencer_flow: bool,
-    /// Cell length of the FV exhaust's and intake's pipes, m
-    /// ([`crate::exhaust_fv::ExhaustFv::with_cells`], [`crate::intake_fv::IntakeFv::with_cells`]).
+    /// Cell length of the FV exhaust's pipes, m ([`crate::exhaust_fv::ExhaustFv::with_cells`]).
     pub fv_cell_m: f64,
 }
 
@@ -2964,12 +2963,13 @@ impl Engine {
             IntakeModel::Fv => {
                 if self.intake_net.as_ref().is_none_or(|n| n.dt != dt) {
                     self.intake_net = Some(
-                        IntakeFv::with_cells(
+                        // the intake keeps the real-time cells: on 1 cm a RENESIS starved at idle
+                        // and stalled (not its port coupling's step; FINDINGS 2026-11-19)
+                        IntakeFv::new(
                             &self.def.intake,
                             self.def.plenum_volume_m3,
                             self.cyl.len(),
                             dt,
-                            self.fidelity.fv_cell_m,
                         )
                         .with_scheme(self.fidelity.pipe_scheme)
                         .coupled_to_port(self.def.intake_valve.max_flow_area()),

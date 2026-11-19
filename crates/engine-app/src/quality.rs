@@ -48,8 +48,8 @@ impl Quality {
             // offline: half Ultra's segments, as it steps at twice Ultra's rate
             // and its packed silencers at the flow through them (each Mach step designed once,
             // tenths of a second a real-time step cannot spare)
-            // its FV exhaust on 1 cm cells, where the firing harmonics a few kHz up converge (4 cm
-            // took 8–13 dB off the LFA's 4th–6th, FINDINGS 2026-11-19)
+            // its FV exhaust on 1 cm cells, where the gas's harmonics a few kHz up converge (the
+            // K20A's 1 cm and 5 mm agree; 4 cm hold a 3.7 kHz wave in four cells)
             Quality::Reference => Fidelity {
                 lining_segment_m: 0.005,
                 silencer_flow: true,
