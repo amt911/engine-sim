@@ -1805,3 +1805,45 @@ stalled), and the intake does not converge (5 mm: −11 / −3 / −21 / −22 /
 **Gotchas.** Render-derived insertion losses read 4–5 dB low against the engine's raw output (the
 render's floor): calibrate in-engine. `pgrep -f`/`pkill -f` on a pattern your own command line
 contains matches (or kills) your own shell.
+
+## The firing tone alone: a misread anchor shrank the road silencer (2026-11-19)
+
+The user heard the K20A as "wind" and the LFA as "missing harmonics" after the render moved to
+the converged FV exhaust. Measured against recordings of the same engines (two stock EP3 K20A
+clips, the LFA at its tips), cycle order by cycle order in tracked 0.2 s windows
+(`target/scratch-refs/look/ordtab.py`, `ordspec.py`), the firing harmonics matched, but
+everything else sat 10–17 dB under the firing tone where the recordings have it: the non-firing
+cycle orders (real −11…−15 dB re the firing line, ours −23…−28) and the floor between lines
+(real −14…−21, ours −25…−32). Total power over the firing line: K20A real +12.8 dB, render +4.2;
+LFA real +7.1, render −2.6. A tone that stands out of everything else like that is heard as a
+whistle or a howl ("silbido", "viento"), not as an engine.
+
+Part of it was the road silencer. Raff & Perry (JSV 28(3) 1973) Fig. 15 is the ISO drive-by of a
+5.9 L truck with and without exhaust silencing, 97.5 → 79.5 dB(A), and the silenced figure is
+the rest of the vehicle sounding under it: a floor for what a silencer takes off. Read as
+"production silencing takes 18–20 dB", it shrank the ten-swept-volume rule to one box of 3.9,
+which passes the 2nd order: Davies & Holland's production four-cylinder (JSV 223(3) 1999,
+Fig. 1c) reads 92.9 / 97.4 / 98.8 / 99.0 dB at 0.25 m over 4500–6000 rpm (mean 97.0); the three
+4-cylinders' mean over the same speeds is 97.1 with the ten-volume rule in two boxes, 104.4
+with one box of 6, 107.6 with one of 3.9. One chamber also passes the tone at every half wave
+of its length (0.45 m of hot gas: 556 and 1111 Hz), which is why production systems carry two
+boxes of unlike lengths. One speed alone is no anchor: the K20A's two-box exhaust reads 107.7 at
+4500 and 93.6 at 6000, its own standing waves.
+
+Ruled out on the way, with numbers: excited-jet amplification of the tail jet's broadband
+(Bechert & Pfizenmaier, JSV 43(3) 1975; Moore, JFM 80(2) 1977, Fig. 38: up to 0.42 dB per dB of
+excitation at St 0.35, Mach 0.2–0.3). The K20A's tail at 6000 rpm carries u'/U = 3.3 % at
+St 0.11 and 0.85 % at St 0.21 but under 0.1 % (Bechert's threshold) from St 0.3 up, where the
+jet responds: it adds little. Davies' broadband at 0.25 m (≈ 106 dB(A)) is not a far-field
+anchor either: 0.25 m is five diameters from the jet, in its hydrodynamic near field.
+
+Still open after the silencer: the non-firing orders. With N cylinders, each non-firing line
+over the firing line is ≈ σ²/(N − 1), σ the spread of the cylinders' complex pulse amplitudes at
+that frequency. The recordings' −21 dB (LFA) and −13 dB (K20A) need σ ≈ 0.27 and 0.4; the
+presets' primary-length deviations give ≈ 0.07.
+
+The sin^1.4 cam lift (Heywood Fig. 6.16c) of the same day is reverted, not discarded: the suite
+it had not been run against fails six fits with it (the LFA's torque band and the SDI's power
+against the published figures, the diesel's light-load burn, the flat-plane V8's idle and blip
+return, the launch in first). The presets' windows were fitted with the sin² lift; a real flank
+needs each preset's duration restated at its checking lift and refitted.

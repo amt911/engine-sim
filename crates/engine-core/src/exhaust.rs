@@ -488,13 +488,13 @@ pub enum Segment {
 /// A road car's exhaust after one collector, from sizing rules rather than one car's drawings
 /// (every road preset without a drawn silencer carries it, `EngineDef::with_road_exhaust`):
 /// a close-coupled catalyst of about the swept volume (standard 400 cpsi / 0.165 mm substrate)
-/// and one straight-through packed rear silencer of [`ROAD_SILENCER_SWEPT`] times it, joined by
-/// `pipe_d` pipes over a 3.4 m run. `swept_m3` is this branch's share. The silencer's size is
-/// set on what production silencing takes off the open pipe at full load, 18–20 dB (Raff &
-/// Perry 1973, Fig. 15; Davies 1999, Fig. 1c), its packing at the flow through it
-/// (`a_road_exhaust_takes_what_production_silencing_takes_off_the_open_pipe`). The old
-/// rule's ten swept volumes in two packed boxes (US 3,318,412's rule of thumb) took 33 dB off:
-/// the tone under the engine's own noise, heard as wind (2026-11-19).
+/// and silencers totalling ten times it (a long-standing rule of thumb for muffler volume, e.g.
+/// US patent 3,318,412), a fifth in a centre resonator and the rest in the rear box, both
+/// straight-through and packed, joined by `pipe_d` pipes. `swept_m3` is this branch's share.
+/// Two boxes of unlike lengths, as production systems are built: one chamber passes the tone
+/// at every half wave of its length (0.45 m of hot gas: 556 and 1111 Hz), the other covers it.
+/// The size holds the 2nd order of Davies' silenced four-cylinder (97 dB at 0.25 m, 4500–6000 rpm;
+/// one box of a third of it left 108, `a_production_exhaust_keeps_the_second_order_of_davies_from_4500_to_6000`).
 pub fn road_exhaust(swept_m3: f64, pipe_d: f64) -> Vec<Segment> {
     let pipe = |length_m: f64| Segment::Pipe {
         length_m,
@@ -510,20 +510,13 @@ pub fn road_exhaust(swept_m3: f64, pipe_d: f64) -> Vec<Segment> {
     vec![
         pipe(0.4),
         close_coupled_catalyst(swept_m3, pipe_d),
-        pipe(2.15),
-        silencer(ROAD_SILENCER_SWEPT * swept_m3, 0.45),
+        pipe(1.0),
+        silencer(2.0 * swept_m3, 0.35),
+        pipe(0.8),
+        silencer(8.0 * swept_m3, 0.45),
         pipe(0.3),
     ]
 }
-
-/// The road exhaust's rear silencer, in swept volumes of its branch ([`road_exhaust`]): the
-/// one size inside both measured anchors, production silencing's 18–20 dB off the open pipe
-/// (K20A, full throttle, 5000–7000 rpm: 2 volumes take 18.0 dB, 3.9 take 22.8, 5 take 24.7;
-/// bound ±3) and the 2nd order of Davies' silenced four-cylinder, 99 dB at 0.25 m and 6000 rpm
-/// (2.5 volumes give 107.8, 3.9 give 104.8; bound ±6). They pull apart: the open pipe's tone
-/// stands higher over its other content than Davies' engine's, so a size that takes production
-/// silencing's share off leaves the 2nd order loud; 3.9 sits within 0.2 dB of both bounds.
-pub const ROAD_SILENCER_SWEPT: f64 = 3.9;
 
 /// A shell of `volume` and `length`, its diameter to a tenth of a millimetre: what a drawing
 /// would give (and a file keeps exactly).
@@ -3604,8 +3597,9 @@ mod tests {
 
     #[test]
     fn a_road_exhaust_follows_its_sizing_rules() {
-        // 2.0 L in one branch, 50 mm pipes: catalyst of 2.0 L over 0.13 m → Ø 0.1400 m; one
-        // silencer of 3.9 × 2.0 L = 7.8 L over 0.45 m → Ø √(4 · 0.0078 / (π · 0.45)) = 0.1486 m
+        // 2.0 L in one branch, 50 mm pipes: catalyst of 2.0 L over 0.13 m → Ø 0.1400 m;
+        // silencers of 10 × 2.0 L, a fifth (4 L over 0.35 m → Ø √(4 · 0.004 / (π · 0.35)) =
+        // 0.1206 m) then the rest (16 L over 0.45 m → Ø √(4 · 0.016 / (π · 0.45)) = 0.2128 m)
         let path = road_exhaust(2.0e-3, 0.05);
         let diameters: Vec<f64> = path
             .iter()
@@ -3616,8 +3610,8 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(diameters.len(), 2);
-        for (got, want) in diameters.iter().zip([0.1400, 0.1486]) {
+        assert_eq!(diameters.len(), 3);
+        for (got, want) in diameters.iter().zip([0.1400, 0.1206, 0.2128]) {
             assert!((got - want).abs() < 5e-4, "{got} vs {want}");
         }
         assert!(

@@ -1416,7 +1416,7 @@ impl EngineDef {
     /// ([`crate::exhaust::road_exhaust`]): a close-coupled catalyst and silencers of ten times
     /// the collector's swept volume, on the car's own pipe. With the finite-volume pipes and
     /// the free tail jet it reads the 2nd order of Davies & Holland's production car (1999,
-    /// Fig. 1(c)) at 6000 rpm (`a_production_exhaust_keeps_the_second_order_of_davies_at_6000`).
+    /// Fig. 1(c)) from 4500 to 6000 rpm (`a_production_exhaust_keeps_the_second_order_of_davies_from_4500_to_6000`).
     fn with_road_exhaust(mut self) -> Self {
         let branches = self.exhaust.groups(self.cylinders).len().max(1);
         self.exhaust.after_collector = crate::exhaust::road_exhaust(
@@ -4592,18 +4592,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_road_exhaust_takes_what_production_silencing_takes_off_the_open_pipe() {
-        // Production silencing takes 18–20 dB off the open pipe's orifice level at full load
-        // (Raff & Perry, JSV 28(3) 1973, Fig. 15; Davies, JSV 223(3) 1999, Fig. 1c: a silenced
-        // four-cylinder's orifice at 0.25 m reads 104–110 dB over 1000–6000 rpm). The road
-        // exhaust against the same run of plain pipe, the K20A held at full throttle from 5000
-        // to 7000 rpm every 500 (the mean of the five: one speed alone sits on the run's standing
-        // waves; three left it on them, ±1 dB), the gas's sound alone, its silencer at the flow
-        // through it as rendered: within 3 dB of that.
+    fn a_road_exhaust_takes_at_least_what_silencing_took_off_a_trucks_drive_by() {
+        // Raff & Perry (JSV 28(3), 1973, Fig. 15): silencing the exhaust of a 5.9 L truck took its
+        // ISO drive-by from 97.5 to 79.5 dB(A), 18 dB(A), and the silenced figure is the rest of
+        // the vehicle sounding under it: a floor for what a silencer takes off, not its value
+        // (read until 2026-11-19 as production silencing's 18–20 dB, which shrank the road
+        // silencer to a third and left the 2nd order 6 dB over Davies' and the firing tone over
+        // the K20A's recordings, docs/FINDINGS.md). The road exhaust against the same run of plain
+        // pipe, the K20A held at full throttle from 5000 to 7000 rpm every 500 (the mean of the
+        // five: one speed alone sits on the run's standing waves), A-weighted as theirs, its
+        // silencer at the flow through it as rendered, the exhaust's own flow noise (tail jet,
+        // valve jets, duct flow) sounding in both runs: at least 18 dB.
         use crate::exhaust::Segment;
         let quiet = |mut d: EngineDef| {
             let s = &mut d.sound;
-            (s.flow_noise, s.intake, s.valve_jet, s.duct_flow) = (0.0, 0.0, 0.0, 0.0);
+            s.intake = 0.0;
             (s.main_bearings, s.piston_slap, s.block, s.mechanical) = (0.0, 0.0, 0.0, 0.0);
             (s.combustion_jitter, s.chamber_ring) = (0.0, 0.0);
             d.exhaust.model = crate::exhaust::ExhaustModel::Fv;
@@ -4638,7 +4641,7 @@ mod tests {
                     e.step(dt, &c);
                 }
                 // what is heard: the audio band, a 2nd-order Butterworth low-pass at 16 kHz (RBJ
-                // cookbook), as the render's decimation keeps it
+                // cookbook), as the render's decimation keeps it, A-weighted
                 let w0 = 2.0 * PI * 16_000.0 * dt;
                 let alpha = w0.sin() / std::f64::consts::SQRT_2;
                 let a0 = 1.0 + alpha;
@@ -4646,22 +4649,21 @@ mod tests {
                 let a = [-2.0 * w0.cos() / a0, (1.0 - alpha) / a0];
                 let (mut x1, mut x2, mut y1, mut y2) = (0.0, 0.0, 0.0, 0.0);
                 let n = (0.3 / dt) as usize;
+                let mut aw = crate::mechanical::AWeighting::new(dt);
                 let mut ms = 0.0;
                 for _ in 0..n {
                     let x = e.step(dt, &c);
                     let y = b[0] * x + b[1] * x1 + b[0] * x2 - a[0] * y1 - a[1] * y2;
                     (x2, x1, y2, y1) = (x1, x, y1, y);
-                    ms += y * y / n as f64;
+                    let ya = aw.process(y);
+                    ms += ya * ya / n as f64;
                 }
                 sum += 10.0 * ms.log10() / 5.0;
             }
             sum
         };
         let il = level(&open, fidelity) - level(&road, fidelity);
-        assert!(
-            (15.0..=23.0).contains(&il),
-            "the road exhaust takes {il:.1} dB off"
-        );
+        assert!(il >= 18.0, "the road exhaust takes {il:.1} dB(A) off");
     }
 
     #[test]
@@ -4697,9 +4699,9 @@ mod tests {
     }
 
     #[test]
-    fn every_road_car_carries_a_catalyst_and_a_silencer_of_its_road_size() {
-        // a road car has a catalyst and a rear silencer of 3.9 times its swept volume per
-        // collector (`crate::exhaust::ROAD_SILENCER_SWEPT`), whoever drew the car; the
+    fn every_road_car_carries_a_catalyst_and_silencers_of_ten_swept_volumes() {
+        // a road car has a catalyst and silencers totalling ten times its swept volume per
+        // collector (US 3,318,412's rule of thumb, `road_exhaust`), whoever drew the car; the
         // LFA keeps its drawn valved silencer and the bridge-port race engine its open pipe
         use crate::exhaust::Segment;
         let road = [
@@ -4737,9 +4739,11 @@ mod tests {
             assert_eq!(cats, 1, "{}: {cats} catalysts", d.name);
             // the shells are rounded, and never narrower than the pipe's 1.5×: within 10 %
             let pipe_d = d.exhaust.tail_diameter_m;
-            let floor = std::f64::consts::PI * 0.25 * (1.5 * pipe_d).powi(2) * 0.45;
+            let shell =
+                |v: f64, l: f64| v.max(std::f64::consts::PI * 0.25 * (1.5 * pipe_d).powi(2) * l);
+            let want = shell(2.0 * per_branch, 0.35) + shell(8.0 * per_branch, 0.45);
             assert!(
-                (volume / (3.9 * per_branch).max(floor) - 1.0).abs() < 0.1,
+                (volume / want - 1.0).abs() < 0.1,
                 "{}: silencers {volume} m³ for {per_branch} m³ swept",
                 d.name
             );
@@ -7922,8 +7926,8 @@ mod tests {
             .iter()
             .filter(|s| matches!(s, crate::exhaust::Segment::Muffler { .. }))
             .count();
-        // the road exhaust's rear silencer (`road_exhaust`)
-        assert_eq!(mufflers, 1);
+        // the road exhaust's centre resonator and rear box (`road_exhaust`)
+        assert_eq!(mufflers, 2);
     }
 
     #[test]
@@ -10096,14 +10100,16 @@ mod tests {
     const DAVIES_SPREAD_DB: f64 = 21.583_124_951_194_2; // 20 log10(3 / 0.25)
 
     #[test]
-    fn a_production_exhaust_keeps_the_second_order_of_davies_at_6000() {
+    fn a_production_exhaust_keeps_the_second_order_of_davies_from_4500_to_6000() {
         // Davies & Holland, JSV 223(3), 1999, Fig. 1(c): a production 4-cylinder at 0.25 m,
-        // 45 deg, full load, the 2nd order's level in dB (linear) ≈ 99 at 6000 rpm (read off
-        // the figure; ≈ 98 at 3000, the dip ≈ 84 at 4000). The three 4-cylinders of the
-        // exhaust's tests, the mean of their 2nd order at 6000 rpm, within 6 dB of it: the
-        // figure's reading (±2) and the ground's 4 dB (it sits ≈ 4 dB lower in the free field)
-        // leave no tighter bound honest. Measured: inline-4 89.4, K20A 97.1, EJ25 95.4: mean
-        // 94.0 (5.0 short of the digitised value).
+        // 45 deg, full load, the 2nd order's level in dB (linear), read off the figure at 4500,
+        // 5000, 5500 and 6000 rpm: 92.9, 97.4, 98.8, 99.0, mean 97.0 (±2 each; the dip of 84 at
+        // 4000 is its pipes' standing wave). The three 4-cylinders of the exhaust's tests over
+        // the same four speeds, the mean of their 2nd order, within 3 dB of it: the reading and
+        // a dB for the engines not being Davies'. One speed alone sits on each exhaust's own
+        // standing waves (the K20A's ten-volume rule reads 107.7 at 4500 and 93.6 at 6000). The
+        // bench's floor is in the scene (`davies_scene`). This is what sizes the road silencer:
+        // the ten-volume rule reads 97.1, one box of a third of it 107.6 (2026-11-19).
         //
         // Why not the 107 dB(A) OVERALL this test used to hold (FINDINGS 2026-11-15): the 2nd
         // order is a 200 Hz line, 88 dB(A) after weighting; the 19 dB between it and 107 is
@@ -10112,17 +10118,20 @@ mod tests {
         // end (K = 2.5e-5, one point fitted to that 107) was making it up, a second source
         // for the same jet. The user decided (2026-11-14) that the bound follows what the
         // physics gives, with the reason here.
-        let defs = [
+        let runs: Vec<(EngineDef, f64)> = [
             EngineDef::inline4(),
             EngineDef::honda_k20a(),
             EngineDef::subaru_ej25(),
-        ];
+        ]
+        .into_iter()
+        .flat_map(|d| [4500.0, 5000.0, 5500.0, 6000.0].map(|rpm| (d.clone(), rpm)))
+        .collect();
         let sum: f64 = std::thread::scope(|sc| {
-            let hs: Vec<_> = defs
+            let hs: Vec<_> = runs
                 .iter()
-                .map(|d| {
+                .map(|(d, rpm)| {
                     sc.spawn(move || {
-                        let (x, f, _) = davies_scene(d.clone(), 6000.0);
+                        let (x, f, _) = davies_scene(d.clone(), *rpm);
                         let a = line_amplitude(&x, f);
                         20.0 * (a / 2f64.sqrt() / 2e-5).log10() + DAVIES_SPREAD_DB
                     })
@@ -10130,9 +10139,9 @@ mod tests {
                 .collect();
             hs.into_iter().map(|h| h.join().unwrap()).sum()
         });
-        let mean = sum / defs.len() as f64;
+        let mean = sum / runs.len() as f64;
         assert!(
-            (mean - 99.0).abs() < 6.0,
+            (mean - 97.0).abs() < 3.0,
             "2nd order {mean:.1} dB Lin at 0.25 m"
         );
     }
@@ -10253,9 +10262,12 @@ mod tests {
     #[test]
     fn the_valve_jets_ride_the_blowdowns() {
         // what the valve jets add at the listener: broadband (zero-mean), and it comes with the
-        // blowdowns — its envelope, a cycle at a time, follows the valves' outflow
+        // blowdowns — its envelope, a cycle at a time, follows the valves' outflow. On the
+        // plain pipe: what a silencer takes off them is the silencer's tests' business (the road
+        // exhaust's two boxes leave 1.0e-3 Pa of them here)
         let heard = |jet: f64| {
             let mut d = EngineDef::inline4();
+            d.exhaust.after_collector.clear();
             d.sound.valve_jet = jet;
             let mut e = Engine::new(d, 4000.0, 1);
             let c = Controls {
