@@ -606,6 +606,54 @@ fn turbo_part(
     .clone()
 }
 
+/// A turbo housing opened for the cut-away layer (spec 2026-11-08, "the cut-away layer opens the
+/// housings to show the wheels"): the half on the far side of the plane z = 0 through its shaft
+/// (x) kept, each triangle clipped at the plane (Sutherland–Hodgman), as a workshop's sectioned
+/// turbo; the wheels inside are drawn whole.
+pub fn cut_housing(whole: &Mesh) -> Mesh {
+    use super::mesh::Vertex;
+    let mut out = Mesh {
+        vertices: Vec::new(),
+        indices: Vec::new(),
+    };
+    // where the edge a→b crosses z = 0: its point, normal interpolated
+    let cross = |a: &Vertex, b: &Vertex| {
+        let t = a.pos[2] / (a.pos[2] - b.pos[2]);
+        let lerp = |x: [f32; 3], y: [f32; 3]| std::array::from_fn(|k| x[k] + t * (y[k] - x[k]));
+        let mut pos = lerp(a.pos, b.pos);
+        pos[2] = 0.0;
+        Vertex {
+            pos,
+            normal: lerp(a.normal, b.normal),
+        }
+    };
+    for tri in whole.indices.as_chunks::<3>().0 {
+        // Sutherland–Hodgman against the one plane: the polygon kept on z ≤ 0
+        let corners: Vec<Vertex> = tri.iter().map(|&i| whole.vertices[i as usize]).collect();
+        let mut poly: Vec<Vertex> = Vec::with_capacity(4);
+        for k in 0..3 {
+            let (a, b) = (&corners[k], &corners[(k + 1) % 3]);
+            let (a_in, b_in) = (a.pos[2] <= 0.0, b.pos[2] <= 0.0);
+            if a_in {
+                poly.push(*a);
+            }
+            if a_in != b_in {
+                poly.push(cross(a, b));
+            }
+        }
+        if poly.len() < 3 {
+            continue;
+        }
+        let base = out.vertices.len() as u32;
+        out.vertices.extend_from_slice(&poly);
+        for k in 1..poly.len() as u32 - 1 {
+            out.indices
+                .extend_from_slice(&[base, base + k, base + k + 1]);
+        }
+    }
+    out
+}
+
 /// One of the turbo's housings about the shaft's middle: the compressor's, the centre (bearing)
 /// one or the turbine's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -973,6 +1021,40 @@ mod tests {
         );
         // another e/R: none of them
         assert!(housing(0.16).is_none() && side_plate(0.16).is_none() && eccentric(0.16).is_none());
+    }
+
+    #[test]
+    fn a_cut_housing_keeps_the_half_behind_the_shaft() {
+        // the cut-away opens each housing along its shaft (x): every triangle kept lies on the
+        // far side of the plane z = 0 through the shaft, and about half of them stay
+        for which in [
+            TurboHousing::Compressor,
+            TurboHousing::Centre,
+            TurboHousing::Turbine,
+        ] {
+            let whole = turbo_housing(which).expect("turbo_housing.glb");
+            let cut = cut_housing(&whole);
+            let tris = |m: &Mesh| m.indices.len() / 3;
+            let centroid_z = |m: &Mesh, t: &[u32]| {
+                t.iter()
+                    .map(|&i| m.vertices[i as usize].pos[2])
+                    .sum::<f32>()
+                    / 3.0
+            };
+            assert!(
+                cut.indices.chunks(3).all(|t| centroid_z(&cut, t) <= 0.0),
+                "{which:?}"
+            );
+            // cut at the plane, not along the triangles: no kept corner on the cut side
+            assert!(
+                cut.indices
+                    .iter()
+                    .all(|&i| cut.vertices[i as usize].pos[2] <= 1e-6),
+                "{which:?}: a corner past the cut"
+            );
+            let share = tris(&cut) as f32 / tris(&whole) as f32;
+            assert!((0.3..0.7).contains(&share), "{which:?}: {share}");
+        }
     }
 
     #[test]

@@ -572,6 +572,7 @@ pub fn show(
             throw_over_bore: throw_over_bore(&snap.def),
             intake_lobe_over_bore: lobe_over_bore(&snap.def, true),
             exhaust_lobe_over_bore: lobe_over_bore(&snap.def, false),
+            cutaway: st.layers.cutaway,
         },
     };
     ui.painter()
@@ -879,6 +880,7 @@ mod tests {
                         throw_over_bore: throw_over_bore(&def),
                         intake_lobe_over_bore: lobe_over_bore(&def, true),
                         exhaust_lobe_over_bore: lobe_over_bore(&def, false),
+                        cutaway: false,
                     },
                 };
                 let mut enc = rs.device.create_command_encoder(&Default::default());
