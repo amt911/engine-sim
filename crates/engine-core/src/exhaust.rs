@@ -2775,6 +2775,63 @@ mod tests {
     }
 
     #[test]
+    fn a_silencer_changing_its_design_with_the_flow_does_not_click() {
+        // a 500 Hz tone through the road silencer while the flow jumps from rest to Mach 0.2
+        // (eight design steps at once, as a gear's pull runs them in a second): the switch may
+        // not kick the waveform. Its kick is its second difference; before the switch and
+        // once the new design has settled the tone's own is 4 sin²(πf·dt)-sized: the switch's
+        // may not stand more than 1.5 times over the larger of the two
+        use crate::silencer2d::{Gas, Perforate, Silencer};
+        let dt = 1.0 / 48_000.0;
+        let gas = Gas {
+            c: C_TAIL,
+            rho: crate::units::ATM_PA / (crate::gas::R_AIR * TAIL_T),
+        };
+        let s = Silencer {
+            r1: 0.025,
+            r2: 0.106_35,
+            len: 0.45,
+            resistivity: Some(16_000.0),
+            perforate: Perforate::default(),
+            mach: 0.0,
+        };
+        let still = s.transmission_eq(gas, 1.0 / dt);
+        let mut d = crate::waveguide::Duct::new(vec![
+            crate::waveguide::Pipe::new(0.45, 0.05, C_TAIL, dt, 0.0).with_flow_silencer(
+                s,
+                gas,
+                1.0 / dt,
+                still,
+            ),
+        ]);
+        d.follow_flow();
+        let area = std::f64::consts::PI * 0.25 * 0.05 * 0.05;
+        let n = (0.4 / dt) as usize;
+        let mut y = Vec::with_capacity(2 * n);
+        for k in 0..2 * n {
+            if k == n {
+                d.set_mean_flow(0.2 * crate::gas::GAMMA * crate::units::ATM_PA / C_TAIL * area);
+            }
+            y.push(d.at_far());
+            d.send(
+                (2.0 * std::f64::consts::PI * 500.0 * k as f64 * dt).sin(),
+                0.0,
+            );
+        }
+        let kick = |a: usize, b: usize| {
+            (a..b)
+                .map(|i| (y[i] - 2.0 * y[i - 1] + y[i - 2]).abs())
+                .fold(0.0, f64::max)
+        };
+        let steady = kick(n / 2, n).max(kick(2 * n - n / 2, 2 * n));
+        let switch = kick(n, n + n / 2);
+        assert!(
+            switch < 1.5 * steady,
+            "switch {switch:.2e} vs steady {steady:.2e}"
+        );
+    }
+
+    #[test]
     fn the_clamp_spares_every_wave_the_gas_can_carry() {
         use crate::units::ATM_PA;
         use crate::valve_boundary::wave_pressure;

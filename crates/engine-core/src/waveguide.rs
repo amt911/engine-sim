@@ -356,7 +356,15 @@ struct FlowSilencer {
     on: bool,
     step: i32,
     designed: Vec<(i32, crate::silencer2d::Cascade)>,
+    /// The design it left, still running on the same waves while the new one fades in
+    /// ([`SILENCER_FADE_S`]), and the steps left of the fade.
+    fade: Option<(Box<[crate::silencer2d::Cascade; 2]>, usize)>,
 }
+
+/// A flow-following silencer fades from one design to the next over this, s: switched at once,
+/// the new design's filters started from the old one's state and kicked the wave (a click at
+/// every Mach step of a gear's pull, heard 2026-11-19).
+const SILENCER_FADE_S: f64 = 0.03;
 
 /// A segment of a [`Pipe::steepening`] pipe: its share of the walls' loss, then its line.
 #[derive(Debug, Clone)]
@@ -527,6 +535,7 @@ impl Pipe {
             on: false,
             step: 0,
             designed: vec![(0, still)],
+            fade: None,
         }));
         p
     }
@@ -707,6 +716,11 @@ impl Pipe {
                         eq
                     }
                 };
+                // the old design keeps running (with its state) and fades out under the new
+                fs.fade = Some((
+                    Box::new((**filter).clone()),
+                    (SILENCER_FADE_S * fs.fs) as usize,
+                ));
                 filter[0].retune(&eq);
                 filter[1].retune(&eq);
                 fs.step = step;
@@ -778,8 +792,21 @@ impl Pipe {
                 self.bwd.push(far);
             }
             Some([f, b]) => {
-                self.fwd.push(f.process(near));
-                self.bwd.push(b.process(far));
+                let (mut ahead, mut back) = (f.process(near), b.process(far));
+                if let Some(fs) = &mut self.flow_silencer
+                    && let Some((old, left)) = &mut fs.fade
+                {
+                    let total = (SILENCER_FADE_S * fs.fs) as usize;
+                    let w = *left as f64 / total.max(1) as f64;
+                    ahead = (1.0 - w) * ahead + w * old[0].process(near);
+                    back = (1.0 - w) * back + w * old[1].process(far);
+                    *left -= 1;
+                    if *left == 0 {
+                        fs.fade = None;
+                    }
+                }
+                self.fwd.push(ahead);
+                self.bwd.push(back);
             }
         }
     }
