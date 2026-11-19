@@ -1725,6 +1725,8 @@ A first version of `same_engine.py` masked lines 1.5 % wide, which covered the w
 
 ## The K20A "whistle": impulsive treble above 8 kHz, from two exhaust causes (2026-11-19)
 
+**Measure it:** the gates' bands stop at 8 kHz. Take the kurtosis per band above 8 kHz (real ≈ 3).
+
 **Symptom.** The user still heard a whistle (silbido) on the K20A render. Held 7000 rpm WOT (Reference)
 against the stock DC5 / EP3 clips, band energy in dB re total: 8–12 / 12–16 / 16–20 kHz model −10.6 /
 −8.9 / −11.2, real −12.8 / −17.0 / −27.4 and −22.5 / −26.0 / −33.3. The model's spectrum *rises* above
@@ -1739,9 +1741,18 @@ each carry the band.
 train of one-step shocks (kurtosis > 20). With linear pipes or the FV exhaust it is smooth (8–20 kHz
 ≈ −45…−50 dB re total). The packed silencers pass them: by the 2D model they take 30–58 dB at
 1–2 kHz but only 3–8 dB at 11–20 kHz (the tube beams its highs), so they act as a high-pass on the
-shocks. The FV exhaust is no arbiter above ~2 kHz (4 cm cells). **Open:** what rounds a real
-exhaust's shock fronts before the outlet (the real treble is Gaussian) has no measured source in
-hand yet (PAPERS.md).
+shocks. The steepening line itself is right: one 0.6 m pipe carrying a 0.1–0.5 bar pulse matches
+Euler (FV at 1 mm) within 1–4 dB per octave band. The FV exhaust converges at 1 cm (1 cm and 5 mm
+agree): gas only, 4–8 kHz at −43.8 dB re total, against −24 for the steepening waveguide over the
+same linear designed path. **The pulses were too big.** At the K20A's port (7000 rpm WOT) the
+waveguide stood at 2.9 bar over the atmosphere, FV at 1.2. At the peak flow (0.25 kg/s) the valve's
+own Benson boundary held 0.90 bar, but the wave the net sent read 2.83. The valve end sent
+w⁺ = w⁻ + c·ṁ/A, which counts the gas at the reference density. Its waves are Blair's
+finite-amplitude ones (density ρ₀·X_s⁵), so a blowdown's wave carried up to 2.6 times the valve's
+mass. **Fix:** the valve end solves Blair's ṁ = 5ρ₀a₀A·(X⁺ − X⁻)·X_s⁵ for X⁺
+(`valve_boundary::sent_wave`). K20A, 7000 rpm, steepening on: gas only now matches FV's total
+(−55.1 dB). The whole render at 8–12 / 12–16 / 16–20 kHz is −23.6 / −26.5 / −29.8 dB re total,
+kurtosis 3.1 / 3.2, inside the real range.
 **Cause 2: the duct jets ran at an atmosphere's density.** `DuctFlow` took u = ṁ/(ρ_atm·A). In a
 1–2 bar blowdown pulse that ran the primaries' jets into the collector at 900–1060 m/s (Mach 1.5).
 Their noise goes as U⁴, above the cut-on as U⁶ with the shelf ×M/0.3, so it formed a hump at 10–20 kHz.
@@ -1749,5 +1760,4 @@ Their noise goes as U⁴, above the cut-on as U⁶ with the shelf ×M/0.3, so it
 pressure (`jet_noise::duct_jet_speed`). FV hands the cells' pressure; the waveguide's sites read
 their waves' (`Duct::node_pressure`, `far_pressure`). Duct flow alone over linear pipes:
 8–20 kHz −11.6 / −7.4 / −7.3 → −20.0 / −16.6 / −17.3 dB re total. With linear pipes and this fix,
-the whole K20A sits at −22 / −21 / −22 (kurtosis 3.5 / 4.8), inside the real range. With
-steepening it stays at −11 / −9 / −12 until cause 1 is solved.
+the whole K20A sits at −22 / −21 / −22 (kurtosis 3.5 / 4.8), inside the real range. 
