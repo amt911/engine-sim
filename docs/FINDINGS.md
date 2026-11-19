@@ -1761,3 +1761,18 @@ pressure (`jet_noise::duct_jet_speed`). FV hands the cells' pressure; the wavegu
 their waves' (`Duct::node_pressure`, `far_pressure`). Duct flow alone over linear pipes:
 8–20 kHz −11.6 / −7.4 / −7.3 → −20.0 / −16.6 / −17.3 dB re total. With linear pipes and this fix,
 the whole K20A sits at −22 / −21 / −22 (kurtosis 3.5 / 4.8), inside the real range. 
+**The gates after the valve fix (2026-11-19).** `regress` against `b2` turned red on most presets
+(low-mid residual +1.2 to +2.7 dB, wind +1.5 on the I4 and EJ25) and `physgate` failed `load` on the V8
+crossplane (+5.5 → +2.5 dB(A)) and the single (+3.7 → +2.0). The duct-jet fix alone moved nothing
+(gates as `b2`); the valve fix did. Judged against the converged FV exhaust (4 cm and 1 cm agree), at
+each preset's `physgate` load speed, full throttle, the radiated level re FV is, linear valve → fixed
+valve: below 1 kHz +3.1 → +1.4 (K20A), +2.1 → +0.2 (single), +1.7 → −0.4 (V8 flat), +1.1 → −2.6
+(V8 cross), within ±1.5 dB on the rest except the K20C1 (−2.4) and the SDI (−2.0); 4–20 kHz, the old
+valve sat +7 to +24 dB over FV, the fixed one within ±2 dB. The old valve's pulses (port up to
+3.2–3.75 bar over the atmosphere against FV's 1.2) made the full-throttle sound louder than the gas
+dynamics give it, so the load contrast and the low-mid share the gates were fitted on carried that
+excess. Against stock K20A clips (`same_engine.py`, eight YouTube clips), the fixed build's low-mid
+(−8.5 / −5.4 / −3.8 dB at 5–6 / 6–7 / 7–8 krpm) and wind (−16.5 / −14.9 / −12.8) sit inside the real
+spread (low-mid −2.3 to −15, wind −7 to −42). Left: the V8 crossplane's low orders 3–4 dB under FV at
+full throttle, and the waveguide's overrun treble over FV's (LFA +7.8, V8 cross +10.9 dB at 4–20 kHz),
+which predates this fix.
