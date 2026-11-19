@@ -1276,9 +1276,9 @@ pub struct ExhaustNet {
 struct DuctFlow {
     gain: f64,
     sites: Vec<SiteSource>,
-    /// Each site's mass flow handed in from outside ([`ExhaustNet::set_site_flows`]), kg/s;
-    /// empty: the net's own.
-    given: Vec<f64>,
+    /// Each site's mass flow, kg/s, and pressure, Pa, handed in from outside
+    /// ([`ExhaustNet::set_site_flows`]); empty: the net's own.
+    given: Vec<(f64, f64)>,
     /// Whether the open end (`SiteAt::Exit`) makes noise ([`ExhaustNet::set_duct_exit`]).
     exit: bool,
 }
@@ -1308,17 +1308,22 @@ impl DuctFlow {
     }
 
     /// Site `i`'s noise this step as the plane-wave pressure for a 1 m² duct (scale by 1/√A),
-    /// its mass flow `own` (kg/s, + towards the tail) unless one was given, in gas of sound
-    /// speed `c` at an atmosphere.
-    fn pressure(&mut self, i: usize, own: f64, c: f64, dt: f64) -> f64 {
+    /// its mass flow `own` (kg/s, + towards the tail) at acoustic pressure `own_p` (Pa over an
+    /// atmosphere) unless they were given, in gas of sound speed `c` at an atmosphere. The jet
+    /// runs at its gas's own density ([`crate::jet_noise::duct_jet_speed`]).
+    fn pressure(&mut self, i: usize, own: f64, own_p: f64, c: f64, dt: f64) -> f64 {
         let src = &mut self.sites[i];
         if !self.exit && src.site.at == SiteAt::Exit {
             return 0.0;
         }
-        let m_dot = self.given.get(i).copied().unwrap_or(own);
+        let (m_dot, p) = self
+            .given
+            .get(i)
+            .copied()
+            .unwrap_or((own, crate::units::ATM_PA + own_p));
         let rho = crate::gas::GAMMA * crate::units::ATM_PA / (c * c);
         let a_jet = 0.25 * std::f64::consts::PI * src.site.d_jet * src.site.d_jet;
-        let u = m_dot / (rho * a_jet);
+        let u = crate::jet_noise::duct_jet_speed(m_dot, p, c, a_jet);
         self.gain * src.jet.step(u, rho, c, src.site.d_jet, src.site.d_down, dt)
     }
 }
@@ -2117,10 +2122,10 @@ impl ExhaustNet {
         self.duct_flow.exit
     }
 
-    /// Each expansion site's instantaneous mass flow, kg/s (+ towards the tail), in
-    /// [`expansion_sites`] order, from outside (an FV exhaust's cells) for the coming steps;
-    /// until then the net uses the flow its own waves carry.
-    pub fn set_site_flows(&mut self, flows: &[f64]) {
+    /// Each expansion site's instantaneous mass flow, kg/s (+ towards the tail), and absolute
+    /// pressure, Pa, in [`expansion_sites`] order, from outside (an FV exhaust's cells) for the
+    /// coming steps; until then the net uses the flow and pressure its own waves carry.
+    pub fn set_site_flows(&mut self, flows: &[(f64, f64)]) {
         self.duct_flow.given.clear();
         self.duct_flow.given.extend_from_slice(flows);
     }
@@ -2200,7 +2205,8 @@ impl ExhaustNet {
                         continue;
                     }
                     let own = areas[j] * (incoming[j] - outgoing[j]) / C_PRIMARY;
-                    let p = df.pressure(i, own, C_PRIMARY, dt);
+                    let at = incoming[j] + outgoing[j];
+                    let p = df.pressure(i, own, at, C_PRIMARY, dt);
                     outgoing[j] += p / areas[j].sqrt();
                     collector_add += p / b.collector.area_m2.sqrt();
                 }
@@ -2226,6 +2232,7 @@ impl ExhaustNet {
             let mut exit = 0.0;
             if noise {
                 let own = areas[0] * (incoming[0] - two[0]) / C_COLLECTOR;
+                let own_p = incoming[0] + two[0];
                 for i in 0..df.sites.len() {
                     let site = &df.sites[i].site;
                     if site.branch != Some(k) {
@@ -2235,19 +2242,21 @@ impl ExhaustNet {
                     match at {
                         SiteAt::Segment { index } => match b.tail.segment_node(index) {
                             None => {
-                                let p = df.pressure(i, own, C_TAIL, dt);
+                                let p = df.pressure(i, own, own_p, C_TAIL, dt);
                                 two[0] += p / areas[0].sqrt();
                                 two[1] += p / areas[1].sqrt();
                             }
                             Some(node) => {
                                 // the flow through that node (the last step's: one sample)
-                                let p = df.pressure(i, b.tail.node_flow(node), C_TAIL, dt);
+                                let (m, at) = (b.tail.node_flow(node), b.tail.node_pressure(node));
+                                let p = df.pressure(i, m, at, C_TAIL, dt);
                                 let (a1, a2) = b.tail.node_areas(node);
                                 b.tail.inject(node, p / a1.sqrt(), p / a2.sqrt());
                             }
                         },
                         SiteAt::Exit => {
-                            let p = df.pressure(i, b.tail.far_flow(), C_TAIL, dt);
+                            let (m, at) = (b.tail.far_flow(), b.tail.far_pressure());
+                            let p = df.pressure(i, m, at, C_TAIL, dt);
                             exit = p / b.tail.end_areas().1.sqrt();
                         }
                         _ => {}
@@ -2291,20 +2300,26 @@ impl ExhaustNet {
                     let (branch, at) = (df.sites[i].site.branch, df.sites[i].site.at);
                     match (branch, at) {
                         (Some(bk), SiteAt::MergeJunction) => {
-                            let own = self.branches.get(bk).map_or(0.0, |b| b.tail.far_flow());
-                            let p = df.pressure(i, own, C_TAIL, dt);
+                            let (own, at) = self
+                                .branches
+                                .get(bk)
+                                .map_or((0.0, 0.0), |b| (b.tail.far_flow(), b.tail.far_pressure()));
+                            let p = df.pressure(i, own, at, C_TAIL, dt);
                             outgoing[bk] += p / areas[bk].sqrt();
                             outgoing[shared_index] += p / areas[shared_index].sqrt();
                         }
                         (None, SiteAt::MergedSegment { index }) => {
                             if let Some(node) = sh.duct.segment_node(index) {
-                                let p = df.pressure(i, sh.duct.node_flow(node), C_TAIL, dt);
+                                let (m, at) =
+                                    (sh.duct.node_flow(node), sh.duct.node_pressure(node));
+                                let p = df.pressure(i, m, at, C_TAIL, dt);
                                 let (a1, a2) = sh.duct.node_areas(node);
                                 sh.duct.inject(node, p / a1.sqrt(), p / a2.sqrt());
                             }
                         }
                         (None, SiteAt::Exit) => {
-                            let p = df.pressure(i, sh.duct.far_flow(), C_TAIL, dt);
+                            let (m, at) = (sh.duct.far_flow(), sh.duct.far_pressure());
+                            let p = df.pressure(i, m, at, C_TAIL, dt);
                             exit = p / sh.duct.end_areas().1.sqrt();
                         }
                         _ => {}
@@ -2466,7 +2481,7 @@ mod tests {
         let on = steady_inline4(
             |n| {
                 n.set_duct_flow(1.0);
-                n.set_site_flows(&[-0.02; 6]);
+                n.set_site_flows(&[(-0.02, crate::units::ATM_PA); 6]);
             },
             0.03,
         );

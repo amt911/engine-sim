@@ -2294,7 +2294,7 @@ pub struct Engine {
     jet_net: Option<ExhaustNet>,
     jet_flows: Vec<f64>,
     /// The FV exhaust's expansion sites' mass flows, handed to `jet_net` each step (scratch).
-    site_flows: Vec<f64>,
+    site_flows: Vec<(f64, f64)>,
     /// Non-linear finite-volume exhaust, when `exhaust.model` is `fv`.
     fv: Option<ExhaustFv>,
     /// The silencers' designed equalizers, kept across rebuilds ([`Engine::adopt_exhaust_from`]).
@@ -10581,14 +10581,23 @@ mod tests {
         run(&mut e, 0.3, &c);
         let sites = crate::exhaust::expansion_sites(&d.exhaust, 4);
         let mut sum = vec![0.0; sites.len()];
+        let mut peak = vec![0.0f64; sites.len()];
         let mut flows = Vec::new();
         let steps = (0.2 / DT).round() as usize; // five cycles at 3000 rpm
         for _ in 0..steps {
             e.step(DT, &c);
             e.fv.as_ref().expect("FV").site_flows(&mut flows);
             assert_eq!(flows.len(), sites.len());
-            for (s, f) in sum.iter_mut().zip(&flows) {
-                *s += f / steps as f64;
+            for ((s, pk), f) in sum.iter_mut().zip(peak.iter_mut()).zip(&flows) {
+                *s += f.0 / steps as f64;
+                *pk = pk.max(f.1);
+            }
+        }
+        // each primary's jet carries its cells' pressure: the blowdown pulses lift it over an
+        // atmosphere (a full-load pulse is tenths of a bar)
+        for (s, p) in sites.iter().zip(&peak) {
+            if matches!(s.at, crate::exhaust::SiteAt::Collector { .. }) {
+                assert!(*p > 1.1 * crate::units::ATM_PA, "{s:?}: peak {p:.0} Pa");
             }
         }
         let at = |want: crate::exhaust::SiteAt| {

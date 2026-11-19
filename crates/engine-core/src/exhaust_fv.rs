@@ -420,33 +420,47 @@ impl ExhaustFv {
         out.extend(self.branches.iter().map(|b| b.duct.far_flow()));
     }
 
-    /// Each expansion site's mass flow this instant, kg/s (+ towards the tail), in
-    /// [`crate::exhaust::expansion_sites`] order: a primary's jet from its last cell, the
-    /// path's first step from the collector's last cell, its inner steps and its exit from the
-    /// designed path's waves there, a merge's from all the paths' ends.
-    pub fn site_flows(&self, out: &mut Vec<f64>) {
+    /// Each expansion site's mass flow this instant, kg/s (+ towards the tail), and absolute
+    /// pressure, Pa, in [`crate::exhaust::expansion_sites`] order: a primary's jet from its last
+    /// cell, the path's first step from the collector's last cell, its inner steps and its exit
+    /// from the designed path's waves there (over an atmosphere), a merge's from all the paths'
+    /// ends.
+    pub fn site_flows(&self, out: &mut Vec<(f64, f64)>) {
         let outflow = |pipe: &Pipe1d| match (pipe.cells.last(), pipe.area.last()) {
             (Some(c), Some(&a)) => {
                 let w = c.to_prim();
-                w.rho * w.u * a
+                (w.rho * w.u * a, w.p)
             }
-            _ => 0.0,
+            _ => (0.0, ATM_PA),
         };
+        let waves = |m: f64, p: f64| (m, ATM_PA + p);
         out.clear();
         for site in &self.sites {
             use crate::exhaust::SiteAt;
             out.push(match (site.at, site.branch) {
                 (SiteAt::Collector { primary }, _) => {
-                    self.primaries.get(primary).map_or(0.0, outflow)
+                    self.primaries.get(primary).map_or((0.0, ATM_PA), outflow)
                 }
-                (SiteAt::Segment { index }, Some(b)) => self.branches.get(b).map_or(0.0, |br| {
-                    // inside the designed path: the flow through that node of its duct
-                    br.duct
-                        .segment_node(index)
-                        .map_or_else(|| outflow(&br.out), |node| br.duct.node_flow(node))
+                (SiteAt::Segment { index }, Some(b)) => {
+                    self.branches.get(b).map_or((0.0, ATM_PA), |br| {
+                        // inside the designed path: the flow through that node of its duct
+                        br.duct.segment_node(index).map_or_else(
+                            || outflow(&br.out),
+                            |node| waves(br.duct.node_flow(node), br.duct.node_pressure(node)),
+                        )
+                    })
+                }
+                (_, Some(b)) => self.branches.get(b).map_or((0.0, ATM_PA), |br| {
+                    waves(br.duct.far_flow(), br.duct.far_pressure())
                 }),
-                (_, Some(b)) => self.branches.get(b).map_or(0.0, |br| br.duct.far_flow()),
-                (_, None) => self.branches.iter().map(|br| br.duct.far_flow()).sum(),
+                (_, None) => {
+                    // the paths' ends feed one outlet: their flows add, at their mean pressure
+                    let n = self.branches.len().max(1) as f64;
+                    let (m, p) = self.branches.iter().fold((0.0, 0.0), |(m, p), br| {
+                        (m + br.duct.far_flow(), p + br.duct.far_pressure() / n)
+                    });
+                    waves(m, p)
+                }
             });
         }
     }

@@ -734,6 +734,10 @@ pub struct Duct {
     /// [`Duct::send`], kg/s of the waves' reference gas (ṁ = A·(p⁺ − p⁻)/c, + onward).
     node_flows: Vec<f64>,
     far_flow: f64,
+    /// The acoustic pressure (both waves) at each inner node and at the far end at the last
+    /// [`Duct::send`], Pa over the mean.
+    node_pressures: Vec<f64>,
+    far_pressure: f64,
 }
 
 /// A wall that breathes at a node of a duct: the packing behind a perforate, a pocket of pore
@@ -956,6 +960,8 @@ impl Duct {
             segment_starts: Vec::new(),
             injected: Vec::new(),
             node_flows: Vec::new(),
+            node_pressures: Vec::new(),
+            far_pressure: 0.0,
             far_flow: 0.0,
         }
     }
@@ -1014,6 +1020,17 @@ impl Duct {
     /// The mass flow out of the far end at the last [`Duct::send`], kg/s.
     pub fn far_flow(&self) -> f64 {
         self.far_flow
+    }
+
+    /// The acoustic pressure at inner `node` at the last [`Duct::send`] (the waves meeting
+    /// there, both ways), Pa over the mean; 0 for an unknown node.
+    pub fn node_pressure(&self, node: usize) -> f64 {
+        self.node_pressures.get(node).copied().unwrap_or(0.0)
+    }
+
+    /// The acoustic pressure at the far end at the last [`Duct::send`], Pa over the mean.
+    pub fn far_pressure(&self) -> f64 {
+        self.far_pressure
     }
 
     /// The areas either side of inner `node`, m² (upstream, downstream).
@@ -1094,8 +1111,10 @@ impl Duct {
                 }
                 if self.node_flows.len() != n - 1 {
                     self.node_flows = vec![0.0; n - 1];
+                    self.node_pressures = vec![0.0; n - 1];
                 }
                 self.node_flows[k] = areas[0] * (incoming[0] - out[0]) / self.pipes[k].sound_speed;
+                self.node_pressures[k] = incoming[0] + out[0];
                 if let Some(add) = self.injected.get_mut(k) {
                     out[0] += add[0];
                     out[1] += add[1];
@@ -1105,6 +1124,7 @@ impl Duct {
             } else {
                 let last = &self.pipes[k];
                 self.far_flow = last.area_m2 * (last.at_far() - from_far) / last.sound_speed;
+                self.far_pressure = last.at_far() + from_far;
                 (from_far, 0.0)
             };
             self.pipes[k].send(into_near, back);
@@ -1348,7 +1368,7 @@ const INFLOW_LOSS_CD: f64 = 2.0;
 #[cfg(test)]
 mod tests {
     #[test]
-    fn a_duct_reads_the_flow_through_its_node_and_out_of_its_end() {
+    fn a_duct_reads_the_flow_and_pressure_at_its_node_and_its_end() {
         // A steady 100 Pa wave into a lossless 1e-3 m² pipe, then a 3e-3 m² one, open far end
         // anechoic: at the step the pressure junction sends back r·p, r = (A₁ − A₂)/(A₁ + A₂)
         // = −½, so the flow there is A₁(p − r·p)/c = 1e-3·150/500 = 3e-4 kg/s; on goes
@@ -1369,6 +1389,11 @@ mod tests {
         );
         assert!((duct.far_flow() - 3e-4).abs() < 3e-6, "{}", duct.far_flow());
         assert_eq!(duct.node_flow(7), 0.0);
+        // and the pressure there, both waves: 100 + r·100 = 50 Pa at the step, the 50 Pa going
+        // on alone at the anechoic end
+        assert!((duct.node_pressure(0) - 50.0).abs() < 0.5, "{}", duct.node_pressure(0));
+        assert!((duct.far_pressure() - 50.0).abs() < 0.5, "{}", duct.far_pressure());
+        assert_eq!(duct.node_pressure(7), 0.0);
     }
 
     use super::*;
