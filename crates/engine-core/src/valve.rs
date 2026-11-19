@@ -1,12 +1,18 @@
 //! Poppet valve lift and effective flow area.
 //!
 //! Angles are in the 720° four-stroke cycle, 0° = TDC at the start of the power stroke.
-//! Lift profile: sin² bump over the opening window (smooth, zero velocity at the ends).
+//! Lift profile: a sin^1.4 bump over the opening window ([`LIFT_EXPONENT`]: a real cam's).
 
 use serde::{Deserialize, Serialize};
 
 /// Discharge coefficient of a poppet valve at moderate L/D (Soriano et al., ENCIT 2012).
 pub const VALVE_CD: f64 = 0.7;
+/// Shape of a cam's lift over its window, sin^n: n = 1.4 fits the typical high-speed engine's
+/// curve of Heywood (*ICE Fundamentals*, 2nd ed., Fig. 6.16c; 1.23, 1.40 and 1.58 at 0.06,
+/// 0.18 and 0.34 of the window). The sin² bump it replaces (n = 2) lifted a quarter as far in
+/// the first degrees: each blowdown left over ~120° of crank, its pulse with no front, the
+/// firing orders above the first 25 dB under a real V10's (JP 2008-169751 A, Fig. 8).
+pub const LIFT_EXPONENT: f64 = 1.4;
 /// Exponent of the smooth turn from curtain to port area (see [`ValveTiming::flow_area`]):
 /// ln 2 / ln(1/0.9).
 const AREA_BLEND: f64 = 6.578_813_478_960_585;
@@ -141,7 +147,7 @@ impl ValveTiming {
             return 0.0;
         }
         let s = (std::f64::consts::PI * x).sin();
-        self.max_lift_m * s * s
+        self.max_lift_m * s.powf(LIFT_EXPONENT)
     }
     /// The most this valve passes: its effective area at its peak lift, on its high lobe if it
     /// has one and that lifts it further, m².
@@ -457,6 +463,29 @@ mod tests {
         assert_eq!(v.lift(100.0), 0.0);
         assert_eq!(v.lift(400.0), 0.0);
         assert!(v.lift(200.0) > 0.0);
+    }
+
+    #[test]
+    fn a_cam_lifts_its_valve_as_a_typical_engines_does() {
+        // Heywood, ICE Fundamentals 2nd ed., Fig. 6.16c (a high-speed 2.2 L four-cylinder):
+        // its 11 mm lift curve read at the 0.15 mm points ±62° cam (a 124° cam window) gives
+        // 1.3 mm at 0.056 of the window, 4.5 mm at 0.177, 8.9 mm at 0.339 (read ±0.3 mm).
+        // A sin² bump over the same window lifts 0.35, 3.1 and 8.4: it opens a quarter as far
+        // in its first degrees, and the blowdown it lets out has no front.
+        let v = ValveTiming {
+            open_deg: 0.0,
+            duration_deg: 248.0,
+            max_lift_m: 0.011,
+            diameter_m: 0.031,
+            high: None,
+        };
+        for (x, want_mm) in [(0.056, 1.3), (0.177, 4.5), (0.339, 8.9)] {
+            let got = v.lift(x * 248.0) * 1e3;
+            assert!(
+                (got - want_mm).abs() < 0.25 * want_mm + 0.3,
+                "at {x} of the window: {got:.2} mm, Heywood {want_mm}"
+            );
+        }
     }
 
     #[test]
