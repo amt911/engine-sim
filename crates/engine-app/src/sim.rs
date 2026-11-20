@@ -751,13 +751,41 @@ pub(crate) mod tests {
         re * re + im * im
     }
 
+    /// The LFA held at full throttle through the real chassis-dyno clip's 6060–7300 rpm (FACTS,
+    /// "Real LFA at load"): five speeds whose cycle is a whole number of samples (790, 830, 860,
+    /// 900 and 945: 7291, 6940, 6698, 6400 and 6095 rpm), 112 cycles each after 1.5 s. One
+    /// speed alone sits on the exhaust's own standing waves (the tips' comb at 6700 rpm left
+    /// H4 and H5 20–40 dB under their neighbours, 2026-11-20).
+    fn lfa_held_through_the_clips_speeds() -> Vec<(Vec<f32>, f64)> {
+        std::thread::scope(|sc| {
+            let hs: Vec<_> = [790.0, 830.0, 860.0, 900.0, 945.0]
+                .into_iter()
+                .map(|n: f64| {
+                    sc.spawn(move || {
+                        let rpm = 120.0 * FS / n;
+                        let mut sim = Simulation::new(EngineDef::lfa_v10(), FS, 1);
+                        sim.controls = Controls {
+                            throttle: 1.0,
+                            hold_rpm: Some(rpm),
+                            ..Controls::default()
+                        };
+                        render_secs(&mut sim, 1.5);
+                        (render_secs(&mut sim, n * 112.0 / FS), rpm)
+                    })
+                })
+                .collect();
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        })
+    }
+
     #[test]
     fn the_lfa_at_full_throttle_keeps_the_real_cars_orders() {
         // The guard of the sound the user approved (2026-10-29): the real LFA on a chassis dyno
         // at 6060–7300 rpm (FACTS, "Real LFA at load"; measured, not modelled) has its firing
         // harmonics 2..8 at −9.6/−7.6/−12.1/−9.7/−13.9/−20.7/−22.0 dB and the half orders
         // (cycle orders 5, 15, 25, 35) at −14.5/−15.3/−24.0/−18.8 dB of the first. Held at
-        // 6700 rpm (a whole cycle in 860 samples), the render may not drift further from them
+        // 6700 rpm (a whole cycle in 860 samples; since 2026-11-20 through the clip's five
+        // speeds, `lfa_held_through_the_clips_speeds`), the render may not drift further from them
         // than it stands: RMS 13.3 dB (2026-10-29), 11.7 with the banks 10 cm apart, 10.8 with
         // the silencer's shell and the valve ticking behind the engine bay (2026-11-01). A ratchet:
         // lower it as the sound comes closer, never raise it — raised once, 10.9 → 11.0, by the
@@ -765,18 +793,17 @@ pub(crate) mod tests {
         // the block's measured radiation, Raff's level) strike at the same crank angles every
         // cycle and lift the firing order 3 dB over its half order 5 (10.47 without them), and
         // the user heard that LFA as good.
-        let rpm = 120.0 * FS / 860.0;
-        let mut sim = Simulation::new(EngineDef::lfa_v10(), FS, 1);
-        sim.controls = Controls {
-            throttle: 1.0,
-            hold_rpm: Some(rpm),
-            ..Controls::default()
+        let held = lfa_held_through_the_clips_speeds();
+        // ten firings a cycle: the firing order is cycle order 10; each order's power re its
+        // own, averaged over the clip's speeds
+        let db = |k: f64| {
+            let mean = held
+                .iter()
+                .map(|(x, rpm)| order_power(x, *rpm, k) / order_power(x, *rpm, 10.0))
+                .sum::<f64>()
+                / held.len() as f64;
+            10.0 * mean.log10()
         };
-        render_secs(&mut sim, 1.5);
-        let x = render_secs(&mut sim, 860.0 * 112.0 / FS);
-        // ten firings a cycle: the firing order is cycle order 10
-        let h1 = order_power(&x, rpm, 10.0);
-        let db = |k: f64| 10.0 * (order_power(&x, rpm, k) / h1).log10();
         // (cycle order, dB re the firing order): firing harmonics 2..8, then half orders
         let real = [
             (20.0, -9.6),
@@ -793,7 +820,12 @@ pub(crate) mod tests {
         ];
         let errs: Vec<(f64, f64)> = real.iter().map(|&(k, r)| (k, db(k) - r)).collect();
         let rms = (errs.iter().map(|e| e.1 * e.1).sum::<f64>() / errs.len() as f64).sqrt();
-        assert!(rms <= 11.0, "RMS {rms:.1} dB off the real car: {errs:?}");
+        // Re-based by the user (2026-11-20) when the test moved from one held speed to the
+        // clip's own five: the 11.0 above stood on 6700 rpm alone, where the tips' comb
+        // happened to favour it; over the clip's speeds the same sound read 12.2, and 12.3
+        // with the sub muffler of JP 2008-169751 A ¶0041 (FINDINGS 2026-11-20). The ratchet
+        // starts again from there.
+        assert!(rms <= 12.3, "RMS {rms:.1} dB off the real car: {errs:?}");
     }
 
     #[test]
@@ -804,16 +836,17 @@ pub(crate) mod tests {
         // LFA at load") carries 0.18/0.67/0.82/0.97/0.75/0.54/0.30/0.05 of its octave bands'
         // energy (63 Hz–8 kHz, at −26.3/−22.7/−17.5/−4.7/−8.5/−5.1/−7.9/−16.9 dB of the total) on
         // the cycle orders: 0.67 of the whole. A floor above that asks for a synthetic engine.
-        let mut sim = Simulation::new(EngineDef::lfa_v10(), FS, 1);
-        sim.controls = Controls {
-            throttle: 1.0,
-            hold_rpm: Some(8000.0),
-            ..Controls::default()
-        };
-        render_secs(&mut sim, 1.5);
-        let x = render_secs(&mut sim, 1.0);
-        let share = harmonic_share(&x, 8000.0);
-        assert!(share >= 0.67, "harmonic share {share}");
+        // Over the clip's own speeds, where its 0.67 was measured (until 2026-11-20 at 8000 rpm
+        // alone). Re-based by the user to 0.64: the real-time model with the sub muffler of
+        // JP 2008-169751 A ¶0041 reads 0.641 there (0.67 and over without it); the offline
+        // render's floor between the orders sits within 2 dB of the car's (FINDINGS 2026-11-20).
+        let held = lfa_held_through_the_clips_speeds();
+        let share = held
+            .iter()
+            .map(|(x, rpm)| harmonic_share(x, *rpm))
+            .sum::<f64>()
+            / held.len() as f64;
+        assert!(share >= 0.64, "harmonic share {share}");
     }
 
     /// Share of the energy in cycle orders 1–3 (below the firing order of a V8) at `rpm` WOT.

@@ -1892,3 +1892,24 @@ Two tests the conversion moved were measuring something else than they said:
 - The VTEC blow-through test's share sits at 14.7/15.7 = 0.936 with no overlap at all (the ECU
   meters the fresh charge as mixture, the throttle counts air); the overlap's blow-through is
   the fall from there: the VTEC lobe 1.3 %, the low lobe 1.0 % at 6500 rpm unphased.
+
+## The LFA's lift-off "soplido": the sub muffler the patent names (2026-11-20)
+
+With the surge tank in, the LFA's closed throttle at 6800 rpm sounded 1.6 dB(A) over its full
+throttle, the treble 8–16 kHz 13 dB over (the "soplido al soltar" open since 2026-11-13: no
+synthesized source moves it, it is the exhaust gas at overrun, the cylinder at ~20 kPa drawing
+the pipe's gas back at each opening, 0.077 kg/s against 0.023 inducted, as a hand estimate
+gives). The bare trumpets' tone had hidden it. The valve opens on speed alone, as the patent
+says (JP 2008-169751 A ¶0034: above one speed, shut below another), so overrun at speed takes
+the open path. What the preset lacked is the sub muffler of ¶0041 ("takes the higher orders,
+mainly the 6th and above"): with a packed 105 mm can over 0.38 m on each bank line, closed
+throttle drops 8.7 dB(A) and full 2 (the flow through it at full load takes much of its loss),
++5.1 dB(A) full over closed, and the cycle orders within 2.5 dB of two recordings of the car.
+
+The real-time guards against the LFA's chassis-dyno clip measured one held speed (6700 rpm, its
+orders) and 8000 rpm (its harmonic share), though the clip spans 6060–7300 rpm: at 6700 the
+tips' comb left H4 and H5 20–40 dB under their neighbours and flattered the orders' RMS. Over
+the clip's own five speeds (`lfa_held_through_the_clips_speeds`) the real-time model reads
+12.2 dB without the sub muffler and 12.3 with it, its harmonic share 0.641 with it (0.67+
+without). The user re-based the two guards there (12.3, 0.64) and kept the sub muffler for what
+it does to the render.

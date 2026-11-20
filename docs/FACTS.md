@@ -261,6 +261,11 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   H4 −17, half order 5 −20, 63/125 Hz +6. The 1D lining is under 2D below ~3 kHz and far over above
   (beaming): the lower tip's glass wool (Ø100 over 60 mm, 0.12 m) is 1.9 dB at 2 kHz in 1D, 12 dB in 2D, so
   it cancels the upper tips at f = c/(2ΔL) ≈ 2 kHz more than it should.
+  **Update 2026-11-20:** with the surge tank and the real cam flank the LFA's H2–H6 at its tips match two recordings
+  of the car only with a sub muffler in: a 105 mm can (the road silencers' smallest shell) over 0.38 m reads H2–H6
+  −15.3 dB re H1 (real −12.7/−13.3), the orders between −22.6 (−21.7), the floor −26.9 (−27.4/−29.5); without it
+  closed throttle at 6800 rpm sounds 1.6 dB(A) over full. At full throttle the flow through it (Rao & Munjal's
+  grazing flow, the render's flow-following silencers) takes much of the loss the 120 mm can had in still gas.
 - **Packed silencers by the 2D model (2026-10-29)**: `silencer2d.rs` ports `modal2d.py` (complex Bessel from the
   `complex-bessel` crate) and matches it to 0.01 dB (0.4 m can at 1 kHz 17.34, 0.8 m 33.82). Backward chamber waves
   must be referred to x = L or the evanescent modes overflow (the 0.8 m can failed everywhere, and 8 kHz+ on short

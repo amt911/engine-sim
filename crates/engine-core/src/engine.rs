@@ -1013,13 +1013,31 @@ impl EngineDef {
                 // pipes" drawing; EPC 17410: two parallel pipes in one part). Lengths: ESTIMATE,
                 // scaled off the Lexus drawing against the engine-to-tail distance (≈ 2.1 m
                 // catalyst to muffler, the sub muffler ≈ 0.38 m a third of the way). The sub
-                // muffler is a plain pipe here: its size and packing are not published, and the
-                // sound measured after it is still flat from 400 Hz to 5 kHz (JP 2008-169751 A,
-                // Fig. 7A, dashed). A packed can of 120 mm over the 70 mm pipe would take 16 dB
-                // at 1 kHz and 38 dB at 2 kHz even by the 2D model that matches Selamet, Lee &
-                // Huff's measurements (JSV 262, 2003) — the real car's H2–H6 are not cut like
-                // that (FACTS, "The sub muffler"). One pipe of the three lengths, then.
-                after_collector: Vec::new(),
+                // muffler "takes the higher orders, mainly the 6th and above" (JP 2008-169751 A,
+                // ¶0041); its size and packing are not published: a packed can on the road
+                // silencers' smallest shell, 1.5 pipes (105 mm; a 120 mm one, FACTS "The sub
+                // muffler", cut the H2–H6 the car keeps). At full throttle the flow through it
+                // takes much of its loss (Rao & Munjal's grazing flow); on overrun it takes the
+                // treble the open valve let through at full level (2026-11-20: closed throttle
+                // −1.6 dB(A) over full at 6800 rpm without it, +5.1 with it, and the orders
+                // between the firing harmonics within 2 dB of two recordings of the car).
+                after_collector: vec![
+                    crate::exhaust::Segment::Pipe {
+                        length_m: 0.50,
+                        diameter_m: 0.070,
+                    },
+                    crate::exhaust::Segment::Muffler {
+                        length_m: 0.38,
+                        diameter_m: 0.105,
+                        tube_diameter_m: 0.070,
+                        packing_resistivity: crate::lining::Packing::default().flow_resistivity,
+                        packing_porosity: crate::lining::Packing::default().porosity,
+                    },
+                    crate::exhaust::Segment::Pipe {
+                        length_m: 1.00,
+                        diameter_m: 0.070,
+                    },
+                ],
                 steepening: true,
                 // each pipe's gas at its own temperature (the LFA's refit with it on: harmonics
                 // H2–H4 1.5 dB from the dyno clips; the user chose it by ear, 2026-10-31)
@@ -1199,7 +1217,6 @@ impl EngineDef {
             turbo: None,
         }
         // its own bank lines (above), the catalyst first
-        .with_tail_pipe()
         .with_catalyst()
     }
 
@@ -4766,7 +4783,16 @@ mod tests {
                 .iter()
                 .any(|s| matches!(s, Segment::Muffler { .. }))
         };
-        assert!(!silenced(&EngineDef::lfa_v10()));
+        // the LFA carries its patent's sub muffler, not the rule's two boxes; the bridge-port
+        // race engine none
+        let boxes = |d: &EngineDef| {
+            d.exhaust
+                .after_collector
+                .iter()
+                .filter(|s| matches!(s, Segment::Muffler { .. }))
+                .count()
+        };
+        assert_eq!(boxes(&EngineDef::lfa_v10()), 1);
         assert!(!silenced(&EngineDef::mazda_13b_bridgeport()));
     }
 
@@ -7449,6 +7475,39 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
+    fn probe_lfa_overrun() {
+        for (name, th) in [("WOT", 1.0), ("closed", 0.0)] {
+            let d = EngineDef::lfa_v10();
+            let mut e = Engine::new(d, 6800.0, 1);
+            let c = Controls {
+                throttle: th,
+                hold_rpm: Some(6800.0),
+                ..Controls::default()
+            };
+            run(&mut e, 1.5, &c);
+            let (r0, m0) = (e.exhaust_reversion_kg(), e.inducted_kg());
+            let (mut p, mut pmin, mut x2) = (0.0, f64::MAX, 0.0);
+            let n = (0.5 / DT) as usize;
+            for _ in 0..n {
+                let x = e.step(DT, &c);
+                x2 += x * x / n as f64;
+                let pc = e.cyl[0].gas.pressure();
+                pmin = pmin.min(pc);
+                p += e.plenum_pressure_pa() / n as f64;
+            }
+            eprintln!(
+                "{name:7}: MAP {:.1} kPa, cyl min {:.1} kPa, reversion {:.3e} kg/s, inducted {:.3e} kg/s, out rms {:.3} Pa",
+                p / 1e3,
+                pmin / 1e3,
+                (e.exhaust_reversion_kg() - r0) / 0.5,
+                (e.inducted_kg() - m0) / 0.5,
+                x2.sqrt()
+            );
+        }
+    }
+
+    #[test]
     fn gas_coming_in_mixes_its_composition_by_mass() {
         // a cylinder holding 1 kg, half of it products and all its fresh part fuelled, takes
         // 0.6 kg of products-free gas that is ⅓ fuelled: burned (0.5·1 + 0)/(1.6) = 0.3125;
@@ -7965,6 +8024,34 @@ mod tests {
         let sdi = cylinder_pressure_level_1k(EngineDef::vw_sdi(), 1000.0, 1.0);
         let k20 = cylinder_pressure_level_1k(EngineDef::honda_k20a(), 1000.0, 1.0);
         assert!(sdi - k20 > 20.0, "SDI {sdi:.1} dB, K20A {k20:.1} dB");
+    }
+
+    #[test]
+    fn the_lfas_bank_lines_carry_their_sub_muffler() {
+        // JP 2008-169751 A, ¶0041: "a sub muffler (not shown) between the engine and the main
+        // muffler takes the higher orders (mainly the 6th and above)": on each bank's line, a
+        // third of the way from the catalyst (the Lexus drawing), a packed can of 0.38 m on
+        // the road silencers' smallest shell (1.5 pipes, 105 mm). Without it the overrun's
+        // treble came through the open valve at full level: closed throttle sounded over full
+        // at 6800 rpm (−1.6 dB(A)); with it +5.1, and the orders between the firing harmonics
+        // within 2 dB of two recordings of the car (FINDINGS 2026-11-20)
+        use crate::exhaust::Segment;
+        let path = EngineDef::lfa_v10().exhaust.after_collector;
+        let kinds: Vec<&str> = path
+            .iter()
+            .map(|s| match s {
+                Segment::Catalyst { .. } => "cat",
+                Segment::Pipe { .. } => "pipe",
+                Segment::Muffler { .. } => "muffler",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, ["cat", "pipe", "muffler", "pipe"]);
+        assert!(matches!(
+            path[2],
+            Segment::Muffler { length_m, diameter_m, tube_diameter_m, .. }
+                if length_m == 0.38 && diameter_m == 0.105 && tube_diameter_m == 0.07
+        ));
     }
 
     #[test]
@@ -10952,23 +11039,28 @@ mod tests {
     #[test]
     fn each_preset_carries_only_the_exhaust_it_has_data_for() {
         // the LFA, whose silencer is drawn at its bank merge: after each collector the
-        // catalyst every road car carries (sized by its rule) and the tail pipe of its own
-        // length and bore (the road cars without a drawn silencer carry the rule's,
+        // catalyst every road car carries (sized by its rule), then its bank line of its own
+        // length and bore with the patent's sub muffler a third of the way
+        // (`the_lfas_bank_lines_carry_their_sub_muffler`; the road cars without a drawn
+        // silencer carry the rule's,
         // `every_road_car_carries_a_catalyst_and_silencers_of_ten_swept_volumes`)
         let d = EngineDef::lfa_v10();
         let branch = d.displacement_m3() / d.exhaust.collectors.len().max(1) as f64;
         assert_eq!(
-            d.exhaust.after_collector,
-            [
-                crate::exhaust::close_coupled_catalyst(branch, d.exhaust.tail_diameter_m),
-                crate::exhaust::Segment::Pipe {
-                    length_m: d.exhaust.tail_length_m,
-                    diameter_m: d.exhaust.tail_diameter_m,
-                }
-            ],
+            d.exhaust.after_collector[0],
+            crate::exhaust::close_coupled_catalyst(branch, d.exhaust.tail_diameter_m),
             "{}",
             d.name
         );
+        let line: f64 = d.exhaust.after_collector[1..]
+            .iter()
+            .map(|s| match s {
+                crate::exhaust::Segment::Pipe { length_m, .. }
+                | crate::exhaust::Segment::Muffler { length_m, .. } => *length_m,
+                _ => 0.0,
+            })
+            .sum();
+        assert!((line - d.exhaust.tail_length_m).abs() < 1e-12, "{line}");
         assert_eq!(EngineDef::inline4().exhaust.tail_length_m, 1.5);
         // the LFA's bank line, catalyst to muffler: 0.50 + 0.38 (sub muffler) + 1.00 m
         assert_eq!(
