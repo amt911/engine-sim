@@ -120,7 +120,7 @@ engine:
       diameter_m: 0.07
     - kind: muffler
       length_m: 0.38
-      diameter_m: 0.105
+      diameter_m: 0.076
       tube_diameter_m: 0.07
       packing_resistivity: 16000.0
       packing_porosity: 0.95
@@ -296,6 +296,8 @@ engine:
       liner_thickness_m: 0.02
       liner_resistivity: 16000.0
       liner_coverage: 0.25
+      intake_inside: false
+    body_height_m: 1.22
     shuffle_hz: 3.5
     shuffle_damping: 0.15
   turbo: null

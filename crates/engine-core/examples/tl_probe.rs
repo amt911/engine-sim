@@ -12,7 +12,21 @@ fn main() {
         rho: 101_325.0 / (287.0 * 622.0),
     };
     let fs = 192_000.0;
-    for seg in road_exhaust(swept, d) {
+    let segs = match std::env::var("CAN") {
+        // CAN="length,shell,tube": one packed can instead of the road rule
+        Ok(c) => {
+            let v: Vec<f64> = c.split(',').map(|x| x.parse().expect("can")).collect();
+            vec![Segment::Muffler {
+                length_m: v[0],
+                diameter_m: v[1],
+                tube_diameter_m: v[2],
+                packing_resistivity: 16_000.0,
+                packing_porosity: 0.95,
+            }]
+        }
+        Err(_) => road_exhaust(swept, d),
+    };
+    for seg in segs {
         if let Segment::Muffler {
             length_m,
             diameter_m,
@@ -21,17 +35,23 @@ fn main() {
             ..
         } = seg
         {
+            let mach: f64 = std::env::var("MACH")
+                .ok()
+                .and_then(|m| m.parse().ok())
+                .unwrap_or(0.0);
             let s = Silencer {
                 r1: 0.5 * tube_diameter_m,
                 r2: 0.5 * diameter_m,
                 len: length_m,
                 resistivity: (packing_resistivity > 0.0).then_some(packing_resistivity),
                 perforate: Perforate::default(),
-                mach: 0.0,
+                mach,
             };
             let eq = s.transmission_eq(gas, fs);
             print!("silencer L {length_m} D {diameter_m:.3} tube {tube_diameter_m}:");
-            for f in [50.0, 100.0, 200.0, 400.0, 800.0, 1600.0, 3200.0] {
+            for f in [
+                700.0, 1400.0, 2100.0, 2800.0, 3500.0, 4200.0, 5600.0, 8000.0,
+            ] {
                 print!(
                     "  {f}Hz TL {:.1} eq {:.1}",
                     s.transmission_loss_db(f, gas).unwrap_or(f64::NAN),

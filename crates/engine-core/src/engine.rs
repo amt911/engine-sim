@@ -1014,13 +1014,13 @@ impl EngineDef {
                 // scaled off the Lexus drawing against the engine-to-tail distance (≈ 2.1 m
                 // catalyst to muffler, the sub muffler ≈ 0.38 m a third of the way). The sub
                 // muffler "takes the higher orders, mainly the 6th and above" (JP 2008-169751 A,
-                // ¶0041); its size and packing are not published: a packed can on the road
-                // silencers' smallest shell, 1.5 pipes (105 mm; a 120 mm one, FACTS "The sub
-                // muffler", cut the H2–H6 the car keeps). At full throttle the flow through it
-                // takes much of its loss (Rao & Munjal's grazing flow); on overrun it takes the
-                // treble the open valve let through at full level (2026-11-20: closed throttle
-                // −1.6 dB(A) over full at 6800 rpm without it, +5.1 with it, and the orders
-                // between the firing harmonics within 2 dB of two recordings of the car).
+                // ¶0041; Fig. 7A: after it the 5th stands out as a peak): its size and packing
+                // are not published. By the 2D model (`silencer2d`) a packed can of 0.38 m over
+                // a 76 mm shell (a thin layer round the 70 mm pipe) passes the firing harmonics
+                // up to the 5th at the recordings' 8000 rpm (≤ 4 dB to 2.1 kHz, 8 at 3.5) and
+                // takes 18–27 dB from 5.6 to 8 kHz. A 105 mm shell (the road silencers'
+                // smallest) took the H3 and H4 the car keeps 10–25 dB under its recordings
+                // (2026-11-20, "le falta algún armónico"); 120 mm cut H2–H6 (FACTS).
                 after_collector: vec![
                     crate::exhaust::Segment::Pipe {
                         length_m: 0.50,
@@ -1028,7 +1028,7 @@ impl EngineDef {
                     },
                     crate::exhaust::Segment::Muffler {
                         length_m: 0.38,
-                        diameter_m: 0.105,
+                        diameter_m: 0.076,
                         tube_diameter_m: 0.070,
                         packing_resistivity: crate::lining::Packing::default().flow_resistivity,
                         packing_porosity: crate::lining::Packing::default().porosity,
@@ -2376,6 +2376,8 @@ pub struct Engine {
     bay: Vec<crate::engine_bay::BayFilter>,
     /// The texture layers' signal this step, in the tails' units, before it is radiated.
     texture_signal: f64,
+    /// The intake's sound at the listener's side of the bay this step, Pa (before its delay).
+    intake_heard: f64,
     /// The turbulent jet at each tail pipe.
     jets: Vec<JetNoise>,
     /// Each exhaust valve's jet ([`crate::jet_noise::ValveJet`]).
@@ -2658,6 +2660,7 @@ impl Engine {
             structure_out: 0.0,
             bay: Vec::new(),
             texture_signal: 0.0,
+            intake_heard: 0.0,
             jets: Vec::new(),
             valve_jets: Vec::new(),
             tail_groups: Vec::new(),
@@ -3760,6 +3763,23 @@ impl Engine {
                 self.def.vehicle.engine_ahead_m,
                 &self.engine_sources_across(),
             );
+            // a bay in a car's body screens the engine from an ear behind it; the engine's
+            // sources at half the roof's height (ESTIMATE: the bay's middle)
+            let v = &self.def.vehicle;
+            let l = if v.engine_bay.is_some() && v.body_height_m > 0.0 {
+                // the screen is on the engine's own noise (the block's sides); the intake's
+                // mouth, its last source, is heard as before (user, 2026-11-17: the body's
+                // test isolated, intake and exhaust untouched)
+                let mouth = l.engine_sources().saturating_sub(1);
+                l.with_body(
+                    v.body_height_m,
+                    0.5 * v.body_height_m,
+                    snd.listener_height_m,
+                )
+                .unscreened(mouth)
+            } else {
+                l
+            };
             self.listener = Some((dt, l));
             self.bank_of = self
                 .def
@@ -3769,8 +3789,10 @@ impl Engine {
                 .map(|p| p.0)
                 .collect();
             self.n_banks = self.bank_of.iter().max().map_or(1, |b| b + 1);
+            // one filter per bank's side of the block, and one more for the intake's mouth when
+            // it draws inside the bay
             self.bay = match &self.def.vehicle.engine_bay {
-                Some(b) => (0..self.n_banks)
+                Some(b) => (0..self.n_banks + usize::from(b.intake_inside))
                     .map(|_| crate::engine_bay::BayFilter::new(b, dt))
                     .collect(),
                 None => Vec::new(),
@@ -4168,6 +4190,12 @@ impl Engine {
                     rest += l.from_engine_at(b, l.spread_from_1m_at(b, p));
                 }
                 let at_mouth = l.radiate_mouth_at(n_banks, intake_flow, mouth_area);
+                // a mouth in the bay is heard through its openings ([`EngineBay::intake_inside`])
+                let at_mouth = match self.bay.get_mut(n_banks) {
+                    Some(f) => f.process(at_mouth),
+                    None => at_mouth,
+                };
+                self.intake_heard = at_mouth;
                 // a turbo's blow-off valve venting to the air on a lift-off (a recirculating one
                 // vents into the intake, unheard): the jet of what it lets out,
                 // through its own bore at the delivered air's density (the turbulent mixing
@@ -8030,11 +8058,9 @@ mod tests {
     fn the_lfas_bank_lines_carry_their_sub_muffler() {
         // JP 2008-169751 A, ¶0041: "a sub muffler (not shown) between the engine and the main
         // muffler takes the higher orders (mainly the 6th and above)": on each bank's line, a
-        // third of the way from the catalyst (the Lexus drawing), a packed can of 0.38 m on
-        // the road silencers' smallest shell (1.5 pipes, 105 mm). Without it the overrun's
-        // treble came through the open valve at full level: closed throttle sounded over full
-        // at 6800 rpm (−1.6 dB(A)); with it +5.1, and the orders between the firing harmonics
-        // within 2 dB of two recordings of the car (FINDINGS 2026-11-20)
+        // third of the way from the catalyst (the Lexus drawing), a packed can of 0.38 m over
+        // a 76 mm shell: it passes the firing harmonics up to the 5th and takes the treble
+        // above, as the patent's Fig. 7A shows (FINDINGS 2026-11-20)
         use crate::exhaust::Segment;
         let path = EngineDef::lfa_v10().exhaust.after_collector;
         let kinds: Vec<&str> = path
@@ -8050,7 +8076,7 @@ mod tests {
         assert!(matches!(
             path[2],
             Segment::Muffler { length_m, diameter_m, tube_diameter_m, .. }
-                if length_m == 0.38 && diameter_m == 0.105 && tube_diameter_m == 0.07
+                if length_m == 0.38 && diameter_m == 0.076 && tube_diameter_m == 0.07
         ));
     }
 
@@ -10594,6 +10620,58 @@ mod tests {
     }
 
     #[test]
+    fn the_body_screens_the_engines_own_noise_and_not_its_intake() {
+        // the intake alone sounds the same with the car's body as without it; the block's
+        // impacts (their 0.5–3 kHz, where Maekawa's loss over the roof's rear edge is several
+        // dB; its hand values are the barrier's own test) are quieter behind it
+        let heard = |intake: bool, body: f64| {
+            let mut d = EngineDef::honda_k20a();
+            let s = &mut d.sound;
+            (s.flow_noise, s.valve_jet, s.duct_flow) = (0.0, 0.0, 0.0);
+            (s.mechanical, s.block) = (0.0, 0.0);
+            let i = if intake { 1.0 } else { 0.0 };
+            (s.intake, s.main_bearings, s.piston_slap) = (i, 1.0 - i, 1.0 - i);
+            d.vehicle.body_height_m = body;
+            let mut e = Engine::new(d, 5000.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(5000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &c);
+            run(&mut e, 0.2, &c)
+        };
+        let rms = |x: &[f64]| (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
+        let (open, screened) = (heard(true, 0.0), heard(true, 1.4));
+        for (a, b) in open.iter().zip(&screened) {
+            assert!((a - b).abs() <= 1e-12 * a.abs().max(1e-9), "{a} vs {b}");
+        }
+        // the impacts' part: with them less without them (the exhaust's pulses are always on)
+        let base = |body: f64| {
+            let mut d = EngineDef::honda_k20a();
+            let s = &mut d.sound;
+            (s.flow_noise, s.valve_jet, s.duct_flow, s.intake) = (0.0, 0.0, 0.0, 0.0);
+            (s.main_bearings, s.piston_slap, s.mechanical, s.block) = (0.0, 0.0, 0.0, 0.0);
+            d.vehicle.body_height_m = body;
+            let mut e = Engine::new(d, 5000.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(5000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &c);
+            run(&mut e, 0.2, &c)
+        };
+        let part = |body: f64| {
+            let (w, o) = (heard(false, body), base(body));
+            rms(&w.iter().zip(&o).map(|(a, b)| a - b).collect::<Vec<_>>())
+        };
+        let (open, screened) = (part(0.0), part(1.4));
+        // Maekawa's loss is 4.8 dB at the least (|H|² ≤ 1/3)
+        assert!(screened < 0.6 * open, "impacts {screened} vs {open} Pa");
+    }
+
+    #[test]
     fn the_impacts_do_not_repeat_cycle_to_cycle() {
         // each impact strikes the block at a point of its own (its clearance and oil film, the
         // journal it lands on): one cycle's mechanical noise is not the last one's — measured,
@@ -10965,10 +11043,14 @@ mod tests {
     #[test]
     fn the_exhaust_pulses_alone_reach_the_listener() {
         // every other source off: the pulses travel the pipes to the tails and out — a waveguide
-        // kept from step to step carries them (rebuilt each step it would hold nothing)
+        // kept from step to step carries them (rebuilt each step it would hold nothing). They
+        // read 0.074 Pa here (2026-11-20); the block and the impacts, left on until the body
+        // came to screen them from an ear behind the car, had carried the total over 0.1 Pa
         let mut d = EngineDef::inline4();
-        d.sound.flow_noise = 0.0;
-        d.sound.intake = 0.0;
+        let s = &mut d.sound;
+        (s.flow_noise, s.intake, s.valve_jet, s.duct_flow) = (0.0, 0.0, 0.0, 0.0);
+        (s.block, s.mechanical, s.piston_slap, s.main_bearings) = (0.0, 0.0, 0.0, 0.0);
+        s.chamber_ring = 0.0;
         let mut e = Engine::new(d, 5000.0, 1);
         let c = Controls {
             throttle: 1.0,
@@ -10978,7 +11060,7 @@ mod tests {
         run(&mut e, 0.3, &c);
         let x = run(&mut e, 0.1, &c);
         let rms = (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
-        assert!(rms > 0.1, "{rms} Pa");
+        assert!(rms > 0.03, "{rms} Pa");
     }
 
     #[test]
@@ -11365,6 +11447,44 @@ mod probe {
             .map(|(a, b)| format!("{:6.1}", 10.0 * (a / b).log10()))
             .collect();
         println!("  tails/flows  {}", tf.join(" "));
+    }
+
+    #[test]
+    fn an_intake_mouth_in_the_bay_is_heard_through_the_bays_loss() {
+        // A road car's air box sits in the engine bay: its mouth's sound leaves through the
+        // bay's openings as the block's does, so at the firing tone (an inline four at 4000
+        // rpm: 133.3 Hz) it is heard the bay's insertion loss there quieter than an open mouth.
+        let heard = |inside: bool| {
+            let mut d = EngineDef::inline4();
+            d.vehicle.engine_bay.as_mut().unwrap().intake_inside = inside;
+            let (rpm, dt) = (4000.0, 1.0 / 48_000.0);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(rpm),
+                ..Controls::default()
+            };
+            let mut e = Engine::new(d, rpm, 1);
+            for _ in 0..(1.0 / dt) as usize {
+                e.step(dt, &c);
+            }
+            let w = 2.0 * PI * rpm / 30.0;
+            let (mut re, mut im) = (0.0f64, 0.0f64);
+            for j in 0..(0.6 / dt) as usize {
+                e.step(dt, &c);
+                let t = j as f64 * dt;
+                (re, im) = (
+                    re + e.intake_heard * (w * t).cos(),
+                    im + e.intake_heard * (w * t).sin(),
+                );
+            }
+            re.hypot(im)
+        };
+        let loss = 20.0 * (heard(false) / heard(true)).log10();
+        let want = crate::engine_bay::EngineBay::default().insertion_loss_db(4000.0 / 30.0);
+        assert!(
+            (loss - want).abs() < 1.5,
+            "{loss:.2} dB against the bay's {want:.2} dB"
+        );
     }
 
     #[test]
