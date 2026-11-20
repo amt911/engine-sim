@@ -49,9 +49,7 @@ fn main() {
             };
             let eq = s.transmission_eq(gas, fs);
             print!("silencer L {length_m} D {diameter_m:.3} tube {tube_diameter_m}:");
-            for f in [
-                700.0, 1400.0, 2100.0, 2800.0, 3500.0, 4200.0, 5600.0, 8000.0,
-            ] {
+            for f in [140.0, 160.0, 185.0, 207.0, 230.0, 250.0, 270.0, 300.0] {
                 print!(
                     "  {f}Hz TL {:.1} eq {:.1}",
                     s.transmission_loss_db(f, gas).unwrap_or(f64::NAN),

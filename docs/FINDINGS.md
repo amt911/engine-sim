@@ -1952,3 +1952,18 @@ the recordings are made: at 1.6 m it grazed the roof's rear edge and the body hi
 block. K20A at 7000 rpm WOT: cycle-line share 10 / 7 / 7 % at 0.8–2 / 2–5 / 5–10 kHz (stock EP3
 recordings 8–12 / 7 / 6–7; standing ear 20 / 8 / 7), firing harmonics −10.9 dB re H1 (real
 −9.8), floor −21.3 (−21.9).
+
+## The K20A's "soplido grave": cycle-to-cycle flow passing straight-through silencers (2026-11-20)
+
+The user heard low wind under the K20A at high speed. Energy at 10–30 / 30–60 Hz re the total:
+stock EP3 recordings −36…−46 / −25…−42 dB, the render −15…−18 / −15…−17 (the LFA likewise, −16
+against −41). Held 7000 rpm WOT, exhaust sources only: without the combustion's cycle-to-cycle
+spread the 5–40 Hz band falls 18 dB and the floor under order 0.5 from −20 to −39 dB re the firing
+line (real −40). The spread itself is the measured one (work per cycle COV 1.6–2.0 %, p at EVO
+2.1 %, pmax 9–11 %; Heywood, Soltau): it moves the mean flow at the tail by ~1 % (≈ 1 m/s at
+116 m/s), while the road silencers leave the firing tone's swing there at ≈ 0.7 m/s. Straight-
+through packed boxes add no mean-flow resistance (exhaust-stroke cylinder pressure 71.4 kPa with
+them, 71.2 without), so nothing low-passes the slow flow (a production chambered muffler's
+back pressure with the boxes' compliance would, at a few Hz). Open: what the stock EP3 muffler
+is; not changed without its drawing. The stock pipe (54 mm, owners' measurements) took the
+treble wind off at 7000–8000 rpm but read Davies' 2nd order at 101.4 dB (bound 97 ± 3): held back.
