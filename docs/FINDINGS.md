@@ -1946,3 +1946,9 @@ Two checks on what is left of the K20A's whistle (the block's 0.8–2 kHz), 2026
   1.6 L gasoline engine. He also finds gasoline engines' combustion noise under their mechanical
   noise; here the block reads 7 dB over the valvetrain at 7000 rpm, which points at the block's
   structure response (the median of nine diesels) for a light gasoline block.
+
+The default ear now stands 0.5 m up behind the tails (2026-11-20, by the user's choice), where
+the recordings are made: at 1.6 m it grazed the roof's rear edge and the body hid little of the
+block. K20A at 7000 rpm WOT: cycle-line share 10 / 7 / 7 % at 0.8–2 / 2–5 / 5–10 kHz (stock EP3
+recordings 8–12 / 7 / 6–7; standing ear 20 / 8 / 7), firing harmonics −10.9 dB re H1 (real
+−9.8), floor −21.3 (−21.9).

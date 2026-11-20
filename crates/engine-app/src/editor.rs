@@ -1164,7 +1164,10 @@ mod tests {
         h.run();
         assert!(h.state().def.sound.ground);
         nudge(&mut h, "Ear height (m)");
-        assert!(h.state().def.sound.listener_height_m > 1.6);
+        assert!(
+            h.state().def.sound.listener_height_m
+                > engine_core::sound::SoundDef::default().listener_height_m
+        );
         assert!(h.state().engine_dirty);
     }
 

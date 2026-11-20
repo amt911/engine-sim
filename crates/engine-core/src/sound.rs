@@ -117,7 +117,12 @@ pub struct SoundDef {
     /// 20 dB without it, as real recordings (16–25 dB, the LFA's four exterior clips).
     /// Off = free field.
     pub ground: bool,
-    /// Heights above the ground of the tail pipes and of the listener's ear, m.
+    /// Heights above the ground of the tail pipes and of the listener's ear, m. The ear stands
+    /// low by default, half a metre up behind the tails, where the recordings the presets are
+    /// judged against are made (a camera by the tail pipe): standing (1.6 m) it grazed the
+    /// roof's rear edge, the body hid little of the block, and its combustion lines whistled
+    /// over the exhaust (the K20A, 2026-11-20: 21 % of the 0.8–2 kHz band on cycle lines
+    /// against the stock car's 9 %).
     pub tail_height_m: f64,
     pub listener_height_m: f64,
     /// A street around the car and the listener: the distance between its façades, m (the car
@@ -173,9 +178,9 @@ impl Default for SoundDef {
             listener_distance_m: 3.0,
             listener_angle_deg: 30.0,
             ground: false,
-            // a road car's tail pipe and a standing adult's ear
+            // a road car's tail pipe, and the ear by it as the recordings are made
             tail_height_m: 0.3,
-            listener_height_m: 1.6,
+            listener_height_m: 0.5,
             street_width_m: 0.0,
             wall_reflection: 0.8,
         }
@@ -184,6 +189,14 @@ impl Default for SoundDef {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_default_ear_stands_by_the_tail_as_the_recordings_are_made() {
+        // half a metre up, behind the 0.3 m tails: under the roof's rear edge, where the body
+        // screens the engine as it does for the camera behind a real car
+        let s = SoundDef::default();
+        assert_eq!((s.tail_height_m, s.listener_height_m), (0.3, 0.5));
+    }
     use super::*;
 
     #[test]

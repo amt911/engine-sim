@@ -11209,8 +11209,10 @@ mod tests {
             let mut d = EngineDef::inline4();
             d.sound.block = block;
             d.sound.listener_distance_m = distance;
-            // heard from the tails' place, as the hand figures below assume
+            // heard from the tails' place by a standing ear 1.3 m over them, as the hand figures
+            // below assume (the default ear stands low by the tails since 2026-11-20)
             d.vehicle.engine_ahead_m = 0.0;
+            d.sound.listener_height_m = 1.6;
             let mut e = Engine::new(d, 5000.0, 1);
             let c = Controls {
                 throttle: 1.0,
