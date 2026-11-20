@@ -1933,3 +1933,16 @@ the 70 mm pipe passes up to the 5th firing harmonic at 8000 rpm (≤ 4 dB to 2.1
 18–27 dB above 5.6 kHz, as the patent says the sub muffler does (Fig. 7A): H3 −12, H4 −20 against
 −12/−16 and −17/−13. Held closed throttle at 6800 rpm then sounds as full again (−0.4 dB(A)): the
 overrun's own treble spans 2–16 kHz, and a can that keeps H3–H4 cannot take it.
+
+Two checks on what is left of the K20A's whistle (the block's 0.8–2 kHz), 2026-11-20:
+- **The exhaust is not too quiet.** HKS publishes the stock cars' close exhaust noise (Japan's
+  stationary test: 0.5 m, 45° from the outlet, neutral, held at a share of the power speed):
+  Accord Euro R CL7 (K20A) 79 dB, FK8 82, FL5 80. The K20A here, exhaust's own sources, ground
+  under it, held with no load: 85.1 dB(A) at 4000 rpm, 76.9 at 6000. Within ±6 dB (the test
+  speed for an 8000 rpm engine is not certain here): the 15 dB Davies' broadband seemed to ask
+  for was his 0.25 m, the jet's near field.
+- **The combustion excitation is not too sharp.** One cylinder's pressure at 2000 rpm WOT: the
+  1 kHz line 68.8 dB under the cycle line; Anderton (SAE 790270, Fig. 2–3) measured 60.6 on a
+  1.6 L gasoline engine. He also finds gasoline engines' combustion noise under their mechanical
+  noise; here the block reads 7 dB over the valvetrain at 7000 rpm, which points at the block's
+  structure response (the median of nine diesels) for a light gasoline block.
