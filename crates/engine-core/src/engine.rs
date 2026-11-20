@@ -1159,19 +1159,20 @@ impl EngineDef {
             // (Engelman: f = (a/2π)·√(A/(L·V)), V = V_d/2·(r + 1)/(r − 1), tuned at twice the
             // revolution frequency at 6800 rpm, 226.7 Hz; 45 mm bore): L = 0.325 m. (The fit to
             // the recordings liked 0.45 m, which tunes the peak to 5000 rpm and the power to
-            // 6500: not the published curve.) The ten trumpets draw from
-            // one surge tank on top of the V (`AirboxDef::lfa_v10_estimate`); not wired in: it costs 12 hp at the top (476 hp against the published 552), and the fit's
-            // render sounds the same without it (2026-10-30). Its ducts alone pass little of
-            // the firing order (−24 dB at 558 Hz, FINDINGS 2026-10-29).
+            // 6500: not the published curve.) The ten trumpets draw from one surge tank on
+            // top of the V (`AirboxDef::lfa_v10_estimate`), whose ducts pass little of the
+            // firing order (−24 dB at 558 Hz, FINDINGS 2026-10-29). Left out from 2026-10-30
+            // (it costs 12 hp at the top, and the render then sounded the same without it),
+            // the bare trumpets' tone came to drown the tips by 12 dB at 8000 rpm behind the
+            // car; with the tank the orders and floor between the firing harmonics read within
+            // 2 dB of four recordings of the car (FINDINGS 2026-11-20).
             intake: IntakeDef {
                 model: IntakeModel::Fv,
                 runner_length_m: 0.325,
                 runner_diameter_m: 0.045,
                 individual_throttles: true,
-                // and, like the surge tank, no rule-sized air cleaner: the approved fit
-                // (2026-10-31) and its guard against the real car (`engine-app` sim tests:
-                // RMS 9.9 dB bare, 13.9 with the rule's 19 L box) were made on the bare trumpets;
-                // the car's own intake comes in with its surge tanks (PR #33)
+                airbox: Some(crate::intake_fv::AirboxDef::lfa_v10_estimate()),
+                // no rule-sized air cleaner on top of the tank: the tank is the car's own box
                 air_cleaner: crate::air_cleaner::AirCleanerDef {
                     fitted: false,
                     ..crate::air_cleaner::AirCleanerDef::default()
@@ -7916,6 +7917,19 @@ mod tests {
     }
 
     #[test]
+    fn the_lfas_trumpets_draw_from_its_surge_tank() {
+        // the car's ten ITBs breathe from one surge tank on top of the V, not the open air:
+        // bare, their firing tone drowned the tips 12 dB at 8000 rpm behind the car, and the
+        // orders between the firing harmonics sat 14 dB under four recordings of the car; with
+        // the tank the render reads them within 2 dB (docs/FINDINGS.md, 2026-11-20)
+        let d = EngineDef::lfa_v10();
+        assert_eq!(
+            d.intake.airbox,
+            Some(crate::intake_fv::AirboxDef::lfa_v10_estimate())
+        );
+    }
+
+    #[test]
     fn the_sdi_breathes_through_its_air_box_and_silencers() {
         // without them its open intake and tail drowned the block's clatter (FINDINGS)
         let d = EngineDef::vw_sdi();
@@ -8148,8 +8162,10 @@ mod tests {
         // throttle_diameter_m is the total bore the ten share: wide open, each throttle body
         // is at least as wide as its runner (√10 · 45 mm = 142.3 mm), so the runner sets the flow
         assert!(d.throttle_diameter_m.powi(2) / 10.0 >= d.intake.runner_diameter_m.powi(2));
-        // the surge tank stays out of the preset until its walls radiate (see the preset)
-        assert_eq!(d.intake.airbox, None);
+        // and they draw from the car's surge tank (`the_lfas_trumpets_draw_from_its_surge_tank`:
+        // kept out until 2026-11-20 for its walls not radiating, its open trumpets drowned the
+        // tips)
+        assert!(d.intake.airbox.is_some());
     }
 
     /// Firing intervals (deg) between consecutive pulses into each exhaust bank, sorted.

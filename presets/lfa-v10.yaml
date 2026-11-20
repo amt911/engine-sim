@@ -212,7 +212,11 @@ engine:
     trumpet_loss: 0.1
     film_fraction: 0.18
     film_tau_s: 1.0
-    airbox: null
+    airbox:
+      volume_m3: 0.02
+      ducts: 2
+      duct_length_m: 0.4
+      duct_diameter_m: 0.09
     air_cleaner:
       fitted: false
       volume_m3: 0.0

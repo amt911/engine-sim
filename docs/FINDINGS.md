@@ -1847,3 +1847,18 @@ it had not been run against fails six fits with it (the LFA's torque band and th
 against the published figures, the diesel's light-load burn, the flat-plane V8's idle and blip
 return, the launch in first). The presets' windows were fitted with the sin² lift; a real flank
 needs each preset's duration restated at its checking lift and refitted.
+
+## The LFA's open trumpets drowned its tips (2026-11-20)
+
+The LFA rendered after the road-silencer fix still sat 13–17 dB too tonal against four
+recordings of the car (rear exterior, in-car tips, YouTube, dyno; they agree within 4–8 dB on
+each measure). Held at 8000 rpm WOT, source by source (`target/scratch-refs/abl3`): flow
+noise, valve jets, duct flow, mechanical and block move nothing; without the intake the total
+falls 12 dB and the cycle orders read firing harmonics −12.2, other orders −18.5, floor −27.0
+dB re the firing line against the recording's −13.0, −22.4, −28.4. The ten ITB trumpets had
+been radiating straight to the air since 2026-10-30, the car's surge tank
+(`AirboxDef::lfa_v10_estimate`) left out because it cost 12 hp at the top and the render of
+that day sounded the same without it. With the tank: −14.5, −20.7, −29.2, and the Ultra guard
+against the real car's orders passes (it read 11.5 dB RMS against its 11.0 bound). The tank's
+size moves the power by 2 hp at most (20–30 L, 9–11 cm ducts): the 12 hp are its presence, on
+top of the 13 % the sin² lift already leaves at the top (`the_lfa_breathes_as_lexus_published`).
