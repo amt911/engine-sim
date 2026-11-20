@@ -1913,3 +1913,23 @@ the clip's own five speeds (`lfa_held_through_the_clips_speeds`) the real-time m
 12.2 dB without the sub muffler and 12.3 with it, its harmonic share 0.641 with it (0.67+
 without). The user re-based the two guards there (12.3, 0.64) and kept the sub muffler for what
 it does to the render.
+
+## The K20A's whistle is its block and valvetrain heard from behind; the LFA's missing harmonic its sub muffler (2026-11-20)
+
+Held at 7000 rpm WOT, the share of each band's energy on cycle lines (`look/hfmod.py`): stock EP3
+recordings 8–12 / 7 / 6–7 % at 0.8–2 / 2–5 / 5–10 kHz; the K20A render 29 / 17 / 9 %; the exhaust
+alone (block, impacts, intake off) 7 / 8 / 7 %. Source by source: the block (combustion through
+the structure) carries the 0.8–2 kHz lines and the firing harmonics (without it H2–H6 fall from
+−2.1 to −11.3 dB re H1; real −9.8), the impacts the 2–5 kHz ones. At the ear 3 m behind the tail
+the block is as loud as the whole exhaust (A-weighted), 3 dB over it at 0.8–2 kHz. The
+combustion's cycle-to-cycle spread is Heywood's (flame angles σ ≈ 12 %, Fig. 9-35), so the lines
+are not too periodic; they are unmasked. The body's screen (Maekawa over the roof's rear edge,
+re-applied) brings the bands to 20 / 8 / 7 %; what is left at 0.8–2 kHz is the block's level
+(its structure response is the median of nine diesels, ±8 dB).
+
+The LFA's "missing harmonic" was H3–H4 (1.7–3.3 kHz), 10–25 dB under four recordings of the car
+with a 105 mm sub-muffler can (TL 21–38 dB at 1.4–2.1 kHz by the 2D model). A 76 mm shell over
+the 70 mm pipe passes up to the 5th firing harmonic at 8000 rpm (≤ 4 dB to 2.1 kHz) and takes
+18–27 dB above 5.6 kHz, as the patent says the sub muffler does (Fig. 7A): H3 −12, H4 −20 against
+−12/−16 and −17/−13. Held closed throttle at 6800 rpm then sounds as full again (−0.4 dB(A)): the
+overrun's own treble spans 2–16 kHz, and a can that keeps H3–H4 cannot take it.

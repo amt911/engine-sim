@@ -824,8 +824,11 @@ pub(crate) mod tests {
         // clip's own five: the 11.0 above stood on 6700 rpm alone, where the tips' comb
         // happened to favour it; over the clip's speeds the same sound read 12.2, and 12.3
         // with the sub muffler of JP 2008-169751 A ¶0041 (FINDINGS 2026-11-20). The ratchet
-        // starts again from there.
-        assert!(rms <= 12.3, "RMS {rms:.1} dB off the real car: {errs:?}");
+        // starts again from there. Raised by the user to 14.1 the same day: the sub muffler's
+        // 76 mm shell, which gives the offline render the H3 and H4 of the car's recordings,
+        // lets this real-time waveguide's own treble through (H7, H8 9–11 dB over the clip's;
+        // the 105 mm shell had hidden it), a defect of the real-time model left for its own fix.
+        assert!(rms <= 14.1, "RMS {rms:.1} dB off the real car: {errs:?}");
     }
 
     #[test]
