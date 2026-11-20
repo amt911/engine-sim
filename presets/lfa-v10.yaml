@@ -1,4 +1,4 @@
-version: 3
+version: 4
 engine:
   name: Lexus LFA V10
   geometry:
@@ -32,13 +32,13 @@ engine:
       - 9
       - 10
   intake_valve:
-    open_deg: 380.0
-    duration_deg: 270.0
+    open_deg: 392.5
+    duration_deg: 245.0
     max_lift_m: 0.0124
     diameter_m: 0.0496
   exhaust_valve:
-    open_deg: 137.0
-    duration_deg: 246.0
+    open_deg: 148.4
+    duration_deg: 223.2
     max_lift_m: 0.0103
     diameter_m: 0.0412
   intake_phaser:

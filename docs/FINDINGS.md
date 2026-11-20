@@ -1862,3 +1862,33 @@ that day sounded the same without it. With the tank: −14.5, −20.7, −29.2, 
 against the real car's orders passes (it read 11.5 dB RMS against its 11.0 bound). The tank's
 size moves the power by 2 hp at most (20–30 L, 9–11 cm ducts): the 12 hp are its presence, on
 top of the 13 % the sin² lift already leaves at the top (`the_lfa_breathes_as_lexus_published`).
+
+## A real cam flank, kept on each preset's fit (format 4, 2026-11-20)
+
+Cams lift on sin^1.4 (Heywood Fig. 6.16c: 1.3, 4.5 and 8.9 mm of an 11 mm lift at 0.056, 0.177
+and 0.339 of the window; sin² gave 0.35, 3.1 and 8.4). Kept whole, the sin² windows broke six
+fits to published figures (LFA torque band, SDI power, diesel burn, flat-plane idle and blip,
+launch): the presets' windows were fitted to those figures with sin². Each window now keeps its
+duration above a tenth of the lift (Honda's 1 mm checking lift on a 10 mm valve) and its
+centre: 0.9074 of its old length, opening 0.0463 of it later (`valve::from_sin2_window`);
+v3 files migrate the same way, rotary ports (the rotor's edges, no cam) stay. Every published
+fit holds, and the LFA with its surge tank makes its power floor again. Tried and dropped,
+with the suite as judge: a 5 % or 7.5 % checking lift (each failed a different fit), and an
+exponent varying along the flank as Heywood's (1.17 + 1.23·u; it fits his three points to
+0.03 mm but cost the LFA 9 hp and raised its idle dilution).
+
+Two tests the conversion moved were measuring something else than they said:
+- The LFA's idle dilution (33.9 % against a bound set half a point over its own old value) was
+  measured 4 s after a cold start, the exhaust ports still at 320 K (their walls relax with
+  60 s and lose nothing outside): their gas, drawn back as the valve closed, left a 494 K
+  residual. On walls settled where the model puts them after minutes (the flow-weighted mean
+  temperature of the gas the valve sends out, 816 K), 25.9 %, inside Heywood's 20–30 %.
+  Renders start cold the same way: a clip is a cold engine's for its first minutes.
+- The air cleaner's insertion loss, Raff & Perry Fig. 14 (a truck's drive-by: open 89.0,
+  standard cleaner 80.5, special silencer 79.5 dB(A)), is again a floor: the special one gaining
+  1 dB says the rest of the truck sounded under them. One speed (3000 rpm) read 15.2 dB(A)
+  against an upper bound of 15; the mean over 2000–5000 rpm reads 18.7 with either cam, a car
+  intake box's usual 15–25 dB.
+- The VTEC blow-through test's share sits at 14.7/15.7 = 0.936 with no overlap at all (the ECU
+  meters the fresh charge as mixture, the throttle counts air); the overlap's blow-through is
+  the fall from there: the VTEC lobe 1.3 %, the low lobe 1.0 % at 6500 rpm unphased.

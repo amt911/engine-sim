@@ -1,4 +1,4 @@
-version: 3
+version: 4
 engine:
   name: Cross-plane V8 6.2
   geometry:
@@ -28,13 +28,13 @@ engine:
       - 6
       - 8
   intake_valve:
-    open_deg: 350.0
-    duration_deg: 250.0
+    open_deg: 361.6
+    duration_deg: 226.9
     max_lift_m: 0.014
     diameter_m: 0.055
   exhaust_valve:
-    open_deg: 130.0
-    duration_deg: 250.0
+    open_deg: 141.6
+    duration_deg: 226.9
     max_lift_m: 0.0138
     diameter_m: 0.0404
   spark_advance_deg: 26.0

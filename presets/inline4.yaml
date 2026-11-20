@@ -1,4 +1,4 @@
-version: 3
+version: 4
 engine:
   name: Inline-4 2.0
   geometry:
@@ -16,13 +16,13 @@ engine:
     bank_angle_deg: 0.0
     banks: []
   intake_valve:
-    open_deg: 345.0
-    duration_deg: 250.0
+    open_deg: 356.6
+    duration_deg: 226.9
     max_lift_m: 0.009
     diameter_m: 0.034
   exhaust_valve:
-    open_deg: 135.0
-    duration_deg: 245.0
+    open_deg: 146.3
+    duration_deg: 222.3
     max_lift_m: 0.008
     diameter_m: 0.029
   spark_advance_deg: 25.0

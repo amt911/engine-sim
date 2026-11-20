@@ -1,9 +1,28 @@
 //! Poppet valve lift and effective flow area.
 //!
 //! Angles are in the 720° four-stroke cycle, 0° = TDC at the start of the power stroke.
-//! Lift profile: sin² bump over the opening window (smooth, zero velocity at the ends).
+//! Lift profile: a sin^1.4 bump over the opening window ([`LIFT_EXPONENT`]: a real cam's).
 
 use serde::{Deserialize, Serialize};
+
+/// Shape of a cam's lift over its window, sin^n: n = 1.4 fits the typical high-speed engine's
+/// curve of Heywood (*ICE Fundamentals*, 2nd ed., Fig. 6.16c; 1.23, 1.40 and 1.58 at 0.06,
+/// 0.18 and 0.34 of the window). The sin² bump it replaces (n = 2) lifted a quarter as far in
+/// the first degrees: each blowdown left over ~120° of crank, its pulse with no front.
+pub const LIFT_EXPONENT: f64 = 1.4;
+
+/// A window drawn for the sin² lift this model used until format 4, as the sin^1.4 window that
+/// keeps its duration above a tenth of the lift (Honda's 1 mm checking lift on a 10 mm valve)
+/// and its centre: (opening, duration), degrees. A tenth of the lift is reached at
+/// x₀ = asin(0.1^(1/n))/π of the window, so the duration above it is (1 − 2x₀) of it: 0.7952
+/// for sin², 0.8763 for sin^1.4; the window shrinks to 0.9074 of the old, opening
+/// 0.0463 of it later. The presets' windows, fitted to the published torque with sin²,
+/// keep their fits this way (a window kept whole lost six of them, 2026-11-19).
+pub fn from_sin2_window(open_deg: f64, duration_deg: f64) -> (f64, f64) {
+    let above = |n: f64| 1.0 - 2.0 * 0.1f64.powf(1.0 / n).asin() / std::f64::consts::PI;
+    let k = above(2.0) / above(LIFT_EXPONENT);
+    (open_deg + 0.5 * (1.0 - k) * duration_deg, k * duration_deg)
+}
 
 /// Discharge coefficient of a poppet valve at moderate L/D (Soriano et al., ENCIT 2012).
 pub const VALVE_CD: f64 = 0.7;
@@ -141,7 +160,7 @@ impl ValveTiming {
             return 0.0;
         }
         let s = (std::f64::consts::PI * x).sin();
-        self.max_lift_m * s * s
+        self.max_lift_m * s.powf(LIFT_EXPONENT)
     }
     /// The most this valve passes: its effective area at its peak lift, on its high lobe if it
     /// has one and that lifts it further, m².
@@ -478,6 +497,56 @@ mod tests {
         assert_relative_eq!(v.lift(720.0), v.lift(0.0));
         assert_relative_eq!(v.lift(-720.0), v.lift(0.0));
         assert_eq!(v.lift(30.0), 0.0);
+    }
+
+    #[test]
+    fn a_cam_lifts_its_valve_as_a_typical_engines_does() {
+        // Heywood, ICE Fundamentals 2nd ed., Fig. 6.16c (a high-speed 2.2 L four-cylinder):
+        // its 11 mm lift curve read at the 0.15 mm points ±62° cam (a 124° cam window) gives
+        // 1.3 mm at 0.056 of the window, 4.5 mm at 0.177, 8.9 mm at 0.339 (read ±0.3 mm).
+        // A sin² bump over the same window lifts 0.35, 3.1 and 8.4: it opens a quarter as far
+        // in its first degrees, and the blowdown it lets out has no front.
+        let v = ValveTiming {
+            open_deg: 0.0,
+            duration_deg: 248.0,
+            max_lift_m: 0.011,
+            diameter_m: 0.031,
+            high: None,
+        };
+        for (x, want_mm) in [(0.056, 1.3), (0.177, 4.5), (0.339, 8.9)] {
+            let got = v.lift(x * 248.0) * 1e3;
+            assert!(
+                (got - want_mm).abs() < 0.25 * want_mm + 0.3,
+                "at {x} of the window: {got:.2} mm, Heywood {want_mm}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sin2_window_keeps_its_duration_above_a_tenth_of_the_lift_and_its_centre() {
+        // by hand: sin² reaches 0.1 at asin(√0.1)/π = 0.102 42 of its window, sin^1.4 at
+        // asin(0.1^(1/1.4))/π = 0.061 84: above it 0.795 17 and 0.876 31 of them; a 250°
+        // window opening at 340° becomes 250 · 0.907 40 = 226.85° opening at 351.57°
+        let (open, dur) = from_sin2_window(340.0, 250.0);
+        assert!((dur - 226.85).abs() < 0.01, "{dur}");
+        assert!((open - 351.57).abs() < 0.01, "{open}");
+        // the same span above a tenth of the lift, on the same centre
+        let lift = |open: f64, dur: f64, n: f64, deg: f64| {
+            let x = (deg - open) / dur;
+            if (0.0..1.0).contains(&x) {
+                (std::f64::consts::PI * x).sin().powf(n)
+            } else {
+                0.0
+            }
+        };
+        let span = |open: f64, dur: f64, n: f64| {
+            (0..7200)
+                .filter(|i| lift(open, dur, n, 300.0 + *i as f64 * 0.05) >= 0.1)
+                .count() as f64
+                * 0.05
+        };
+        assert!((span(340.0, 250.0, 2.0) - span(open, dur, LIFT_EXPONENT)).abs() < 0.2);
+        assert!((open + 0.5 * dur - 465.0).abs() < 1e-9);
     }
 
     #[test]

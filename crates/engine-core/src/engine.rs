@@ -185,15 +185,15 @@ impl EngineDef {
             layout: Layout::default(),
             combustion: Combustion::Spark,
             intake_valve: ValveTiming {
-                open_deg: 345.0,
-                duration_deg: 250.0,
+                open_deg: 356.6,
+                duration_deg: 226.9,
                 max_lift_m: 0.009,
                 diameter_m: 0.034,
                 high: None,
             },
             exhaust_valve: ValveTiming {
-                open_deg: 135.0,
-                duration_deg: 245.0,
+                open_deg: 146.3,
+                duration_deg: 222.3,
                 max_lift_m: 0.008,
                 diameter_m: 0.029,
                 high: None,
@@ -299,15 +299,15 @@ impl EngineDef {
             // a diesel's small overlap: IVO 10° BTDC, IVC 40° ABDC, EVO 45° BBDC, EVC 10° ATDC
             // (typical values; ESTIMATE)
             intake_valve: ValveTiming {
-                open_deg: 350.0,
-                duration_deg: 230.0,
+                open_deg: 360.6,
+                duration_deg: 208.7,
                 max_lift_m: 0.009,
                 diameter_m: 0.036,
                 high: None,
             },
             exhaust_valve: ValveTiming {
-                open_deg: 135.0,
-                duration_deg: 235.0,
+                open_deg: 145.9,
+                duration_deg: 213.2,
                 max_lift_m: 0.0078,
                 diameter_m: 0.031,
                 high: None,
@@ -562,15 +562,15 @@ impl EngineDef {
             // typical road-engine values (IVO 10° BTDC, IVC 50° ABDC, EVO 50° BBDC, EVC
             // 10° ATDC). Valve sizes and timing: ESTIMATES
             intake_valve: ValveTiming {
-                open_deg: 350.0,
-                duration_deg: 240.0,
+                open_deg: 361.1,
+                duration_deg: 217.8,
                 max_lift_m: 0.0127,
                 diameter_m: 0.0509,
                 high: None,
             },
             exhaust_valve: ValveTiming {
-                open_deg: 130.0,
-                duration_deg: 240.0,
+                open_deg: 141.1,
+                duration_deg: 217.8,
                 max_lift_m: 0.011,
                 diameter_m: 0.0438,
                 high: None,
@@ -622,10 +622,12 @@ impl EngineDef {
         d.name = "Honda K20A tuned (VTEC, 9200 rpm)".into();
         d.redline_rpm = 9200.0;
         if let Some(hi) = &mut d.intake_valve.high {
-            // 12.65 → 13.4 mm per valve and ~12° more duration, 6° of it as earlier opening
+            // 12.65 → 13.4 mm per valve and ~12° more duration, 6° of it as earlier opening (a
+            // sin² window's degrees: on the real flank, `crate::valve::from_sin2_window`, 10.9°
+            // more opening 5.4° earlier)
             hi.max_lift_m *= 13.4 / 12.65;
-            hi.open_deg -= 6.0;
-            hi.duration_deg += 12.0;
+            hi.open_deg -= 5.4;
+            hi.duration_deg += 10.9;
         }
         if let Some(v) = &mut d.vtec {
             v.engage_rpm = 5500.0;
@@ -720,13 +722,13 @@ impl EngineDef {
             // 6000 rpm), so until a primary source gives their timing the exhaust keeps one lobe
             // (spec 2026-10-26).
             intake_valve: ValveTiming {
-                open_deg: 340.0,
-                duration_deg: 265.0,
+                open_deg: 352.3,
+                duration_deg: 240.5,
                 max_lift_m: 0.0124,
                 diameter_m: 0.0495,
                 high: Some(crate::valve::CamLobe {
-                    open_deg: 322.0,
-                    duration_deg: 301.0,
+                    open_deg: 335.9,
+                    duration_deg: 273.1,
                     max_lift_m: 0.017_74,
                 }),
             },
@@ -734,8 +736,8 @@ impl EngineDef {
             // the recordings' firing harmonics (stock DC5 and EP3 chassis dynos) and an onboard
             // DC5 pull's other orders, the power held in the published range (2026-10-31)
             exhaust_valve: ValveTiming {
-                open_deg: 140.5,
-                duration_deg: 242.5,
+                open_deg: 151.7,
+                duration_deg: 220.0,
                 max_lift_m: 0.0106,
                 diameter_m: 0.0424,
                 high: None,
@@ -911,15 +913,15 @@ impl EngineDef {
             // measured 0.6 s snap to 9000 rpm (see the test) leaves the cams no more than half a
             // second to reach the high-output timing, ≥ 60 °/s; 30 °/s took 0.73 s.
             intake_valve: ValveTiming {
-                open_deg: 380.0,
-                duration_deg: 270.0,
+                open_deg: 392.5,
+                duration_deg: 245.0,
                 max_lift_m: 0.0124,
                 diameter_m: 0.0496,
                 high: None,
             },
             exhaust_valve: ValveTiming {
-                open_deg: 137.0,
-                duration_deg: 246.0,
+                open_deg: 148.4,
+                duration_deg: 223.2,
                 max_lift_m: 0.0103,
                 diameter_m: 0.0412,
                 high: None,
@@ -1225,15 +1227,15 @@ impl EngineDef {
             },
             combustion: Combustion::Spark,
             intake_valve: ValveTiming {
-                open_deg: 340.0,
-                duration_deg: 270.0,
+                open_deg: 352.5,
+                duration_deg: 245.0,
                 max_lift_m: 0.0115,
                 diameter_m: 0.050,
                 high: None,
             },
             exhaust_valve: ValveTiming {
-                open_deg: 125.0,
-                duration_deg: 265.0,
+                open_deg: 137.3,
+                duration_deg: 240.5,
                 max_lift_m: 0.0105,
                 diameter_m: 0.043,
                 high: None,
@@ -1312,15 +1314,15 @@ impl EngineDef {
             },
             combustion: Combustion::Spark,
             intake_valve: ValveTiming {
-                open_deg: 350.0,
-                duration_deg: 250.0,
+                open_deg: 361.6,
+                duration_deg: 226.9,
                 max_lift_m: 0.014,
                 diameter_m: 0.055,
                 high: None,
             },
             exhaust_valve: ValveTiming {
-                open_deg: 130.0,
-                duration_deg: 250.0,
+                open_deg: 141.6,
+                duration_deg: 226.9,
                 max_lift_m: 0.0138,
                 diameter_m: 0.0404,
                 high: None,
@@ -6917,6 +6919,31 @@ mod tests {
         crate::units::wrap(x.open_deg + x.duration_deg - i.open_deg + 360.0, 720.0) - 360.0
     }
 
+    /// A warm engine's exhaust ports: where the wall model settles after minutes of running.
+    /// It relaxes towards the port gas (60 s) and loses nothing outside, so it settles where
+    /// the gas no longer warms it: at the mean temperature of the gas the valve sends out,
+    /// weighted by its flow (h/c_p of the enthalpy over the mass, over a second of running).
+    fn warm_exhaust_walls(e: &mut Engine, c: &Controls) {
+        for _ in 0..2 {
+            let n = (1.0 / DT) as usize;
+            let (mut m, mut h) = (vec![0.0; e.cyl.len()], vec![0.0; e.cyl.len()]);
+            for _ in 0..n {
+                e.step(DT, c);
+                for ((m, h), cs) in m.iter_mut().zip(h.iter_mut()).zip(&e.cyl) {
+                    *m += cs.port_outflow.max(0.0);
+                    *h += cs.port_enthalpy_flow.max(0.0);
+                }
+            }
+            for ((cs, m), h) in e.cyl.iter_mut().zip(m).zip(h) {
+                if m > 0.0 {
+                    cs.wall_t = h / m / crate::gas::CP;
+                    cs.port_t = cs.wall_t;
+                }
+            }
+        }
+        run(e, 1.0, c);
+    }
+
     #[test]
     fn the_lfa_closes_its_overlap_at_idle_and_opens_it_under_load() {
         // Dual VVT-i (Toyota, 1LR-GUE): at idle the intake cam sits retarded and the exhaust
@@ -6926,21 +6953,27 @@ mod tests {
         let d = EngineDef::lfa_v10();
         let mut e = Engine::new(d.clone(), d.idle_rpm, 1);
         run(&mut e, 4.0, &Controls::default());
+        warm_exhaust_walls(&mut e, &Controls::default());
         assert!(overlap_deg(&e) < 0.0, "idle overlap {}", overlap_deg(&e));
         // the idle's charge: diluted as a warm idle's (Heywood Fig. 6-21: ≈ 20–30 % at 0.3
-        // bar), not at the flame's limit. Ours reads 33.0 % (32.98 % with a sealed silencer
-        // valve, 33.03 % with its clearance's leak, 2026-11-06): 3 points over Heywood's
-        // range, an open item; the bound only keeps it off the flame's limit
+        // bar; §4.2: "some 30 % at idle"), on a warm exhaust: with the ports still at a cold
+        // start's 320 K, their gas drawn back as the valve closed left a 494 K residual and
+        // 33.9 % (read as an open item from 2026-11-06 to 2026-11-20); warm (walls 816 K),
+        // 25.9 %
         let dil = e.cyl.iter().map(dilution_of).sum::<f64>() / e.cyl.len() as f64;
-        assert!(dil < 0.335, "idle dilution {dil}");
+        assert!((0.20..=0.30).contains(&dil), "idle dilution {dil}");
         let wot = Controls {
             throttle: 1.0,
             hold_rpm: Some(3000.0),
             ..Controls::default()
         };
         run(&mut e, 3.0, &wot);
+        // 43° between the sin² windows the timing was drawn on; between the real flanks'
+        // windows (`crate::valve::from_sin2_window`, each 0.0463 of its old length shorter at
+        // each end) 43 − 0.0463 · (270 + 246) = 19.1°, the overlap above a tenth of the lift
+        // kept as it was
         assert!(
-            (overlap_deg(&e) - 43.0).abs() < 0.5,
+            (overlap_deg(&e) - 19.1).abs() < 0.5,
             "WOT overlap {}",
             overlap_deg(&e)
         );
@@ -7372,14 +7405,25 @@ mod tests {
 
     #[test]
     fn vtec_overlap_blows_some_fresh_air_through() {
-        // On its VTEC lobe with the cam advanced, the K20A's valves overlap widely at speed: part
-        // of the air drawn in passes straight to the exhaust (scavenging), so the fuel the ECU
-        // meters on the trapped charge is less than the inducted air's stoichiometric share
-        // (measured 0.93 at 6500 rpm); with fixed cams it is the share itself
-        let share = |vvt: bool| {
+        // On its VTEC lobe the K20A's valves overlap widely at speed: part of the air drawn in
+        // passes straight to the exhaust (scavenging), so the fuel the ECU meters on the trapped
+        // charge falls under the inducted air's stoichiometric share. That share sits at
+        // 14.7/15.7 = 0.936 with no overlap at all (the ECU meters the fresh charge as mixture,
+        // the throttle counts air; 0.944 with the exhaust closed 40° early, its recompression
+        // keeping a little more): what the overlap blows through is the fall from there. The VTEC lobe (opening 18° earlier, 36° longer) blows
+        // through more than the low lobe at 6500 rpm, cams unphased (2026-11-20: 1.3 % against
+        // 1.0 %; the VTC's 10° at 6500, a torque optimum, sends some of it back as reversion);
+        // with the VTC its share stays a scavenging engine's.
+        let share = |vtec: bool, vtc: bool, overlap: bool| {
             let mut d = EngineDef::honda_k20a();
-            if !vvt {
-                (d.vtec, d.intake_phaser, d.exhaust_phaser) = (None, None, None);
+            if !vtec {
+                d.vtec = None;
+            }
+            if !vtc {
+                (d.intake_phaser, d.exhaust_phaser) = (None, None);
+            }
+            if !overlap {
+                d.exhaust_valve.duration_deg -= 40.0;
             }
             let mut e = Engine::new(d, 6500.0, 1);
             let c = Controls {
@@ -7392,9 +7436,16 @@ mod tests {
             run(&mut e, 0.5, &c);
             (e.fuel_ledger.into_cylinders - inj0) * AFR_STOICH / (e.inducted_kg() - m0)
         };
-        let (with, without) = (share(true), share(false));
+        let closed = share(false, false, false);
+        assert!(
+            (closed - AFR_STOICH / (1.0 + AFR_STOICH)).abs() < 0.01,
+            "no overlap {closed}"
+        );
+        let blown = |vtec: bool| share(vtec, false, false) - share(vtec, false, true);
+        let (high, low) = (blown(true), blown(false));
+        assert!(low > 0.0 && high > low, "VTEC lobe {high}, low lobe {low}");
+        let with = share(true, true, true);
         assert!(with < 0.97 && with > 0.85, "with VTEC/VTC {with}");
-        assert!(without > with, "fixed cams {without}");
     }
 
     #[test]
@@ -10641,16 +10692,26 @@ mod tests {
     }
 
     #[test]
-    fn an_air_cleaner_takes_off_what_raff_measured() {
-        // Raff & Perry 1973 Fig. 14: the standard air cleaner took 8.5 dB(A) off the open
-        // intake — a 5.9 L diesel truck, the only measured insertion loss found (no car air
-        // box's was): the cleaner must take a substantial 5–15 dB(A), not tuned to the number
-        let fitted = mouth_power(EngineDef::inline4(), 3000.0);
+    fn an_air_cleaner_takes_off_at_least_what_raff_measured() {
+        // Raff & Perry 1973 Fig. 14: a 5.9 L diesel truck's drive-by, open intake 89.0 dB(A),
+        // standard air cleaner 80.5, a special air silencer 79.5: the special one gaining 1 dB
+        // more says the rest of the truck sounds under them, so the cleaner's 8.5 dB(A) is a
+        // floor of what it takes off (read until 2026-11-20 as a value bounding 5–15). A drive-by
+        // sweeps the speeds: the mean of the mouth's power over 2000–5000 rpm every 1000 (one
+        // speed alone sits on the box's and the runners' standing waves). Car intake boxes take
+        // 15–25 dB above their Helmholtz frequency; the inline-4's reads 18.7.
         let mut bare = EngineDef::inline4();
         bare.intake.air_cleaner.fitted = false;
-        let bare = mouth_power(bare, 3000.0);
-        let il = 10.0 * (bare / fitted).log10();
-        assert!((5.0..15.0).contains(&il), "{il:.1} dB(A)");
+        let speeds = [2000.0, 3000.0, 4000.0, 5000.0];
+        let mean = |d: &EngineDef| {
+            speeds
+                .iter()
+                .map(|&r| mouth_power(d.clone(), r))
+                .sum::<f64>()
+                / speeds.len() as f64
+        };
+        let il = 10.0 * (mean(&bare) / mean(&EngineDef::inline4())).log10();
+        assert!(il >= 8.5, "{il:.1} dB(A)");
     }
 
     #[test]

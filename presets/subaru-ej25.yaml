@@ -1,4 +1,4 @@
-version: 3
+version: 4
 engine:
   name: Subaru EJ25 2.5 (flat-four)
   geometry:
@@ -20,13 +20,13 @@ engine:
     - - 2
       - 4
   intake_valve:
-    open_deg: 350.0
-    duration_deg: 240.0
+    open_deg: 361.1
+    duration_deg: 217.8
     max_lift_m: 0.0127
     diameter_m: 0.0509
   exhaust_valve:
-    open_deg: 130.0
-    duration_deg: 240.0
+    open_deg: 141.1
+    duration_deg: 217.8
     max_lift_m: 0.011
     diameter_m: 0.0438
   spark_advance_deg: 25.0

@@ -1,4 +1,4 @@
-version: 3
+version: 4
 engine:
   name: Honda K20C1 2.0 turbo (Civic Type R)
   geometry:
@@ -16,13 +16,13 @@ engine:
     bank_angle_deg: 0.0
     banks: []
   intake_valve:
-    open_deg: 340.0
-    duration_deg: 265.0
+    open_deg: 352.3
+    duration_deg: 240.5
     max_lift_m: 0.0124
     diameter_m: 0.0495
   exhaust_valve:
-    open_deg: 140.5
-    duration_deg: 242.5
+    open_deg: 151.7
+    duration_deg: 220.0
     max_lift_m: 0.0106
     diameter_m: 0.0424
   intake_phaser:

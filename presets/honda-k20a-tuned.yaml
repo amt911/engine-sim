@@ -1,4 +1,4 @@
-version: 3
+version: 4
 engine:
   name: Honda K20A tuned (VTEC, 9200 rpm)
   geometry:
@@ -16,17 +16,17 @@ engine:
     bank_angle_deg: 0.0
     banks: []
   intake_valve:
-    open_deg: 340.0
-    duration_deg: 265.0
+    open_deg: 352.3
+    duration_deg: 240.5
     max_lift_m: 0.0124
     diameter_m: 0.0495
     high:
-      open_deg: 316.0
-      duration_deg: 313.0
+      open_deg: 330.5
+      duration_deg: 284.0
       max_lift_m: 0.01879177865612648
   exhaust_valve:
-    open_deg: 140.5
-    duration_deg: 242.5
+    open_deg: 151.7
+    duration_deg: 220.0
     max_lift_m: 0.0106
     diameter_m: 0.0424
   vtec:
