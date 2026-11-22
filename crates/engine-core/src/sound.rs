@@ -125,6 +125,13 @@ pub struct SoundDef {
     /// against the stock car's 9 %).
     pub tail_height_m: f64,
     pub listener_height_m: f64,
+    /// The recording's low cut, Hz (0 = none): a second-order Butterworth high-pass on the
+    /// engine's sound, as the microphones and cameras of the recordings the presets are judged
+    /// against all cut (2026-11-20: every one falls 13–40 dB under its 200–400 Hz band below
+    /// 40–120 Hz; the render stood flat there, the cycle-to-cycle swing of the exhaust's mean
+    /// flow at 12–50 Hz, heard as a low wind the recordings never carry). The recording chain,
+    /// not the engine: off, the listener hears the air as it moves.
+    pub mic_low_cut_hz: f64,
     /// A street around the car and the listener: the distance between its façades, m (the car
     /// in the middle). 0 = open ground, nothing but the ground reflects.
     pub street_width_m: f64,
@@ -181,14 +188,79 @@ impl Default for SoundDef {
             // a road car's tail pipe, and the ear by it as the recordings are made
             tail_height_m: 0.3,
             listener_height_m: 0.5,
+            mic_low_cut_hz: 40.0,
             street_width_m: 0.0,
             wall_reflection: 0.8,
         }
     }
 }
 
+/// [`SoundDef::mic_low_cut_hz`]: a second-order Butterworth high-pass (Bristow-Johnson, "Audio
+/// EQ Cookbook", HPF with Q = 1/√2), redesigned when the step changes; 0 Hz passes everything.
+#[derive(Debug, Clone, Default)]
+pub struct MicLowCut {
+    design: (f64, f64),
+    c: [f64; 5],
+    x: [f64; 2],
+    y: [f64; 2],
+}
+
+impl MicLowCut {
+    pub fn process(&mut self, x: f64, fc: f64, dt: f64) -> f64 {
+        if fc <= 0.0 {
+            return x;
+        }
+        if self.design != (fc, dt) {
+            let w0 = 2.0 * std::f64::consts::PI * fc * dt;
+            let alpha = w0.sin() / std::f64::consts::SQRT_2;
+            let a0 = 1.0 + alpha;
+            let cw = w0.cos();
+            self.c = [
+                (1.0 + cw) / 2.0 / a0,
+                -(1.0 + cw) / a0,
+                (1.0 + cw) / 2.0 / a0,
+                -2.0 * cw / a0,
+                (1.0 - alpha) / a0,
+            ];
+            self.design = (fc, dt);
+        }
+        let c = self.c;
+        let y =
+            c[0] * x + c[1] * self.x[0] + c[2] * self.x[1] - c[3] * self.y[0] - c[4] * self.y[1];
+        self.x = [x, self.x[0]];
+        self.y = [y, self.y[0]];
+        y
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_mic_low_cut_takes_a_butterworths_loss() {
+        // second-order Butterworth: |H|² = f⁴/(f⁴ + fc⁴); at fc −3.01 dB, at fc/2 −12.30 dB,
+        // at 2 fc −0.26 dB (by hand); 0 Hz cut passes the signal untouched
+        let dt = 1.0 / 48_000.0;
+        let level = |f: f64, fc: f64| {
+            let mut m = super::MicLowCut::default();
+            let (mut a, mut b) = (0.0, 0.0);
+            let n = (4.0 / dt) as usize;
+            for i in 0..n {
+                let x = (2.0 * std::f64::consts::PI * f * i as f64 * dt).sin();
+                let y = m.process(x, fc, dt);
+                if i > n / 2 {
+                    (a, b) = (a + x * x, b + y * y);
+                }
+            }
+            10.0 * (b / a).log10()
+        };
+        for (f, want) in [(40.0, -3.01), (20.0, -12.30), (80.0, -0.26)] {
+            let got = level(f, 40.0);
+            assert!((got - want).abs() < 0.1, "{f} Hz: {got:.2} dB, want {want}");
+        }
+        assert!(level(20.0, 0.0).abs() < 1e-9);
+        assert_eq!(super::SoundDef::default().mic_low_cut_hz, 40.0);
+    }
 
     #[test]
     fn the_default_ear_stands_by_the_tail_as_the_recordings_are_made() {

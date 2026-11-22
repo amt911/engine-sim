@@ -2390,6 +2390,8 @@ pub struct Engine {
     tail_u: Vec<f64>,
     /// Each tail's mean exit velocity this step (mass continuity), m/s.
     tail_u_mean: Vec<f64>,
+    /// The recording's low cut ([`crate::sound::SoundDef::mic_low_cut_hz`]).
+    mic: crate::sound::MicLowCut,
     /// The tails' signals this step, kept between steps (no allocation per step).
     tails_buf: Vec<f64>,
     /// The exhaust net when it runs elsewhere ([`Engine::detach_exhaust`]).
@@ -2668,6 +2670,7 @@ impl Engine {
             tail_dc: Vec::new(),
             tail_u: Vec::new(),
             tail_u_mean: Vec::new(),
+            mic: crate::sound::MicLowCut::default(),
             tails_buf: Vec::new(),
             remote: RemoteSlot(None),
             tail_backpressure: Vec::new(),
@@ -4276,7 +4279,7 @@ impl Engine {
             }
         }
         self.theta = crate::units::wrap(self.theta + self.omega * dt, 4.0 * PI / shaft_k);
-        audio
+        self.mic.process(audio, self.def.sound.mic_low_cut_hz, dt)
     }
 
     /// Where the engine's sound comes from, across the car's axis, m: one place per bank
@@ -8081,6 +8084,40 @@ mod tests {
     }
 
     #[test]
+    fn the_recordings_low_cut_takes_the_slow_air_and_leaves_the_tone() {
+        // the K20A at 7000 rpm WOT: its 5–25 Hz (the exhaust's mean flow swinging cycle to
+        // cycle) falls by the Butterworth's 12 dB an octave under 40 Hz, its firing line at
+        // 233 Hz keeps within 0.2 dB (|H|² = f⁴/(f⁴ + fc⁴): −0.02 dB there)
+        let heard = |cut: f64| {
+            let mut d = EngineDef::honda_k20a();
+            d.sound.mic_low_cut_hz = cut;
+            let mut e = Engine::new(d, 7000.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(7000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.5, &c);
+            run(&mut e, 1.0, &c)
+        };
+        let band = |x: &[f64], lo: f64, hi: f64| {
+            let mut p = 0.0;
+            let mut f = lo;
+            while f <= hi {
+                p += line_amplitude(x, f).powi(2);
+                f += 1.0;
+            }
+            p
+        };
+        let (on, off) = (heard(40.0), heard(0.0));
+        let slow = 10.0 * (band(&on, 5.0, 25.0) / band(&off, 5.0, 25.0)).log10();
+        let tone = 20.0
+            * (line_amplitude(&on, 7000.0 / 30.0) / line_amplitude(&off, 7000.0 / 30.0)).log10();
+        assert!(slow < -10.0, "slow air {slow:.1} dB");
+        assert!(tone.abs() < 0.2, "firing line {tone:.2} dB");
+    }
+
+    #[test]
     fn the_lfas_trumpets_draw_from_its_surge_tank() {
         // the car's ten ITBs breathe from one surge tank on top of the V, not the open air:
         // bare, their firing tone drowned the tips 12 dB at 8000 rpm behind the car, and the
@@ -8458,6 +8495,8 @@ mod tests {
             mechanical: 0.0,
             combustion_jitter: 0.0,
             listener_angle_deg: angle,
+            // the listener's plumbing to the bit: the recording's low cut off
+            mic_low_cut_hz: 0.0,
             ..crate::sound::SoundDef::default()
         };
         let mut e = Engine::new(def, 3000.0, 1);
@@ -8670,6 +8709,8 @@ mod tests {
             combustion_jitter: 0.0,
             intake: 0.0,
             listener_angle_deg: 90.0,
+            // the output rebuilt from the tails through a bare listener: no recording's low cut
+            mic_low_cut_hz: 0.0,
             ..crate::sound::SoundDef::default()
         };
         let mut e = Engine::new(d.clone(), 3000.0, 1);
@@ -9963,6 +10004,8 @@ mod tests {
             let mut def = def;
             def.exhaust.steepening = false;
             def.exhaust.gas_temperature = false;
+            // the samples compared to the bit: the recording's low cut off
+            def.sound.mic_low_cut_hz = 0.0;
             let mut a = Engine::new(def.clone(), 3000.0, 1);
             let mut b = Engine::new(def.clone(), 3000.0, 1);
             let n = (0.15 / DT) as usize + 7;

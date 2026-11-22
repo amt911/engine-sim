@@ -1967,3 +1967,11 @@ them, 71.2 without), so nothing low-passes the slow flow (a production chambered
 back pressure with the boxes' compliance would, at a few Hz). Open: what the stock EP3 muffler
 is; not changed without its drawing. The stock pipe (54 mm, owners' measurements) took the
 treble wind off at 7000–8000 rpm but read Davies' 2nd order at 101.4 dB (bound 97 ± 3): held back.
+
+**Recordings cut the lows (2026-11-22).** Every reference recording falls far under its 200–400 Hz
+band below 40–120 Hz (third octaves re that band: the EP3 rolling road −16 dB at 100 Hz, −36 at
+50; a K20A dyno −24 at 50; two K20 clips −13…−20 at 25–31.5; the LFA's tips gentler, −9 dB/oct).
+The render stood flat at −13…−17 from 12.5 to 50 Hz: the exhaust's mean flow swinging cycle to
+cycle, physical, but no microphone the presets are judged against carries it, and the user
+heard it as a low wind. `sound.mic_low_cut_hz` (40 Hz by default, a second-order Butterworth on
+the engine's sound) is that recording chain; 0 hears the air as it moves.

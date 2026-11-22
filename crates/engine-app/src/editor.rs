@@ -595,6 +595,14 @@ pub fn editor_panel(ui: &mut egui::Ui, state: &mut UiState) {
                     .text("Ear height (m)"),
             );
             ui.add(
+                slider(&mut snd.mic_low_cut_hz, 0.0..=150.0)
+                    .step_by(5.0)
+                    .text("Mic low cut (Hz)"),
+            )
+            .on_hover_text(
+                "The recording's high-pass, as real microphones and cameras cut the lows: 0 = none",
+            );
+            ui.add(
                 slider(&mut snd.street_width_m, 0.0..=40.0)
                     .step_by(1.0)
                     .text("Street width (m)"),
@@ -1167,6 +1175,17 @@ mod tests {
         assert!(
             h.state().def.sound.listener_height_m
                 > engine_core::sound::SoundDef::default().listener_height_m
+        );
+        assert!(h.state().engine_dirty);
+    }
+
+    #[test]
+    fn the_mic_low_cut_slider_edits_the_sound() {
+        let mut h = harness(EngineDef::inline4());
+        nudge(&mut h, "Mic low cut (Hz)");
+        assert!(
+            h.state().def.sound.mic_low_cut_hz
+                > engine_core::sound::SoundDef::default().mic_low_cut_hz
         );
         assert!(h.state().engine_dirty);
     }
