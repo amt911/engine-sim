@@ -1422,16 +1422,6 @@ impl EngineDef {
             .clamp(-MAX_SPARK_ADVANCE_DEG, MAX_SPARK_ADVANCE_DEG)
     }
 
-    /// This engine with one pipe after each collector, the tail's own length and bore: for a
-    /// car whose silencer is drawn elsewhere (the LFA's valved one at the bank merge).
-    fn with_tail_pipe(mut self) -> Self {
-        self.exhaust.after_collector = vec![crate::exhaust::Segment::Pipe {
-            length_m: self.exhaust.tail_length_m,
-            diameter_m: self.exhaust.tail_diameter_m,
-        }];
-        self
-    }
-
     /// A road car's exhaust after each collector from one rule for every car
     /// ([`crate::exhaust::road_exhaust`]): a close-coupled catalyst and silencers of ten times
     /// the collector's swept volume, on the car's own pipe. With the finite-volume pipes and
