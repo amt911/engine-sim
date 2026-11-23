@@ -1975,3 +1975,34 @@ The render stood flat at −13…−17 from 12.5 to 50 Hz: the exhaust's mean fl
 cycle, physical, but no microphone the presets are judged against carries it, and the user
 heard it as a low wind. `sound.mic_low_cut_hz` (40 Hz by default, a second-order Butterworth on
 the engine's sound) is that recording chain; 0 hears the air as it moves.
+
+## The LFA's treble sat on every cycle order: its primaries' fitted delays (2026-11-23)
+
+User (2026-11-23): both presets carry a background wind, and the LFA sounds somewhat synthetic.
+Held at 8000 rpm WOT (Reference, listener 3 m at 30°), the LFA's 2–8 kHz is mostly lines (78 %
+within ±4 Hz of a cycle order), but the firing series sat 7.8 dB *under* the other cycle orders at
+2–4 kHz and 6.8 dB under at 4–8 kHz: `same_engine.py` read that as wind (−13.8 dB) and 11 % of
+1.5–4 kHz on the firing and bank orders, against the real exterior clips' 37–67 %. Switching off
+each synthesized source (flow_noise, intake, valve_jet, duct_flow, block, mechanical,
+combustion_jitter, chamber_ring) moved neither by more than 2 dB: the gas dynamics.
+
+The cause: `primary_length_deviation_m` (±3 cm, σ 1.8 cm), fitted by ear on 2026-10-30 to raise
+the cycle orders between the firing harmonics. A length difference is a pure delay (30–50 µs in
+900 K gas), harmless at 500 Hz and a random phase per cylinder over 2 kHz, where it spreads the
+firing series over every cycle order. Equal primaries (the Lexus drawing): firing series 5.2 dB
+over the other orders at 2–4 kHz, wind −19.2 dB, 43 % on the orders. The real dyno clip's order
+table (`the_lfa_at_full_throttle_keeps_the_real_cars_orders`) read on the offline render's
+finite-volume exhaust: RMS 11.7 dB with the delays, 11.4 without. Realism gates (`gates.sh`,
+lfa-v10): spectral order score 1.57 → 1.13 (bound 1.51) and the fundamental's pitch check FAIL →
+PASS; treble wind −23.1 → −24.0 dB; the ear gate's bank, wind, lift and peak and blind2's hnr fail
+as before (next entry's work).
+
+Also found, not changed: on the finite-volume exhaust the LFA's firing order falls 11–17 dB at
+6600–7500 rpm (held, at the tail; the waveguide only 1–4 dB). It moves with the primary length
+(0.7 m: to 7000–8200; 0.9 m: under 6400), so the other primaries, shut at their valves, act as
+three-quarter-wave side branches near 570 Hz. The ear gate's 150–500 Hz "wind" is read against
+the firing line, so it reads +12 dB at 6800 rpm where that line sits in the hole. A refit of the
+primary length on the finite-volume exhaust (0.6–0.85 m) moved the real-orders RMS 15.7…10.2 dB
+without one length winning on every order: short primaries leave H1 9–28 dB over H2 and H5–H8
+15–25 dB weak, long ones move the hole. The K20A's 4-into-1 (0.624 m) puts its quarter-wave hole
+on the 2nd order near 6500 rpm (Davies scene: 85.2 dB there against 97–107 at 4500–6000).

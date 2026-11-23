@@ -87,17 +87,7 @@ engine:
     collector_extra_length_m:
     - 0.0
     - 0.07
-    primary_length_deviation_m:
-    - 0.016
-    - -0.024
-    - 0.006
-    - 0.03
-    - -0.012
-    - -0.018
-    - 0.022
-    - -0.004
-    - 0.01
-    - -0.026
+    primary_length_deviation_m: []
     tail_length_m: 1.88
     tail_diameter_m: 0.07
     tail_outlets: 1
