@@ -2012,3 +2012,22 @@ number, and the user heard it as "fatal, no parece ni el coche real" (as "too cl
 the pulses' treble. Also seen on the LFA, not changed: on the FV exhaust its firing order falls
 11–17 dB at 6600–7500 rpm (the other primaries as three-quarter-wave side branches near 570 Hz;
 the waveguide 1–4 dB), and the ear gate's 150–500 Hz "wind" reads against that line.
+
+**Where the K20A's periodic treble comes from, and what it is measured against (later the same
+day).** Attribution (`attribute.sh`): the intake mouth carries it (intake off: periodic 1/2/4 kHz
+−15/−23/−18 dB); valve jets, duct flow, mechanical and block move it by ≤ 2 dB. Ruled out:
+- Screening the intake mouth by the body (no `.unscreened(mouth)`): texture passes (1.80/2.30),
+  but `physgate` load fails at 6300 rpm (+1.1 dB(A), bound +3): the exhaust alone has no load
+  contrast (−0.8 dB(A); on overrun its 4–16 kHz are 9–15 dB *over* full load, lines at 12–15 kHz
+  56 dB over the floor, no sound knob moves them: the open "Overrun ≈ full power at the tail").
+  The LFA fails three physgate checks that way.
+- The throttle's own flow noise (`DuctJet` at the bore's exit into the plenum, Davies & Holland
+  1999 Fig. 1): +0.0 dB at full load (≈ 40 m/s); +6…+15 dB at 2–8 kHz at 0.4 throttle. Not kept.
+Against the stock K20 dyno clips (`same_engine.py`, `yt/`), the render's treble is not too loud:
+1.5–4 kHz is 8–19 dB under the firing line against −6…+7 in most clips. Its 1.5–4 kHz line share
+is 76–88 % at 5000–7000 rpm against 37–72 %. Rendered as the clips were recorded, in a dyno cell
+(`room: 240 m³, RT60 1.2 s`), the share drops to 65 / 80 / 48 / 35 % at 5–9k rpm; low-mid −8.5…−13
+and wind −21…−27 dB sit in the clips' range. Most of the texture failure is the comparison's
+conditions (the free-field render against recordings carrying a room or the road): the
+reverberant tail of a sweep fills the gaps between the lines. What remains is 6000–7000 rpm
+(80 % against ≤ 72 %).
