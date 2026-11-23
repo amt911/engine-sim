@@ -612,10 +612,15 @@ impl ExhaustFv {
     /// The Mach step each designed path's silencers are designed at (tests).
     #[cfg(test)]
     pub(crate) fn silencer_steps(&self) -> Vec<i32> {
-        self.branches
+        let mut steps: Vec<i32> = self
+            .branches
             .iter()
             .flat_map(|b| b.duct.silencer_steps())
-            .collect()
+            .collect();
+        if let Some(sh) = &self.shared {
+            steps.extend(sh.silencer_steps());
+        }
+        steps
     }
 
     /// The designed paths' silencers take their transmission at the mean flow through them

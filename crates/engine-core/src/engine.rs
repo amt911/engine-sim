@@ -669,6 +669,12 @@ impl EngineDef {
         // through (Honda's product planner, via Mod Bargains), 86 mm inside (Tomei). What bore
         // feeds them is not published, so ESTIMATE: two of the pipe's, the least they can be
         d.exhaust.tail_outlets = 2;
+        // its manifold is one 4-into-1 cast in the head, not the K20A's 4-2-1
+        let one = ExhaustDef::default();
+        d.exhaust.collectors.clear();
+        d.exhaust.merge = None;
+        d.exhaust.collector_length_m = one.collector_length_m;
+        d.exhaust.collector_diameter_m = one.collector_diameter_m;
         // the road exhaust's rule on the FK8's own pipe
         d = d.with_road_exhaust();
         let turbo = crate::turbo::TurboDef {
@@ -749,17 +755,23 @@ impl EngineDef {
             idle_throttle: 0.0,
             // a typical car idle (estimate)
             idle_rpm: 800.0,
-            // primaries timed to the blowdown's second return at the 8000 rpm power peak
-            // (Blair, ch. 6; c ≈ 600 m/s): 0.734 m, a first guess; 0.624 m, the pipe after the
-            // catalyst 1.84 m and the primaries' spread from the fit to the recordings (as for
-            // the LFA; every unknown kept in its physical range). One 4-into-1 collector, its
-            // own tail pipe
+            // The stock manifold is a cast 4-2-1: cylinders 1 and 4, 2 and 3 (360° apart) pair
+            // into two secondaries that meet before the catalyst ([`Self::with_four_two_one`]).
+            // Primaries 0.40 m and secondaries 0.60 m × 45 mm: no drawing found, so fitted within
+            // a 4-2-1's usual proportions (primaries 0.30–0.45, secondaries 0.30–0.60 m swept on the
+            // finite-volume exhaust, 2026-11-23) to the stock EP3 clip's firing line: a dip at
+            // 5000 rpm, 2–13 dB over it from 5500 (the clip: 8–11 dB); 0.45 m read 7–15 dB and its
+            // treble too periodic for the real clips (FINDINGS 2026-11-23). Shorter pairs put the other
+            // pair's path, shut at a valve, on the 2nd order as a quarter-wave side branch at
+            // 6000–7500 rpm; so did the 4-into-1 of 0.624 m
+            // (`the_k20a_keeps_its_second_order_through_vtec`). Not equal-length:
+            // ±4 cm, an ESTIMATE from the 2026-10 fit (identical primaries leave the orders
+            // between the firing harmonics 10–20 dB under the recordings')
             exhaust: ExhaustDef {
-                primary_length_m: 0.624,
-                // the stock manifold is a cast 4-2-1, not equal-length: ±4 cm, an ESTIMATE from
-                // the fit (identical primaries leave the orders between the firing harmonics
-                // 10–20 dB under the recordings')
+                primary_length_m: 0.40,
                 primary_length_deviation_m: vec![0.0224, -0.0336, 0.0084, 0.042],
+                collector_length_m: 0.55,
+                collector_diameter_m: 0.045,
                 tail_length_m: 1.84,
                 ..ExhaustDef::default()
             },
@@ -864,6 +876,7 @@ impl EngineDef {
             ..Self::single()
         }
         .with_road_exhaust()
+        .with_four_two_one(&[&[1, 4], &[2, 3]], 0.05)
     }
 
     /// Lexus LFA, Toyota 1LR-GUE: 4.8 L 72° V10, 88 × 79 mm, CR 12.0, even firing,
@@ -1446,6 +1459,26 @@ impl EngineDef {
             self.exhaust.tail_diameter_m,
         );
         self.exhaust.after_collector.insert(0, cat);
+        self
+    }
+
+    /// A 4-2-1 (or any staged) manifold: the primaries of each group meet in its secondary
+    /// (`collector_length_m` × `collector_diameter_m`, then `secondary_tail_m` more of it), the
+    /// secondaries in one pipe that carries the designed path to the open end
+    /// ([`crate::exhaust::Merge`]). The path is the one built for the whole engine, so call it
+    /// after `with_road_exhaust` on a single collector.
+    fn with_four_two_one(mut self, groups: &[&[usize]], secondary_tail_m: f64) -> Self {
+        let path = std::mem::take(&mut self.exhaust.after_collector);
+        self.exhaust.collectors = groups.iter().map(|g| g.to_vec()).collect();
+        self.exhaust.after_collector = vec![crate::exhaust::Segment::Pipe {
+            length_m: secondary_tail_m,
+            diameter_m: self.exhaust.collector_diameter_m,
+        }];
+        self.exhaust.merge = Some(crate::exhaust::Merge {
+            segments: path,
+            outlet_diameter_m: self.exhaust.tail_diameter_m,
+            bypass: None,
+        });
         self
     }
 
@@ -4656,7 +4689,12 @@ mod tests {
         let road = quiet(EngineDef::honda_k20a());
         let mut open = road.clone();
         let pipe_d = road.exhaust.tail_diameter_m;
-        for s in &mut open.exhaust.after_collector {
+        let shared = open
+            .exhaust
+            .merge
+            .iter_mut()
+            .flat_map(|m| m.segments.iter_mut());
+        for s in open.exhaust.after_collector.iter_mut().chain(shared) {
             if let Segment::Catalyst { length_m, .. } | Segment::Muffler { length_m, .. } = *s {
                 *s = Segment::Pipe {
                     length_m,
@@ -4739,6 +4777,22 @@ mod tests {
         assert!(steps(false).iter().all(|&k| k == 0));
     }
 
+    /// A road car's designed path from one collector to the open end (through the shared duct
+    /// when the collectors merge) and the swept volume it serves.
+    fn road_path(d: &EngineDef) -> (Vec<crate::exhaust::Segment>, f64) {
+        let mut path = d.exhaust.after_collector.clone();
+        match &d.exhaust.merge {
+            Some(m) => {
+                path.extend(m.segments.iter().cloned());
+                (path, d.displacement_m3())
+            }
+            None => {
+                let branches = d.exhaust.groups(d.cylinders).len().max(1) as f64;
+                (path, d.displacement_m3() / branches)
+            }
+        }
+    }
+
     #[test]
     fn every_road_car_carries_a_catalyst_and_silencers_of_ten_swept_volumes() {
         // a road car has a catalyst and silencers totalling ten times its swept volume per
@@ -4759,9 +4813,8 @@ mod tests {
             EngineDef::vw_tdi(),
         ];
         for d in road {
-            let branches = d.exhaust.groups(d.cylinders).len().max(1) as f64;
-            let per_branch = d.displacement_m3() / branches;
-            let path = &d.exhaust.after_collector;
+            let (path, per_branch) = road_path(&d);
+            let path = &path;
             let cats = path
                 .iter()
                 .filter(|s| matches!(s, Segment::Catalyst { .. }))
@@ -9301,8 +9354,8 @@ mod tests {
             // first after its downpipe
             assert!(
                 matches!(
-                    d.exhaust
-                        .after_collector
+                    road_path(&d)
+                        .0
                         .iter()
                         .find(|s| !matches!(s, crate::exhaust::Segment::Pipe { .. })),
                     Some(crate::exhaust::Segment::Catalyst { .. })
@@ -10313,6 +10366,30 @@ mod tests {
     const DAVIES_SPREAD_DB: f64 = 21.583_124_951_194_2; // 20 log10(3 / 0.25)
 
     #[test]
+    fn the_k20a_keeps_its_second_order_through_vtec() {
+        // A stock EP3's rolling-road clip (same_engine.py / lineabs, 2026-11-23): its firing line
+        // stands 8.4–10.8 dB over its 5000 rpm level from 5500 to 8000 rpm (VTEC from 5800), and
+        // Davies' production four rises 6 dB from 4500 to 6000 (Fig. 1(c)). On the 4-into-1 the
+        // other three primaries, shut at their valves, are quarter-wave side branches that took
+        // the 2nd order 22 dB under 5000's at 6500 rpm (85.2 against 107.0 dB): the treble jet
+        // was left alone ("viento"). At 0.25 m, 45 deg, full load: 6500 and 7500 rpm within
+        // 3 dB of 5000 or over it.
+        let at = |rpm: f64| {
+            let (x, f, _) = davies_scene(EngineDef::honda_k20a(), rpm);
+            20.0 * line_amplitude(&x, f).log10()
+        };
+        let base = at(5000.0);
+        for rpm in [6500.0, 7500.0] {
+            let l = at(rpm);
+            assert!(
+                l > base - 3.0,
+                "{rpm} rpm: 2nd order {:.1} dB re 5000",
+                l - base
+            );
+        }
+    }
+
+    #[test]
     fn a_production_exhaust_keeps_the_second_order_of_davies_from_4500_to_6000() {
         // Davies & Holland, JSV 223(3), 1999, Fig. 1(c): a production 4-cylinder at 0.25 m,
         // 45 deg, full load, the 2nd order's level in dB (linear), read off the figure at 4500,
@@ -10361,8 +10438,8 @@ mod tests {
 
     #[test]
     fn the_tail_broadband_reads_the_jet_law_at_6000() {
-        // The broadband at the tail, 0.25 m, = the A-weighted overall less the firing orders
-        // (every harmonic of the firing frequency up to 16 kHz), against the free jet's
+        // The broadband at the tail, 0.25 m, = the A-weighted overall less the cycle orders
+        // (every line of the 720 deg cycle up to 16 kHz), against the free jet's
         // textbook level for the exit the engine really has. Hand calculation, SAE ARP876
         // (Stone), as in arXiv:0804.4135 eq. 4, 90 deg to the axis:
         //   OASPL = 141 + 10 w log10(rho_j/rho_a) + 75 log10 M - 10 log10(1 + 0.01 M^4.5)
@@ -10398,8 +10475,12 @@ mod tests {
                         let mut a = crate::mechanical::AWeighting::new(DT);
                         let xa: Vec<f64> = x.iter().map(|v| a.process(*v)).collect();
                         let total = xa.iter().map(|v| v * v).sum::<f64>() / xa.len() as f64;
-                        let orders: f64 = (1..=(16_000.0 / f) as usize)
-                            .map(|k| line_amplitude(&xa, f * k as f64).powi(2) / 2.0)
+                        // every cycle order (720 deg: a quarter of an inline four's firing
+                        // frequency), not the firing series alone: a 4-2-1's two pairs are
+                        // not alike, and their orders between the firing ones are lines
+                        let cycle = f * 2.0 / d.cylinders as f64;
+                        let orders: f64 = (1..=(16_000.0 / cycle) as usize)
+                            .map(|k| line_amplitude(&xa, cycle * k as f64).powi(2) / 2.0)
                             .sum();
                         let db =
                             10.0 * ((total - orders).max(1e-30) / 4e-10).log10() + DAVIES_SPREAD_DB;

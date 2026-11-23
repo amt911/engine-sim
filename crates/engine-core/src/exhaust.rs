@@ -1428,6 +1428,21 @@ impl Shared {
         }
     }
 
+    /// The Mach step its silencers are designed at (tests).
+    #[cfg(test)]
+    pub(crate) fn silencer_steps(&self) -> Vec<i32> {
+        let mut steps = self.duct.silencer_steps();
+        if let Some(v) = &self.valved {
+            for d in [&v.open, &v.closed, &v.tips] {
+                steps.extend(d.silencer_steps());
+            }
+            for (d, _) in &v.outlets {
+                steps.extend(d.silencer_steps());
+            }
+        }
+        steps
+    }
+
     /// Its silencers' transmission follows the mean flow through them ([`Duct::follow_flow`]).
     pub(crate) fn follow_flow(&mut self) {
         self.duct.follow_flow();

@@ -1975,3 +1975,40 @@ The render stood flat at −13…−17 from 12.5 to 50 Hz: the exhaust's mean fl
 cycle, physical, but no microphone the presets are judged against carries it, and the user
 heard it as a low wind. `sound.mic_low_cut_hz` (40 Hz by default, a second-order Butterworth on
 the engine's sound) is that recording chain; 0 hears the air as it moves.
+
+## The K20A's wind: a 4-into-1 side branch on its 2nd order; the treble's missing randomness (2026-11-23)
+
+User (2026-11-23): both presets carry a background wind. The K20A's is the tail jet (switching
+`sound.flow_noise` off took `same_engine.py`'s wind at 7500 rpm from −8.4 to −24.4 dB; ARP876 at
+the model's 136 m/s through 50 mm gives the jet's own level). The jet is not too loud; the tone
+under it fell. Against a stock EP3 rolling-road clip the firing line stands 8–11 dB over its
+5000 rpm level from 5500 to 8000 (VTEC); the render's fell 5–12 dB. Held, FV, at the tail: the
+valves' summed flow keeps a flat 2nd order with speed (the choked blowdown's peak does not grow
+with rpm), the road silencers' insertion loss climbs 17 dB from 133 to 233 Hz, and the 4-into-1
+of 0.624 m put the three primaries shut at their valves on the 2nd order as quarter-wave side
+branches: the Davies scene read 85.2 dB at 6500 rpm against 107.0 at 5000. That collapse is
+shared by the inline4 and the EJ25 on the same road exhaust (−15 and −7 dB from 4500 to 6000,
+where Davies' car rises 6): `a_production_exhaust_keeps_the_second_order_of_davies_from_4500_to_6000`
+averages four speeds and does not see the shape. Ruled out: the time step (48–192 kHz agree),
+the steepening, the pipe lengths between the boxes, an exhaust VTEC lobe.
+
+**Fix:** the stock cast 4-2-1 (`EngineDef::with_four_two_one`: pairs 1-4 and 2-3 into two
+secondaries that merge before the catalyst). Its lengths are unknown; swept on the FV exhaust
+(primaries 0.30–0.45, secondaries 0.30–0.60 m), the pair path shut at a valve is the side branch
+now, and short ones put it on the 2nd order at 6000–7500 rpm (0.40/0.45 m: `physgate` crescendo
+FAIL at 6200). 0.40/0.60 m follows the clip's shape (a dip at 5000, then up) and every gate but
+one passes: physgate, ear gate, blind2, spectral order 4.14 → 0.61, treble wind −11.9 → −25.7 dB.
+`the_tail_broadband_reads_the_jet_law_at_6000` now takes every cycle order out of the broadband,
+not the firing series alone: the two pairs are not alike and their orders between are lines.
+
+**Still failing, the next work:** the spectral tier's texture — periodic 2–4 kHz +9.4 dB and
+4–8 kHz +7.1 dB against the real clips' most extreme +3.1 and +0.4 (0.45/0.60 m: +17.7, +12.0 and
+the treble randomness 0.8 % against ≥ 1.6 %). The model's treble repeats cycle after cycle: while
+the jet covered the tone it supplied the randomness (heard as wind); with the tone back it is
+too clean. The same on the LFA: equal primaries (its ±3 cm delays scramble the treble's phases)
+put its firing series 5 dB over the other orders at 2–4 kHz and read better on every spectral
+number, and the user heard it as "fatal, no parece ni el coche real" (as "too clean" on
+2026-10-31); reverted. What a real engine has and the model lacks is cycle-to-cycle variation of
+the pulses' treble. Also seen on the LFA, not changed: on the FV exhaust its firing order falls
+11–17 dB at 6600–7500 rpm (the other primaries as three-quarter-wave side branches near 570 Hz;
+the waveguide 1–4 dB), and the ear gate's 150–500 Hz "wind" reads against that line.

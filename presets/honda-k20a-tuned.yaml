@@ -81,11 +81,15 @@ engine:
   idle_throttle: 0.0
   idle_rpm: 800.0
   exhaust:
-    primary_length_m: 0.624
+    primary_length_m: 0.4
     primary_diameter_m: 0.04
-    collectors: []
-    collector_length_m: 0.25
-    collector_diameter_m: 0.055
+    collectors:
+    - - 1
+      - 4
+    - - 2
+      - 3
+    collector_length_m: 0.55
+    collector_diameter_m: 0.045
     collector_extra_length_m: []
     primary_length_deviation_m:
     - 0.0224
@@ -105,35 +109,41 @@ engine:
     tail_spacing_m: 0.9
     after_collector:
     - kind: pipe
-      length_m: 0.4
-      diameter_m: 0.05
-    - kind: catalyst
-      length_m: 0.13
-      diameter_m: 0.1399
-      cells_per_in2: 400.0
-      wall_m: 0.000165
-    - kind: pipe
-      length_m: 1.0
-      diameter_m: 0.05
-    - kind: muffler
-      length_m: 0.35
-      diameter_m: 0.1206
-      tube_diameter_m: 0.05
-      packing_resistivity: 16000.0
-      packing_porosity: 0.95
-    - kind: pipe
-      length_m: 0.8
-      diameter_m: 0.05
-    - kind: muffler
-      length_m: 0.45
-      diameter_m: 0.2127
-      tube_diameter_m: 0.05
-      packing_resistivity: 16000.0
-      packing_porosity: 0.95
-    - kind: pipe
-      length_m: 0.3
-      diameter_m: 0.05
-    merge: null
+      length_m: 0.05
+      diameter_m: 0.045
+    merge:
+      segments:
+      - kind: pipe
+        length_m: 0.4
+        diameter_m: 0.05
+      - kind: catalyst
+        length_m: 0.13
+        diameter_m: 0.1399
+        cells_per_in2: 400.0
+        wall_m: 0.000165
+      - kind: pipe
+        length_m: 1.0
+        diameter_m: 0.05
+      - kind: muffler
+        length_m: 0.35
+        diameter_m: 0.1206
+        tube_diameter_m: 0.05
+        packing_resistivity: 16000.0
+        packing_porosity: 0.95
+      - kind: pipe
+        length_m: 0.8
+        diameter_m: 0.05
+      - kind: muffler
+        length_m: 0.45
+        diameter_m: 0.2127
+        tube_diameter_m: 0.05
+        packing_resistivity: 16000.0
+        packing_porosity: 0.95
+      - kind: pipe
+        length_m: 0.3
+        diameter_m: 0.05
+      outlet_diameter_m: 0.05
+      bypass: null
     steepening: true
     gas_temperature: false
   intake:
