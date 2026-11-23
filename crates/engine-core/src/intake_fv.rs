@@ -3,7 +3,7 @@
 //! (ITBs, like the LFA) or from a common **plenum** behind a single throttle. Gives intake (ram)
 //! tuning and induction sound. Spec: `docs/superpowers/specs/2026-10-22-intake-and-pipe-editor.md`.
 
-use crate::exhaust_fv::{CELL_M, PIPE_FRICTION, area, guard, junction_ghost, throttled_ghost};
+use crate::exhaust_fv::{CELL_M, PIPE_FRICTION, area, guard, junction_ghost, open_end_ghost};
 use crate::fv::{Boundary, Cons, Pipe1d, Prim, flux_boundary};
 use crate::gas::{GasVolume, R_AIR};
 use crate::units::ATM_PA;
@@ -226,6 +226,7 @@ impl Airbox {
         let up = self.upstream();
         let (mut inducted, mut at_mouths) = (0.0, 0.0);
         for duct in &mut self.ducts {
+            // the ducts' lengths carry both end corrections (their inertance): plain ends
             let n = duct.cells.len();
             duct.left = Boundary::State(junction_ghost(duct.prim(0), inlet.p, inlet.rho, -1.0));
             duct.right = Boundary::State(junction_ghost(duct.prim(n - 1), up.p, up.rho, 1.0));
@@ -437,8 +438,7 @@ fn itb_runners_step(
     {
         set_valve_boundary(pipe, m, e, a, dt);
         for (fs, es) in f.iter_mut().zip(ef) {
-            let ghost = throttled_ghost(pipe.prim(0), up.p, up.rho, -1.0, psi);
-            pipe.left = Boundary::State(ghost);
+            pipe.left = open_end_ghost(pipe, false, up.p, up.rho, psi, h);
             pipe.step(h);
             *fs = pipe.end_flux.0.rho;
             *es = pipe.end_flux.0.e;
@@ -779,8 +779,8 @@ impl IntakeFv {
                 p: self.plenum.pressure(),
             };
             for pipe in &mut self.runners {
-                let first = pipe.prim(0);
-                pipe.left = Boundary::State(junction_ghost(first, pl.p, pl.rho, -1.0));
+                // each runner opens into the plenum: its lows reflect, its highs leave
+                pipe.left = open_end_ghost(pipe, false, pl.p, pl.rho, f64::INFINITY, h);
                 pipe.step(h);
                 let f = pipe.end_flux.0;
                 self.plenum.mass_kg -= f.rho * a * h;

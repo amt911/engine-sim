@@ -2031,3 +2031,16 @@ and wind −21…−27 dB sit in the clips' range. Most of the texture failure i
 conditions (the free-field render against recordings carrying a room or the road): the
 reverberant tail of a sweep fills the gaps between the lines. What remains is 6000–7000 rpm
 (80 % against ≤ 72 %).
+
+**An open runner end reflected every frequency (2026-11-23, night).** The intake FV runners met the
+plenum (and the ITB trumpets met the air) through `junction_ghost`, a constant-pressure end: |R| = 1
+at every frequency. A real unflanged open end radiates its highs (Levine & Schwinger 1948, end
+correction 0.6133 a; Silva et al., JSV 322, 2009, fit |R| = 0.894 at ka 0.5, 0.346 at ka 2), so the
+runners rang at their HF standing waves on every cycle: the periodic 1–8 kHz texture that read as
+"soplido". `open_end_ghost` adds the radiation impedance as ρc in parallel with the end-correction
+inertance (|R| = 1/√(1+4(kl)²): 0.85 / 0.38 at ka 0.5 / 2), tested against Silva's values. The airbox
+ducts keep plain ends: their lengths already carry both end corrections (L + 0.85 a + 0.6 a), and
+adding the inertance again moved their Helmholtz test 57.75 → 61.59 Hz. Result, K20A 4-2-1: texture
+2.20/2.30 (was 3.42; periodic 2–4 kHz 17.7 dB pull → passing), spectral, expect, physgate and
+ear_gate pass. Still open: lift +5.1 dB ('soplido al soltar', the exhaust's overrun treble) and the
+LFA's low-mid over its approved build (−13.7 dB against −18.4).

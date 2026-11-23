@@ -166,6 +166,70 @@ pub(crate) fn junction_ghost(cell: Prim, p_j: f64, rho_j: f64, sigma: f64) -> Pr
     throttled_ghost(cell, p_j, rho_j, sigma, f64::INFINITY)
 }
 
+/// End correction of an unflanged pipe over its radius (Levine & Schwinger, Phys. Rev. 73(4),
+/// 1948: l = 0.6133·a at low ka).
+pub(crate) const END_CORRECTION_UNFLANGED: f64 = 0.6133;
+
+/// The radiation impedance of a pipe's open end into a large space (a plenum, an air box, the
+/// air), which [`junction_ghost`]'s constant pressure leaves out: there every wave reflects whole,
+/// at every frequency, so a runner rings at all its harmonics. A real end reflects its lows
+/// (the mass of its end correction) and lets its highs leave: the unflanged end's |R| falls from
+/// 1 at ka → 0 to 0.35 at ka = 2 (Levine & Schwinger 1948; Silva et al., JSV 322, 2009, eq. 15
+/// fit). As a resistance ρc in parallel with the end correction's inertance ρ·l, l = 0.6133·a:
+/// below ka ≈ 1.6 the end is that mass, above it the wave leaves matched (|R| = 1/√(1 + 4(kl)²):
+/// 0.85 at ka = 0.5, 0.38 at 2, against the fit's 0.89 and 0.35). The excess pressure the end
+/// needs is ρc times its outward velocity high-passed at c/l; the mean flow is not touched.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct EndRadiation {
+    /// The outward velocity low-passed at c/l (the inertance's share of the flow), m/s.
+    through_mass: f64,
+}
+
+impl EndRadiation {
+    /// The pressure over the space's own the end needs this step `h`, Pa: the end cell's
+    /// velocity `u` (+x), `sigma` = +1 for a right end, −1 for a left one, the pipe's radius
+    /// `radius` and the space's gas (`rho`, `c`).
+    pub(crate) fn step(
+        &mut self,
+        u: f64,
+        sigma: f64,
+        radius: f64,
+        rho: f64,
+        c: f64,
+        h: f64,
+    ) -> f64 {
+        let out = sigma * u;
+        let tau = END_CORRECTION_UNFLANGED * radius / c;
+        // backward Euler: stable for any step against the time constant
+        self.through_mass += (out - self.through_mass) * h / (tau + h);
+        rho * c * (out - self.through_mass)
+    }
+}
+
+/// The boundary of a pipe end opening into a space at (`p_j`, `rho_j`) — a plenum, an air box,
+/// the air — through a throttle of `psi` ([`throttled_ghost`]; `f64::INFINITY` when open): the
+/// space's pressure plus what the end's radiation needs ([`EndRadiation`]), over a step `h`.
+/// `right`: the pipe's right end.
+pub(crate) fn open_end_ghost(
+    pipe: &mut Pipe1d,
+    right: bool,
+    p_j: f64,
+    rho_j: f64,
+    psi: f64,
+    h: f64,
+) -> Boundary {
+    let (i, sigma) = if right {
+        (pipe.cells.len() - 1, 1.0)
+    } else {
+        (0, -1.0)
+    };
+    let cell = pipe.prim(i);
+    let radius = (pipe.area[i] / std::f64::consts::PI).sqrt();
+    let c = (crate::gas::GAMMA * p_j / rho_j).sqrt();
+    let excess = pipe.radiation[usize::from(right)].step(cell.u, sigma, radius, rho_j, c, h);
+    Boundary::State(throttled_ghost(cell, p_j + excess, rho_j, sigma, psi))
+}
+
 /// [`junction_ghost`] through a throttle of `psi` = effective area / pipe area (an ITB at its
 /// trumpet; Benson's partially open end): the flow either way is at most what a compressible
 /// orifice of that area passes (no pressure recovery past the throat), solved together with
@@ -1255,6 +1319,61 @@ mod tests {
     /// Riemann invariant J = u + σ·2c/(γ−1) carried by the characteristic leaving the pipe.
     fn invariant(s: Prim, sigma: f64) -> f64 {
         s.u + sigma * 2.0 / (crate::gas::GAMMA - 1.0) * s.sound_speed()
+    }
+
+    #[test]
+    fn an_open_end_reflects_its_lows_and_radiates_its_highs() {
+        // A tone packet running into a pipe's open end comes back by the end's |R|, the
+        // unflanged end's (Levine & Schwinger 1948) as Silva et al.'s fit (JSV 322, 2009, eq. 15):
+        // |R| = (1 + a₁x)/(1 + (β + a₁)x + a₂x² + a₃x³), x = (ka)², β = ½, a₁ = 0.800,
+        // a₂ = 0.266, a₃ = 0.0263. By hand: ka = 0.5 → 1.2/1.3424 = 0.894; ka = 2 →
+        // 4.2/12.14 = 0.346. Measured against the same packet off the bare constant-pressure
+        // end (|R| = 1), so the scheme's own dissipation divides out.
+        use std::f64::consts::PI;
+        let (radius, rho, p0) = (0.02, 1.2, 101_325.0);
+        let c = (crate::gas::GAMMA * p0 / rho).sqrt();
+        let area = PI * radius * radius;
+        let back = |ka: f64, radiate: bool| {
+            let f = ka * c / (2.0 * PI * radius);
+            let k = 2.0 * PI * f / c;
+            let (dx, x0) = (0.0025, 1.75);
+            let mut p = Pipe1d::segmented(&[(3.5, area)], dx, Prim { rho, u: 0.0, p: p0 });
+            p.acoustic_loss = 0.0;
+            for (i, cell) in p.cells.iter_mut().enumerate() {
+                let x = (i as f64 + 0.5) * dx - x0;
+                // a left-running packet: p' = −ρc·u'
+                let env = (-(x * f / (c * 3.0)).powi(2)).exp();
+                let dp = 100.0 * env * (k * x).cos();
+                *cell = Prim {
+                    rho: rho * (1.0 + dp / (crate::gas::GAMMA * p0)),
+                    u: -dp / (rho * c),
+                    p: p0 + dp,
+                }
+                .to_cons();
+            }
+            let (mut t, until) = (0.0, 2.0 * x0 / c);
+            while t < until {
+                let h = p.max_dt(0.5).min(until - t);
+                p.left = if radiate {
+                    open_end_ghost(&mut p, false, p0, rho, f64::INFINITY, h)
+                } else {
+                    Boundary::State(junction_ghost(p.prim(0), p0, rho, -1.0))
+                };
+                p.step(h);
+                t += h;
+            }
+            (0..p.cells.len())
+                .filter(|&i| (i as f64 + 0.5) * dx > 0.8)
+                .map(|i| (p.prim(i).p - p0).abs())
+                .fold(0.0, f64::max)
+        };
+        for (ka, want) in [(0.5, 0.894), (2.0, 0.346)] {
+            let r = back(ka, true) / back(ka, false);
+            assert!(
+                (r - want).abs() < 0.06,
+                "ka {ka}: |R| {r:.3}, Levine & Schwinger {want}"
+            );
+        }
     }
 
     #[test]
