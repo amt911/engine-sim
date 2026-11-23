@@ -988,17 +988,13 @@ impl EngineDef {
                 // inside that bound, from the fit. Identical lines cancel the half orders where
                 // the banks meet (held 6700 WOT: order 5 at −35 dB vs the dyno clip's −14.5)
                 collector_extra_length_m: vec![0.0, 0.07],
-                // the equal-length primaries equal (2026-11-23). The ±3 cm (σ 1.8 cm) of the
-                // 2026-10-30 fit, picked by ear on the waveguide to raise the cycle orders between
-                // the firing harmonics, are pure delays: 30–50 µs scramble the cylinders' phases
-                // over 2 kHz, so the treble's lines sat on every cycle order (held 8000 WOT,
-                // 2–4 kHz: firing series 7.8 dB under the others; equal, 5.2 dB over) and its
-                // share of 1.5–4 kHz on the firing and bank orders was 11 % against the real
-                // exterior clips' 37–67 % (43 % equal). On the finite-volume exhaust of the
-                // offline render the real dyno clip's orders read no worse without them (RMS
-                // 11.7 → 11.4 dB, `the_lfa_at_full_throttle_keeps_the_real_cars_orders`'s
-                // table), and the realism gates' order and pitch tiers pass (FINDINGS 2026-11-23)
-                primary_length_deviation_m: Vec::new(),
+                // the equal-length primaries as built: ±3 cm (σ 1.8 cm), an ESTIMATE. Identical
+                // ones leave the cycle orders between the firing harmonics 8–12 dB under the dyno
+                // clip's (−19…−26 dB re H1) and its half orders 6 dB over; these bring both to it
+                // (held through the gears: half orders −7 dB, floor −21 dB) and were picked by ear
+                primary_length_deviation_m: vec![
+                    0.016, -0.024, 0.006, 0.030, -0.012, -0.018, 0.022, -0.004, 0.010, -0.026,
+                ],
                 // the bank line below, catalyst to muffler (the last pipe refitted with the gas
                 // at its own temperature: hotter gas carries sound faster, the same delays ask
                 // for a longer pipe; 2026-10-31)
