@@ -195,7 +195,7 @@ def cmd_gate(labels):
     for lab in labels:
         it = sim(lab)
         v, s = line(lab, judge(refs, it, it["family"]))
-        print(s)
+        print(f"{s}  lifts {it.get('nlift', '?')}")
         for k, x, lim, st, words in judge(refs, it, it["family"]):
             if st == "FAIL":
                 print(f"    -> {words}")

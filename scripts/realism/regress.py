@@ -19,6 +19,10 @@ import sys
 import rdata
 
 STEP_DB = 1.0
+# The lift is the median over a render's throttle lifts; a median of fewer than three is one or two
+# events at moments the other build need not share (2026-11-23: main's K20A lift was a single event).
+MIN_LIFTS = 3
+LIFTS = re.compile(r"^(\S+)\s+(?:PASS|FAIL)\s+bank .*\blifts (\d+)")
 METRICS = {  # name: (regex on the summary, higher-is-worse)
     "wind": (re.compile(r"^(\S+) \(.*?wind (-?[\d.]+)/"), True),
     "lowmid": (re.compile(r"^(\S+) \(.*?lowmid (-?[\d.]+)/"), True),
@@ -38,6 +42,9 @@ def read(sfx):
                 if m and m.group(1).endswith("-" + sfx):
                     preset = m.group(1)[: -len(sfx) - 1]
                     out.setdefault(preset, {})[name] = float(m.group(2))
+            m = LIFTS.match(line)
+            if m and m.group(1).endswith("-" + sfx):
+                out.setdefault(m.group(1)[: -len(sfx) - 1], {})["lifts"] = int(m.group(2))
     return out
 
 
@@ -49,6 +56,10 @@ def worse(name, new, base):
 
 def main(sfx, base):
     a, b = read(sfx), read(base)
+    for r in (a, b):
+        for p in r.values():   # an old summary without the count keeps being judged
+            if p.get("lifts", MIN_LIFTS) < MIN_LIFTS:
+                p.pop("lift", None)
     rc = 0
     for preset in sorted(set(a) & set(b)):
         bad = [f"{n} {b[preset][n]:+.1f} -> {a[preset][n]:+.1f}"
