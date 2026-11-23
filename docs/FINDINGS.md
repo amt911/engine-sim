@@ -2044,3 +2044,18 @@ adding the inertance again moved their Helmholtz test 57.75 → 61.59 Hz. Result
 2.20/2.30 (was 3.42; periodic 2–4 kHz 17.7 dB pull → passing), spectral, expect, physgate and
 ear_gate pass. Still open: lift +5.1 dB ('soplido al soltar', the exhaust's overrun treble) and the
 LFA's low-mid over its approved build (−13.7 dB against −18.4).
+
+**The LFA's "wind" since its surge tank is exposed noise, not noisy gas (2026-11-23, night).** The
+ear gate's wind (150–500 Hz between the orders) went from −22.2 dB (main) to −2…−4 on this branch,
+the spectral low-mid −21 → −13; the step is `a69baa0` (the trumpets draw from the tank: lfa-ten
+−19.1 → lfa-tank −7.5). Measured on held renders: the gas dynamics alone (every synthesized source
+off) are periodic to −84 dB at 4500 and 6800 rpm; the floor between the lines is the stochastic
+sources (tail jet noise about half, then combustion jitter and the block), and it peaks at
+6000–7500 rpm (18 % of 150 Hz–2 kHz off the cycle lines at 6800, 0.04 % at 4500), where the firing
+line falls (−15.8 dB re the total at 6800 against −0.7 without the tank). Both sources are on
+their references: the jet's level is ARP876 applied pseudo-steadily to the instantaneous exit
+velocity, as Li, Dai & Zhu (JSV 167(3), 1993) do and match against a pulsating blow-off; the
+jitter is Soltau's COV (test `cycles_vary_as_measured_engines_do`). The bare trumpets' intake tone
+had masked them. What is short is the firing tone at 6000–7500 rpm (the real car's dominant line
+there: `lfaref/WWa441avBHs.wav`), the open "LFA FV firing notch". Also: the regress lift was a
+single event on main's K20A; `regress.py` now needs three lifts each side.
