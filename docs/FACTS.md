@@ -423,7 +423,9 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   −49.9 dBFS at 7500; at 6800 they meet at 168° and cancel to 35.7 dB). With the chamber element a plain pipe the
   H1 rises 12–28 dB but the jitter's spread rides the pulses through and rises with it (aperiodic 58.0, wind −4.0;
   jitter off: −17.3). The real exterior recordings' H2 sits 13–25 dB under H1 at 6400–8000 rpm (`look/ordtab.py`,
-  five `lfaref` clips); the model's exhaust alone has H2 1–6 dB over it. Inputs: `scratch-refs/wabl/`.
+  five `lfaref` clips); the model's exhaust alone has H2 1–6 dB over it.   Both corrections together (0.65 m primaries, the merge inflow's H1/H2 balance in `pscan/`, and a plain pipe for
+  the chamber element): wind −18.3 / −12.6 at 6800 / 7500 (from +8.0 / −4.1), H2 −28 / −6 re H1, floor −48 / −42.
+  Either alone: 0.65 m −12.1 / +3.8, no chamber −6.9 / −4.0. Inputs: `scratch-refs/wabl/`.
 - **JP 2008-169751 A ¶0048–0049 (2026-11-24)**: the long lower tip (52, ≥ 2× the others) cuts the 1st order at
   ≈ 4800 rpm and its wool the ≥ 1 kHz; Fig. 8's combined tail sound has H2, H4, H5 over H1 by design. The model
   at 4800 rpm sends H2/H4/H5 into the muffler at −10/−22/−34 dB re H1 (`order_probe`, the merge's inflow); with
