@@ -400,3 +400,19 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   now fitted once per pipe; silencer equalizers are memoized (`silencer2d::EqMemo`, carried across
   rebuilds). First block after an exhaust edit, release, loaded machine: K20A 178 → 26 ms,
   LFA ~1100 → 100 ms; whole K20A net 194 → 23 ms.
+- **The LFA's "wind" on fix/duct-jet-density is a missing firing line, not more noise (2026-11-24)**: ear_gate's
+  wind = aperiodic 150–500 Hz minus H1 (`scripts/realism/ear/ear_feat.py`), on the held renders at 6800/7500 rpm.
+  Aperiodic 150–500 Hz: main (b2) 48.6/49.2 dB, branch (rad1) 43.7/45.4, 0.675 m primaries 43.8/44.8; H1 at the
+  ear: 71.5/70.3, 35.7/49.6, 55.0/42.2. Main's H1 came from the open trumpets; with the surge tank only the
+  exhaust's is left.
+- **LFA designed path, valve open, impulse from an anechoic source vs a straight 70 mm pipe (2026-11-24)**: the
+  bank lines + Y alone 0–6 dB; the main muffler 24–25 dB at 300–475 Hz, 30–37 at 550–800. Of that, the spherical
+  chamber's published TL ≈ 20 dB flat (equal tips: 25–27 dB at every frequency) and the three unequal tips 5–11 dB
+  more at 550–1200 Hz (no chamber: 4–5 dB below 475 Hz, 10–17 above 550). Spike: `scratch-refs/spike-designed-path-tf.patch`
+  (needs a 1 s warm-up for the bypass valve's 0.3 s travel, and the zero-input run subtracted: the mean flow's DC).
+- **JP 2008-169751 A ¶0048–0049 (2026-11-24)**: the long lower tip (52, ≥ 2× the others) cuts the 1st order at
+  ≈ 4800 rpm and its wool the ≥ 1 kHz; Fig. 8's combined tail sound has H2, H4, H5 over H1 by design. The model
+  at 4800 rpm radiates H2/H4/H5 at −10/−22/−34 dB re H1 (`order_probe`). The road recordings hold H1 dominant
+  (−2…−3 dB of 100 Hz–4 kHz, 400–700 Hz), so the exterior firing line must largely come from elsewhere than
+  the tail: the intake (Okamoto 2011 Fig. 18, "surge tank tuned 400 Hz, equal tone tuned intake") — the model's
+  tank ducts pass −17…−26 dB at 558 Hz (FINDINGS 2026-11-20).
