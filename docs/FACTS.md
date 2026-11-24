@@ -444,6 +444,17 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   right where it starts (cylinder pressure at EVO COV 1.4–1.8 %, port peak 1.5–2.4 % at 6800–7500 — Soltau's
   charge spread), but where H1 sits in a zero its per-cycle spread is −16 dB re its line at the merge inflow
   (0.8 m, 7500) against −29…−33 elsewhere (`jitter_probe`).
+- **The LFA's exhaust source is flat with rpm (2026-11-24, 0.60 m primaries, Reference, held WOT)**: the ten
+  exhaust valves' summed flow at the firing order (cycle order 10) against its mean: −16.6 / −13.6 / −19.0 /
+  −19.0 / −24.3 dB at 3600 / 4800 / 6000 / 7200 / 8400 rpm, so its dQ/dt holds at 44–47 dB from 4800 to 8400
+  while the mean flow grows 4.8 dB (the pulses spread over more crank angle as the speed rises); valves to the
+  merge's inflow −10 / −10 / −8 / −12 / −15 dB (the shut primaries' third zero at 8800). The tail jet grows
+  with the mean flow (U^7.5) and the mechanical sources with the speed, so the firing line loses to them at the
+  top: the LFA's physgate crescendo −3.5 dB(A)/octave (rad1 +6.1, b2 passed with the open trumpets' intake).
+  Spike: `scratch-refs/probe-source-by-rpm.patch`. Gates of 209c393 (`gates-j60`): spectral PASS (low-mid
+  −18.6 vs −13.7 on rad1), blind2 hnr 10.7 (rad1 13.5), ear_gate wind −4.3, lift +5.4 (rad1 −0.8), peak +18.1.
+  Held renders: exhaust alone −11.8 / −10.5 at 6800 / 7500 (0.8 m: −2.9 / −2.1); with the intake −14.3 / −2.9 —
+  at 7500 the intake's H1 meets the exhaust's out of phase at the fixed ear (51.9 → 44.1 dB).
 - **A merged exhaust's tail jet was counted twice (fixed 2026-11-24)**: the LFA's two tails (its banks' halves of
   the one radiated signal) each blew a jet of all three tips' area at one bank's flow through its 70 mm pipe:
   6 dB over one jet of the tips at the whole flow (65.8 vs 59.6 dB at 6000 rpm, 3 m). ARP876 at 7500 rpm, 3 m:
