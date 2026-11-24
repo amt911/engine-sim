@@ -2061,7 +2061,7 @@ there: `lfaref/WWa441avBHs.wav`), the open "LFA FV firing notch". Also: the regr
 single event on main's K20A; `regress.py` now needs three lifts each side.
 
 **The LFA's firing tone sinks at 6500–7500 rpm on the FV exhaust: the bank lines resonate too
-sharply (2026-11-24, open).** Two exterior recordings of the car (`lfaref/WWa441avBHs`,
+sharply (2026-11-24; cause found the same day, below).** Two exterior recordings of the car (`lfaref/WWa441avBHs`,
 `cmP42s56PKc`) keep the firing line at −2.4…−3.0 dB of their 100 Hz–4 kHz from 5500 to 8000 rpm.
 The offline render's tails (d/dt of the exit flow, held WOT, jitter off) read −1.7 at 6000 and
 −10.7 at 7000. Probes (`order_probe`, Reference fidelity): the intake tank changes nothing; the
@@ -2075,3 +2075,26 @@ are turbulent absorption at M ≈ 0.18 in the bank lines and the junctions' and 
 vortex losses with mean flow; neither is in the duct. Test kept as a patch until then
 (`target/scratch-refs/lfa-firing-test.patch`, `the_lfa_firing_tone_holds_its_share_through_six_to_seven_thousand`,
 RED: −1.7 / −10.7 dB; a fitted 0.85 m after the sub muffler reads −7.6).
+**Correction, same day: neither candidate was missing, and the bank lines were not the cause.**
+The linear duct already damps by turbulent friction (`Pipe::set_mean_flow`, α = f·M/(2D)), by the
+quasi-steady loss of its area changes with mean flow (`waveguide.rs`, Ronneberger / Davies 1988
+§3) and by the catalyst's capillaries, all fed at Reference (`engine.rs` → `ExhaustFv::set_mean_flow`).
+The trough is the primaries': while one cylinder fires, its bank's four shut primaries are
+side branches of the collector whose 3λ/4 zero (3c/4L ≈ 600 Hz at L = 0.8 m, c ≈ 640 m/s) sits on
+the firing order near 7000 rpm. Measured (`order_probe`, held WOT, order 5 dB at 6000…8500):
+0.80 m 30 26 20 23 35 39; 0.90 m 21 31 40 36 37 38 — the zero follows 1/L (zero rpm × L ≈ 5800).
+A joining-flow loss at the FV collector junction (Bassett, Winterbone & Pearson, Proc. IMechE C
+215, 2001, eqs. 3–6 generalised to N branches: R ≈ 0.54ρu_C on a shut primary) did not fill it
+(−17.5 at 7500 against −11.3) and was dropped. The firing-harmonic envelope of the road
+recordings is flat at −2…−3 dB from 400 to 700 Hz; the dyno clips dip at a different frequency
+each (their rooms); none at a fixed 550–600 Hz, which the render had (−12/−13 against −4).
+Blair's tuning estimate (0.675 m, ch. 6) leaves the held share at −0.5…−5.0 over 5500–8500 and
+the torque within 2 %, yet the driving scene's gates read it worse than 0.8 m (ear_gate wind
++1.4 against −4.0, bank +4.8 against +7.3, peak +20.9 against +13.6; lift −3.1 against −0.8;
+low-mid −13.6 against −13.7) and the real-time guard 15.7 against 14.1: the zeros only move
+(order 5 at ≈ 2840 and 8500 rpm, order 10 at ≈ 4270), so 0.8 m stays. Open: the zeros' depth
+(the 0D junction leaves the shut primaries ringing; the joining-flow loss above was not it),
+and the ear's wind is the 150–500 Hz band the tank's lost intake tone exposed (entry above),
+a separate gap. **Why it isn't obvious:** the bank-line lengths move the trough's depth (they
+load the junction), so fitting them looks promising and is chaotic; the zero's frequency only
+moves with the primaries, and moving it trades one rpm's hole for another's. Look for a fixed-frequency trough across rpm (the firing harmonics re the band total, binned by frequency over every rpm) before fitting.
