@@ -455,6 +455,18 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   −18.6 vs −13.7 on rad1), blind2 hnr 10.7 (rad1 13.5), ear_gate wind −4.3, lift +5.4 (rad1 −0.8), peak +18.1.
   Held renders: exhaust alone −11.8 / −10.5 at 6800 / 7500 (0.8 m: −2.9 / −2.1); with the intake −14.3 / −2.9 —
   at 7500 the intake's H1 meets the exhaust's out of phase at the fixed ear (51.9 → 44.1 dB).
+- **Where the LFA's wind sits in rpm, and the lift (2026-11-24)**: the ear_gate's wind per 500 rpm bin, real
+  exterior (`lfa-accel`, `lfa-flight`): −19…−25 dB flat from 5500 to 8000. Renders: j60 (0.60 m) −20 at 5500–6000,
+  −14 at 6500, −2.5 / −3.1 at 7000 / 7500, −11 at 8000, −22 at 8500; rad1 worse (+7.9 at 6500); b2 (open trumpets)
+  −20…−26 throughout (`scratch-refs/wabl/windrpm.py`). In pascals at 3 m (`abs_probe`, `wabl/abs2`), exhaust only:
+  H1 87.2 / 81.9 / 74.2 / 77.6 / 75.9 / 72.9 / 75.0 dB at 5500…8500 rpm, the floor between the lines 64→71; with
+  the intake 85.7 / 81.1 / 80.2 / 78.2 / 68.0 / 73.5 / 79.9 (it meets the exhaust's out of phase at 7500, adds at
+  6500 and 8500 at the fixed free-field ear). Lift at Heywood's 12 % of the bore (630202f): H1 +2.5…+4 dB at
+  6000–8500, floor +0.5…+1.8; dyno 530 hp at 8000 (L/D 0.25: 497; 0.30: 525; 0.33: 534). EVO 7–21° earlier: +1…+2 %
+  at 8500 only. Gates (`gates-hey`): ear_gate wind −11.3 (j60 −4.3), bank +3.9 (j60 +7.0), lift +5.1, peak +16.5;
+  spectral PASS (low-mid −20.1); regress vs b2 PASS; blind2 hnr 13.8 @ bin 3 (b2 11.0, also failing); physgate
+  crescendo −3.2 dB(A)/octave (deepest hole 7500: the intake–exhaust cancellation) and load +0.0 (overrun as loud
+  as full; b2 +6.3 and +8.1 with the trumpets carrying the level).
 - **A merged exhaust's tail jet was counted twice (fixed 2026-11-24)**: the LFA's two tails (its banks' halves of
   the one radiated signal) each blew a jet of all three tips' area at one bank's flow through its 70 mm pipe:
   6 dB over one jet of the tips at the whole flow (65.8 vs 59.6 dB at 6000 rpm, 3 m). ARP876 at 7500 rpm, 3 m:
