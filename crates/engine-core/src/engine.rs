@@ -989,10 +989,16 @@ impl EngineDef {
             // Primary length not published: the second return of the blowdown's reflection
             // reaches the port at the overlap at the 8700 rpm power peak — 2·(2L)/c = (360° −
             // EVO)/(6N) with c ≈ 600 m/s in ~900 K gas (Blair, Design and Simulation of
-            // Four-Stroke Engines, ch. 6): L = 0.675 m, a first guess; 0.8 m from the fit to the recordings (2026-10-30: the dyno and onboard clips' harmonics, half orders and bands, and the patent's Fig. 8; every unknown kept inside its physical range).
+            // Four-Stroke Engines, ch. 6): L ≈ 0.675 m. The shut primaries' zeros on the flow
+            // the collector passes, odd multiples of c/4L (c ≈ 585 m/s in them at full load),
+            // place it: the exterior recordings keep the firing line steady from 5500 to
+            // 8000 rpm and the 2nd harmonic 13–25 dB under it from 6400 to 8000, so the third
+            // zero sits above ≈ 8400 rpm (L ≤ 0.625 m); 0.60 m puts it at 8800 (the 0.8 m fit of
+            // 2026-10-30, made while the open trumpets masked the exhaust's firing line, put it
+            // at 7000–7500, the LFA's "viento"; `the_lfa_firing_tone_holds_its_share_…`).
             // Bores estimated.
             exhaust: ExhaustDef {
-                primary_length_m: 0.8,
+                primary_length_m: 0.60,
                 primary_diameter_m: 0.042,
                 collectors: vec![vec![1, 2, 3, 4, 5], vec![6, 7, 8, 9, 10]],
                 collector_length_m: 0.4725,
@@ -3996,6 +4002,18 @@ impl Engine {
                 self.tail_mach[t] = u_mean / crate::exhaust::C_TAIL;
                 self.tail_u_mean[t] = u_mean;
             }
+            // Banks that merge (`exhaust.merge`) leave through the same outlets: one jet of
+            // their summed area carries the whole flow (each tail's own would count it twice).
+            if self.def.exhaust.merge.is_some() {
+                let d = self.def.exhaust.jet_diameter();
+                let outlets = crate::exhaust::ExitLosses {
+                    outlet_area: std::f64::consts::PI * 0.25 * d * d,
+                    friction: 0.0,
+                    laminar: 0.0,
+                };
+                let (_, u) = tail_exit(self.tail_mean_flow.iter().sum(), &outlets);
+                self.tail_u_mean.iter_mut().for_each(|v| *v = u);
+            }
         }
         if snd.flow_noise > 0.0 && self.listener.is_some() && self.jets.len() != n_tails {
             // seeded from the engine's own generator: deterministic for a seed
@@ -4361,7 +4379,12 @@ impl Engine {
             for ((jet, u), r) in self.jets.iter_mut().zip(&self.tail_u).zip(l.distances()) {
                 jets += jet.step(*u, d, rho, *r, dt);
             }
-            jets *= snd.flow_noise;
+            // a merged exhaust's one jet, its power shared by the tails' sources
+            let share = match self.def.exhaust.merge {
+                Some(_) => (self.jets.len().max(1) as f64).sqrt().recip(),
+                None => 1.0,
+            };
+            jets *= snd.flow_noise * share;
         }
         heard + jets + rest
     }
@@ -9711,6 +9734,54 @@ mod tests {
     }
 
     #[test]
+    fn a_merged_exhaust_blows_one_jet_through_its_outlets() {
+        // The LFA's banks join before the rear muffler and leave through its three 60 mm tips
+        // together (JP 2008-169751 A, Figs. 1–5): one jet of the tips' summed area carries both
+        // banks' flow. Continuity, u = ṁ/(ρA) in the tail's reference gas, gives its speed from
+        // the whole engine's exhaust flow, and SAE ARP876 (Stone) its level from that speed and
+        // area; the listener's tail sources share its power. A jet of the whole area on each
+        // bank, at one bank's flow through its own 70 mm pipe, was 6 dB louder (2026-11-24).
+        let rpm = 6000.0;
+        let run_at = |k: f64| {
+            let mut d = EngineDef::lfa_v10();
+            d.sound = crate::sound::SoundDef {
+                flow_noise: k,
+                ..crate::sound::SoundDef::default()
+            };
+            let mut e = Engine::new(d, rpm, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(rpm),
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &c);
+            let out: Vec<f64> = (0..(0.5 / DT) as usize).map(|_| e.step(DT, &c)).collect();
+            (out, e)
+        };
+        let (quiet, _) = run_at(0.0);
+        let (loud, e) = run_at(1.0);
+        let (_, jets) = mean_rms_of_difference(&loud, &quiet);
+        let heard = 20.0 * (jets / 20e-6).log10();
+        // three 60 mm tips: 8482 mm², the bore of one jet of that area 103.9 mm
+        let area = 3.0 * std::f64::consts::PI * 0.25 * 0.060 * 0.060;
+        let bore = 0.060 * 3f64.sqrt();
+        let rho = crate::exhaust::tail_reference_density();
+        let u = e.tail_mean_flow.iter().sum::<f64>() / (rho * area);
+        let distances = e.listener.as_ref().map(|(_, l)| l.distances().to_vec());
+        let distances = distances.expect("a listener");
+        let power: f64 = distances
+            .iter()
+            .map(|&r| 10f64.powf(0.1 * crate::jet_noise::jet_oaspl_db(u, bore, rho, r)))
+            .sum::<f64>()
+            / distances.len() as f64;
+        let expected = 10.0 * power.log10();
+        assert!(
+            (heard - expected).abs() < 1.5,
+            "jets {heard:.1} dB, one jet of the tips {expected:.1} dB (u {u:.1} m/s)"
+        );
+    }
+
+    #[test]
     fn the_texture_radiates_like_a_monopole_from_the_tails() {
         // The intake layer's share of the sound (level 1 minus level 0) is the shared
         // radiation of its share of the texture signal: a monopole, p ∝ dQ/dt with a positive
@@ -11493,6 +11564,81 @@ mod tests {
             let ideal = 1.18 * e.def().displacement_m3() * rpm / 120.0 * 0.2;
             let ve = (e.inducted_kg() - m0) / ideal;
             assert!((0.6..1.15).contains(&ve), "{rpm} rpm: VE {ve:.2}");
+        }
+    }
+
+    /// The share (dB) of the firing line in 100 Hz–4 kHz of the time derivative of the flow the
+    /// banks send into their merge (on a merged exhaust `exit_flows` is the muffler's inflow,
+    /// FINDINGS 2026-11-24), the LFA held at `rpm` at full load on the offline render's
+    /// finite-volume exhaust, every cycle alike.
+    fn lfa_firing_share_db(rpm: f64) -> f64 {
+        let mut d = EngineDef::lfa_v10();
+        d.exhaust.model = ExhaustModel::Fv;
+        d.sound.combustion_jitter = 0.0;
+        // the offline render's (engine-app Quality::Reference)
+        let fid = Fidelity {
+            lining_segment_m: 0.005,
+            silencer_flow: true,
+            fv_cell_m: 0.01,
+            ..Fidelity::default()
+        };
+        let fs = 48_000.0;
+        let dt = 1.0 / fs;
+        let mut e = Engine::with_fidelity(d, rpm, 1, fid);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(rpm),
+            ..Controls::default()
+        };
+        run(&mut e, 1.5, &c);
+        let cycle = 120.0 / rpm;
+        let n = ((1.0 / cycle).floor() * cycle * fs).round() as usize;
+        let (mut x, mut out, mut prev) = (Vec::with_capacity(n), Vec::new(), None);
+        for _ in 0..n {
+            e.step(dt, &c);
+            e.exit_flows(&mut out);
+            let s: f64 = out.iter().sum();
+            if let Some(p) = prev {
+                x.push((s - p) * fs);
+            }
+            prev = Some(s);
+        }
+        // every cycle alike: the power lies on the cycle orders
+        let line = |f: f64| {
+            let (mut re, mut im) = (0.0, 0.0);
+            for (i, v) in x.iter().enumerate() {
+                let w = 2.0 * PI * f * i as f64 / fs;
+                re += v * w.cos();
+                im += v * w.sin();
+            }
+            re * re + im * im
+        };
+        let f_cycle = rpm / 120.0;
+        let band: f64 = (1..)
+            .map(|k| k as f64 * f_cycle)
+            .skip_while(|&f| f < 100.0)
+            .take_while(|&f| f <= 4000.0)
+            .map(line)
+            .sum();
+        10.0 * (line(10.0 * f_cycle) / band).log10()
+    }
+
+    #[test]
+    #[ignore = "offline-render fidelity, minutes: cargo test --release -p engine-core lfa_firing -- --ignored"]
+    fn the_lfa_firing_tone_holds_its_share_through_six_to_eight_thousand() {
+        // Two exterior recordings of the car accelerating (`lfaref/WWa441avBHs`,
+        // `cmP42s56PKc`, tracked 0.2 s windows) keep the firing line at −2.4…−3.0 dB of their
+        // 100 Hz–4 kHz from 5500 to 8000 rpm, within 0.6 dB of each other. A 5-into-1
+        // collector's shut primaries put zeros at odd multiples of c/4L on the flow it passes
+        // (closed side branches): with 0.8 m primaries the third fell on the firing line at
+        // 7000–7500 rpm (−10 dB, "viento" on the LFA, 2026-11-24), with 0.675 m at 7800.
+        let a = lfa_firing_share_db(6000.0);
+        for rpm in [7000.0, 7500.0, 8000.0] {
+            let b = lfa_firing_share_db(rpm);
+            assert!(
+                b > a - 3.0,
+                "firing share {a:.1} dB at 6000, {b:.1} at {rpm}"
+            );
         }
     }
 }

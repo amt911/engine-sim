@@ -415,7 +415,11 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   orders 5 / 10 / 15 / 20 / 25 at 4800 rpm, 21.7–30.3 at 7500. The patent's Fig. 8 against its Fig. 7A dashed "engine
   sound" (sub muffler only) reads ≈ 11 / 5 / – / 5 / 5.5. With the chamber element a plain 0.25 m × 85 mm pipe:
   4.4 / 11.5 / 7.3 / 10.0 / 6.2 (the patent's); an empty 14 L expansion chamber in its place: 22.5 / 20.5 / 19.2 /
-  7.1 / 12.7. Inputs: `scratch-refs/wabl/{nomain,nochamber,reactive}`, `wabl/il.py`.
+  7.1 / 12.7. Inputs: `scratch-refs/wabl/{nomain,nochamber,reactive}`, `wabl/il.py`. **But the dashed curve is
+  not a measurement:** ¶0047 says the engine sound is "例示" (illustrated) with it, where the solid outlet curves
+  are "示されている" (shown); the in-situ figure above is no target. An empty chamber is reactive (its loss is
+  reflection), the `Segment::Measured` element absorbs both ways; at 7500 rpm both give the same H1 at the ear
+  (47.7 vs 47.4 dB in the held renders), so the realisation is not what keeps H1 low there.
 - **What the LFA's wind is made of (held 7500 rpm, rad1, 2026-11-24)**: aperiodic 150–500 Hz 45.4 dB against H1
   49.6. Each source alone (the rest off): tail jet 43.7, combustion jitter 37.2, piston slap 36.0, main bearings 33.1,
   the others ≤ 14 (they sum to 45.4); every one alone already fails the real bound (−22.4: `lfa-accel` −22.4,
@@ -426,6 +430,24 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   five `lfaref` clips); the model's exhaust alone has H2 1–6 dB over it.   Both corrections together (0.65 m primaries, the merge inflow's H1/H2 balance in `pscan/`, and a plain pipe for
   the chamber element): wind −18.3 / −12.6 at 6800 / 7500 (from +8.0 / −4.1), H2 −28 / −6 re H1, floor −48 / −42.
   Either alone: 0.65 m −12.1 / +3.8, no chamber −6.9 / −4.0. Inputs: `scratch-refs/wabl/`.
+- **The LFA's exhaust in pascals, and why it is quiet at the top (2026-11-24)**: exhaust only (intake off), held WOT,
+  Reference fidelity, the listener's 3 m (`scratch-refs/wabl/abs`, `abs_probe`): H1 85–88 dB SPL at 4800 rpm but
+  68–72 at 7500, the tail jet's broadband between the cycle lines (150–500 Hz) ≈ 70 dB there, so H1 ≈ floor. At
+  4800 the third octaves 125–315 Hz sit 23–39 dB under the 400 Hz one, as in the patent's measured Fig. 8
+  (24–41): the floor is right where H1 is strong. The fall is upstream of every silencer: with a straight 70 mm
+  pipe after the collectors the merge inflow's H1 (`order_probe`, 0.675 m primaries) reads 50 / 46.8 / 46.7 /
+  41.9 / 37.8 / 32.5 / 14.5 / 29.1 / 36.4 dB at 4800 / 5600 / 6400 / 6800 / 7200 / 7500 / 7800 / 8200 / 8600 rpm —
+  the shut primaries' third zero, 3c/4L with c ≈ 585 m/s, a −30 dB notch with −10 dB skirts 400 rpm wide (0.8 m:
+  at 7000–7500). Merge inflow share / H2 re H1 at 6500 / 7000 / 7500 / 8000 rpm: 0.575 m −1.5/−7, −0.9/−8,
+  −0.4/−17, −1.3/−20; 0.60 m −1.7/−6, −0.5/−13, −0.7/−21, −2.1/−12; 0.625 m −1.2/−8, −0.6/−19, −1.2/−16,
+  −2.7/−7; 0.65 m −0.6/−15, −1.3/−19, −2.3/−6, −3.4/−4 (`scratch-refs/pscan`). The combustion's own spread is
+  right where it starts (cylinder pressure at EVO COV 1.4–1.8 %, port peak 1.5–2.4 % at 6800–7500 — Soltau's
+  charge spread), but where H1 sits in a zero its per-cycle spread is −16 dB re its line at the merge inflow
+  (0.8 m, 7500) against −29…−33 elsewhere (`jitter_probe`).
+- **A merged exhaust's tail jet was counted twice (fixed 2026-11-24)**: the LFA's two tails (its banks' halves of
+  the one radiated signal) each blew a jet of all three tips' area at one bank's flow through its 70 mm pipe:
+  6 dB over one jet of the tips at the whole flow (65.8 vs 59.6 dB at 6000 rpm, 3 m). ARP876 at 7500 rpm, 3 m:
+  68 dB per old tail.
 - **JP 2008-169751 A ¶0048–0049 (2026-11-24)**: the long lower tip (52, ≥ 2× the others) cuts the 1st order at
   ≈ 4800 rpm and its wool the ≥ 1 kHz; Fig. 8's combined tail sound has H2, H4, H5 over H1 by design. The model
   at 4800 rpm sends H2/H4/H5 into the muffler at −10/−22/−34 dB re H1 (`order_probe`, the merge's inflow); with

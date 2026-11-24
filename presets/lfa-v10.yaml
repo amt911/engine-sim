@@ -69,7 +69,7 @@ engine:
   idle_throttle: 0.0
   idle_rpm: 900.0
   exhaust:
-    primary_length_m: 0.8
+    primary_length_m: 0.6
     primary_diameter_m: 0.042
     collectors:
     - - 1
