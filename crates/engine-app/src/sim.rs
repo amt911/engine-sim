@@ -828,7 +828,12 @@ pub(crate) mod tests {
         // 76 mm shell, which gives the offline render the H3 and H4 of the car's recordings,
         // lets this real-time waveguide's own treble through (H7, H8 9–11 dB over the clip's;
         // the 105 mm shell had hidden it), a defect of the real-time model left for its own fix.
-        assert!(rms <= 14.1, "RMS {rms:.1} dB off the real car: {errs:?}");
+        // Raised by the user to 14.7 (2026-11-24): the 0.8 m primaries had put their third zero
+        // on the firing line at 7000–7500 rpm, which lowered it against this clip's harmonics;
+        // at 0.60 m (the exterior recordings' steady firing line) and the lift at Heywood's 12 %
+        // of the bore (the published power) it reads 14.69. This clip wants H5–H8 at −10…−22 dB
+        // where the five exterior recordings hold −19…−48 and the render sits inside them.
+        assert!(rms <= 14.7, "RMS {rms:.2} dB off the real car: {errs:?}");
     }
 
     #[test]

@@ -133,8 +133,10 @@ mod tests {
             "power peak at {}",
             power.rpm
         );
+        // within 5 % of the published 552 hp: the lift at Heywood's 12 % of the bore (FACTS)
+        // brought the top's 12 % shortfall to 4 % (2026-11-24)
         assert!(
-            (480.0..=600.0).contains(&power.power_hp()),
+            (0.95 * 552.0..=600.0).contains(&power.power_hp()),
             "{} hp",
             power.power_hp()
         );

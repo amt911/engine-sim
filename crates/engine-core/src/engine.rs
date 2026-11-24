@@ -908,9 +908,11 @@ impl EngineDef {
             // knee, Z ≈ 0.6 (ICE Fundamentals §6.3.2; mean flow coefficient Cᵢ ≈ 0.35) at
             // 8700 rpm (S̄p = 22.91 m/s): one equivalent valve of 49.6 mm, two of 35.1 mm.
             // Exhaust ≈ 0.83 of the intake (Heywood §6.3: exhaust valves ~70 % of the intake
-            // area): 41.2 mm. Lift: a quarter of each valve's diameter, where the curtain area
-            // reaches the port's (8.8 mm per intake valve; the equivalent valve's lift keeps the
-            // two valves' curtain area). Timing: Heywood's typical high-output values
+            // area): 41.2 mm. Lift: Heywood's maximum, about 12 % of the bore (ICE Fundamentals
+            // §6.3), 10.56 mm on every valve (L/D 0.30 intake, 0.36 exhaust; the equivalent
+            // valve's lift keeps the two valves' curtain area). A quarter of each valve's diameter,
+            // where the curtain reaches the port, left the top 12 % short of the published power:
+            // the flow area dwells at the port only past it (2026-11-24). Timing: Heywood's typical high-output values
             // (IVO 20° BTDC, IVC 70° ABDC); the exhaust's EVO 43° BBDC, EVC 23° ATDC fitted
             // within the usual 40–70° / 10–45° to the recordings' firing harmonics and the
             // patent's muffler response, the power held in the published range.
@@ -928,14 +930,14 @@ impl EngineDef {
             intake_valve: ValveTiming {
                 open_deg: 392.5,
                 duration_deg: 245.0,
-                max_lift_m: 0.0124,
+                max_lift_m: 0.01493,
                 diameter_m: 0.0496,
                 high: None,
             },
             exhaust_valve: ValveTiming {
                 open_deg: 148.4,
                 duration_deg: 223.2,
-                max_lift_m: 0.0103,
+                max_lift_m: 0.01493,
                 diameter_m: 0.0412,
                 high: None,
             },
