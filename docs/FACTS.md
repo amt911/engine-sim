@@ -410,9 +410,27 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   chamber's published TL ≈ 20 dB flat (equal tips: 25–27 dB at every frequency) and the three unequal tips 5–11 dB
   more at 550–1200 Hz (no chamber: 4–5 dB below 475 Hz, 10–17 above 550). Spike: `scratch-refs/spike-designed-path-tf.patch`
   (needs a 1 s warm-up for the bypass valve's 0.3 s travel, and the zero-input run subtracted: the mean flow's DC).
+  **In the running engine it is as big** (held renders at the ear, every synthesized source and the intake off,
+  valve open; the main muffler against a 0.5 m × 85 mm pipe in its place): 26.2 / 31.4 / 26.6 / 30.0 / 25.6 dB at
+  orders 5 / 10 / 15 / 20 / 25 at 4800 rpm, 21.7–30.3 at 7500. The patent's Fig. 8 against its Fig. 7A dashed "engine
+  sound" (sub muffler only) reads ≈ 11 / 5 / – / 5 / 5.5. With the chamber element a plain 0.25 m × 85 mm pipe:
+  4.4 / 11.5 / 7.3 / 10.0 / 6.2 (the patent's); an empty 14 L expansion chamber in its place: 22.5 / 20.5 / 19.2 /
+  7.1 / 12.7. Inputs: `scratch-refs/wabl/{nomain,nochamber,reactive}`, `wabl/il.py`.
+- **What the LFA's wind is made of (held 7500 rpm, rad1, 2026-11-24)**: aperiodic 150–500 Hz 45.4 dB against H1
+  49.6. Each source alone (the rest off): tail jet 43.7, combustion jitter 37.2, piston slap 36.0, main bearings 33.1,
+  the others ≤ 14 (they sum to 45.4); every one alone already fails the real bound (−22.4: `lfa-accel` −22.4,
+  `lfa-flight` −24.3). All off: 13.4 (wind −34). At the ear the intake's H1 is 5 dB over the exhaust's (−44.5 vs
+  −49.9 dBFS at 7500; at 6800 they meet at 168° and cancel to 35.7 dB). With the chamber element a plain pipe the
+  H1 rises 12–28 dB but the jitter's spread rides the pulses through and rises with it (aperiodic 58.0, wind −4.0;
+  jitter off: −17.3). The real exterior recordings' H2 sits 13–25 dB under H1 at 6400–8000 rpm (`look/ordtab.py`,
+  five `lfaref` clips); the model's exhaust alone has H2 1–6 dB over it. Inputs: `scratch-refs/wabl/`.
 - **JP 2008-169751 A ¶0048–0049 (2026-11-24)**: the long lower tip (52, ≥ 2× the others) cuts the 1st order at
   ≈ 4800 rpm and its wool the ≥ 1 kHz; Fig. 8's combined tail sound has H2, H4, H5 over H1 by design. The model
-  at 4800 rpm radiates H2/H4/H5 at −10/−22/−34 dB re H1 (`order_probe`). The road recordings hold H1 dominant
+  at 4800 rpm sends H2/H4/H5 into the muffler at −10/−22/−34 dB re H1 (`order_probe`, the merge's inflow); with
+  no main muffler the ear's third octaves at 800 / 1250 / 1600 / 2000 Hz read −15 / −16 / −28 / −30 dB re the
+  400 Hz one, where Fig. 7A's dashed engine sound reads ≈ −1.5 / +2 / – / −4.5 (its curves are drawn through
+  third-octave points, so a reading, not a measurement; an A-weighting would explain ≤ 6 dB of it). At 0.5 m
+  the no-main H1 reads ≈ 126 dB against the dashed 122. The road recordings hold H1 dominant
   (−2…−3 dB of 100 Hz–4 kHz, 400–700 Hz), so the exterior firing line must largely come from elsewhere than
   the tail: the intake (Okamoto 2011 Fig. 18, "surge tank tuned 400 Hz, equal tone tuned intake") — the model's
   tank ducts pass −17…−26 dB at 558 Hz (FINDINGS 2026-11-20).

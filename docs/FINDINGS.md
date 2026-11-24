@@ -2098,3 +2098,11 @@ and the ear's wind is the 150–500 Hz band the tank's lost intake tone exposed 
 a separate gap. **Why it isn't obvious:** the bank-line lengths move the trough's depth (they
 load the junction), so fitting them looks promising and is chaotic; the zero's frequency only
 moves with the primaries, and moving it trades one rpm's hole for another's. Look for a fixed-frequency trough across rpm (the firing harmonics re the band total, binned by frequency over every rpm) before fitting.
+
+**On a merged exhaust, `Engine::exit_flows` is the muffler's inflow, not the tails' (2026-11-24).**
+`ExhaustFv::exit_flows` returns each branch duct's far-end flow; with a `merge` the branches end at the
+merge junction, so a probe that sums them and differentiates (`order_probe`) reads what enters the main
+muffler. Comparing two mufflers that way showed the LFA's taking 4.9 dB at H1 in the engine; the ear of
+held renders (every synthesized source and the intake off) shows 26 dB, and 26–31 at H2–H5, against the
+patent's ≈ 5–11 (FACTS). **Why it isn't obvious:** on an unmerged exhaust the same call is the tails'
+flow, and the probe's name says "exit". Measure a muffler's in-situ loss at the ear of a render.
