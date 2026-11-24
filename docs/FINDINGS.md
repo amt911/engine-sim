@@ -2059,3 +2059,19 @@ jitter is Soltau's COV (test `cycles_vary_as_measured_engines_do`). The bare tru
 had masked them. What is short is the firing tone at 6000–7500 rpm (the real car's dominant line
 there: `lfaref/WWa441avBHs.wav`), the open "LFA FV firing notch". Also: the regress lift was a
 single event on main's K20A; `regress.py` now needs three lifts each side.
+
+**The LFA's firing tone sinks at 6500–7500 rpm on the FV exhaust: the bank lines resonate too
+sharply (2026-11-24, open).** Two exterior recordings of the car (`lfaref/WWa441avBHs`,
+`cmP42s56PKc`) keep the firing line at −2.4…−3.0 dB of their 100 Hz–4 kHz from 5500 to 8000 rpm.
+The offline render's tails (d/dt of the exit flow, held WOT, jitter off) read −1.7 at 6000 and
+−10.7 at 7000. Probes (`order_probe`, Reference fidelity): the intake tank changes nothing; the
+sub muffler (0ff3e4c) moves the anti-resonance onto the firing order. Its own transmission is
+0.5 dB at 575 Hz; its graphic EQ's minimum phase lags 16° (3.9 cm) against the 2D model's own
+12.9° (3.0 cm), so the realisation is right. What is wrong is the sensitivity: ±0.38 m of bank
+line moves the firing order ±10 dB, 10 cm of either pipe 5–9 dB, and no geometry in a 0.3–0.7 ×
+0.7–1.0 m grid holds the share above −5 dB at 7000 (best −5.0). The real line is smooth to
+±0.3 dB, so the model's linear ducts are short of the damping a full-load exhaust has: candidates
+are turbulent absorption at M ≈ 0.18 in the bank lines and the junctions' and expansions'
+vortex losses with mean flow; neither is in the duct. Test kept as a patch until then
+(`target/scratch-refs/lfa-firing-test.patch`, `the_lfa_firing_tone_holds_its_share_through_six_to_seven_thousand`,
+RED: −1.7 / −10.7 dB; a fitted 0.85 m after the sub muffler reads −7.6).
