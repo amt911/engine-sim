@@ -676,3 +676,7 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   other cycle orders −29.7 / −39.9 dB: both fall ≈ 10 dB and the others stay 10 dB under the firing lines. Ours on
   overrun: LFA other orders 45.0 → 55.2 dB(A) over firing 55.0 → 50.9; V8 cross-plane other orders 51.2 → 51.3,
   firing 41.8 → 26.9; K20C1 firing 44.9 → 43.9; single firing 62.5 → 60.4 (held, physgate's mid speed).
+- **The LFA's overrun is not its reverse-flow Cd (2026-11-25, `scratch-refs/ovr/rcd`, `abs_probe` THR 0 WARM 1,
+  6800 rpm)**: `exhaust_reverse_cd_ratio` 0.75 / 0.4 / 0.2 → 73.4 / 72.2 / 72.2 dB(A) (full load 76.9). Recorded
+  0.3 s after the lift, the floor between lines reads 70.2 (62.8 at full load) whatever the synthesized sources
+  (all off 70.3): the cooling transient smears the lines; the app's held scenes settle 1 s first.
