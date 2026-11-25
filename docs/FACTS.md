@@ -653,3 +653,12 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   carry it, as on the LFA); LFA (6800) +4.9 / +4.1 / +2.5 / −9.8 | +10.2 / +6.8 / +10.9. The single's floor does
   not follow the load; the K20C1's full-load A-weighted total is its 173 Hz firing line (125 Hz octave), which
   holds on overrun as the Pantera's fundamental does.
+- **The single's overrun floor is its mechanical noise (2026-11-25, `scratch-refs/ovr/single`, `pw` binary, held
+  5600 rpm, app renders)**: full / closed 64.3 / 63.0 dB(A) (span +1.4); every mechanical source off: 61.2 / 58.9
+  (+2.3) and the closed floor at 250 Hz / 1 kHz / 4 kHz falls 38 / 54 / 51 dB, the full one 4 / 18 / 15: the floor
+  between the lines is the impacts' at both loads. Alone: piston slap off −1.4 / −1.9 dB(A) (floor 1 kHz −4.5),
+  main bearings off −0.6 / −0.9, block, valvetrain and chamber ring ≤ 0.5. Each impact is pushed at the source's
+  fixed weight whatever the force that reverses (`Engine::step`, the side / rod force's sign change), the level
+  being Lalor et al.'s overall curve against speed — load-blind by design (Raff & Perry 1973: a motored engine as
+  loud as two fired ones at 4000 rpm). With the ear by the tails the engine's mechanical noise stands against an
+  exhaust whose floor would follow the load.
