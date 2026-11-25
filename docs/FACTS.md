@@ -504,3 +504,19 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   the lines it sits under are what is weak. Against the chassis-dyno clip the waveguide's cycle orders 30–80 read
   9–24 dB low, but the five exterior recordings hold H5–H8 at −19…−48 dB and the render inside them: no verdict
   on the high harmonics yet. `tail_mach` still uses `C_TAIL`.
+- **Overrun at the port is real physics, not a bug (2026-11-25)**: FV, held, cylinder 0 (`scratch-refs/ovr/port-pulse-spike.patch`).
+  The inline-4 at 4900 rpm: full load 514 mg out per cycle, peak 120 g/s, port gauge −7…+71 kPa; overrun
+  (MAP 23 kPa, cylinder 21 kPa at EVO: a real fuel cut-off's) 81 mg back in (−34 g/s) and 133 mg out (+66 g/s),
+  port gauge −37…+46 kPa: the same ≈ 80 kPa swing (p = c·ṁ/A ≈ 31 kPa for the displacement alone). The summed
+  ports' firing harmonics on overrun re full: inline-4 +2.6/+3.8/+4.1 dB (H1–H3), the tail −0.6/+2.7/−0.4 and
+  −9…−21 at H4–H6; LFA at 6800 (MAP 13 kPa) the ports −15.9 dB at H1 but each primary's exit −9…−14, the
+  collectors −5.5, the merge −2.8 (`ovr/chain-spike.patch`, per expansion site): the cold overrun gas's
+  acoustics gain ≈ 13 dB along the chain. Part throttle: the inline-4's tail H1 dips −19.8 dB at 701 mg/cycle
+  (where the cylinder at EVO meets the exhaust's pressure: no blowdown, no reverse rush). FV pipes exchange no
+  heat with their walls (hand NTU of an LFA primary at full load ≈ 0.2: −60 K, c −2…3 %; not built).
+- **Real pull vs decel at matched rpm (2026-11-25, `scratch-refs/ovr/decel.py`, dyno clips)**: S2000 (two
+  clips): 1–4 kHz −5…−10 dB above 5000 rpm on the decel, H1 −1…−17, dB(A) −2…−8; Civic K20 ≈ 0 (a coast-down?).
+  Five LFA dyno clips (`yt/lfa/`): −11…+7 dB(A), the decel often as loud as the pull (camera gain control,
+  rollers): no load contrast to fit. Full-load share of the A total: real I4 dyno H1 −9…−30, 1–4 kHz −3…−8 dB;
+  the LFA render H1 −1…−6 (the exterior recordings also hold H1 dominant). JP 2008-169751 A states no
+  microphone distance: Fig. 7A gives no absolute level.
