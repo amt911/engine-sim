@@ -631,3 +631,14 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   firing share at 7000 rpm (0.60 m) −7.3 → −7.0 / −6.3 dB for α 0.5 / 2, at 6500 −2.1 → −1.6: the dip is not a
   lossless junction's. At 0.60 m the third zero sits at ≈ 8800 rpm, not 7000; at 7500 the intake takes 4 dB off
   the exhaust's H1 at the ear (74.1 → 70.2) and at 6800 adds 3.3.
+- **The LFA's main muffler fit cannot carry the crescendo (2026-11-25, `scratch-refs/wabl/mfit`, user: fit the
+  muffler's ESTIMATE dimensions)**: a linear-waveguide transfer probe (`muffler_tf`, both banks driven alike)
+  applied as deltas to the FV exhaust-only harmonics predicts the FV ablations within 0–2 dB (long tip +0.10 m:
+  H1 +1.8 vs +2.1, H3 −2.7 vs −4.4; the closed path's 833 Hz notch shallower, +5.4 vs +15.3). One at a time, only
+  the tips' scale and the Y's 85 mm pipe move the result; the final chamber's length, the open path and the
+  closed path's pipes ±50 % move ≤ 0.6 dB. Best of tips ×(1–1.75) × Y pipe 0.1–0.5 m: Fig. 8 rms 10.5 dB (tips
+  ×1.5 of now, Y 0.30 m) from 14.5, with a new +10 dB peak at 6800 rpm. In every candidate the 5000 rpm peak
+  stays (82–84 dB(A), H3 at 1250 Hz): a 1200 Hz pass band of the primaries and collectors through the Y's filter
+  (linear sweep at 5000: 41.7 dB at 1200 Hz vs 21–35 around it; primaries 0.66 m move it to 1100–1150; collector
+  0.40 / 0.55 m to 1250 / 1300; without the merge flat 61–67). Not fitted: the gain on Fig. 8 is small and
+  unvalidated, and the crescendo's deficit is upstream of the muffler.
