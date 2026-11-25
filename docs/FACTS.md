@@ -607,3 +607,14 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   the 153 mm body's reflection against the source, not the monolith. The waveguide model shows the catalyst's
   insertion loss 9–14 dB at H3–H7; the FV path 10–31 dB (FV without catalyst carries more upper orders than the
   waveguide: steepening).
+- **The LFA's primaries refit with the crescendo (2026-11-25, tips 80 mm ×2, `scratch-refs/wabl/fit/grid_x2.py`,
+  held WOT, Reference, all sources at the ear)**: 0.60 / 0.70 / 0.80 / 0.90 m — ear J 113 / 149 / 81 / 79;
+  dB(A) slope 4500–9000 rpm +1.5 / +1.4 / +10.3 / +8.7 per octave, mean fall under the running maximum 5.8 / 8.4 /
+  4.7 / 3.4 (physgate: ≥ 3 and ≤ 2; every length is loud at 4500, 84–87 dB(A), and 11 dB down at 5500); dyno peak
+  529 / – / 533 / 529 hp; Fig. 8 rms at 4800 14.5 / – / 22.5 / 14.5 dB. The firing line's share of 100 Hz–4 kHz
+  at 5500 / 6000 / 6500 / 7000 / 7500 / 8000 (real exterior: −2.4…−3.0, flat): 0.60 m −1.6 / −0.9 / −2.1 / −7.3 /
+  −3.5 / −1.4; 0.80 m −4.8 / −10.2 / −10.9 / −26.6 / −8.6 / −1.3; 0.90 m −2.3 / −9.6 / −16.3 / −4.1 / −5.3 / −2.5:
+  the shut primaries' third zero walks through the band for every length in the range, so the recordings' steady
+  line keeps 0.60 m (Okamoto et al. 2011 call the manifold "long branch", length not given; its catalysts are
+  metal-substrate with fewer cells). No approved dimension fixes the crescendo without breaking the firing line.
+  The model's zero is −30 dB deep with lossless junctions; the real line shows none from 5500 to 8000.
