@@ -618,3 +618,16 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   line keeps 0.60 m (Okamoto et al. 2011 call the manifold "long branch", length not given; its catalysts are
   metal-substrate with fewer cells). No approved dimension fixes the crescendo without breaking the firing line.
   The model's zero is −30 dB deep with lossless junctions; the real line shows none from 5500 to 8000.
+- **Gates of the warm-hold build (`pw`, 2026-11-25, all presets, base `b2` = main)**: physgate PASS inline4,
+  K20A, K20A-tuned, EJ25; FAIL LFA (crescendo +0.6 / deficit 5.2, load −1.1), K20C1 (load +2.1, lift-off +0.1),
+  V8 flat-plane (crescendo −0.3, load +2.0), V8 cross-plane (load +0.7), single (load +1.3, lift-off +0.6), Renesis
+  (crescendo −3.5), 13B bridgeport and both VW diesels (load; these fail on main too). Main passes the LFA, K20C1,
+  both V8s and Renesis. The held part-load renders' 1.5 s pull before them moves the load spans ≤ 0.3 dB on the
+  other presets. regress vs main: FAIL LFA lowmid −21.1 → −16.9, single −15.5 → −13.8, EJ25 wind −20.8 → −17.8,
+  VW TDI lowmid −16.6 → −9.6; blind2 LFA hnr 11.5 > 9.5 + 1 at bin 2.
+- **Junction loss does not fill the LFA's firing-line dip (2026-11-25, spike, reverted)**: a linear resistance
+  α·ρ·|U_collector|·(A_primary/A_collector) at each primary's mouth on the constant-pressure junction (the
+  grazing flow's damping of a side branch; Bassett et al. 2001 give joining-flow losses of this order) moves the
+  firing share at 7000 rpm (0.60 m) −7.3 → −7.0 / −6.3 dB for α 0.5 / 2, at 6500 −2.1 → −1.6: the dip is not a
+  lossless junction's. At 0.60 m the third zero sits at ≈ 8800 rpm, not 7000; at 7500 the intake takes 4 dB off
+  the exhaust's H1 at the ear (74.1 → 70.2) and at 6800 adds 3.3.
