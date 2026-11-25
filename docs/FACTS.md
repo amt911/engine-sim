@@ -575,3 +575,13 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   +4.6 (+4.3), lift +6.8 (+1.9), peak +14.7 (+16.5); physgate crescendo +0.6 (−3.7), load −1.1 (+0.7); spectral
   low-mid −16.9 (bound −18.4), treble −26.7 PASS; blind2 hnr over at bins 2–4 and echo 22.3 > 19.8 at bin 3 (the
   long tip's 1.2 ms against the short pair, physgate's comb ripple 1.7 → 3.8 dB p-p, still a PASS).
+- **The LFA's load contrast across speed, and the held overrun's cold pipes (2026-11-25, `scratch-refs/ovr/load`,
+  `abs_probe` with THR / WARM, all sources, 3 m)**: full over closed throttle +9.7 / +9.4 / +4.6 / +2.8 / −1.2 /
+  −2.7 / −3.8 / +2.3 / +0.3 dB(A) at 5000 / 5500 / 6000 / 6500 / 6800 / 7000 / 7500 / 8000 / 8500 rpm. Full load
+  falls from 86.4 dB(A) at 5000 to 78.4 at 7500 (the tone's hole, the crescendo's failure too) while overrun
+  rises 72 → 82. Overrun at 7500 is no synthesized source (each off: ±0.1 dB(A)) and no firing (motored peaks
+  298–305 kPa, ±2 % between cylinders): the exhaust's own lines at cycle orders 4 / 12 / 20 / 19 / 11 (79.3 /
+  77.3 / 74.5 / 74.0 / 72.8 dB) over the firing order (68.4): each cylinder's reverse rush follows the waves at
+  its port, so the cylinders differ. A held closed-throttle render settles its pipes on overrun's own cold
+  steady state; after 1.5 s at full load (a real decel follows a pull) the span reads +3.2 / +2.3 / −0.7 / +1.0
+  at 6000 / 6800 / 7500 / 8000 (cold-settled +4.6 / −1.2 / −3.8 / +2.3).
