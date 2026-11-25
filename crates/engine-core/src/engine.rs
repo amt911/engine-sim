@@ -1082,12 +1082,12 @@ impl EngineDef {
                         length_m: 0.15625,
                         diameter_m: 0.085,
                     }],
-                    // three tips of 70 mm bore inside the 105 mm trims: their area as one. The
-                    // bore is unpublished: fitted (user, 2026-11-25) within 55–80 mm to the
-                    // exterior recordings' wind at 5500–6000 rpm, where the firing line is
-                    // sound (−26.8 / −21.7 dB against −19…−25; 60 mm −18.4 / −11.7, 80 mm
-                    // −31.0 / −27.3: the jet goes as d^−13 at a given flow; FACTS)
-                    outlet_diameter_m: 0.070 * 3f64.sqrt(),
+                    // three tips of 80 mm bore inside the 105 mm trims: their area as one. The
+                    // bore and the tips' lengths are unpublished: fitted (user, 2026-11-25)
+                    // within 55–80 mm and a scale of Fig. 1's lengths, to the exterior
+                    // recordings' wind (the jet goes as d^−13 at a given flow) and the patent's
+                    // measured Fig. 8 (FACTS 2026-11-25); the bore sits at the range's top
+                    outlet_diameter_m: 0.080 * 3f64.sqrt(),
                     bypass: Some(crate::exhaust::Bypass {
                         closed: vec![
                             // inlet chamber (28)
@@ -1147,29 +1147,31 @@ impl EngineDef {
                                 [1000.0, 19.0],
                             ],
                         }],
-                        // L₁ = 0.08 m above, L₂ = 0.23 m below (Fig. 1's proportion, ≈ 2.9·L₁;
-                        // the claim: L₂ ≥ 2·L₁), 70 mm bores (above); the lower one packed along its
+                        // Fig. 1's proportion (L₂ ≈ 2.9·L₁ outside the chamber; the claim: L₂ ≥ 2·L₁)
+                        // at twice the scale first read off it (fitted, above: the long tip has to
+                        // cut the 1st order at ≈ 4800 rpm against the short pair and keep the 2nd,
+                        // Fig. 8), 80 mm bores (above); the lower one packed along its
                         // part inside the final chamber (56, 58: about half of it in Fig. 1)
                         outlets: vec![
                             vec![Segment::Pipe {
-                                length_m: 0.13,
-                                diameter_m: 0.070,
+                                length_m: 0.26,
+                                diameter_m: 0.080,
                             }],
                             vec![Segment::Pipe {
-                                length_m: 0.13,
-                                diameter_m: 0.070,
+                                length_m: 0.26,
+                                diameter_m: 0.080,
                             }],
                             vec![
                                 Segment::Muffler {
-                                    length_m: 0.12,
+                                    length_m: 0.24,
                                     diameter_m: 0.10,
-                                    tube_diameter_m: 0.070,
+                                    tube_diameter_m: 0.080,
                                     packing_resistivity: 16_000.0,
                                     packing_porosity: 0.95,
                                 },
                                 Segment::Pipe {
-                                    length_m: 0.225,
-                                    diameter_m: 0.070,
+                                    length_m: 0.45,
+                                    diameter_m: 0.080,
                                 },
                             ],
                         ],
@@ -9794,7 +9796,7 @@ mod tests {
 
     #[test]
     fn a_merged_exhaust_blows_one_jet_through_its_outlets() {
-        // The LFA's banks join before the rear muffler and leave through its three 70 mm tips
+        // The LFA's banks join before the rear muffler and leave through its three 80 mm tips
         // together (JP 2008-169751 A, Figs. 1–5): one jet of the tips' summed area carries both
         // banks' flow. Continuity, u = ṁ/(ρA) in the gas leaving the tail (the pipes' heat
         // balance, ρ = p_a/(RT)), gives its speed from the whole engine's exhaust flow, and SAE
@@ -9822,9 +9824,9 @@ mod tests {
         let (loud, e) = run_at(1.0);
         let (_, jets) = mean_rms_of_difference(&loud, &quiet);
         let heard = 20.0 * (jets / 20e-6).log10();
-        // three 70 mm tips: 11 545 mm², the bore of one jet of that area 121.2 mm
-        let area = 3.0 * std::f64::consts::PI * 0.25 * 0.070 * 0.070;
-        let bore = 0.070 * 3f64.sqrt();
+        // three 80 mm tips: 15 080 mm², the bore of one jet of that area 138.6 mm
+        let area = 3.0 * std::f64::consts::PI * 0.25 * 0.080 * 0.080;
+        let bore = 0.080 * 3f64.sqrt();
         let t_k = e.tail_k.iter().sum::<f64>() / e.tail_k.len() as f64;
         let rho = crate::units::ATM_PA / (crate::gas::R_AIR * t_k);
         let u = e.tail_mean_flow.iter().sum::<f64>() / (rho * area);
@@ -9844,10 +9846,10 @@ mod tests {
 
     #[test]
     fn the_lfas_tips_blow_jets_of_their_own_bore() {
-        // Three 70 mm tips are three jets of 70 mm at the shared speed, not one of their summed
-        // area (121.2 mm): the same power (∝ area, SAE ARP876), its spectrum peaking at
-        // St·u/d (St 0.2) of a 70 mm jet, √3 higher. The jets' sound (with less without) holds
-        // more around the 70 mm jet's peak than around the 121.2 mm one's.
+        // Three 80 mm tips are three jets of 80 mm at the shared speed, not one of their summed
+        // area (138.6 mm): the same power (∝ area, SAE ARP876), its spectrum peaking at
+        // St·u/d (St 0.2) of an 80 mm jet, √3 higher. The jets' sound (with less without) holds
+        // more around the 80 mm jet's peak than around the 138.6 mm one's.
         let rpm = 6000.0;
         let run_at = |k: f64| {
             let mut d = EngineDef::lfa_v10();
@@ -9885,7 +9887,7 @@ mod tests {
             sum
         };
         let u = e.tail_u_mean[0];
-        let (tip, summed) = (0.2 * u / 0.070, 0.2 * u / 0.121_244);
+        let (tip, summed) = (0.2 * u / 0.080, 0.2 * u / 0.138_564);
         let (at_tip, at_summed) = (around(tip), around(summed));
         assert!(
             at_tip > at_summed,

@@ -2643,7 +2643,7 @@ mod tests {
     fn the_lfa_sites_by_hand() {
         // presets/lfa-v10.yaml: banks 1–5 and 6–10, primaries 42 mm into 65 mm collectors
         // (2.4×), each into a 153.4 mm catalyst, its 70 mm pipe into the shared 85 mm duct
-        // ((85/70)² = 1.47 < 1.5: no expansion site), one merged exit of 121.2 mm (three 70 mm tips: 0.07·√3). The bypass
+        // ((85/70)² = 1.47 < 1.5: no expansion site), one merged exit of 138.6 mm (three 80 mm tips: 0.08·√3). The bypass
         // silencer's chambers are not sites (this plan's ruling).
         let ex = crate::engine::EngineDef::lfa_v10().exhaust;
         let got = expansion_sites(&ex, 10);
@@ -2662,7 +2662,7 @@ mod tests {
         let exits: Vec<_> = got.iter().filter(|s| s.at == SiteAt::Exit).collect();
         assert_eq!(exits.len(), 1);
         assert_eq!(exits[0].branch, None);
-        assert!((exits[0].d_jet - 0.121_243_556_529_821_41).abs() < 1e-12);
+        assert!((exits[0].d_jet - 0.138_564_064_605_510_18).abs() < 1e-12);
         // the second bank's collector sites carry cylinders 6–10 (indices 5–9)
         assert_eq!(got[6].at, SiteAt::Collector { primary: 5 });
         assert_eq!(got[6].branch, Some(1));
@@ -3558,7 +3558,7 @@ mod tests {
     #[test]
     fn each_outlet_blows_a_jet_of_its_own_bore() {
         // two 50 mm outlets: two 50 mm jets; the LFA's three tips (JP 2008-169751 A, Figs. 1–5;
-        // their 70 mm bore fitted, FACTS 2026-11-25): three of 70 mm; one plain tail: one jet of
+        // their 80 mm bore fitted, FACTS 2026-11-25): three of 80 mm; one plain tail: one jet of
         // its bore
         let mut two = ExhaustDef {
             tail_outlets: 2,
@@ -3570,7 +3570,7 @@ mod tests {
         assert!((d - 0.050).abs() < 1e-9, "{d}");
         let (n, d) = crate::engine::EngineDef::lfa_v10().exhaust.jets();
         assert_eq!(n, 3);
-        assert!((d - 0.070).abs() < 1e-9, "{d}");
+        assert!((d - 0.080).abs() < 1e-9, "{d}");
         let mut one = ExhaustDef::default();
         one.after_collector.clear();
         assert_eq!(one.jets(), (1, 0.05));

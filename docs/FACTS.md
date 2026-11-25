@@ -564,3 +564,14 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   against the pair at 400 Hz and with it at 800 Hz, a path difference ≈ c/(2·400 Hz) ≈ 0.7 m at 780 K, where the
   model has 0.215 m (tip lengths 0.13 / 0.345 m from Fig. 1's proportions, L₂ ≈ 2.9·L₁, scaled to tips first taken
   as 60 mm: an ESTIMATE).
+- **The LFA's tips' lengths fitted (2026-11-25, user: scale of Fig. 1's lengths)**: exhaust alone at 4800 rpm,
+  firing H2 / H4 / H5 re H1 against Fig. 8's measured +4 / +8 / +1, by scale of the tips' lengths (0.13 / 0.12 wool +
+  0.225 m at ×1): ×1 −20.7 / −21.2 / −23.4 (rms 26), ×1.5 rms 19.4, ×1.75 +0.3 / −9.9 / −10.6 (12.5), ×2 −3.2 /
+  −11.3 / −13.0 (14.4), ×2.25 15.6, ×2.5 14.4, ×3 17.3, ×4 22; the 1st order falls 11–14 dB at ×1.75–2 (the long tip
+  against the short pair at 400 Hz). Held ear J (wind ≤ −22.4, bank ≥ +13.4, 5500–8500 rpm) at 70 mm: ×1 142, ×1.5
+  135, ×1.75 162, ×2 116, ×2.5 130, ×3 126; at ×2 the bore again: 65 mm 153, 70 116, 76 119, 80 113 (5500 / 6000
+  wind −22.3 / −19.2, inside the real −19…−25). Taken: ×2 (short tips 0.26 m, long 0.24 wool + 0.45 m), 80 mm (the
+  range's top). Dyno 529 hp at 8000 (527 before). Gates (`s2`, LFA, against `t70`): ear wind −10.2 (−5.9), bank
+  +4.6 (+4.3), lift +6.8 (+1.9), peak +14.7 (+16.5); physgate crescendo +0.6 (−3.7), load −1.1 (+0.7); spectral
+  low-mid −16.9 (bound −18.4), treble −26.7 PASS; blind2 hnr over at bins 2–4 and echo 22.3 > 19.8 at bin 3 (the
+  long tip's 1.2 ms against the short pair, physgate's comb ripple 1.7 → 3.8 dB p-p, still a PASS).
