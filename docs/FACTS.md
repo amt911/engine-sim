@@ -662,3 +662,12 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   being Lalor et al.'s overall curve against speed — load-blind by design (Raff & Perry 1973: a motored engine as
   loud as two fired ones at 4000 rpm). With the ear by the tails the engine's mechanical noise stands against an
   exhaust whose floor would follow the load.
+- **A real decel's drop depends on the exhaust (2026-11-25, `scratch-refs/ovr/real/decel.py`, exhaust microphones,
+  rpm-rising vs rpm-falling frames at matched f0)**: Suzuki DRZ-400 single (Pole Position, gearshifts) +1.7 /
+  +4.4 dB(A) at ≈ 7400 / 8500 rpm, lines H1..H4 within ±6, floor 4 kHz +5.5; Dodge Viper GTS V10 race engine (ramps)
+  −0.1 / +1.1 / +0.5 dB(A) at ≈ 1000 / 1900 / 2800, lines and floor within ±9 (mostly ±3); Nissan R33 I6 turbo road
+  car (ramps) +4.2 / +13.9 / +10.6 / +12.7 at ≈ 800 / 1700 / 2600 / 3500, H1 +1…+6, H2..H4 +7…+20, floor 250 Hz /
+  1 kHz / 4 kHz +8…+11 / +9…+14 / +9…+19; the Pantera's road V8 +10.9 (above). Open exhausts barely drop; muffled
+  road cars drop 10–14 dB(A), mostly their harmonics above the first and their high floor. physgate's load bound
+  (≥ 3 dB(A), "real exhaust microphones −3.6 to −20.5") is not met by the single and the race V10. The model's
+  single (+1.3) and LFA (−1.1) sit with the open exhausts; the LFA, the K20C1 and the V8s are muffled road cars.
