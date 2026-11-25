@@ -9,7 +9,9 @@ and each failure says what the listener hears and which physics to look at.
              a test bed reads ~+9 dB unweighted from 3000 to 6000 rpm (Davies & Holland, JSV 223(3),
              1999, Fig. 1c).
   load       at ~0.75 x redline, full throttle must stand >= 3 dB(A) over a closed throttle (real
-             exhaust microphones: decelerating -3.6 to -20.5 dB(A) under the pull).
+             exhaust microphones: decelerating -3.6 to -20.5 dB(A) under the pull), for a silenced
+             exhaust only: open ones drop 0-4 dB(A) for real (a single, a race V10) and are not
+             judged (`silenced`, from the render folder's engine.yaml).
   lift-off   the drive scene: lifting must be >= 3 dB(A) quieter than the pull at the limiter, and
              no 0.1 s burst louder than the pull by more than 1 dB(A).
   comb       peak-to-peak ripple of the broadband floor (the engine's lines removed) <= 12 dB:
@@ -48,6 +50,47 @@ LIFT_MAX = -3.0
 BURST_MAX = 1.0
 COMB_MAX = 12.0
 LOADS = [0.0, 0.15, 0.4, 0.7, 1.0]
+# Exhaust path segments that silence: an exhaust without one is open, and real open exhausts do
+# not drop on a lift (exhaust microphones, accel vs decel at matched speed: Suzuki DRZ-400 single
+# +1.7…+4.4, Dodge Viper race V10 −0.1…+1.1 dB(A); silenced road cars R33 +10.6…+13.9, Pantera
+# +10.9; docs/FACTS.md 2026-11-25), so the load bound holds for silenced exhausts only (user,
+# 2026-11-25).
+SILENCER_KINDS = ("muffler", "measured", "resonator")
+
+
+def silenced(d):
+    """Whether the engine file in render folder d (engine.yaml, as `run` saves it) has a silenced
+    exhaust: a silencer kind on its designed path or in its merge, or — with no designed path —
+    the older fields' muffler volume. No file: silenced (the strict side)."""
+    p = os.path.join(d, "engine.yaml")
+    if not os.path.exists(p):
+        return True
+    lines = open(p).read().splitlines()
+    try:
+        start = next(i for i, s in enumerate(lines) if s.strip() == "exhaust:")
+    except StopIteration:
+        return True
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    block = []
+    for s in lines[start + 1:]:
+        if s.strip() and len(s) - len(s.lstrip()) <= indent:
+            break
+        block.append(s)
+    text = "\n".join(block)
+    kinds = re.findall(r"kind:\s*(\w+)", text)
+    if any(k in SILENCER_KINDS for k in kinds):
+        return True
+    path = re.search(r"after_collector:\s*(\[\])?\s*$", text, re.M)
+    if path and not path.group(1) and kinds:
+        return False
+    vol = re.search(r"muffler_volume_m3:\s*([0-9.eE+-]+)", text)
+    return bool(vol and float(vol.group(1)) > 0.0)
+
+
+def load_ok(span, silenced):
+    """The load check: a silenced exhaust's full throttle stands LOAD_MIN_SPAN over the closed one;
+    an open exhaust is not held to it."""
+    return span >= LOAD_MIN_SPAN or not silenced
 
 
 def load_wav(path):
@@ -139,12 +182,14 @@ def judge(d, redline):
     for p in glob.glob(os.path.join(d, "held_*_*_*.wav")):
         m = re.search(r"held_(\d+)_([0-9.]+)_", p)
         ladder.setdefault(int(m.group(1)), {})[float(m.group(2))] = p
+    shut = silenced(d)
     for rpm, by in sorted(ladder.items()):
         if len(by) < 3 or min(by) > 0.01 or max(by) < 0.99:
             continue
         lv = {l: dba(load_wav(p)[FS:] * FULL_SCALE_PA) for l, p in by.items()}
         span = lv[max(lv)] - lv[min(lv)]
-        out.append(("load", f"{rpm} rpm: full over closed throttle {span:+.1f} dB(A)", span >= LOAD_MIN_SPAN,
+        note = "" if shut else " (open exhaust: not judged)"
+        out.append(("load", f"{rpm} rpm: full over closed throttle {span:+.1f} dB(A){note}", load_ok(span, shut),
                     "the sound does not follow the load: overrun sources too loud (reverse flow at the valves, "
                     "pipes ringing with no mean flow to damp them) or the fired cycle too quiet"))
     dr = os.path.join(d, "drive.wav")
@@ -227,6 +272,28 @@ def selftest():
     combed, q = comb_floor(x[k:] + 0.9 * x[:-k])
     assert flat < COMB_MAX < combed, (flat, combed)
     assert abs(q - 0.82) < 0.05, q
+    # load: only a silenced exhaust must drop; an open one is not judged (real open exhausts drop
+    # 0-4 dB(A)); the engine file in the render folder says which
+    import tempfile
+    head = "engine:\n  name: x\n  exhaust:\n    primary_length_m: 0.5\n"
+    tail = "    muffler_volume_m3: 0.006\n  sound:\n    intake: 1.0\n"
+    files = {
+        "open path": head + "    after_collector:\n    - kind: pipe\n      length_m: 1.3\n" + tail,
+        "silenced path": head + "    after_collector:\n    - kind: pipe\n      length_m: 0.5\n"
+                         "    - kind: muffler\n      length_m: 0.3\n" + tail,
+        "old fields": head + "    after_collector: []\n" + tail,
+        "merge": head + "    after_collector:\n    - kind: catalyst\n      length_m: 0.1\n    merge:\n"
+                 "      bypass:\n        closed:\n        - kind: muffler\n          length_m: 0.2\n" + tail,
+    }
+    files["old fields, no silencer"] = files["old fields"].replace("muffler_volume_m3: 0.006", "muffler_volume_m3: 0.0")
+    want = {"open path": False, "silenced path": True, "old fields": True, "merge": True,
+            "old fields, no silencer": False}
+    with tempfile.TemporaryDirectory() as tmp:
+        assert silenced(tmp), "no engine file: judged as silenced"
+        for name, text in files.items():
+            open(os.path.join(tmp, "engine.yaml"), "w").write(text)
+            assert silenced(tmp) == want[name], name
+    assert load_ok(2.0, silenced=False) and not load_ok(2.0, silenced=True) and load_ok(3.0, silenced=True)
     print(f"selftest ok: A(1k) {g(1000.0):+.2f}, A(100) {g(100.0):+.1f} dB; comb flat {flat:.1f}, "
           f"combed {combed:.1f} dB at {q:.2f} ms")
     return 0
