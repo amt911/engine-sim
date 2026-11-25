@@ -642,3 +642,14 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   (linear sweep at 5000: 41.7 dB at 1200 Hz vs 21–35 around it; primaries 0.66 m move it to 1100–1150; collector
   0.40 / 0.55 m to 1250 / 1300; without the merge flat 61–67). Not fitted: the gain on Fig. 8 is small and
   unvalidated, and the crescendo's deficit is upstream of the muffler.
+- **What a real decel drops, and what ours does (2026-11-25, `scratch-refs/ovr/real/decel.py`)**: the Pantera's
+  BMW Alpina V8 on its exhaust microphone (Sonniss GDC 2017, `exhaust_close`, f0 tracked, accel vs decel frames at
+  ≈ 2000 rpm): A-weighted +10.9 dB; tracked lines H1..H4 +2.0 / +10.0 / +2.6 / +17.2; the floor between lines at
+  250 Hz / 1 kHz / 4 kHz +3.4 / +7.7 / +11.4 (the fundamental holds, the harmonics and the high floor go). An
+  Aprilia V-twin's dyno free revs show ±2 dB (no load on either side: not a load contrast). Ours, held full over
+  closed at physgate's mid speed, firing lines H1..H4 | floor: single (5600) +12.4 / +13.0 / +3.7 / −2.5 | +2.1 /
+  +0.1 / +0.2; K20C1 (5200) −0.8 / +2.6 / +5.1 / +25.1 | +15.2 / +12.0 / +21.6; V8 cross-plane (5000) +9.3 / +21.8
+  / +24.6 / +23.0 | +17.9 / +12.0 / +22.5 (load +0.7 dB(A) all the same: the overrun's non-firing cycle orders
+  carry it, as on the LFA); LFA (6800) +4.9 / +4.1 / +2.5 / −9.8 | +10.2 / +6.8 / +10.9. The single's floor does
+  not follow the load; the K20C1's full-load A-weighted total is its 173 Hz firing line (125 Hz octave), which
+  holds on overrun as the Pantera's fundamental does.
