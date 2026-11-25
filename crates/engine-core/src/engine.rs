@@ -1739,8 +1739,10 @@ impl Burn {
 /// T = c²/(γR).
 const TAIL_T_K: f64 =
     crate::exhaust::C_TAIL * crate::exhaust::C_TAIL / (crate::gas::GAMMA * crate::gas::R_AIR);
-/// Speed of a sonic (choked) exit from gas at [`TAIL_T_K`]: c* = c·√(2/(γ+1)), m/s.
-const TAIL_SONIC: f64 = crate::exhaust::C_TAIL * 0.912_870_929_175_276_9;
+/// Speed of a sonic (choked) exit from gas at `t_k` K: c* = c·√(2/(γ+1)), m/s.
+fn tail_sonic(t_k: f64) -> f64 {
+    (crate::gas::GAMMA * crate::gas::R_AIR * t_k).sqrt() * 0.912_870_929_175_276_9
+}
 
 /// The way out after the collector, quasi-steady at the mean exhaust flow `m` (kg/s):
 /// (backpressure, Pa; exit velocity, m/s). The open end is an orifice of the outlet's bore into
@@ -1749,7 +1751,7 @@ const TAIL_SONIC: f64 = crate::exhaust::C_TAIL * 0.912_870_929_175_276_9;
 /// pressure behind it climbs), plus the pipes' wall friction (Darcy) and the catalysts'
 /// laminar resistance ([`crate::exhaust::ExitLosses`]). The jet leaves at the isentropic speed
 /// of that expansion, at most sonic.
-fn tail_exit(m: f64, losses: &crate::exhaust::ExitLosses) -> (f64, f64) {
+fn tail_exit(m: f64, losses: &crate::exhaust::ExitLosses, t_k: f64) -> (f64, f64) {
     if m <= 0.0 {
         return (0.0, 0.0);
     }
@@ -1760,21 +1762,21 @@ fn tail_exit(m: f64, losses: &crate::exhaust::ExitLosses) -> (f64, f64) {
     // ṁ = A·p₀/√(RT)·Γ. Subsonic, with x = (p_a/p₀)^((γ−1)/γ) and n = 2γ/(γ−1):
     // ṁ·√(RT)/(A·p_a) = K = √(n(1 − x))/x, so K²x² + n·x − n = 0 and x = 2n/(n + √(n² + 4nK²))
     // (the root in (0, 1], written without the cancellation at small K).
-    let rt = (R_AIR * TAIL_T_K).sqrt();
+    let rt = (R_AIR * t_k).sqrt();
     let choked = m * rt / (a * CHOKED_FLOW_FACTOR);
     // The jet leaves at √(2c_pT(1 − x)): sonic (c*) when choked.
     let (p0, u) = if atm / choked <= CRITICAL_PRESSURE_RATIO {
-        (choked, TAIL_SONIC)
+        (choked, tail_sonic(t_k))
     } else {
         let n = 2.0 * GAMMA / (GAMMA - 1.0);
         let k = m * rt / (a * atm);
         let x = 2.0 * n / (n + (n * n + 4.0 * n * k * k).sqrt());
         (
             atm / x.powf(GAMMA / (GAMMA - 1.0)),
-            (2.0 * crate::gas::CP * TAIL_T_K * (1.0 - x)).sqrt(),
+            (2.0 * crate::gas::CP * t_k * (1.0 - x)).sqrt(),
         )
     };
-    let rho = p0 / (crate::gas::R_AIR * TAIL_T_K);
+    let rho = p0 / (crate::gas::R_AIR * t_k);
     let friction = losses.friction * m * m / (2.0 * rho);
     let laminar = losses.laminar * m / rho;
     (p0 - atm + friction + laminar, u)
@@ -2417,6 +2419,9 @@ pub struct Engine {
     /// (kg/s), the waveguide signal's own average, and the exit velocity (m/s) the jets see.
     tail_groups: Vec<Vec<usize>>,
     tail_mean_flow: Vec<f64>,
+    /// The gas leaving each tail, K: the pipes' heat balance with `exhaust.gas_temperature`
+    /// ([`crate::exhaust::ExhaustNet::tail_gas_k`]), else the tail's reference gas.
+    tail_k: Vec<f64>,
     tail_dc: Vec<f64>,
     tail_u: Vec<f64>,
     /// Each tail's mean exit velocity this step (mass continuity), m/s.
@@ -2455,6 +2460,12 @@ pub struct Engine {
     cyl_mean_outflow: Vec<f64>,
     cyl_mean_enthalpy_flow: Vec<f64>,
     cyl_port_k: Vec<f64>,
+    /// Every port has let gas out since the start and the cycle means have run three cycles
+    /// (95 % of the way from zero): `cyl_port_k` and the mean flows are the engine's, not the
+    /// state they start from, and the exhaust's walls may settle on them.
+    port_k_ready: bool,
+    /// Engine cycles the cycle means have run, up to three ([`Engine::port_k_ready`]).
+    mean_cycles: f64,
     /// Steps since the pipes' friction last followed the mean flows.
     friction_age: usize,
     flows: Vec<f64>,
@@ -2701,6 +2712,7 @@ impl Engine {
             tail_dc: Vec::new(),
             tail_u: Vec::new(),
             tail_u_mean: Vec::new(),
+            tail_k: Vec::new(),
             mic: crate::sound::MicLowCut::default(),
             tails_buf: Vec::new(),
             remote: RemoteSlot(None),
@@ -2719,6 +2731,8 @@ impl Engine {
             cyl_mean_outflow: Vec::new(),
             cyl_mean_enthalpy_flow: Vec::new(),
             cyl_port_k: Vec::new(),
+            port_k_ready: false,
+            mean_cycles: 0.0,
             friction_age: 0,
             flows: Vec::new(),
             reversion_kg: 0.0,
@@ -3715,7 +3729,20 @@ impl Engine {
                 fv.set_turbine_resistance(turbine_dp_dm);
                 fv.step();
                 if let Some(j) = &mut self.jet_net {
-                    j.prepare(&self.tail_mach, None);
+                    // with the gas temperature the jet net walks the pipes' heat on the cycle
+                    // means, as the waveguide net does: the gas the tails' jets leave at
+                    let heat = self.def.exhaust.gas_temperature && self.friction_age == 0;
+                    if heat && self.port_k_ready {
+                        j.set_port_temperature(&self.cyl_port_k);
+                    }
+                    let mean = heat.then_some(crate::exhaust::NetMeans {
+                        cylinders: &self.cyl_mean_flow,
+                        branches: &self.tail_mean_flow,
+                        rpm,
+                        upstream_pa,
+                        turbine_dp_dm,
+                    });
+                    j.prepare(&self.tail_mach, mean);
                     // the duct flow noise rides the jet net on the FV gas's own flow
                     fv.site_flows(&mut self.site_flows);
                     j.set_site_flows(&self.site_flows);
@@ -3737,7 +3764,7 @@ impl Engine {
                     upstream_pa,
                     turbine_dp_dm,
                 });
-                if due {
+                if due && self.port_k_ready {
                     net.set_port_temperature(&self.cyl_port_k);
                 }
                 net.prepare(&self.tail_mach, mean);
@@ -3958,6 +3985,7 @@ impl Engine {
             self.tail_dc = vec![0.0; n_tails];
             self.tail_u = vec![0.0; n_tails];
             self.tail_u_mean = vec![0.0; n_tails];
+            self.tail_k = vec![TAIL_T_K; n_tails];
             self.tail_backpressure = vec![0.0; n_tails];
             self.exit_losses = Some(self.def.exhaust.exit_losses());
             self.tail_mach = vec![0.0; n_tails];
@@ -3989,6 +4017,18 @@ impl Engine {
                             (*h / (m * crate::gas::CP)).clamp(crate::pipe_heat::AMBIENT_K, 2500.0);
                     }
                 }
+                self.mean_cycles = (self.mean_cycles + k).min(3.0);
+                self.port_k_ready |=
+                    self.mean_cycles >= 3.0 && self.cyl_mean_outflow.iter().all(|&m| m > 1e-6);
+            }
+            if self.def.exhaust.gas_temperature
+                && let Some(n) = self.net.as_ref().or(self.jet_net.as_ref())
+            {
+                for (t, k) in self.tail_k.iter_mut().enumerate() {
+                    if let Some(g) = n.tail_gas_k(t) {
+                        *k = g;
+                    }
+                }
             }
             for t in 0..n_tails {
                 let m: f64 = self.tail_groups[t]
@@ -3999,7 +4039,7 @@ impl Engine {
                 let losses = self
                     .exit_losses
                     .get_or_insert_with(|| self.def.exhaust.exit_losses());
-                let (back, u_mean) = tail_exit(self.tail_mean_flow[t], losses);
+                let (back, u_mean) = tail_exit(self.tail_mean_flow[t], losses, self.tail_k[t]);
                 self.tail_backpressure[t] = back;
                 self.tail_mach[t] = u_mean / crate::exhaust::C_TAIL;
                 self.tail_u_mean[t] = u_mean;
@@ -4013,7 +4053,9 @@ impl Engine {
                     friction: 0.0,
                     laminar: 0.0,
                 };
-                let (_, u) = tail_exit(self.tail_mean_flow.iter().sum(), &outlets);
+                // one gas leaves them all: the tails' mean
+                let t_k = self.tail_k.iter().sum::<f64>() / self.tail_k.len().max(1) as f64;
+                let (_, u) = tail_exit(self.tail_mean_flow.iter().sum(), &outlets, t_k);
                 self.tail_u_mean.iter_mut().for_each(|v| *v = u);
             }
         }
@@ -4369,17 +4411,28 @@ impl Engine {
             self.tail_dc[t] += (signal - self.tail_dc[t]) * k;
             // the swing rides on the mean; no exit blows past sound (it chokes first)
             let swing = tail_swing_velocity(signal - self.tail_dc[t], z, outlets);
-            self.tail_u[t] = (u_mean[t] + swing).min(TAIL_SONIC);
+            let t_k = self.tail_k.get(t).copied().unwrap_or(TAIL_T_K);
+            self.tail_u[t] = (u_mean[t] + swing).min(tail_sonic(t_k));
         }
         let mut jets = 0.0;
         let snd = &self.def.sound;
         if snd.flow_noise > 0.0
             && let Some((_, l)) = &self.listener
         {
-            let rho = crate::exhaust::tail_reference_density();
-            let d = self.def.exhaust.jet_diameter();
-            for ((jet, u), r) in self.jets.iter_mut().zip(&self.tail_u).zip(l.distances()) {
-                jets += jet.step(*u, d, rho, *r, dt);
+            // each outlet's own jet, all at the tail's speed
+            let (n, d) = self.def.exhaust.jets();
+            let outlets = f64::from(n).sqrt();
+            for (t, ((jet, u), r)) in self
+                .jets
+                .iter_mut()
+                .zip(&self.tail_u)
+                .zip(l.distances())
+                .enumerate()
+            {
+                // the jet's gas: the tail's, at the atmosphere's pressure
+                let t_k = self.tail_k.get(t).copied().unwrap_or(TAIL_T_K);
+                let rho = crate::units::ATM_PA / (crate::gas::R_AIR * t_k);
+                jets += outlets * jet.step(*u, d, rho, *r, dt);
             }
             // a merged exhaust's one jet, its power shared by the tails' sources
             let share = match self.def.exhaust.merge {
@@ -9739,10 +9792,11 @@ mod tests {
     fn a_merged_exhaust_blows_one_jet_through_its_outlets() {
         // The LFA's banks join before the rear muffler and leave through its three 60 mm tips
         // together (JP 2008-169751 A, Figs. 1–5): one jet of the tips' summed area carries both
-        // banks' flow. Continuity, u = ṁ/(ρA) in the tail's reference gas, gives its speed from
-        // the whole engine's exhaust flow, and SAE ARP876 (Stone) its level from that speed and
-        // area; the listener's tail sources share its power. A jet of the whole area on each
-        // bank, at one bank's flow through its own 70 mm pipe, was 6 dB louder (2026-11-24).
+        // banks' flow. Continuity, u = ṁ/(ρA) in the gas leaving the tail (the pipes' heat
+        // balance, ρ = p_a/(RT)), gives its speed from the whole engine's exhaust flow, and SAE
+        // ARP876 (Stone) its level from that speed, area and density; the listener's tail sources
+        // share its power. A jet of the whole area on each bank, at one bank's flow through its
+        // own 70 mm pipe, was 6 dB louder (2026-11-24).
         let rpm = 6000.0;
         let run_at = |k: f64| {
             let mut d = EngineDef::lfa_v10();
@@ -9767,7 +9821,8 @@ mod tests {
         // three 60 mm tips: 8482 mm², the bore of one jet of that area 103.9 mm
         let area = 3.0 * std::f64::consts::PI * 0.25 * 0.060 * 0.060;
         let bore = 0.060 * 3f64.sqrt();
-        let rho = crate::exhaust::tail_reference_density();
+        let t_k = e.tail_k.iter().sum::<f64>() / e.tail_k.len() as f64;
+        let rho = crate::units::ATM_PA / (crate::gas::R_AIR * t_k);
         let u = e.tail_mean_flow.iter().sum::<f64>() / (rho * area);
         let distances = e.listener.as_ref().map(|(_, l)| l.distances().to_vec());
         let distances = distances.expect("a listener");
@@ -9779,7 +9834,60 @@ mod tests {
         let expected = 10.0 * power.log10();
         assert!(
             (heard - expected).abs() < 1.5,
-            "jets {heard:.1} dB, one jet of the tips {expected:.1} dB (u {u:.1} m/s)"
+            "jets {heard:.1} dB, one jet of the tips {expected:.1} dB (u {u:.1} m/s, {t_k:.0} K)"
+        );
+    }
+
+    #[test]
+    fn the_lfas_tips_blow_jets_of_their_own_bore() {
+        // Three 60 mm tips are three jets of 60 mm at the shared speed, not one of their summed
+        // area (103.9 mm): the same power (∝ area, SAE ARP876), its spectrum peaking at
+        // St·u/d (St 0.2) of a 60 mm jet, √3 higher. The jets' sound (with less without) holds
+        // more around the 60 mm jet's peak than around the 103.9 mm one's.
+        let rpm = 6000.0;
+        let run_at = |k: f64| {
+            let mut d = EngineDef::lfa_v10();
+            d.sound = crate::sound::SoundDef {
+                flow_noise: k,
+                ..crate::sound::SoundDef::default()
+            };
+            let mut e = Engine::new(d, rpm, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(rpm),
+                ..Controls::default()
+            };
+            run(&mut e, 0.3, &c);
+            let out: Vec<f64> = (0..(0.5 / DT) as usize).map(|_| e.step(DT, &c)).collect();
+            (out, e)
+        };
+        let (quiet, _) = run_at(0.0);
+        let (loud, e) = run_at(1.0);
+        let jets: Vec<f64> = loud.iter().zip(&quiet).map(|(a, b)| a - b).collect();
+        // mean square within a sixth of an octave of `f`, Goertzel bins every 5 Hz
+        let around = |f: f64| -> f64 {
+            let (mut g, mut sum) = (f / 2f64.powf(1.0 / 6.0), 0.0);
+            while g < f * 2f64.powf(1.0 / 6.0) {
+                let w = 2.0 * std::f64::consts::PI * g * DT;
+                let (mut s1, mut s2) = (0.0, 0.0);
+                for &v in &jets {
+                    let s0 = v + 2.0 * w.cos() * s1 - s2;
+                    s2 = s1;
+                    s1 = s0;
+                }
+                sum += s1 * s1 + s2 * s2 - 2.0 * w.cos() * s1 * s2;
+                g += 5.0;
+            }
+            sum
+        };
+        let u = e.tail_u_mean[0];
+        let (tip, summed) = (0.2 * u / 0.060, 0.2 * u / 0.103_923);
+        let (at_tip, at_summed) = (around(tip), around(summed));
+        assert!(
+            at_tip > at_summed,
+            "u {u:.0} m/s: around {tip:.0} Hz {:.1} dB, around {summed:.0} Hz {:.1} dB",
+            10.0 * at_tip.log10(),
+            10.0 * at_summed.log10()
         );
     }
 
@@ -10073,6 +10181,60 @@ mod tests {
             (c0 - crate::exhaust::C_PRIMARY).abs() > 1.0,
             "still the fixed speed"
         );
+    }
+
+    #[test]
+    fn the_exhaust_walls_start_at_the_running_engines_heat() {
+        // The first walk sets each wall to its operating point's steady state, so a render does
+        // not start with cold pipes: the point the port's measured outflow sets, not the air the
+        // port temperature starts from. Hand balance for the inline-4's primary at 5000 rpm,
+        // full load (ṁ ≈ 0.025 kg/s through 40 mm, gas ≈ 1000 K): Dittus–Boelter inside,
+        // h ≈ 94 W/(m²·K) (Incropera eq. 8.60), against 15 W/(m²·K) and radiation at ε 0.8
+        // outside, balances near 765 K.
+        let mut def = EngineDef::inline4();
+        def.exhaust.gas_temperature = true;
+        let mut e = Engine::new(def, 5000.0, 1);
+        let c = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(5000.0),
+            ..Controls::default()
+        };
+        run(&mut e, 0.4, &c);
+        let mut pipes = Vec::new();
+        assert!(e.probe_exhaust(&mut pipes));
+        let wall = pipes[0].wall_k.expect("a wall");
+        assert!(wall > 600.0, "primary wall {wall:.0} K");
+    }
+
+    #[test]
+    fn the_tail_jet_leaves_at_the_tails_gas_temperature() {
+        // With the gas temperature on, the jet leaves at the tail's own gas, not the fixed 622 K
+        // reference: continuity at the outlet, u = ṁRT/(p_a·A) at low Mach, T the gas the pipes'
+        // heat balance leaves at the tail. At full load that is over 650 K: burnt gas near
+        // 1000 K from the ports through walls near 750 K (hand balance above; the gas leaves
+        // between its inlet and its wall, Incropera eq. 8.42b). Both exhaust models.
+        for model in [ExhaustModel::Waveguide, ExhaustModel::Fv] {
+            let mut def = EngineDef::inline4();
+            def.exhaust.gas_temperature = true;
+            def.exhaust.model = model;
+            let mut e = Engine::new(def, 5000.0, 1);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(5000.0),
+                ..Controls::default()
+            };
+            run(&mut e, 0.5, &c);
+            let t = e.tail_k[0];
+            assert!(t > 650.0, "{model:?}: tail gas {t:.0} K");
+            let a = e.exit_losses.as_ref().expect("losses").outlet_area;
+            let continuity =
+                e.tail_mean_flow[0] * crate::gas::R_AIR * t / (crate::units::ATM_PA * a);
+            assert!(
+                (e.tail_u_mean[0] / continuity - 1.0).abs() < 0.05,
+                "{model:?}: jet {:.1} m/s, continuity at {t:.0} K {continuity:.1} m/s",
+                e.tail_u_mean[0]
+            );
+        }
     }
 
     #[test]
@@ -11261,21 +11423,24 @@ mod tests {
             friction,
             laminar,
         };
-        let (back, u) = tail_exit(0.967_11, &losses(0.0, 0.0));
+        let (back, u) = tail_exit(0.967_11, &losses(0.0, 0.0), TAIL_T_K);
         assert!((back / 202_650.0 - 1.0).abs() < 1e-3, "{back} Pa");
         assert!((u - 456.435).abs() < 0.05, "{u} m/s");
         // the pipes' friction and the catalyst's laminar resistance add at ρ = p₀/(R·T) =
         // 1.70222 kg/m³: 1000·m²/(2ρ) = 274.73 Pa and 1000·m/ρ = 568.15 Pa
-        let (with, _) = tail_exit(0.967_11, &losses(1000.0, 1000.0));
+        let (with, _) = tail_exit(0.967_11, &losses(1000.0, 1000.0), TAIL_T_K);
         assert!((with - back - 842.88).abs() < 1.0, "{} Pa", with - back);
         // subsonic: 1.1 atm behind the outlet passes (pr = 1/1.1, q = pr^(2/7) = 0.973136)
         // A·p₀/√(RT)·(pr/q)·√(7(1 − q)) = 0.209798 kg/s, leaving at √(2·c_p·T·(1 − q)) =
         // 183.249 m/s with 10 132.5 Pa behind it
-        let (back, u) = tail_exit(0.209_798, &losses(0.0, 0.0));
+        let (back, u) = tail_exit(0.209_798, &losses(0.0, 0.0), TAIL_T_K);
         assert!((back / 10_132.5 - 1.0).abs() < 1e-3, "{back} Pa");
         assert!((u - 183.249).abs() < 0.05, "{u} m/s");
         // no flow, no backpressure
-        assert_eq!(tail_exit(0.0, &losses(1000.0, 1000.0)), (0.0, 0.0));
+        assert_eq!(
+            tail_exit(0.0, &losses(1000.0, 1000.0), TAIL_T_K),
+            (0.0, 0.0)
+        );
     }
 
     #[test]
@@ -11288,7 +11453,7 @@ mod tests {
             laminar: 0.0,
         };
         for m in [1e-3, 0.05, 0.2, 0.4, 0.5, 0.6, 1.0, 3.0] {
-            let (back, _) = tail_exit(m, &losses);
+            let (back, _) = tail_exit(m, &losses, TAIL_T_K);
             let p0 = crate::units::ATM_PA + back;
             let through =
                 crate::gas::orifice_mass_flow(1.963_495e-3, p0, TAIL_T_K, crate::units::ATM_PA);

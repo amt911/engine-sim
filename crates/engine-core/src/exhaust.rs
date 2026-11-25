@@ -799,6 +799,23 @@ impl ExhaustDef {
         self.radiating_diameter() * f64::from(self.tail_outlets.max(1)).sqrt()
     }
 
+    /// The jets the gas leaves in: how many, and the bore of each, m. Each outlet blows its own
+    /// jet at the speed the whole area sets ([`Self::jet_diameter`]); n jets of bore d carry
+    /// the power of one of the summed area (∝ area, SAE ARP876), their spectrum peaking at
+    /// St·u/d of the one outlet. A merged exhaust's [`Bypass::outlets`] (an even share of
+    /// their summed area each), else [`Self::tail_outlets`] of [`Self::radiating_diameter`].
+    pub fn jets(&self) -> (u32, f64) {
+        let outlets = self
+            .merge
+            .as_ref()
+            .and_then(|m| m.bypass.as_ref())
+            .map_or(0, |b| b.outlets.len());
+        match u32::try_from(outlets) {
+            Ok(n) if n > 0 => (n, self.jet_diameter() / f64::from(n).sqrt()),
+            _ => (self.tail_outlets.max(1), self.radiating_diameter()),
+        }
+    }
+
     /// Length of cylinder `i`'s (0-based) primary, m: `primary_length_m` and its deviation,
     /// if any.
     pub fn primary_length(&self, i: usize) -> f64 {
@@ -1351,6 +1368,9 @@ struct Heat {
     /// outlet gas (temperature, mass flow).
     outs: Vec<f64>,
     tails: Vec<(f64, f64)>,
+    /// The gas leaving each branch's open end at the last walk, K (a shared tail's, for every
+    /// branch that joins it); empty before the first walk.
+    exit_k: Vec<f64>,
 }
 
 impl Heat {
@@ -1889,6 +1909,13 @@ impl ExhaustNet {
         v
     }
 
+    /// The gas leaving branch `branch`'s open end, K, at the last walk of the pipes' heat
+    /// ([`ExhaustDef::gas_temperature`]): its tail's outlet, or the shared tail's for branches
+    /// that join one. None without the gas temperature or before the first walk.
+    pub fn tail_gas_k(&self, branch: usize) -> Option<f64> {
+        self.heat.as_ref()?.exit_k.get(branch).copied()
+    }
+
     /// The port temperatures last handed ([`ExhaustNet::set_port_temperature`]), K.
     pub fn port_temperatures(&self) -> &[f64] {
         self.heat.as_ref().map_or(&[], |h| &h.port_k)
@@ -1898,6 +1925,11 @@ impl ExhaustNet {
     /// ([`ExhaustDef::gas_temperature`]; ignored without it).
     pub fn set_port_temperature(&mut self, per_cylinder: &[f64]) {
         if let Some(h) = &mut self.heat {
+            // the walls settled on the fixed primaries' gas until now: the first measured port
+            // temperatures set them anew (a render does not start with cold or overheated pipes)
+            if h.port_k.is_empty() {
+                h.walls.clear();
+            }
             h.port_k.clear();
             h.port_k.extend_from_slice(per_cylinder);
         }
@@ -1933,17 +1965,27 @@ impl ExhaustNet {
         if let Some(sh) = &mut self.shared {
             let m: f64 = per_branch.iter().sum();
             let t = heat.duct(&mut sh.duct, mixed(tails.iter().copied()), m);
-            if let Some(v) = &mut sh.valved {
+            let exit = if let Some(v) = &mut sh.valved {
                 let (mo, mc) = (m * v.x, m * (1.0 - v.x));
                 let to = heat.duct(&mut v.open, t, mo);
                 let tc = heat.duct(&mut v.closed, t, mc);
                 let t = heat.duct(&mut v.tips, mixed([(to, mo), (tc, mc)].into_iter()), m);
                 // the tips share the flow evenly (an estimate: they are about alike)
                 let mt = m / v.outlets.len().max(1) as f64;
+                let (mut sum, mut n) = (0.0, 0.0);
                 for (d, _) in &mut v.outlets {
-                    heat.duct(d, t, mt);
+                    sum += heat.duct(d, t, mt);
+                    n += 1.0;
                 }
-            }
+                if n > 0.0 { sum / n } else { t }
+            } else {
+                t
+            };
+            heat.exit_k.clear();
+            heat.exit_k.resize(tails.len(), exit);
+        } else {
+            heat.exit_k.clear();
+            heat.exit_k.extend(tails.iter().map(|&(t, _)| t));
         }
         heat.outs = outs;
         heat.tails = tails;
@@ -3511,6 +3553,26 @@ mod tests {
         );
         assert!((l.laminar / 13_004.5 - 1.0).abs() < 1e-4, "{}", l.laminar);
         assert!((l.outlet_area - 1.963_495e-3).abs() < 1e-9);
+    }
+
+    #[test]
+    fn each_outlet_blows_a_jet_of_its_own_bore() {
+        // two 50 mm outlets: two 50 mm jets; the LFA's three 60 mm tips (JP 2008-169751 A,
+        // Figs. 1–5): three of 60 mm; one plain tail: one jet of its bore
+        let mut two = ExhaustDef {
+            tail_outlets: 2,
+            ..ExhaustDef::default()
+        };
+        two.after_collector.clear();
+        let (n, d) = two.jets();
+        assert_eq!(n, 2);
+        assert!((d - 0.050).abs() < 1e-9, "{d}");
+        let (n, d) = crate::engine::EngineDef::lfa_v10().exhaust.jets();
+        assert_eq!(n, 3);
+        assert!((d - 0.060).abs() < 1e-9, "{d}");
+        let mut one = ExhaustDef::default();
+        one.after_collector.clear();
+        assert_eq!(one.jets(), (1, 0.05));
     }
 
     #[test]

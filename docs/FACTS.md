@@ -481,3 +481,26 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   (−2…−3 dB of 100 Hz–4 kHz, 400–700 Hz), so the exterior firing line must largely come from elsewhere than
   the tail: the intake (Okamoto 2011 Fig. 18, "surge tank tuned 400 Hz, equal tone tuned intake") — the model's
   tank ducts pass −17…−26 dB at 558 Hz (FINDINGS 2026-11-20).
+- **The LFA's treble in main was its doubled tail jet (2026-11-25)**: A-weighted octave bands of the held renders,
+  main (`b2`) against the branch after the double count's fix (`hey`): 4 kHz 54–59 vs 31–43, 8 kHz 43–53 vs
+  15–30 dB at 4500–9000 rpm (twice the speed through u⁸: ≈ +24 dB). With it gone the LFA lost its crescendo
+  (−3.2 dB(A)/octave), its load contrast (+0.0) and its "shrill" top. The exhaust alone barely follows the load:
+  the inline-4 at 4900 rpm, d/dt of the tail flow (`order_probe`, THR=0/1), firing order 2 drops 1.4 dB on
+  overrun (8.3 vs 9.7 dB), the 8 and 16 kHz octaves rise 4–7 dB, the cycle's lines 51 dB over the floor at 8–16 kHz
+  (28 at full load); 0.5 cm cells change nothing (not numerical). Screening the intake mouth with the body
+  (patch `scratch-refs/wabl/mouth-screen.patch`) fails physgate load or crescendo on 9 of 13 presets (inline-4
+  load +10.4 → +2.8 dB(A)): shelved until the exhaust follows the load. K20C1 (load +1.9, lift-off) and RENESIS
+  (crescendo −3.5) fail physgate on this branch before these changes too (`hey`), and pass on main: the ear by
+  the tails (3e8fde4) is the likeliest cause, the same lack of contrast.
+- **Tail gas temperature (2026-11-25)**: the tail jet left at a fixed 622 K (`C_TAIL` 500 m/s) whatever the load,
+  and the FV path (Reference renders) never walked `pipe_heat`; the walls settled on the 300 K the port
+  temperature starts from (304 K after 0.4 s at full load; hand balance ≈ 765 K). Now the walls settle once the
+  cycle means have run three cycles, the FV path walks the heat on its `jet_net`, and the jet leaves at the
+  tail's gas (`ExhaustNet::tail_gas_k`; LFA ≈ 950 K at full load, only presets with `gas_temperature`). Each
+  outlet blows its own jet (`ExhaustDef::jets`: the LFA's three 60 mm tips, St·u/d √3 higher than one 104 mm jet).
+  LFA gates (`gates-tj`): treble back (4 kHz +7…+16, 8 kHz +6…+21 dB re `hey`), physgate crescendo +0.7 and
+  load +1.8 (bounds 3.0), lift-off PASS; spectral low-mid wind −9.4 (bound −18.4) and ear-gate wind −3.4: the tail
+  jet carries it (`attribute.sh`: flow_noise off → −21.6 and −16.2). The jet's own level is ARP876 at ≈ 100 m/s;
+  the lines it sits under are what is weak. Against the chassis-dyno clip the waveguide's cycle orders 30–80 read
+  9–24 dB low, but the five exterior recordings hold H5–H8 at −19…−48 dB and the render inside them: no verdict
+  on the high harmonics yet. `tail_mach` still uses `C_TAIL`.

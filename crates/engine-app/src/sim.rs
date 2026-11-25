@@ -833,7 +833,12 @@ pub(crate) mod tests {
         // at 0.60 m (the exterior recordings' steady firing line) and the lift at Heywood's 12 %
         // of the bore (the published power) it reads 14.69. This clip wants H5–H8 at −10…−22 dB
         // where the five exterior recordings hold −19…−48 and the render sits inside them.
-        assert!(rms <= 14.7, "RMS {rms:.2} dB off the real car: {errs:?}");
+        // Raised by the user to 14.9 (2026-11-25): the exhaust's walls now start at the running
+        // engine's steady heat (they had settled on the 300 K the port temperature starts from),
+        // and the hotter gas moves the pipes' speed of sound (14.90); raised by the user to 15.0
+        // the same day for the tips' own 60 mm jets (three jets, not one of their summed area):
+        // it reads 14.95.
+        assert!(rms <= 15.0, "RMS {rms:.2} dB off the real car: {errs:?}");
     }
 
     #[test]
