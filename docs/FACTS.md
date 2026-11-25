@@ -544,3 +544,13 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   more than another); ¶0048–0049: only the long tip cuts the 1st order (and its wool ≥ 1 kHz), so the sum has the
   2nd, 4th and 5th over the 1st (Fig. 8). The model's chamber and tips cut 625 Hz 7 dB and 800 Hz 11 dB more than
   400 Hz: a low-pass where the patent describes a flat path.
+- **The tips' junction is not the main muffler's low-pass (2026-11-25, by hand)**: lossless transfer matrices of the
+  model's tips (85 mm duct into two 0.13 m and one 0.345 m tips of 70 mm, end corrections 0.6133a, c 560 m/s,
+  radiated ∝ f·U) against three equal short tips: +0.9 / +1.9 / +3.0 / +4.5 / +4.8 / +0.7 / −9.3 / −11.6 / −8.0 dB
+  at 300 / 400 / 475 / 550 / 625 / 700 / 800 / 1000 / 1200 Hz (the long tip's half-wave shorts the junction at
+  800–1200 only). A 14 L compliance at the junction (the sphere's volume) makes it worse: with the tips it is a
+  Helmholtz low-pass (equal tips −4.4 / −5.8 / −6.2 at 625 / 800 / 1000 re 400 Hz). The model's extra 7 dB at 625 Hz
+  (and the in-situ 5–11 dB at 550–1200) therefore comes from another element of the path (the long tip's wool
+  segment, the bypass's closed path in parallel, the merge): measure each against the patent's three measured
+  curves at 4800 rpm (Fig. 7A solid: short tips alone keep the engine's balance; Fig. 7B: the long tip alone
+  with the 1st and ≥ 5th orders cut; Fig. 8: the sum, 2nd/4th/5th over the 1st) before changing any geometry.
