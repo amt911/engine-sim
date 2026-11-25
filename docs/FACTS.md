@@ -585,3 +585,14 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   its port, so the cylinders differ. A held closed-throttle render settles its pipes on overrun's own cold
   steady state; after 1.5 s at full load (a real decel follows a pull) the span reads +3.2 / +2.3 / −0.7 / +1.0
   at 6000 / 6800 / 7500 / 8000 (cold-settled +4.6 / −1.2 / −3.8 / +2.3).
+- **The LFA's full-load "hole" is a flat H1 with weak upper orders, plus an H3 spike at 5000 (2026-11-25,
+  `scratch-refs/ovr/hole`, `abs_probe`, held WOT, tips 80 mm ×2, Reference)**: exhaust alone 80.2 / 84.0 / 77.2 /
+  76.5 / 76.2 / 79.6 dB(A) at 4800 / 5000 / 6000 / 6800 / 7500 / 8000 rpm, with the intake on ±0.5 (2.0 at 7500): the
+  fall is the exhaust's, not intake–exhaust interference at the ear. Unweighted H1 stays 74–79 dB throughout and
+  carries the total from 6000 up; H2–H5 sit −8…−40 dB under it (Fig. 8 at 4800: +4 / ? / +8 / +1; ours −2.4 / +4.2 /
+  −12.4 / −12.1, rms 14.5 dB). The 5000 rpm peak is H3 (1250 Hz, cycle order 30, phase-locked) at +4 dB over H1:
+  primaries 0.66 m or the long tip's pipe 0.55 m take 4 dB off it, short tips 0.32 m nothing. Element by element at
+  5000 / 6000 / 7500: the published-loss final chamber (`Measured`) is a flat −20 dB (no shape); the long tip's wool
+  holds H1 up 5 dB; the closed (low-speed) path in parallel is a Herschel–Quincke branch notching H2 at 5000 rpm
+  (833 Hz: −15.4 re H1, +1.9 with its pipes choked to 8 mm; −2.4 at 4800), and its two inter-chamber pipes cut to
+  0.02 m (the patent's perforated partitions 20A / 22A, ¶0034) move nothing at 4800 / 6000 / 7500.
