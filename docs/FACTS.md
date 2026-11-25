@@ -680,3 +680,14 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   6800 rpm)**: `exhaust_reverse_cd_ratio` 0.75 / 0.4 / 0.2 → 73.4 / 72.2 / 72.2 dB(A) (full load 76.9). Recorded
   0.3 s after the lift, the floor between lines reads 70.2 (62.8 at full load) whatever the synthesized sources
   (all off 70.3): the cooling transient smears the lines; the app's held scenes settle 1 s first.
+- **The overrun's harmonics are made at the port (2026-11-25, single 5600 rpm, `xfer_probe` spike: cylinder 0's
+  port gauge and the radiated output together, warm hold, FV Reference)**: full over closed at the port H1 +15.0,
+  H2 +8.5, H3 +0.9, H4 −5.6, H5 −3.1, H10 −16.6, H24 −2.2, H30 −4.2, H40 −5.8 dB; radiated +12.4 / +13.0 / +3.7 /
+  −2.5 / +0.6 / +0.1 (H10) / +8.0 / +0.6 / +0.8; port-to-tail transfers differ by ≤ 5 dB except H10 and H24 —
+  the overrun's upper orders come from the port, not from undamped pipes. Phase-averaged port wave: full load −16
+  … +40 kPa, the blowdown's front +39 kPa/ms; overrun −17.6 … +26.9 kPa, the reverse rush's dip (−17 kPa at ≈ 460°)
+  then a rise as steep (+40 kPa/ms at ≈ 500°: the back-flow stopping as the cylinder fills, and the stroke's
+  push); cycle-to-cycle spread 0.50 vs 0.05 kPa. Without a measured overrun port trace (asked for in PAPERS.md)
+  the model's overrun pulse cannot be judged against reality. Separate from this: the impacts' level is a
+  four-cylinder's whatever the count (`mechanism_dba_at_1m_loaded` is the whole engine's): energy over n
+  cylinders would put the single 6 dB under it, V8 / V10 +3 / +4 dB (Lalor et al. scale by bore only).
