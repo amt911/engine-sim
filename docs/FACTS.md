@@ -554,3 +554,13 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   segment, the bypass's closed path in parallel, the merge): measure each against the patent's three measured
   curves at 4800 rpm (Fig. 7A solid: short tips alone keep the engine's balance; Fig. 7B: the long tip alone
   with the 1st and ≥ 5th orders cut; Fig. 8: the sum, 2nd/4th/5th over the 1st) before changing any geometry.
+- **What each LFA tip radiates (2026-11-25, `scratch-refs/wabl/ord/tipsplit-spike.patch`, held WOT, exhaust only)**:
+  firing harmonics, 4800 rpm: the short pair H1 −3.1 dB re the sum's, H2..H4 −11.7 / −8.3 / −15.9 re its own H1
+  (the muffler's inflow: H2 −10, so the short tips keep the inflow's balance, as ¶0047 says); the long tip H1 −10.2
+  (its own 1st order cut, as Fig. 7B shows), H2 −10.6; the sum H2 −20.1 re H1 (Fig. 8, measured: +4). The long
+  tip adds in phase at 400 Hz and against the short pair at 800 Hz (sum −5 dB under the pair). At 7500 rpm the
+  pair and the long tip are ≈ 117° apart at H1 (625 Hz): the sum 5–6 dB under their in-phase sum, the "low-pass"
+  of the main muffler. The patent's sum cuts the 1st order and keeps the 2nd/4th/5th over it: the long tip
+  against the pair at 400 Hz and with it at 800 Hz, a path difference ≈ c/(2·400 Hz) ≈ 0.7 m at 780 K, where the
+  model has 0.215 m (tip lengths 0.13 / 0.345 m from Fig. 1's proportions, L₂ ≈ 2.9·L₁, scaled to tips first taken
+  as 60 mm: an ESTIMATE).
