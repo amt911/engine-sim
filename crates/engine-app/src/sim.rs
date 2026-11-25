@@ -837,8 +837,10 @@ pub(crate) mod tests {
         // engine's steady heat (they had settled on the 300 K the port temperature starts from),
         // and the hotter gas moves the pipes' speed of sound (14.90); raised by the user to 15.0
         // the same day for the tips' own 60 mm jets (three jets, not one of their summed area):
-        // it reads 14.95.
-        assert!(rms <= 15.0, "RMS {rms:.2} dB off the real car: {errs:?}");
+        // it reads 14.95. Raised by the user to 16.7 (2026-11-25) for the tips' bore fitted at
+        // 70 mm: their jets' hiss had filled this clip's H5–H8 bins, which now sit on the floor
+        // at −24…−25 dB re the firing order (16.69).
+        assert!(rms <= 16.7, "RMS {rms:.2} dB off the real car: {errs:?}");
     }
 
     #[test]

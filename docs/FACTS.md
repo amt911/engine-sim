@@ -520,3 +520,27 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   rollers): no load contrast to fit. Full-load share of the A total: real I4 dyno H1 −9…−30, 1–4 kHz −3…−8 dB;
   the LFA render H1 −1…−6 (the exterior recordings also hold H1 dominant). JP 2008-169751 A states no
   microphone distance: Fig. 7A gives no absolute level.
+- **The LFA's tip bore sets its wind floor (2026-11-25)**: the jet's level at a fixed mass flow goes as n^−6.5·d^−13
+  (ARP876: area × u^7.5, u ∝ 1/(n·d²)), and the 60 mm bore of the three tips is an ESTIMATE from the patent's
+  proportions (no published figure; the trims are ≈ 105 mm outside). Held WOT at 3 m (`abs_probe`, all sources,
+  `scratch-refs/wabl/tip`): 60 → 76 mm (3 in) exits lower the 150–500 Hz floor between the cycle lines by 7.7 / 8.6 /
+  8.3 / 8.3 dB at 6000 / 7000 / 7500 / 8000 rpm (not the 13.4 of the law: the peak St·u/d moves down into the band
+  and the jitter and mechanical sources stay); H1 moves +4.9 / +4.4 / −1.4 / −3.3 (the tips' acoustics). H1 over the
+  floor: 13.0 / 4.6 / 0.9 / 0.3 dB → 25.6 / 17.6 / 7.8 / 5.3. The model's LFA at full load reads 84–86 dB SPL at 3 m
+  (H1 78–85); no calibrated level of the real car was found (Japanese proximity and EU stationary figures searched;
+  the FK8 Civic's stock proximity level is 82 dB per HKS's catalogue, rpm not stated).
+- **The LFA's tips fitted at 70 mm (2026-11-25, user: fit only the ESTIMATE dimensions)**: grid of held WOT renders
+  (`scratch-refs/wabl/fit/grid.py`, ear_feat wind/bank at 5500–8500 rpm). Bore at 0.60 m primaries, wind 5500 /
+  6000 rpm: 55 mm −14.1 / −8.3, 60 −18.4 / −11.7, 65 −23.0 / −17.5, 70 −26.8 / −21.7, 76 −29.8 / −25.7, 80 −31.0 /
+  −27.3 (real −19…−25); 70 mm taken from the bins where the firing line is sound (80 overshoots them while 7500–8500
+  stay at −5…−10 for every bore: the tone, not the jet). Primaries at 80 mm tips, 0.60 / 0.65 / 0.70 / 0.80 / 0.90 m:
+  J 74 / 115 / 116 / 67 / 69, each with a hole somewhere in 6500–8500 (the zeros move): kept 0.60. Gates (`t70`,
+  LFA): spectral treble −27.0 (PASS; `tj` −17.2), low-mid −16.6 (bound −18.4; `tj` −9.4), ear_gate wind −5.9, bank
+  +4.3, lift +1.9, peak +16.5, physgate crescendo −3.7 dB(A)/octave and load +0.7 (`tj` +0.7 / +1.8): with the jet
+  quieter the tone's own fall with speed shows. Exhaust alone at the ear (held, every other source off, firing
+  harmonics): H1 88.5 / 88.9 / 80.1 / 73.8 dB SPL at 4800 / 6000 / 7500 / 8500, H2 −20.7 / −23.8 / −14.0 / −2.3 re
+  H1, while the main muffler's inflow keeps H1 flat (`chain_fv_spike`: 132 / 131 at 4800 / 7500). JP 2008-169751 A
+  ¶0046–0047: at high speed the final chamber and the short tips keep the engine's own order balance (no order cut
+  more than another); ¶0048–0049: only the long tip cuts the 1st order (and its wool ≥ 1 kHz), so the sum has the
+  2nd, 4th and 5th over the 1st (Fig. 8). The model's chamber and tips cut 625 Hz 7 dB and 800 Hz 11 dB more than
+  400 Hz: a low-pass where the patent describes a flat path.
