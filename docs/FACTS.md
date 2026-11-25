@@ -596,3 +596,14 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   holds H1 up 5 dB; the closed (low-speed) path in parallel is a Herschel–Quincke branch notching H2 at 5000 rpm
   (833 Hz: −15.4 re H1, +1.9 with its pipes choked to 8 mm; −2.4 at 4800), and its two inter-chamber pipes cut to
   0.02 m (the patent's perforated partitions 20A / 22A, ¶0034) move nothing at 4800 / 6000 / 7500.
+- **Where the LFA's upper orders go (2026-11-25, same renders, 7500 / 4800 rpm, H2..H8 re H1)**: real dyno clip
+  at 6600 −9.6 / −7.6 / −12.1 / −9.7 / −13.9 / −20.7 / −22.0; model −7.6 / −15.3 / −22.1 / −27.6 / −42.9 / −42.9 /
+  −50.4 at 7500. A straight 70 mm pipe after the collectors (no catalyst, silencers or merge) −9.6 / −4.7 / −10.5 /
+  −17.1 / −16.1 / −20.3 / −25.8, H1 35 dB up: the source has them. Without the sub-mufflers little changes at 7500
+  (−6 dB at H4/H5 at 4800); without the catalysts −5.1 / −5.0 / −14.9 / −16.7 / −16.7 / −24.3 / −31.0, H1 +5.3
+  (+6.6 at 4800), +8.6 dB(A). The catalyst alone (`catalyst_brick`, 900 K, between 70 mm pipes) loses 6.3 / 7.4 /
+  6.4 / 8.0 / 9.3 / 8.7 dB at 625…3750 Hz, as narrow-tube theory gives (channels 3.0 → 5.9 dB over 0.13 m); an
+  empty chamber of its size in its place takes the same in situ (H1 76.2 vs 76.0, H6 −39.5 vs −42.9): the loss is
+  the 153 mm body's reflection against the source, not the monolith. The waveguide model shows the catalyst's
+  insertion loss 9–14 dB at H3–H7; the FV path 10–31 dB (FV without catalyst carries more upper orders than the
+  waveguide: steepening).
