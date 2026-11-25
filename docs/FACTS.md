@@ -671,3 +671,8 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   road cars drop 10–14 dB(A), mostly their harmonics above the first and their high floor. physgate's load bound
   (≥ 3 dB(A), "real exhaust microphones −3.6 to −20.5") is not met by the single and the race V10. The model's
   single (+1.3) and LFA (−1.1) sit with the open exhausts; the LFA, the K20C1 and the V8s are muffled road cars.
+- **A real decel keeps its order balance (2026-11-25, `scratch-refs/ovr/real/orders.py`, R33 exhaust microphone,
+  A-weighted lines, firing = every 6th cycle order)**: at ≈ 2500–3700 rpm accel / decel firing lines −19.2 / −28.7,
+  other cycle orders −29.7 / −39.9 dB: both fall ≈ 10 dB and the others stay 10 dB under the firing lines. Ours on
+  overrun: LFA other orders 45.0 → 55.2 dB(A) over firing 55.0 → 50.9; V8 cross-plane other orders 51.2 → 51.3,
+  firing 41.8 → 26.9; K20C1 firing 44.9 → 43.9; single firing 62.5 → 60.4 (held, physgate's mid speed).
