@@ -1,7 +1,8 @@
 //! Poppet valve lift and effective flow area.
 //!
 //! Angles are in the 720° four-stroke cycle, 0° = TDC at the start of the power stroke.
-//! Lift profile: a sin^1.4 bump over the opening window ([`LIFT_EXPONENT`]: a real cam's).
+//! Lift profile: a sin^n bump over the opening window (n = [`LIFT_EXPONENT`], a typical real
+//! cam's, unless the valve's cam is known to be fuller: [`ValveTiming::lift_exponent`]).
 
 use serde::{Deserialize, Serialize};
 
@@ -42,6 +43,24 @@ pub struct ValveTiming {
     /// A second lobe the valve rides while VTEC is engaged ([`Vtec`]); none: one lobe.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub high: Option<CamLobe>,
+    /// The flank of this valve's cam, the n of its sin^n lift ([`ValveTiming::lift`]):
+    /// [`LIFT_EXPONENT`] (Heywood's typical cam) unless the engine's cam is known to be fuller.
+    /// A rapid-acceleration cam reaches its lift sooner and dwells near it longer (smaller n);
+    /// 1 is the fullest this shape allows with the valve leaving its seat at a finite speed
+    /// (below 1 the slope at the window's edge is infinite).
+    #[serde(
+        default = "typical_lift_exponent",
+        skip_serializing_if = "is_typical_lift_exponent"
+    )]
+    pub lift_exponent: f64,
+}
+
+fn typical_lift_exponent() -> f64 {
+    LIFT_EXPONENT
+}
+
+fn is_typical_lift_exponent(n: &f64) -> bool {
+    *n == LIFT_EXPONENT
 }
 
 /// A cam lobe: where it starts opening its valve, for how long and how far.
@@ -148,6 +167,7 @@ impl ValveTiming {
             max_lift_m: lobe.max_lift_m,
             diameter_m: self.diameter_m,
             high: self.high,
+            lift_exponent: self.lift_exponent,
         }
     }
 }
@@ -160,7 +180,7 @@ impl ValveTiming {
             return 0.0;
         }
         let s = (std::f64::consts::PI * x).sin();
-        self.max_lift_m * s.powf(LIFT_EXPONENT)
+        self.max_lift_m * s.powf(self.lift_exponent)
     }
     /// The most this valve passes: its effective area at its peak lift, on its high lobe if it
     /// has one and that lifts it further, m².
@@ -222,6 +242,7 @@ mod tests {
             duration_deg: 244.0,
             max_lift_m: 0.0088,
             diameter_m: 0.035,
+            lift_exponent: LIFT_EXPONENT,
             high: Some(CamLobe {
                 open_deg: 340.0,
                 duration_deg: 280.0,
@@ -240,6 +261,7 @@ mod tests {
             duration_deg: 240.0,
             max_lift_m: 0.010,
             diameter_m: 0.035,
+            lift_exponent: LIFT_EXPONENT,
             high: None,
         };
         assert_relative_eq!(v.max_flow_area(), 6.3884e-4, max_relative = 1e-4);
@@ -263,6 +285,7 @@ mod tests {
             duration_deg: 200.0,
             max_lift_m: 0.01,
             diameter_m: 0.04,
+            lift_exponent: LIFT_EXPONENT,
             high: None,
         };
         let full = VALVE_CD * PI * 0.02 * 0.02;
@@ -439,6 +462,7 @@ mod tests {
             duration_deg: 235.0,
             max_lift_m: 0.009,
             diameter_m: 0.030,
+            lift_exponent: LIFT_EXPONENT,
             high: None,
         }
     }
@@ -485,12 +509,35 @@ mod tests {
     }
 
     #[test]
+    fn a_rapid_acceleration_cam_lifts_on_a_fuller_flank() {
+        // a sixth into the window sin 30° = 0.5 (hand): a flank of n = 1 lifts half the lift
+        // there, Heywood's typical n = 1.4 lifts 0.5^1.4 = e^(1.4·ln 0.5) = 0.378 93 of it
+        let mut v = ValveTiming {
+            open_deg: 0.0,
+            duration_deg: 240.0,
+            max_lift_m: 0.01,
+            diameter_m: 0.03,
+            high: None,
+            lift_exponent: 1.4,
+        };
+        assert_relative_eq!(v.lift(40.0), 0.003_789_3, max_relative = 1e-4);
+        v.lift_exponent = 1.0;
+        assert_relative_eq!(v.lift(40.0), 0.005, max_relative = 1e-12);
+        // the timing the engine runs keeps its cam's flank: advanced 30°, it lifts at 10°
+        // what it lifted at 40°
+        let now = v.effective(false, 30.0);
+        assert_eq!(now.lift_exponent, 1.0);
+        assert_relative_eq!(now.lift(10.0), 0.005, max_relative = 1e-12);
+    }
+
+    #[test]
     fn window_wraps_around_720() {
         let v = ValveTiming {
             open_deg: 700.0,
             duration_deg: 40.0,
             max_lift_m: 0.01,
             diameter_m: 0.03,
+            lift_exponent: LIFT_EXPONENT,
             high: None,
         };
         assert_relative_eq!(v.lift(0.0), 0.01, max_relative = 1e-12); // 20° into the window = middle
@@ -511,6 +558,7 @@ mod tests {
             duration_deg: 248.0,
             max_lift_m: 0.011,
             diameter_m: 0.031,
+            lift_exponent: LIFT_EXPONENT,
             high: None,
         };
         for (x, want_mm) in [(0.056, 1.3), (0.177, 4.5), (0.339, 8.9)] {

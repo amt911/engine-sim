@@ -117,10 +117,10 @@ mod tests {
         // from 3700 to 9000 rpm. The preset's unpublished geometry is sized by physics (valves
         // by the Mach index at 8700 rpm, runners tuned at 6800, primaries at 8700). With real
         // gas properties and friction by components the level is the published one (≈ 500
-        // N·m); the top falls early (≈ 12 % short at 8500 rpm): at speed the valve events pass
-        // too little gas — the sin² lift curve's time-area is below a real cam's, and the lift
-        // stops at L/D 0.25 (FINDINGS, 2026-10-27). The torque is flat from 5500 to 6500 rpm
-        // (within 1 %), so its peak may land at 5500 until the cam profile is a real one.
+        // N·m); the top fell early while the cams were generic (sin², then Heywood's sin^1.4:
+        // 12 %, then 8 % short), and holds within 6 % on the LFA's own rapid-acceleration
+        // cams (Okamoto et al., SAE 2011-01-2024 §9; 2026-11-26). The torque is
+        // flat from 5500 to 6500 rpm (within 1 %), so its peak may land at 5500.
         let points = sweep(&EngineDef::lfa_v10());
         let (torque, power) = peaks(&points).unwrap();
         assert!(

@@ -189,6 +189,7 @@ impl EngineDef {
                 duration_deg: 226.9,
                 max_lift_m: 0.009,
                 diameter_m: 0.034,
+                lift_exponent: crate::valve::LIFT_EXPONENT,
                 high: None,
             },
             exhaust_valve: ValveTiming {
@@ -196,6 +197,7 @@ impl EngineDef {
                 duration_deg: 222.3,
                 max_lift_m: 0.008,
                 diameter_m: 0.029,
+                lift_exponent: crate::valve::LIFT_EXPONENT,
                 high: None,
             },
             vtec: None,
@@ -303,6 +305,7 @@ impl EngineDef {
                 duration_deg: 208.7,
                 max_lift_m: 0.009,
                 diameter_m: 0.036,
+                lift_exponent: crate::valve::LIFT_EXPONENT,
                 high: None,
             },
             exhaust_valve: ValveTiming {
@@ -310,6 +313,7 @@ impl EngineDef {
                 duration_deg: 213.2,
                 max_lift_m: 0.0078,
                 diameter_m: 0.031,
+                lift_exponent: crate::valve::LIFT_EXPONENT,
                 high: None,
             },
             // a dual-mass flywheel's engine side (estimate)
@@ -424,6 +428,7 @@ impl EngineDef {
                 duration_deg: 250.0,
                 max_lift_m: 0.0134,
                 diameter_m: 0.0535,
+                lift_exponent: crate::valve::LIFT_EXPONENT,
                 high: None,
             },
             exhaust_valve: ValveTiming {
@@ -431,6 +436,7 @@ impl EngineDef {
                 duration_deg: 213.0,
                 max_lift_m: 0.0104,
                 diameter_m: 0.0416,
+                lift_exponent: crate::valve::LIFT_EXPONENT,
                 high: None,
             },
             flywheel_inertia_kgm2: 0.12,
@@ -500,6 +506,7 @@ impl EngineDef {
                 duration_deg: 283.0,
                 max_lift_m: base.intake_valve.max_lift_m * 1.5f64.sqrt(),
                 diameter_m: base.intake_valve.diameter_m * 1.5f64.sqrt(),
+                lift_exponent: crate::valve::LIFT_EXPONENT,
                 high: None,
             },
             exhaust_valve: ValveTiming {
@@ -507,6 +514,7 @@ impl EngineDef {
                 duration_deg: 262.0,
                 max_lift_m: base.exhaust_valve.max_lift_m * 1.5f64.sqrt(),
                 diameter_m: base.exhaust_valve.diameter_m * 1.5f64.sqrt(),
+                lift_exponent: crate::valve::LIFT_EXPONENT,
                 high: None,
             },
             redline_rpm: 9500.0,
@@ -568,6 +576,7 @@ impl EngineDef {
                 duration_deg: 217.8,
                 max_lift_m: 0.0127,
                 diameter_m: 0.0509,
+                lift_exponent: crate::valve::LIFT_EXPONENT,
                 high: None,
             },
             exhaust_valve: ValveTiming {
@@ -575,6 +584,7 @@ impl EngineDef {
                 duration_deg: 217.8,
                 max_lift_m: 0.011,
                 diameter_m: 0.0438,
+                lift_exponent: crate::valve::LIFT_EXPONENT,
                 high: None,
             },
             flywheel_inertia_kgm2: 0.15,
@@ -734,6 +744,7 @@ impl EngineDef {
                 duration_deg: 240.5,
                 max_lift_m: 0.0124,
                 diameter_m: 0.0495,
+                lift_exponent: crate::valve::LIFT_EXPONENT,
                 high: Some(crate::valve::CamLobe {
                     open_deg: 335.9,
                     duration_deg: 273.1,
@@ -748,6 +759,7 @@ impl EngineDef {
                 duration_deg: 220.0,
                 max_lift_m: 0.0106,
                 diameter_m: 0.0424,
+                lift_exponent: crate::valve::LIFT_EXPONENT,
                 high: None,
             },
             flywheel_inertia_kgm2: 0.15,
@@ -929,18 +941,30 @@ impl EngineDef {
             // close the exhaust 3° ATDC (7° apart: an ESTIMATE inside those ranges). Rate: the
             // measured 0.6 s snap to 9000 rpm (see the test) leaves the cams no more than half a
             // second to reach the high-output timing, ≥ 60 °/s; 30 °/s took 0.73 s.
+            // The cams themselves: Okamoto et al. (SAE 2011-01-2024) §9 credit the high end's
+            // torque to a "rapid acceleration cam profile and high lift (thanks to very low
+            // inertia valve train)" and the low end's to a "narrow camshaft working angle". The
+            // flank: the fullest sin^n that leaves the seat at a finite speed, n = 1, on the
+            // timing above: each window keeps its duration above a tenth of the lift and its
+            // centre, as `crate::valve::from_sin2_window` does for sin^1.4 — (1 − 2x₀) is 0.7952
+            // of a sin² window and 0.9362 of a sin¹ one, so the sin² windows (380° + 270°,
+            // 137° + 246°) shrink to 0.8493 of themselves, opening 0.0753 of them later. Held
+            // WOT against Fig. 22's 432 / 480 / 452 N·m at 3800 / 7000 / 8700 rpm: +4 / +2 /
+            // −6 % (sin^1.4: +3 / +1 / −8 %, the top 8 % under the published 412 kW), 2026-11-26.
             intake_valve: ValveTiming {
-                open_deg: 392.5,
-                duration_deg: 245.0,
+                open_deg: 400.34,
+                duration_deg: 229.32,
                 max_lift_m: 0.01493,
                 diameter_m: 0.0496,
+                lift_exponent: 1.0,
                 high: None,
             },
             exhaust_valve: ValveTiming {
-                open_deg: 148.4,
-                duration_deg: 223.2,
+                open_deg: 155.53,
+                duration_deg: 208.93,
                 max_lift_m: 0.01493,
                 diameter_m: 0.0412,
+                lift_exponent: 1.0,
                 high: None,
             },
             vtec: None,
@@ -1283,6 +1307,7 @@ impl EngineDef {
                 duration_deg: 245.0,
                 max_lift_m: 0.0115,
                 diameter_m: 0.050,
+                lift_exponent: crate::valve::LIFT_EXPONENT,
                 high: None,
             },
             exhaust_valve: ValveTiming {
@@ -1290,6 +1315,7 @@ impl EngineDef {
                 duration_deg: 240.5,
                 max_lift_m: 0.0105,
                 diameter_m: 0.043,
+                lift_exponent: crate::valve::LIFT_EXPONENT,
                 high: None,
             },
             vtec: None,
@@ -1370,6 +1396,7 @@ impl EngineDef {
                 duration_deg: 226.9,
                 max_lift_m: 0.014,
                 diameter_m: 0.055,
+                lift_exponent: crate::valve::LIFT_EXPONENT,
                 high: None,
             },
             exhaust_valve: ValveTiming {
@@ -1377,6 +1404,7 @@ impl EngineDef {
                 duration_deg: 226.9,
                 max_lift_m: 0.0138,
                 diameter_m: 0.0404,
+                lift_exponent: crate::valve::LIFT_EXPONENT,
                 high: None,
             },
             vtec: None,
@@ -5248,6 +5276,7 @@ mod tests {
             duration_deg: 244.0,
             max_lift_m: 0.008_84,
             diameter_m: d.intake_valve.diameter_m,
+            lift_exponent: crate::valve::LIFT_EXPONENT,
             high: Some(crate::valve::CamLobe {
                 open_deg: ci - 140.0,
                 duration_deg: 280.0,
@@ -5259,6 +5288,7 @@ mod tests {
             duration_deg: 240.0,
             max_lift_m: 0.008_59,
             diameter_m: d.exhaust_valve.diameter_m,
+            lift_exponent: crate::valve::LIFT_EXPONENT,
             high: Some(crate::valve::CamLobe {
                 open_deg: ce - 139.0,
                 duration_deg: 278.0,
@@ -7172,12 +7202,11 @@ mod tests {
             ..Controls::default()
         };
         run(&mut e, 3.0, &wot);
-        // 43° between the sin² windows the timing was drawn on; between the real flanks'
-        // windows (`crate::valve::from_sin2_window`, each 0.0463 of its old length shorter at
-        // each end) 43 − 0.0463 · (270 + 246) = 19.1°, the overlap above a tenth of the lift
-        // kept as it was
+        // 43° between the sin² windows the timing was drawn on; between the LFA's sin¹ flanks'
+        // windows (each 0.0753 of its old length shorter at each end, see the preset)
+        // 43 − 0.0753 · (270 + 246) = 4.1°, the overlap above a tenth of the lift kept as it was
         assert!(
-            (overlap_deg(&e) - 19.1).abs() < 0.5,
+            (overlap_deg(&e) - 4.1).abs() < 0.5,
             "WOT overlap {}",
             overlap_deg(&e)
         );
@@ -8202,6 +8231,27 @@ mod tests {
         let sdi = cylinder_pressure_level_1k(EngineDef::vw_sdi(), 1000.0, 1.0);
         let k20 = cylinder_pressure_level_1k(EngineDef::honda_k20a(), 1000.0, 1.0);
         assert!(sdi - k20 > 20.0, "SDI {sdi:.1} dB, K20A {k20:.1} dB");
+    }
+
+    #[test]
+    fn the_lfas_cams_lift_on_a_rapid_acceleration_flank() {
+        // Okamoto et al. (SAE 2011-01-2024) §9: the high end's torque from a "rapid
+        // acceleration cam profile and high lift (thanks to very low inertia valve train)": the
+        // fullest flank of the sin^n lift that leaves the seat at a finite speed, n = 1
+        let d = EngineDef::lfa_v10();
+        assert_eq!(
+            (d.intake_valve.lift_exponent, d.exhaust_valve.lift_exponent),
+            (1.0, 1.0)
+        );
+        // the others keep Heywood's typical cam, sin^1.4 (ICE Fundamentals Fig. 6.16c)
+        for p in [EngineDef::single(), EngineDef::inline4()] {
+            assert_eq!(
+                (p.intake_valve.lift_exponent, p.exhaust_valve.lift_exponent),
+                (1.4, 1.4),
+                "{}",
+                p.name
+            );
+        }
     }
 
     #[test]

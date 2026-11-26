@@ -32,15 +32,17 @@ engine:
       - 9
       - 10
   intake_valve:
-    open_deg: 392.5
-    duration_deg: 245.0
+    open_deg: 400.34
+    duration_deg: 229.32
     max_lift_m: 0.01493
     diameter_m: 0.0496
+    lift_exponent: 1.0
   exhaust_valve:
-    open_deg: 148.4
-    duration_deg: 223.2
+    open_deg: 155.53
+    duration_deg: 208.93
     max_lift_m: 0.01493
     diameter_m: 0.0412
+    lift_exponent: 1.0
   intake_phaser:
     range_deg: 40.0
     rate_deg_s: 60.0

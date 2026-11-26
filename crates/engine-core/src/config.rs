@@ -210,10 +210,13 @@ pub fn validate(def: &EngineDef) -> Result<(), ConfigError> {
         let ok = within(v.open_deg, -720.0, 720.0)
             && within(v.duration_deg, 1.0, 719.0)
             && within(v.max_lift_m, 0.0005, 0.05)
-            && within(v.diameter_m, 0.005, 0.2);
+            && within(v.diameter_m, 0.005, 0.2)
+            && within(v.lift_exponent, 1.0, 4.0);
         check(
             ok,
-            &format!("{name}: opening in ±720°, duration 1–719°, lift 0.5–50 mm, Ø 5–200 mm"),
+            &format!(
+                "{name}: opening in ±720°, duration 1–719°, lift 0.5–50 mm, Ø 5–200 mm, flank n 1–4"
+            ),
         );
     }
     check(
@@ -405,6 +408,32 @@ mod tests {
     }
 
     #[test]
+    fn a_cams_flank_round_trips_and_old_files_get_heywoods() {
+        let mut def = EngineDef::single();
+        def.intake_valve.lift_exponent = 1.0;
+        for f in [Format::Yaml, Format::Json] {
+            let back = from_str(&to_string(&def, f).unwrap(), f).unwrap();
+            assert_eq!(
+                (
+                    back.intake_valve.lift_exponent,
+                    back.exhaust_valve.lift_exponent
+                ),
+                (1.0, 1.4),
+                "{f:?}"
+            );
+        }
+        // the typical cam (Heywood's sin^1.4) stays out of the file, so files keep their text
+        let y = to_string(&EngineDef::single(), Format::Yaml).unwrap();
+        assert!(!y.contains("lift_exponent"), "{y}");
+        let old = from_str(
+            "version: 4\nengine:\n  intake_valve:\n    open_deg: 340.0\n    duration_deg: 250.0\n    max_lift_m: 0.0124\n    diameter_m: 0.0495\n",
+            Format::Yaml,
+        )
+        .unwrap();
+        assert_eq!(old.intake_valve.lift_exponent, 1.4);
+    }
+
+    #[test]
     fn written_file_carries_version() {
         let y = to_string(&EngineDef::single(), Format::Yaml).unwrap();
         assert!(y.starts_with("version: 4\n"), "{y}");
@@ -523,6 +552,14 @@ mod tests {
             (
                 "intake valve",
                 Box::new(|d| d.intake_valve.open_deg = f64::NAN),
+            ),
+            (
+                "intake valve",
+                Box::new(|d| d.intake_valve.lift_exponent = 0.5),
+            ),
+            (
+                "exhaust valve",
+                Box::new(|d| d.exhaust_valve.lift_exponent = f64::NAN),
             ),
             ("redline", Box::new(|d| d.redline_rpm = 1e9)),
             (
