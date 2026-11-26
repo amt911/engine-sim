@@ -691,3 +691,18 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   the model's overrun pulse cannot be judged against reality. Separate from this: the impacts' level is a
   four-cylinder's whatever the count (`mechanism_dba_at_1m_loaded` is the whole engine's): energy over n
   cylinders would put the single 6 dB under it, V8 / V10 +3 / +4 dB (Lalor et al. scale by bore only).
+- **The LFA after Okamoto's catalyst can, the tank wall and filter, and the sub muffler fit (2026-11-26,
+  `scratch-refs/ovr/{sub,line,cres,tips}`, `abs_probe`, held WOT, 3 m, Reference)**: exhaust-only firing H2..H8
+  re H1 against the real dyno clip at 6600 / 7500 (rms dB): sub muffler 0.38 m 10.2 / 9.6, none 6.7 / 3.2, no
+  catalyst can 7.1 / 3.2, a straight pipe after the collectors 7.7 / 5.1; the fit took 0.25 m (8.7 / 5.6; the
+  6th–8th still cut 1.9 dB more than the 2nd–5th, JP 2008-169751 A ¶0041). Gates `sb` (LFA, base `b2`): physgate
+  crescendo +3.0 (just under; deficit 0.72), load +4.4, lift-off and comb PASS; spectral PASS; regress lowmid
+  −21.1 → −19.1; ear_gate bank +7.6, wind −13.9, lift +7.0, peak +14.7 (`b2` +9.5 / −22.2 / +9.0 / +15.2: main
+  fails ear_gate too); blind2 hnr over at bins 3–5. The intake is not the 7500 rpm dip (intake off: 83.3 vs 83.1
+  dB(A)). Against `b2` the firing H1 at the ear is 10–18 dB down at 6000–8200 (6800: −40.8 vs −22.6 dBFS) while
+  the 150–500 Hz floor between the orders fell 7–8: that is the wind failure, and it was already there in `hey`
+  (the jet fix), before this session's changes. Tip scale of Fig. 1 (×2 now) against the same build: ×2 / 2.5 / 3
+  / 3.5 — crescendo +3.01 / +2.45 / −1.69 / −0.88 dB(A)/octave, Fig. 8 rms at 4800 12.5 / 6.2 / 13.9 / 21.4 dB,
+  ear J (5500–8500) 53 / 36 / 24 / 22: every scale leaves a hole somewhere in 6000–9000 (the tips' comb moves
+  with it), as the primaries' and the main muffler's fits found. The real exterior line has none from 5500 to
+  8000.
