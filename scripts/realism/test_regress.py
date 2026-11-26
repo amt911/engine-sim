@@ -32,6 +32,16 @@ class RegressTest(unittest.TestCase):
     def test_a_worse_treble_hump_fails(self):
         self.assertEqual(self.run_pair(summary("base", -15, -14, 1), summary("new", -15, -14, 5)), 1)
 
+    def test_a_lift_from_too_few_events_is_not_judged(self):
+        # 2026-11-23: main's K20A lift (-1.8) was one throttle lift, the new build's (+5.1) the
+        # median of three at other moments; matched in time (drive scene) the new one was lower
+        ear = lambda sfx, lift, n: (f"k20-{sfx}                 PASS  bank  +14.2<+0.7 ok  wind  -12.9>+29.4 ok  "
+                                    f"lift  {lift:+.1f}>+10.4 ok  peak  +22.9>+48.4 ok  lifts {n}\n")
+        base = summary("base", -15, -14, 1) + ear("base", -1.8, 1)
+        self.assertEqual(self.run_pair(base, summary("new", -15, -14, 1) + ear("new", 5.1, 3)), 0)
+        base3 = summary("base", -15, -14, 1) + ear("base", -1.8, 3)
+        self.assertEqual(self.run_pair(base3, summary("new", -15, -14, 1) + ear("new", 5.1, 3)), 1)
+
     def test_the_same_numbers_pass(self):
         self.assertEqual(self.run_pair(summary("base", -15, -14, 1), summary("new", -15, -14, 1)), 0)
 

@@ -92,7 +92,14 @@ pub fn cycle_samples(rpm: f64, sample_rate: f64) -> usize {
     (120.0 * sample_rate / rpm.max(1.0)).round().max(1.0) as usize
 }
 
-/// One loop: `def` held at `rpm` (made seamless) and `throttle`, settled, then `cycles` whole
+/// The pull a held part-load loop follows, s: real recordings off load (a lift on the road, a
+/// decel on the dyno) come after one, with the pipes still at the full load's heat. Settled on
+/// overrun's own cold steady state instead, the LFA's span from full load to closed throttle read
+/// 3 dB less at 6800–7500 rpm (FACTS 2026-11-25).
+pub const PULL_BEFORE_S: f64 = 1.5;
+
+/// One loop: `def` held at `rpm` (made seamless) and `throttle`, after a pull of
+/// [`PULL_BEFORE_S`] at full throttle when `throttle` is below it, settled, then `cycles` whole
 /// cycles. Returns (the speed used, the samples).
 pub fn render_loop(
     def: &EngineDef,
@@ -107,10 +114,15 @@ pub fn render_loop(
         Simulation::with_quality(def.clone(), VehicleDef::default(), sample_rate, 1, quality);
     sim.set_limiter(false);
     sim.controls = Controls {
-        throttle,
+        throttle: 1.0,
         hold_rpm: Some(rpm),
         ..Controls::default()
     };
+    if throttle < 1.0 {
+        let mut pull = vec![0.0f32; (PULL_BEFORE_S * sample_rate) as usize];
+        sim.render(&mut pull);
+    }
+    sim.controls.throttle = throttle;
     // settle: the pipes' waves and the mean flows reach their steady state
     let mut warm = vec![0.0f32; sample_rate as usize];
     sim.render(&mut warm);
@@ -871,6 +883,31 @@ mod tests {
         let r = seamless_rpm(4321.0, 48_000.0);
         assert!((r - 4_321.080_27).abs() < 1e-3, "{r}");
         assert_eq!(cycle_samples(r, 48_000.0), 1333);
+    }
+
+    #[test]
+    fn a_held_part_load_follows_a_pull() {
+        // A recording of an engine off load (a lift on the road, a decel on the dyno) follows a
+        // pull: its pipes still hold the full load's heat. A held part-load scene is that same
+        // engine run first at full throttle for the pull, then at its load to settle, then
+        // recorded; the samples are those of a simulation driven so by hand.
+        let d = EngineDef::single();
+        let (rpm, x) = render_loop(&d, 3000.0, 0.0, 2, 48_000.0, Quality::Low);
+        let mut sim = Simulation::with_quality(d, VehicleDef::default(), 48_000.0, 1, Quality::Low);
+        sim.set_limiter(false);
+        sim.controls = Controls {
+            throttle: 1.0,
+            hold_rpm: Some(rpm),
+            ..Controls::default()
+        };
+        let mut pull = vec![0.0f32; 72_000];
+        sim.render(&mut pull);
+        sim.controls.throttle = 0.0;
+        let mut settle = vec![0.0f32; 48_000];
+        sim.render(&mut settle);
+        let mut want = vec![0.0f32; x.len()];
+        sim.render(&mut want);
+        assert_eq!(x, want);
     }
 
     #[test]
