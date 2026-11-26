@@ -1021,7 +1021,7 @@ impl EngineDef {
                 // the bank line below, catalyst to muffler (the last pipe refitted with the gas
                 // at its own temperature: hotter gas carries sound faster, the same delays ask
                 // for a longer pipe; 2026-10-31)
-                tail_length_m: 0.50 + 0.38 + 1.00,
+                tail_length_m: 0.50 + 0.25 + 1.13,
                 tail_diameter_m: 0.070,
                 tail_outlets: 1,
                 // Sport muffler with bypass valves: less damping than a road car.
@@ -1043,21 +1043,24 @@ impl EngineDef {
                 // up to the 5th at the recordings' 8000 rpm (≤ 4 dB to 2.1 kHz, 8 at 3.5) and
                 // takes 18–27 dB from 5.6 to 8 kHz. A 105 mm shell (the road silencers'
                 // smallest) took the H3 and H4 the car keeps 10–25 dB under its recordings
-                // (2026-11-20, "le falta algún armónico"); 120 mm cut H2–H6 (FACTS).
+                // (2026-11-20, "le falta algún armónico"); 120 mm cut H2–H6 (FACTS). Behind
+                // Okamoto's catalyst can it still took the 4th–6th 10 dB under the dyno clips;
+                // fitted (2026-11-26, the user: fit it to the recordings' orders with the
+                // patent's 6th-and-above): 0.25 m, the 1 m pipe after it 0.13 m longer.
                 after_collector: vec![
                     crate::exhaust::Segment::Pipe {
                         length_m: 0.50,
                         diameter_m: 0.070,
                     },
                     crate::exhaust::Segment::Muffler {
-                        length_m: 0.38,
+                        length_m: 0.25,
                         diameter_m: 0.076,
                         tube_diameter_m: 0.070,
                         packing_resistivity: crate::lining::Packing::default().flow_resistivity,
                         packing_porosity: crate::lining::Packing::default().porosity,
                     },
                     crate::exhaust::Segment::Pipe {
-                        length_m: 1.00,
+                        length_m: 1.13,
                         diameter_m: 0.070,
                     },
                 ],
@@ -8202,7 +8205,7 @@ mod tests {
     fn the_lfas_bank_lines_carry_their_sub_muffler() {
         // JP 2008-169751 A, ¶0041: "a sub muffler (not shown) between the engine and the main
         // muffler takes the higher orders (mainly the 6th and above)": on each bank's line, a
-        // third of the way from the catalyst (the Lexus drawing), a packed can of 0.38 m over
+        // third of the way from the catalyst (the Lexus drawing), a packed can of 0.25 m over
         // a 76 mm shell: it passes the firing harmonics up to the 5th and takes the treble
         // above, as the patent's Fig. 7A shows (FINDINGS 2026-11-20)
         use crate::exhaust::Segment;
@@ -8222,7 +8225,7 @@ mod tests {
         assert!(matches!(
             path[path.len() - 2],
             Segment::Muffler { length_m, diameter_m, tube_diameter_m, .. }
-                if length_m == 0.38 && diameter_m == 0.076 && tube_diameter_m == 0.07
+                if length_m == 0.25 && diameter_m == 0.076 && tube_diameter_m == 0.07
         ));
     }
 
@@ -11543,11 +11546,11 @@ mod tests {
             "{line}"
         );
         assert_eq!(EngineDef::inline4().exhaust.tail_length_m, 1.5);
-        // the LFA's bank line, catalyst to muffler: 0.50 + 0.38 (sub muffler) + 1.00 m
-        assert_eq!(
-            EngineDef::lfa_v10().exhaust.tail_length_m,
-            0.50 + 0.38 + 1.00
-        );
+        // the LFA's bank line, catalyst to muffler: 0.50 + 0.25 (sub muffler) + 1.13 m, the
+        // 1.88 m it was before the sub muffler's fit
+        let lfa = EngineDef::lfa_v10().exhaust.tail_length_m;
+        assert_eq!(lfa, 0.50 + 0.25 + 1.13);
+        assert!((lfa - 1.88).abs() < 1e-12, "{lfa}");
     }
 
     #[test]
