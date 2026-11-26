@@ -226,6 +226,11 @@ engine:
       ducts: 2
       duct_length_m: 0.4
       duct_diameter_m: 0.09
+      wall:
+        thickness_m: 0.003
+        density_kg_m3: 1360.0
+        area_m2: 0.175
+        resonance_hz: 400.0
     air_cleaner:
       fitted: false
       volume_m3: 0.0

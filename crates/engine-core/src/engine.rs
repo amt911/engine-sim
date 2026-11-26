@@ -340,6 +340,7 @@ impl EngineDef {
                     ducts: 1,
                     duct_length_m: 0.5,
                     duct_diameter_m: 0.065,
+                    wall: None,
                 }),
                 ..IntakeDef::default()
             },
@@ -3977,7 +3978,10 @@ impl Engine {
             None => heard,
         };
         let snd = &self.def.sound;
-        let intake_flow = -snd.intake * heard / AIR_DENSITY;
+        // the surge tank's wall breathes out beside the mouths ([`crate::intake_fv::TankWall`]):
+        // heard from the same place, through the same bay openings
+        let wall = self.intake_net.as_ref().map_or(0.0, |n| n.wall_rate());
+        let intake_flow = snd.intake * (wall - heard / AIR_DENSITY);
         self.texture_signal = intake_flow;
         // each tail's jet: its exit velocity u = (ρc·u)/ρc, its own distance to the listener
         // Exit velocity at each tail: the mean is mass continuity, ṁ/(ρA), with ṁ the exhaust
@@ -11882,6 +11886,49 @@ mod probe {
             .map(|(a, b)| format!("{:6.1}", 10.0 * (a / b).log10()))
             .collect();
         println!("  tails/flows  {}", tf.join(" "));
+    }
+
+    #[test]
+    fn a_surge_tanks_breathing_wall_is_heard_with_its_mouths() {
+        // An inline four at 4000 rpm (firing tone 133.3 Hz) drawing through a 10 L box whose
+        // wall (1 mm of steel over 0.2 m², an ESTIMATE of a thin box) breathes at that tone:
+        // the wall's volume velocity joins the mouth's, so the tone heard is stronger.
+        let heard = |wall: bool| {
+            let mut d = EngineDef::inline4();
+            d.intake.model = crate::intake_fv::IntakeModel::Fv;
+            d.intake.airbox = Some(crate::intake_fv::AirboxDef {
+                wall: wall.then_some(crate::intake_fv::TankWall {
+                    thickness_m: 0.001,
+                    density_kg_m3: 7850.0,
+                    area_m2: 0.2,
+                    resonance_hz: 133.3,
+                }),
+                ..crate::intake_fv::AirboxDef::default()
+            });
+            let (rpm, dt) = (4000.0, 1.0 / 48_000.0);
+            let c = Controls {
+                throttle: 1.0,
+                hold_rpm: Some(rpm),
+                ..Controls::default()
+            };
+            let mut e = Engine::new(d, rpm, 1);
+            for _ in 0..(0.5 / dt) as usize {
+                e.step(dt, &c);
+            }
+            let w = 2.0 * PI * rpm / 30.0;
+            let (mut re, mut im) = (0.0f64, 0.0f64);
+            for j in 0..(0.3 / dt) as usize {
+                e.step(dt, &c);
+                let t = j as f64 * dt;
+                (re, im) = (
+                    re + e.intake_heard * (w * t).cos(),
+                    im + e.intake_heard * (w * t).sin(),
+                );
+            }
+            re.hypot(im)
+        };
+        let gain = 20.0 * (heard(true) / heard(false)).log10();
+        assert!(gain > 1.0, "the wall adds {gain:.2} dB to the firing tone");
     }
 
     #[test]

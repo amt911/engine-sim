@@ -67,6 +67,9 @@ pub struct AirboxDef {
     pub ducts: usize,
     pub duct_length_m: f64,
     pub duct_diameter_m: f64,
+    /// The box's wall, breathing with the pressure inside and radiating to the air outside
+    /// ([`TankWall`]); none: a rigid box, heard only through its ducts' mouths.
+    pub wall: Option<TankWall>,
 }
 
 impl Default for AirboxDef {
@@ -76,8 +79,24 @@ impl Default for AirboxDef {
             ducts: 1,
             duct_length_m: 0.3,
             duct_diameter_m: 0.07,
+            wall: None,
         }
     }
+}
+
+/// A surge tank's wall in its breathing mode: a plate of `thickness_m` of `density_kg_m3`
+/// over `area_m2`, its mode at `resonance_hz`, driven by the box's pressure over the air's
+/// and pushing the air outside as a monopole ([`crate::exhaust::Shell`]: Kinsler et al.,
+/// *Fundamentals of Acoustics* 4th ed., §6.4). Below the mode it is a spring, above it a mass
+/// whose radiated sound is flat with frequency (the mass law's −6 dB/octave against the
+/// monopole's +6).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TankWall {
+    pub thickness_m: f64,
+    pub density_kg_m3: f64,
+    pub area_m2: f64,
+    pub resonance_hz: f64,
 }
 
 impl AirboxDef {
@@ -93,14 +112,25 @@ impl AirboxDef {
     /// deep → ≈ 20 L (4 × the 4.8 L swept); each duct's mouth is as wide as the drawing's
     /// bank spacing over five cylinders → Ø 90 mm, ≈ 0.40 m along its curve. Helmholtz with
     /// both end corrections (L' = 0.465 m): (c/2π)√(2A/(L'V)) = 65 Hz lumped, 62 Hz as a
-    /// line. Yamaha tuned the case's walls to radiate the firing tone (250–500 Hz) — a path
-    /// this model does not have yet, which is why the preset does not use it (2026-10-29).
+    /// line. Yamaha tuned the case's walls to radiate the firing tone ("a powerful harmonic
+    /// sound structure centered around 250 Hz" at 3000 rpm, 500 Hz at 6000, more highs above:
+    /// Yamaha Corp. news release, 2009-10-21) and Okamoto et al. (SAE 2011-01-2024, Fig. 18)
+    /// mark the tank "400 Hz, tuned by surge tank": its wall's breathing mode at 400 Hz. The
+    /// wall's material and thickness are not published: 3 mm of glass-filled polyamide (1360
+    /// kg/m³), the middle of the 2.4–4 mm of Aydemir et al.'s polymer manifold (SAE
+    /// 2009-01-0345), ESTIMATE; its area the case's top, 0.5 × 0.35 m.
     pub fn lfa_v10_estimate() -> Self {
         Self {
             volume_m3: 0.020,
             ducts: 2,
             duct_length_m: 0.40,
             duct_diameter_m: 0.09,
+            wall: Some(TankWall {
+                thickness_m: 0.003,
+                density_kg_m3: 1360.0,
+                area_m2: 0.175,
+                resonance_hz: 400.0,
+            }),
         }
     }
 }
@@ -173,6 +203,9 @@ pub struct IntakeFv {
     inducted_rate: f64,
     /// The FV step's rate before the last one (the interpolation's start).
     previous_rate: f64,
+    /// The surge tank wall's volume velocity over the last FV step and the one before, m³/s.
+    wall_rate: f64,
+    wall_previous: f64,
     /// Runners stepped elsewhere ([`IntakeFv::detach_runners`]); the ones from `first` on.
     remote: RemoteRunners,
     /// This step's left-end mass flux of every runner, per substep, and the local runners'
@@ -189,6 +222,10 @@ struct Airbox {
     gas: GasVolume,
     ducts: Vec<Pipe1d>,
     a_duct: f64,
+    /// Its wall ([`TankWall`]; a massless one for none: it never moves).
+    wall: crate::exhaust::Shell,
+    /// The volume the wall has pushed out since the FV step began, m³.
+    wall_swept: f64,
 }
 
 impl Airbox {
@@ -204,10 +241,25 @@ impl Airbox {
                 p
             })
             .collect();
+        let w = def.wall.unwrap_or(TankWall {
+            thickness_m: 0.0,
+            density_kg_m3: 0.0,
+            area_m2: 0.0,
+            resonance_hz: 0.0,
+        });
+        let air = Upstream::ATMOSPHERE;
         Self {
             gas: GasVolume::at(ATM_PA, AMBIENT_T_K, def.volume_m3.max(1e-4)),
             ducts,
             a_duct,
+            wall: crate::exhaust::Shell::new(
+                w.thickness_m,
+                w.density_kg_m3,
+                w.area_m2,
+                w.resonance_hz,
+                air.rho * C_AIR,
+            ),
+            wall_swept: 0.0,
         }
     }
 
@@ -238,6 +290,9 @@ impl Airbox {
             self.gas.energy_j += into.e * self.a_duct * h;
         }
         guard(&mut self.gas);
+        // the wall swells with the box's pressure over the air outside it (the atmosphere,
+        // also behind a compressor)
+        self.wall_swept += self.wall.step(self.gas.pressure() - ATM_PA, h) * h;
         (inducted, at_mouths)
     }
 
@@ -525,6 +580,8 @@ impl IntakeFv {
             inducted: 0.0,
             inducted_rate: 0.0,
             previous_rate: 0.0,
+            wall_rate: 0.0,
+            wall_previous: 0.0,
             remote: RemoteRunners(None),
             flux: Vec::new(),
             eflux: Vec::new(),
@@ -713,6 +770,7 @@ impl IntakeFv {
             self.radiated = radiated;
             self.previous_rate = self.inducted_rate;
             self.inducted_rate = self.inducted / dt;
+            self.wall_step_done(dt);
             return radiated;
         }
         for (i, pipe) in self.runners.iter_mut().enumerate() {
@@ -735,6 +793,7 @@ impl IntakeFv {
         self.radiated = radiated;
         self.previous_rate = self.inducted_rate;
         self.inducted_rate = self.inducted / dt;
+        self.wall_step_done(dt);
         radiated
     }
 
@@ -830,6 +889,23 @@ impl IntakeFv {
     pub fn drawn_rate(&self) -> f64 {
         let f = self.count as f64 / self.substeps as f64;
         self.previous_rate + (self.inducted_rate - self.previous_rate) * f
+    }
+
+    /// The volume velocity the surge tank's wall pushes into the air outside, m³/s (0 without
+    /// a wall), interpolated over the FV step as [`IntakeFv::drawn_rate`].
+    pub fn wall_rate(&self) -> f64 {
+        let f = self.count as f64 / self.substeps as f64;
+        self.wall_previous + (self.wall_rate - self.wall_previous) * f
+    }
+
+    /// An FV step of `dt` s is done: its wall's sweep becomes the rate.
+    fn wall_step_done(&mut self, dt: f64) {
+        let swept = self
+            .airbox
+            .as_mut()
+            .map_or(0.0, |b| std::mem::take(&mut b.wall_swept));
+        self.wall_previous = self.wall_rate;
+        self.wall_rate = swept / dt;
     }
 
     /// Step the runners from `first` on elsewhere (ITBs only: they are independent of each
@@ -1404,6 +1480,9 @@ mod tests {
         let yaml = serde_yaml_ng::to_string(&def).unwrap();
         assert_eq!(serde_yaml_ng::from_str::<IntakeDef>(&yaml).unwrap(), def);
         assert!(yaml.contains("duct_length_m: 0.4"));
+        assert!(yaml.contains("resonance_hz: 400.0"));
+        let rigid: AirboxDef = serde_yaml_ng::from_str("volume_m3: 0.02\nducts: 2\n").unwrap();
+        assert_eq!(rigid.wall, None);
         let old: IntakeDef =
             serde_yaml_ng::from_str("model: fv\nindividual_throttles: true\n").unwrap();
         assert_eq!(old.airbox, None);
@@ -1447,6 +1526,60 @@ mod tests {
             f += 0.25;
         }
         assert!((at / 61.59 - 1.0).abs() < 0.04, "rings at {at} Hz");
+    }
+
+    #[test]
+    fn the_surge_tanks_wall_swells_with_its_pressure() {
+        // The LFA's tank wall: 3 mm of polyamide (1360 kg/m³: m = 4.08 kg/m²) over 0.175 m²,
+        // its breathing mode at 400 Hz: k = (2π·400)²·m = 2.5771e7 Pa/m. Far below that mode it
+        // is a spring (Hooke): it swells by x = Δp/k, sweeping A·x = 6.791e-9 m³ per pascal over
+        // the air outside (the mass and damping terms are (f/f₀)² ≈ 2 % at the box's 62 Hz
+        // ring). The box rung as in the Helmholtz test: the volume the wall has pushed out at
+        // the end is A/k times the box's pressure over the air's. The draw is smooth (1 g over
+        // 50 ms, a raised cosine): a sharp one would ring the ducts' half-wave (≈ 370 Hz) at
+        // the wall's own mode, where it is no spring.
+        let dt = 1e-5;
+        let def = boxed(true);
+        let wall = def.airbox.as_ref().unwrap().wall.unwrap();
+        assert_eq!(
+            (
+                wall.thickness_m,
+                wall.density_kg_m3,
+                wall.area_m2,
+                wall.resonance_hz
+            ),
+            (0.003, 1360.0, 0.175, 400.0)
+        );
+        let mut net = IntakeFv::new(&def, 1e-3, 1, dt);
+        let a = net.a_runner;
+        let mut swept = 0.0;
+        let (mut worst, mut swing) = (0.0_f64, 0.0_f64);
+        for i in 0..(0.3 / dt) as usize {
+            let dm = if i < 5000 {
+                2e-7 * (1.0 - (2.0 * std::f64::consts::PI * i as f64 / 5000.0).cos())
+            } else {
+                0.0
+            };
+            net.add_valve_flow(0, dm, CP * 300.0);
+            net.step(a);
+            swept += net.wall_rate() * dt;
+            let gauge = net.airbox_pressure().unwrap() - ATM_PA;
+            if i >= 2000 {
+                worst = worst.max((swept - 6.791e-9 * gauge).abs());
+                swing = swing.max((6.791e-9 * gauge).abs());
+            }
+        }
+        assert!(swing > 1e-7, "the box barely rang: {swing} m³");
+        assert!(worst < 0.05 * swing, "off by {worst} m³ of {swing}");
+        // no wall: nothing radiates through it
+        let mut bare = boxed(true);
+        bare.airbox.as_mut().unwrap().wall = None;
+        let mut net = IntakeFv::new(&bare, 1e-3, 1, dt);
+        for i in 0..2000 {
+            net.add_valve_flow(0, if i < 1000 { 1e-6 } else { 0.0 }, CP * 300.0);
+            net.step(a);
+            assert_eq!(net.wall_rate(), 0.0);
+        }
     }
 
     #[test]
