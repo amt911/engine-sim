@@ -227,19 +227,19 @@ engine:
             - 19.0
         outlets:
         - - kind: pipe
-            length_m: 0.26
+            length_m: 0.2925
             diameter_m: 0.08
         - - kind: pipe
-            length_m: 0.26
+            length_m: 0.2925
             diameter_m: 0.08
         - - kind: muffler
-            length_m: 0.24
+            length_m: 0.27
             diameter_m: 0.1
             tube_diameter_m: 0.08
             packing_resistivity: 16000.0
             packing_porosity: 0.95
           - kind: pipe
-            length_m: 0.45
+            length_m: 0.50625
             diameter_m: 0.08
         baffle_open_area: 0.03
         open_rpm: 3000.0

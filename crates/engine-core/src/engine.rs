@@ -1153,29 +1153,32 @@ impl EngineDef {
                             ],
                         }],
                         // Fig. 1's proportion (L₂ ≈ 2.9·L₁ outside the chamber; the claim: L₂ ≥ 2·L₁)
-                        // at twice the scale first read off it (fitted, above: the long tip has to
-                        // cut the 1st order at ≈ 4800 rpm against the short pair and keep the 2nd,
-                        // Fig. 8), 80 mm bores (above); the lower one packed along its
-                        // part inside the final chamber (56, 58: about half of it in Fig. 1)
+                        // at 2.25 times the scale first read off it (fitted, above: the long tip
+                        // has to cut the 1st order at ≈ 4800 rpm against the short pair and keep
+                        // the 2nd, Fig. 8; refitted 2026-11-26 behind the catalyst can and the
+                        // sub muffler, against the recordings' steady firing line and the
+                        // crescendo: ×2 left a 7500 rpm hole, ×2.5 one at 8200), 80 mm bores
+                        // (above); the lower one packed along its part inside the final chamber
+                        // (56, 58: about half of it in Fig. 1)
                         outlets: vec![
                             vec![Segment::Pipe {
-                                length_m: 0.26,
+                                length_m: 0.2925,
                                 diameter_m: 0.080,
                             }],
                             vec![Segment::Pipe {
-                                length_m: 0.26,
+                                length_m: 0.2925,
                                 diameter_m: 0.080,
                             }],
                             vec![
                                 Segment::Muffler {
-                                    length_m: 0.24,
+                                    length_m: 0.27,
                                     diameter_m: 0.10,
                                     tube_diameter_m: 0.080,
                                     packing_resistivity: 16_000.0,
                                     packing_porosity: 0.95,
                                 },
                                 Segment::Pipe {
-                                    length_m: 0.45,
+                                    length_m: 0.50625,
                                     diameter_m: 0.080,
                                 },
                             ],
@@ -8199,6 +8202,35 @@ mod tests {
         let sdi = cylinder_pressure_level_1k(EngineDef::vw_sdi(), 1000.0, 1.0);
         let k20 = cylinder_pressure_level_1k(EngineDef::honda_k20a(), 1000.0, 1.0);
         assert!(sdi - k20 > 20.0, "SDI {sdi:.1} dB, K20A {k20:.1} dB");
+    }
+
+    #[test]
+    fn the_lfas_tips_keep_fig_1s_proportions_at_the_fitted_scale() {
+        // JP 2008-169751 A, Fig. 1 read at 0.13 m for the short tips and 0.12 m of wool + 0.225 m
+        // for the long one outside the chamber (L₂ ≈ 2.9·L₁; the claim: L₂ ≥ 2·L₁); fitted
+        // (2026-11-26, FACTS) at 2.25 times that: 0.2925 / 0.27 + 0.50625 m
+        let d = EngineDef::lfa_v10();
+        let b = d
+            .exhaust
+            .merge
+            .and_then(|m| m.bypass)
+            .expect("the LFA's bypass muffler");
+        let len = |o: &[Segment]| {
+            o.iter()
+                .map(|s| match s {
+                    Segment::Pipe { length_m, .. } | Segment::Muffler { length_m, .. } => *length_m,
+                    other => panic!("a tip of pipe and wool only: {other:?}"),
+                })
+                .sum::<f64>()
+        };
+        let l: Vec<f64> = b.outlets.iter().map(|o| len(o)).collect();
+        assert_eq!(l.len(), 3);
+        assert!(
+            (l[0] - 0.2925).abs() < 1e-9 && (l[1] - 0.2925).abs() < 1e-9,
+            "{l:?}"
+        );
+        assert!((l[2] - (0.27 + 0.50625)).abs() < 1e-9, "{l:?}");
+        assert!(l[2] >= 2.0 * l[0], "{l:?}");
     }
 
     #[test]
