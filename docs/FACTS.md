@@ -715,3 +715,20 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   stays with short primaries and fills 3 dB with short collectors; the tips' scale moves it (above). The
   downstream path is the waveguide (Borda–Carnot at its junctions); the FV pipes' area steps carry no expansion
   loss (geometric source only).
+- **Where the LFA's top-end power went, and the cam that brings it back (2026-11-26, `power_probe` spike, held
+  WOT, cylinder 0's p dV)**: at 8700 rpm on Heywood's sin^1.4 cam VE 0.973 (1.056 at 6800), PMEP −1.07, FMEP
+  1.77, BMEP 10.90 against the published 11.82 bar. The VVT maps were already at their best (intake 40° advance
+  ±10° moves ≤ 2 %), the lift does not matter (port-limited), and the catalyst can (−4 hp), sub muffler (−2 hp) and
+  surge-tank filter are physical. The flank does it: n = 1 on windows that keep the duration above a tenth of the
+  lift gives +4 / +2 / −6 % against Fig. 22 at 3800 / 7000 / 8700 (sin^1.4 +3 / +1 / −8; n = 1 on the whole
+  windows −6 / +1 / −4; narrowed to 96 % about the centres +1 / +3 / −5, but that moves the fitted events and
+  the overlap). Dyno 532 hp at 8000, 534 N·m at 6000.
+- **The cam pushes the LFA's crescendo under the gate, and why (2026-11-26, `scratch-refs/ovr/cresc`, held WOT
+  4500–9000, Reference)**: physgate crescendo +3.4 (tp) → +2.8 (cam on 96 % windows) → +2.3 (cam on kept
+  events); the fuller flank adds 2–4 dB(A) at every speed, most at 6000. All sources 86.9 / 88.6 / 88.6 / 87.5 /
+  91.3 dB(A) at 4500 / 6000 / 7500 / 8200 / 9000; intake off 83.5 / 88.3 / 89.3 / 87.4 / 87.1 (slope +3.6);
+  exhaust tonal alone 83.8 / 88.9 / 90.0 / 87.5 / 86.4 (+2.9). At 4500 the intake carries the firing order (375
+  Hz) 16 dB over the exhaust. Cylinder 0's port pressure at the firing order is flat, 77–80 dB re 1 Pa, from 4500
+  to 9000 (`xfer_probe`, exhaust only); the radiated firing order is −25.5 / −9.7 / −0.2 / −3.1 / −8.5 dB: the
+  path from port to ear swings 27 dB over 375–750 Hz with its peak at 625 Hz (7500 rpm). The source is flat (as
+  it should be at full load); the crescendo's shape is the path's.
