@@ -706,3 +706,12 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   ear J (5500–8500) 53 / 36 / 24 / 22: every scale leaves a hole somewhere in 6000–9000 (the tips' comb moves
   with it), as the primaries' and the main muffler's fits found. The real exterior line has none from 5500 to
   8000.
+- **The LFA's exterior firing line is the tail's, and the model's hole moves with every length (2026-11-26,
+  `scratch-refs/ovr/src`, `abs_probe`, held WOT, all sources, 3 m)**: the dyno clip's phone stands straight behind
+  the tips (FACTS 2026-10-29) and holds H1 dominant at 6060–7300 rpm (H2 −9.6 dB), so the steady real line does
+  not need the intake (the model's intake moves the 6800 / 7500 totals ≤ 0.3 dB(A)). Model H1 at the ear,
+  6000 / 6800 / 7500 / 8200 rpm: as built 87.3 / 79.2 / 82.4 / 89.0 dB (H2 at 6800 86.4, over H1); primaries
+  0.15 m 85.5 / 77.1 / 87.0 / 88.2; collectors 0.10 m 86.9 / 82.0 / 88.2 / 88.3. The 6800 rpm hole (567 Hz)
+  stays with short primaries and fills 3 dB with short collectors; the tips' scale moves it (above). The
+  downstream path is the waveguide (Borda–Carnot at its junctions); the FV pipes' area steps carry no expansion
+  loss (geometric source only).
