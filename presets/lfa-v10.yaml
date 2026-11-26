@@ -110,13 +110,51 @@ engine:
       porosity: 0.95
     tail_spacing_m: 0.0
     after_collector:
-    - kind: catalyst
-      length_m: 0.13
-      diameter_m: 0.1534
-      cells_per_in2: 400.0
-      wall_m: 0.000165
     - kind: pipe
-      length_m: 0.5
+      length_m: 0.02
+      diameter_m: 0.0805
+    - kind: pipe
+      length_m: 0.02
+      diameter_m: 0.1015
+    - kind: pipe
+      length_m: 0.035
+      diameter_m: 0.112
+    - kind: catalyst
+      length_m: 0.08
+      diameter_m: 0.112
+      cells_per_in2: 200.0
+      wall_m: 0.00005
+    - kind: pipe
+      length_m: 0.0275
+      diameter_m: 0.1064
+    - kind: pipe
+      length_m: 0.0275
+      diameter_m: 0.0952
+    - kind: pipe
+      length_m: 0.02
+      diameter_m: 0.0896
+    - kind: pipe
+      length_m: 0.0275
+      diameter_m: 0.0952
+    - kind: pipe
+      length_m: 0.0275
+      diameter_m: 0.1064
+    - kind: catalyst
+      length_m: 0.08
+      diameter_m: 0.112
+      cells_per_in2: 200.0
+      wall_m: 0.00005
+    - kind: pipe
+      length_m: 0.03
+      diameter_m: 0.105
+    - kind: pipe
+      length_m: 0.03
+      diameter_m: 0.091
+    - kind: pipe
+      length_m: 0.03
+      diameter_m: 0.077
+    - kind: pipe
+      length_m: 0.175
       diameter_m: 0.07
     - kind: muffler
       length_m: 0.38
@@ -226,6 +264,7 @@ engine:
       ducts: 2
       duct_length_m: 0.4
       duct_diameter_m: 0.09
+      filter_resistance_pa_s_m3: 4162.3
       wall:
         thickness_m: 0.003
         density_kg_m3: 1360.0

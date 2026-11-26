@@ -536,6 +536,48 @@ pub fn close_coupled_catalyst(swept_m3: f64, pipe_d: f64) -> Segment {
     }
 }
 
+/// The Lexus LFA's catalyst can, one per bank between `pipe_d` pipes (Okamoto et al., SAE
+/// 2011-01-2024, Fig. 19 and §7): a front and a rear three-way brick on metal supports ("less
+/// cell number": 200 cpsi of 0.05 mm foil, ESTIMATE of a metal substrate) in one can with a
+/// waist between them, cones at both ends. Read off the drawing against its outlet pipe: can
+/// Ø 1.6 pipes (112 mm at 70), waist 0.8 of the can, inlet cone 0.04 m then 0.035 m of can,
+/// waist cones 0.055 m each round 0.02 m of waist, outlet cone 0.09 m; bricks 80 mm, the
+/// drawing's 100 mm fitted within ±20 % to the dyno recordings' orders 2–8 (2026-11-26, the
+/// user: fit the drawing's uncertain sizes). Cones are steps of pipe (each ≥ 0.02 m). Sizes
+/// to a tenth of a millimetre, as a drawing gives them (and a file keeps them exactly).
+pub fn lfa_catalyst_can(pipe_d: f64) -> Vec<Segment> {
+    let mm = |x: f64| (x * 1e4).round() / 1e4;
+    let can = mm(1.6 * pipe_d);
+    let waist = mm(0.8 * can);
+    let pipe = |length_m: f64, diameter_m: f64| Segment::Pipe {
+        length_m: mm(length_m),
+        diameter_m: mm(diameter_m),
+    };
+    let cone = |from: f64, to: f64, length: f64, steps: usize| {
+        (0..steps).map(move |i| {
+            pipe(
+                length / steps as f64,
+                from + (to - from) * (i as f64 + 0.5) / steps as f64,
+            )
+        })
+    };
+    let brick = || Segment::Catalyst {
+        length_m: 0.08,
+        diameter_m: can,
+        cells_per_in2: 200.0,
+        wall_m: 0.000_05,
+    };
+    let mut out: Vec<Segment> = cone(pipe_d, can, 0.04, 2).collect();
+    out.push(pipe(0.035, can));
+    out.push(brick());
+    out.extend(cone(can, waist, 0.055, 2));
+    out.push(pipe(0.02, waist));
+    out.extend(cone(waist, can, 0.055, 2));
+    out.push(brick());
+    out.extend(cone(can, pipe_d, 0.09, 3));
+    out
+}
+
 /// Viscosity of exhaust gas at `t` K: Sutherland's law for air (μ₀ = 1.716e-5 Pa·s at 273 K,
 /// S = 110.4 K; White, *Viscous Fluid Flow*, Table 1-2), Pa·s.
 pub(crate) fn gas_viscosity(t: f64) -> f64 {
@@ -2642,7 +2684,9 @@ mod tests {
     #[test]
     fn the_lfa_sites_by_hand() {
         // presets/lfa-v10.yaml: banks 1–5 and 6–10, primaries 42 mm into 65 mm collectors
-        // (2.4×), each into a 153.4 mm catalyst, its 70 mm pipe into the shared 85 mm duct
+        // (2.4×), each into its catalyst can's inlet cone, two steps of 80.5 and 101.5 mm
+        // ((80.5/65)² = 1.53 and (101.5/80.5)² = 1.59: both sites; the can's 112 mm after them
+        // 1.22, its waist's way back up ≤ 1.25: none), its 70 mm pipe into the shared 85 mm duct
         // ((85/70)² = 1.47 < 1.5: no expansion site), one merged exit of 138.6 mm (three 80 mm tips: 0.08·√3). The bypass
         // silencer's chambers are not sites (this plan's ruling).
         let ex = crate::engine::EngineDef::lfa_v10().exhaust;
@@ -2652,20 +2696,27 @@ mod tests {
             .filter(|s| matches!(s.at, SiteAt::Collector { .. }))
             .count();
         assert_eq!(collectors, 10);
-        assert_eq!(
-            got.iter()
-                .filter(|s| s.at == SiteAt::Segment { index: 0 })
-                .count(),
-            2
-        );
+        for (index, d_jet, d_down) in [(0, 0.065, 0.0805), (1, 0.0805, 0.1015)] {
+            let at: Vec<_> = got
+                .iter()
+                .filter(|s| s.at == SiteAt::Segment { index })
+                .collect();
+            assert_eq!(at.len(), 2, "{index}");
+            assert!(
+                at.iter().all(|s| s.d_jet == d_jet && s.d_down == d_down),
+                "{at:?}"
+            );
+        }
+        assert_eq!(got.len(), 10 + 4 + 1);
         assert!(!got.iter().any(|s| s.at == SiteAt::MergeJunction));
         let exits: Vec<_> = got.iter().filter(|s| s.at == SiteAt::Exit).collect();
         assert_eq!(exits.len(), 1);
         assert_eq!(exits[0].branch, None);
         assert!((exits[0].d_jet - 0.138_564_064_605_510_18).abs() < 1e-12);
-        // the second bank's collector sites carry cylinders 6–10 (indices 5–9)
-        assert_eq!(got[6].at, SiteAt::Collector { primary: 5 });
-        assert_eq!(got[6].branch, Some(1));
+        // the second bank's collector sites carry cylinders 6–10 (indices 5–9), after the
+        // first bank's five and its two cone steps
+        assert_eq!(got[7].at, SiteAt::Collector { primary: 5 });
+        assert_eq!(got[7].branch, Some(1));
     }
 
     #[test]

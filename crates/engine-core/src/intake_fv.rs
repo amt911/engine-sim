@@ -67,6 +67,9 @@ pub struct AirboxDef {
     pub ducts: usize,
     pub duct_length_m: f64,
     pub duct_diameter_m: f64,
+    /// The air filter element between the ducts and the box, Pa per m³/s of the air through it
+    /// (0: none).
+    pub filter_resistance_pa_s_m3: f64,
     /// The box's wall, breathing with the pressure inside and radiating to the air outside
     /// ([`TankWall`]); none: a rigid box, heard only through its ducts' mouths.
     pub wall: Option<TankWall>,
@@ -79,6 +82,7 @@ impl Default for AirboxDef {
             ducts: 1,
             duct_length_m: 0.3,
             duct_diameter_m: 0.07,
+            filter_resistance_pa_s_m3: 0.0,
             wall: None,
         }
     }
@@ -118,13 +122,22 @@ impl AirboxDef {
     /// mark the tank "400 Hz, tuned by surge tank": its wall's breathing mode at 400 Hz. The
     /// wall's material and thickness are not published: 3 mm of glass-filled polyamide (1360
     /// kg/m³), the middle of the 2.4–4 mm of Aydemir et al.'s polymer manifold (SAE
-    /// 2009-01-0345), ESTIMATE; its area the case's top, 0.5 × 0.35 m.
+    /// 2009-01-0345), ESTIMATE; its area the case's top, 0.5 × 0.35 m. The tank is the air
+    /// cleaner's case (Okamoto Fig. 18 labels it so; EPC 17190, "case, air cleaner"): the
+    /// filter element sits in it, restricting [`crate::air_cleaner::RATED_RESTRICTION_PA`] at
+    /// the engine's rated flow (4.805 L · 9000 rpm / 120).
     pub fn lfa_v10_estimate() -> Self {
         Self {
             volume_m3: 0.020,
             ducts: 2,
             duct_length_m: 0.40,
             duct_diameter_m: 0.09,
+            // to 0.1 Pa·s/m³: a file keeps it exactly
+            filter_resistance_pa_s_m3: (crate::air_cleaner::RATED_RESTRICTION_PA
+                / (4.805e-3 * 9000.0 / 120.0)
+                * 10.0)
+                .round()
+                / 10.0,
             wall: Some(TankWall {
                 thickness_m: 0.003,
                 density_kg_m3: 1360.0,
@@ -226,6 +239,9 @@ struct Airbox {
     wall: crate::exhaust::Shell,
     /// The volume the wall has pushed out since the FV step began, m³.
     wall_swept: f64,
+    /// The filter element's resistance, Pa·s/m³, and the air through it last substep, m³/s.
+    filter: f64,
+    through: f64,
 }
 
 impl Airbox {
@@ -260,6 +276,8 @@ impl Airbox {
                 air.rho * C_AIR,
             ),
             wall_swept: 0.0,
+            filter: def.filter_resistance_pa_s_m3.max(0.0),
+            through: 0.0,
         }
     }
 
@@ -276,19 +294,24 @@ impl Airbox {
     /// sound source c·Σρu.
     fn breathe(&mut self, h: f64, inlet: Upstream) -> (f64, f64) {
         let up = self.upstream();
-        let (mut inducted, mut at_mouths) = (0.0, 0.0);
+        // the ducts end on the element: the box's pressure plus the element's drop at the flow
+        // it passed last substep (Darcy: linear in the flow), shared by every duct
+        let end = up.p + self.filter * self.through;
+        let (mut inducted, mut at_mouths, mut into_box) = (0.0, 0.0, 0.0);
         for duct in &mut self.ducts {
             // the ducts' lengths carry both end corrections (their inertance): plain ends
             let n = duct.cells.len();
             duct.left = Boundary::State(junction_ghost(duct.prim(0), inlet.p, inlet.rho, -1.0));
-            duct.right = Boundary::State(junction_ghost(duct.prim(n - 1), up.p, up.rho, 1.0));
+            duct.right = Boundary::State(junction_ghost(duct.prim(n - 1), end, up.rho, 1.0));
             duct.step(h);
             let (mouth, into) = duct.end_flux;
             inducted += mouth.rho * self.a_duct * h;
             at_mouths += C_AIR * mouth.rho;
+            into_box += into.rho * self.a_duct;
             self.gas.mass_kg += into.rho * self.a_duct * h;
             self.gas.energy_j += into.e * self.a_duct * h;
         }
+        self.through = into_box / up.rho;
         guard(&mut self.gas);
         // the wall swells with the box's pressure over the air outside it (the atmosphere,
         // also behind a compressor)
@@ -1483,6 +1506,7 @@ mod tests {
         assert!(yaml.contains("resonance_hz: 400.0"));
         let rigid: AirboxDef = serde_yaml_ng::from_str("volume_m3: 0.02\nducts: 2\n").unwrap();
         assert_eq!(rigid.wall, None);
+        assert_eq!(rigid.filter_resistance_pa_s_m3, 0.0);
         let old: IntakeDef =
             serde_yaml_ng::from_str("model: fv\nindividual_throttles: true\n").unwrap();
         assert_eq!(old.airbox, None);
@@ -1499,8 +1523,11 @@ mod tests {
         // λ/4 ≈ 1.4 m, so the distributed line's resonance (Kinsler §10.9: x·tan x = A_t·L'/V
         // = 0.29598, x = kL' = 0.51861) sits lower: f = c·x/(2π·L') = 61.59 Hz. A short draw
         // through the runners sets it ringing; the box pressure then swings at that frequency.
+        // The box without its filter element: the calculation has no loss to damp the ring.
         let dt = 1e-5;
-        let mut net = IntakeFv::new(&boxed(true), 1e-3, 1, dt);
+        let mut def = boxed(true);
+        def.airbox.as_mut().unwrap().filter_resistance_pa_s_m3 = 0.0;
+        let mut net = IntakeFv::new(&def, 1e-3, 1, dt);
         let a = net.a_runner;
         let mut p = Vec::new();
         for i in 0..(0.6 / dt) as usize {
@@ -1540,6 +1567,10 @@ mod tests {
         // the wall's own mode, where it is no spring.
         let dt = 1e-5;
         let def = boxed(true);
+        // the tank is the air cleaner's case: its element restricts 1.5 kPa at the engine's
+        // rated flow, 4.805 L · 9000 rpm / 120 = 0.36038 m³/s: 4162.3 Pa·s/m³
+        let r = def.airbox.as_ref().unwrap().filter_resistance_pa_s_m3;
+        assert!((r - 4162.3).abs() < 0.5, "{r}");
         let wall = def.airbox.as_ref().unwrap().wall.unwrap();
         assert_eq!(
             (
@@ -1580,6 +1611,36 @@ mod tests {
             net.step(a);
             assert_eq!(net.wall_rate(), 0.0);
         }
+    }
+
+    #[test]
+    fn a_filter_in_the_box_drops_the_pressure_by_its_resistance() {
+        // A steady draw of 0.06 kg/s through the box (air at 300 K, 1 atm: ρ = 1.1768 kg/m³,
+        // Q = 0.05099 m³/s). An element of R = 4170 Pa·s/m³ (1.5 kPa at the LFA's rated
+        // 0.36 m³/s, [`crate::air_cleaner::RATED_RESTRICTION_PA`]) between the ducts and the
+        // box takes R·Q = 212.6 Pa more off the box's pressure than an empty box loses.
+        let dt = 1e-5;
+        let settled = |r: f64| {
+            let mut def = boxed(true);
+            def.airbox.as_mut().unwrap().filter_resistance_pa_s_m3 = r;
+            let mut net = IntakeFv::new(&def, 1e-3, 1, dt);
+            let a = net.a_runner;
+            let mut p = 0.0;
+            let n = (1.5 / dt) as usize;
+            for i in 0..n {
+                net.add_valve_flow(0, 0.06 * dt, CP * 300.0);
+                net.step(a);
+                if i >= n - 20_000 {
+                    p += net.airbox_pressure().unwrap() / 20_000.0;
+                }
+            }
+            p
+        };
+        let drop = settled(0.0) - settled(4170.0);
+        assert!(
+            (drop / 212.6 - 1.0).abs() < 0.05,
+            "the element takes {drop} Pa"
+        );
     }
 
     #[test]

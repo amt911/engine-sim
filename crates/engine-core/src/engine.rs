@@ -340,6 +340,7 @@ impl EngineDef {
                     ducts: 1,
                     duct_length_m: 0.5,
                     duct_diameter_m: 0.065,
+                    filter_resistance_pa_s_m3: 0.0,
                     wall: None,
                 }),
                 ..IntakeDef::default()
@@ -1244,8 +1245,8 @@ impl EngineDef {
             vehicle: crate::drivetrain::VehicleDef::lfa_v10(),
             turbo: None,
         }
-        // its own bank lines (above), the catalyst first
-        .with_catalyst()
+        // its own bank lines (above), its catalyst can first
+        .with_lfa_catalysts()
     }
 
     /// Flat-plane V8 after the Ferrari F136 F (458 Italia): 4,497 cc from 94 × 81 mm,
@@ -1464,16 +1465,25 @@ impl EngineDef {
         self
     }
 
-    /// A road car's catalyst first after each collector
-    /// ([`crate::exhaust::close_coupled_catalyst`]): every one since the 1990s carries them,
-    /// and they shape the sound that reaches the tail (Elnemr, KTH 2011).
-    fn with_catalyst(mut self) -> Self {
-        let branches = self.exhaust.collectors.len().max(1);
-        let cat = crate::exhaust::close_coupled_catalyst(
-            self.displacement_m3() / branches as f64,
-            self.exhaust.tail_diameter_m,
-        );
-        self.exhaust.after_collector.insert(0, cat);
+    /// The LFA's catalyst can first in each bank line ([`crate::exhaust::lfa_catalyst_can`]),
+    /// the pipe after it shortened so the line still reaches its sub muffler where a 0.13 m
+    /// brick and that pipe did.
+    fn with_lfa_catalysts(mut self) -> Self {
+        let can = crate::exhaust::lfa_catalyst_can(self.exhaust.tail_diameter_m);
+        let long: f64 = can
+            .iter()
+            .map(|s| match s {
+                crate::exhaust::Segment::Pipe { length_m, .. }
+                | crate::exhaust::Segment::Catalyst { length_m, .. } => *length_m,
+                _ => 0.0,
+            })
+            .sum();
+        if let Some(crate::exhaust::Segment::Pipe { length_m, .. }) =
+            self.exhaust.after_collector.first_mut()
+        {
+            *length_m = ((*length_m - (long - 0.13)) * 1e4).round() / 1e4;
+        }
+        self.exhaust.after_collector.splice(0..0, can);
         self
     }
 
@@ -8206,9 +8216,11 @@ mod tests {
                 _ => "other",
             })
             .collect();
-        assert_eq!(kinds, ["cat", "pipe", "muffler", "pipe"]);
+        // after the catalyst can (its two bricks, `road_presets_carry_close_coupled_catalysts`)
+        assert_eq!(kinds.iter().filter(|k| **k == "cat").count(), 2);
+        assert_eq!(kinds[kinds.len() - 3..], ["pipe", "muffler", "pipe"]);
         assert!(matches!(
-            path[2],
+            path[path.len() - 2],
             Segment::Muffler { length_m, diameter_m, tube_diameter_m, .. }
                 if length_m == 0.38 && diameter_m == 0.076 && tube_diameter_m == 0.07
         ));
@@ -9420,19 +9432,37 @@ mod tests {
     fn road_presets_carry_close_coupled_catalysts() {
         // every road car has catalysts: one per branch right after its collector, of about the
         // branch's swept volume (the sizing rule of `exhaust::road_exhaust`), 0.13 m long. The
-        // LFA: 4.805 L over two banks, Ø = √(4·2.4025e-3/(π·0.13)) = 0.1534 m (hand)
+        // LFA's own, by Okamoto et al. (SAE 2011-01-2024): a front and a rear metal-support
+        // brick per bank ("less cell number"), in one can with a waist between them and cones
+        // at both ends (Fig. 19). From that drawing against its 70 mm outlet pipe: can Ø 112 mm,
+        // waist 0.8 of it, bricks fitted at 80 mm long (2026-11-26, the user: fit within ±20 %
+        // of the drawing to the recordings' orders); the can and the pipe after it still reach
+        // the sub muffler 0.63 m from the collector.
         let lfa = EngineDef::lfa_v10();
-        match lfa.exhaust.after_collector.first() {
-            Some(crate::exhaust::Segment::Catalyst {
-                length_m,
-                diameter_m,
-                ..
-            }) => {
-                assert_eq!(*length_m, 0.13);
-                assert!((diameter_m - 0.1534).abs() < 5e-4, "{diameter_m}");
-            }
-            other => panic!("the LFA has no catalyst first: {other:?}"),
-        }
+        let path = &lfa.exhaust.after_collector;
+        let bricks: Vec<_> = path
+            .iter()
+            .filter_map(|s| match s {
+                crate::exhaust::Segment::Catalyst {
+                    length_m,
+                    diameter_m,
+                    cells_per_in2,
+                    wall_m,
+                } => Some((*length_m, *diameter_m, *cells_per_in2, *wall_m)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(bricks, vec![(0.08, 0.112, 200.0, 0.000_05); 2]);
+        let to_sub: f64 = path
+            .iter()
+            .take_while(|s| !matches!(s, crate::exhaust::Segment::Muffler { .. }))
+            .map(|s| match s {
+                crate::exhaust::Segment::Pipe { length_m, .. }
+                | crate::exhaust::Segment::Catalyst { length_m, .. } => *length_m,
+                _ => 0.0,
+            })
+            .sum();
+        assert!((to_sub - 0.63).abs() < 1e-9, "{to_sub}");
         for d in [
             EngineDef::inline4(),
             EngineDef::honda_k20a(),
@@ -11482,29 +11512,36 @@ mod tests {
 
     #[test]
     fn each_preset_carries_only_the_exhaust_it_has_data_for() {
-        // the LFA, whose silencer is drawn at its bank merge: after each collector the
-        // catalyst every road car carries (sized by its rule), then its bank line of its own
-        // length and bore with the patent's sub muffler a third of the way
+        // the LFA, whose silencer is drawn at its bank merge: after each collector its catalyst
+        // can (Okamoto's Fig. 19, `exhaust::lfa_catalyst_can`), then its bank line of its own
+        // bore with the patent's sub muffler, the whole as long as the rule's 0.13 m brick and
+        // the line's own length
         // (`the_lfas_bank_lines_carry_their_sub_muffler`; the road cars without a drawn
         // silencer carry the rule's,
         // `every_road_car_carries_a_catalyst_and_silencers_of_ten_swept_volumes`)
         let d = EngineDef::lfa_v10();
-        let branch = d.displacement_m3() / d.exhaust.collectors.len().max(1) as f64;
+        let can = crate::exhaust::lfa_catalyst_can(d.exhaust.tail_diameter_m);
         assert_eq!(
-            d.exhaust.after_collector[0],
-            crate::exhaust::close_coupled_catalyst(branch, d.exhaust.tail_diameter_m),
+            d.exhaust.after_collector[..can.len()],
+            can[..],
             "{}",
             d.name
         );
-        let line: f64 = d.exhaust.after_collector[1..]
+        let line: f64 = d
+            .exhaust
+            .after_collector
             .iter()
             .map(|s| match s {
                 crate::exhaust::Segment::Pipe { length_m, .. }
+                | crate::exhaust::Segment::Catalyst { length_m, .. }
                 | crate::exhaust::Segment::Muffler { length_m, .. } => *length_m,
                 _ => 0.0,
             })
             .sum();
-        assert!((line - d.exhaust.tail_length_m).abs() < 1e-12, "{line}");
+        assert!(
+            (line - (d.exhaust.tail_length_m + 0.13)).abs() < 1e-9,
+            "{line}"
+        );
         assert_eq!(EngineDef::inline4().exhaust.tail_length_m, 1.5);
         // the LFA's bank line, catalyst to muffler: 0.50 + 0.38 (sub muffler) + 1.00 m
         assert_eq!(
