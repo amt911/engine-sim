@@ -7,7 +7,11 @@ and each failure says what the listener hears and which physics to look at.
              slope >= 3 dB(A) per octave of speed and a mean fall under the running maximum
              <= 2 dB(A). Real fixed-gain pulls: median +10.6 dB(A)/octave, lowest 3.2 (11 sessions);
              a test bed reads ~+9 dB unweighted from 3000 to 6000 rpm (Davies & Holland, JSV 223(3),
-             1999, Fig. 1c).
+             1999, Fig. 1c). The slope is the engine's trend: read on the energy mean of three ears,
+             the listener's and 15 deg to either side, because an intake heard metres from the tails
+             combs each speed's level at one point (the LFA, 2026-11-27: one build +4.4 / +2.3 /
+             +2.7 at 15 / 30 / 45 deg, mean +3.1; docs/FACTS.md). The fall is read at the listener:
+             a hole is heard where it is ("muy tapado" and "suena fatal" fail on it, 2.64 and 2.92).
   load       at ~0.75 x redline, full throttle must stand >= 3 dB(A) over a closed throttle (real
              exhaust microphones: decelerating -3.6 to -20.5 dB(A) under the pull), for a silenced
              exhaust only: open ones drop 0-4 dB(A) for real (a single, a race V10) and are not
@@ -45,6 +49,8 @@ FS = 48000
 FULL_SCALE_PA = 20.0  # the renderer's calibration: 0 dBFS = 20 Pa (crates/engine-audio dsp.rs)
 CRESCENDO_MIN_SLOPE = 3.0
 CRESCENDO_MAX_DEFICIT = 2.0
+# the crescendo's trend is read over three ears, the listener's and this far to either side of it
+EAR_SPREAD_DEG = 15.0
 LOAD_MIN_SPAN = 3.0
 LIFT_MAX = -3.0
 BURST_MAX = 1.0
@@ -163,6 +169,35 @@ def crescendo(levels):
     return slope, float(np.mean(runmax - la)), float(rp[int(np.argmax(runmax - la))])
 
 
+def crescendo_ears(own, others):
+    """(slope, mean deficit, worst rpm, own ear's slope) of the full-load levels {rpm: dB(A)} heard at
+    the listener (`own`) and at the other ears (`others`, one {rpm: dB(A)} each): the slope from the
+    energy mean over the ears at each speed (the own ear's level alone where an ear lacks that speed),
+    the deficit and its worst speed at the own ear."""
+    mean = {}
+    for r, v in own.items():
+        vs = [o[r] for o in others if r in o]
+        mean[r] = v if len(vs) < len(others) or not vs else \
+            float(10 * np.log10(np.mean([10 ** (x / 10) for x in [v] + vs])))
+    s1, dfc, worst = crescendo(own)
+    return crescendo(mean)[0], dfc, worst, s1
+
+
+def ear_angles(path):
+    """The listener's angle in an engine file (sound.listener_angle_deg; the format's default 30°) and
+    the two ears EAR_SPREAD_DEG to either side of it."""
+    m = re.search(r"\n\s*listener_angle_deg: ([-0-9.eE+]+)", open(path).read())
+    a = float(m.group(1)) if m else 30.0
+    return a, [a - EAR_SPREAD_DEG, a + EAR_SPREAD_DEG]
+
+
+def with_ear(text, angle):
+    """An engine file's text with its listener at `angle` degrees."""
+    if re.search(r"\n(\s*)listener_angle_deg: [-0-9.eE+]+", text):
+        return re.sub(r"(\n\s*listener_angle_deg: )[-0-9.eE+]+", lambda m: f"{m.group(1)}{angle}", text, count=1)
+    return re.sub(r"(\n(\s*)sound:\n)", lambda m: f"{m.group(1)}{m.group(2)}  listener_angle_deg: {angle}\n", text, count=1)
+
+
 def judge(d, redline):
     """[(check, measured, ok, what is wrong)] of the renders in d."""
     out = []
@@ -171,10 +206,16 @@ def judge(d, redline):
         rpm = float(re.search(r"held_(\d+)_", p).group(1))
         if rpm >= 0.5 * redline:
             full[rpm] = dba(load_wav(p)[FS:] * FULL_SCALE_PA)
+    ears = {}
+    for p in glob.glob(os.path.join(d, "ear*_held_*_1.0_*.wav")):
+        m = re.search(r"ear([-0-9.]+)_held_(\d+)_", os.path.basename(p))
+        if float(m.group(2)) >= 0.5 * redline:
+            ears.setdefault(m.group(1), {})[float(m.group(2))] = dba(load_wav(p)[FS:] * FULL_SCALE_PA)
     if len(full) >= 5:
-        s, dfc, worst = crescendo(full)
+        s, dfc, worst, s1 = crescendo_ears(full, list(ears.values()))
         ok = s >= CRESCENDO_MIN_SLOPE and dfc <= CRESCENDO_MAX_DEFICIT
-        out.append(("crescendo", f"{s:+.1f} dB(A)/octave, mean deficit {dfc:.2f} dB(A), {len(full)} speeds", ok,
+        heard = f" over {1 + len(ears)} ears (the listener's {s1:+.1f})" if ears else ""
+        out.append(("crescendo", f"{s:+.1f} dB(A)/octave{heard}, mean deficit {dfc:.2f} dB(A), {len(full)} speeds", ok,
                     f"full-load level does not build with speed (deepest hole at {worst:.0f} rpm): a source "
                     "cancels or a path closes as revs rise — intake and exhaust firing tones cancelling at the "
                     "listener, an exhaust trough on the firing order, a silencer path tuned onto it"))
@@ -233,6 +274,16 @@ def run(binary, engine, d):
         out = os.path.join(d, sc.replace(":", "_") + ".wav")
         if not os.path.exists(out):
             todo.append(["nice", "-n19", binary, "--engine", path, "--render", sc, "--out", out])
+    # the full-load speeds again with the listener EAR_SPREAD_DEG to either side (the crescendo's trend)
+    _, others = ear_angles(path)
+    for a in others:
+        ear = os.path.join(d, f"engine-ear{a:g}.yaml")
+        if not os.path.exists(ear):
+            open(ear, "w").write(with_ear(open(path).read(), a))
+        for r in full:
+            out = os.path.join(d, f"ear{a:g}_held_{r}_1.0_4.wav")
+            if not os.path.exists(out):
+                todo.append(["nice", "-n19", binary, "--engine", ear, "--render", f"held:{r}:1.0:4", "--out", out])
     # every render is one single-threaded process: run PHYSGATE_JOBS of them at once (default 4)
     jobs = max(1, int(os.environ.get("PHYSGATE_JOBS", "4")))
     with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
@@ -265,6 +316,36 @@ def selftest():
     assert abs(s - 6.0) < 1e-9 and dfc == 0.0, (s, dfc)
     lv[7000] -= 4.0
     assert crescendo(lv)[2] == 7000.0
+    # the ears: a 4 dB/octave engine heard through a ±3 dB comb that walks with the ear's angle.
+    # At the own ear the comb's phase reads +1.4 dB/octave (a fail); the energy mean of the three
+    # ears reads the engine's trend (≥ 3), and the deficit stays the own ear's (holes are heard there)
+    sp = [4500, 5200, 6000, 6800, 7500, 8200, 9000]
+    base = {r: 80 + 4 * np.log2(r / 4500) for r in sp}
+    comb = lambda ph: {r: base[r] + 3 * np.cos(2 * np.pi * r / 3000 + ph) for r in sp}
+    own, others = comb(np.pi), [comb(np.pi / 3), comb(5 * np.pi / 3)]
+    s_own, d_own, _ = crescendo(own)
+    s3, d3, _, s1 = crescendo_ears(own, others)
+    assert s_own < CRESCENDO_MIN_SLOPE <= s3, (s_own, s3)
+    assert abs(s3 - 4.0) < 0.5 and s1 == s_own and d3 == d_own, (s3, s1, d3, d_own)
+    # a speed some ear lacks is judged at the own ear alone
+    assert crescendo_ears(own, [{}, {}])[0] == s_own
+    part = [{r: v for r, v in others[0].items() if r != 9000}, others[1]]
+    by_hand = {r: 10 * np.log10(np.mean([10 ** (own[r] / 10), 10 ** (others[0][r] / 10), 10 ** (others[1][r] / 10)]))
+               for r in sp if r != 9000}
+    by_hand[9000] = own[9000]
+    assert abs(crescendo_ears(own, part)[0] - crescendo(by_hand)[0]) < 1e-9
+    # the ears' engine files: the listener turned, or placed where a file leaves the format's default
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        f = os.path.join(tmp, "e.yaml")
+        open(f, "w").write("engine:\n  sound:\n    flow_noise: 1.0\n    listener_angle_deg: 22.5\n")
+        assert ear_angles(f) == (22.5, [7.5, 37.5])
+        assert "listener_angle_deg: 7.5\n" in with_ear(open(f).read(), 7.5)
+        open(f, "w").write("engine:\n  sound:\n    flow_noise: 1.0\n")
+        assert ear_angles(f) == (30.0, [15.0, 45.0])
+        turned = with_ear(open(f).read(), 45.0)
+        open(f, "w").write(turned)
+        assert ear_angles(f)[0] == 45.0 and "    listener_angle_deg: 45.0\n" in turned, turned
     # comb: white noise is flat; noise plus its 0.82 ms copy (the ground image's delay) is combed
     x = rng.standard_normal(4 * FS)
     flat, _ = comb_floor(x)

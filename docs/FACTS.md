@@ -810,3 +810,13 @@ at load: 1 / 2 / 4 kHz 25 / 46 / 70 % random (LFA chassis dyno, above), −0.5�
   hslope −9.3 / −12.9 / −17.6, for2000 79 / 85 / 80 %; real `lfa-tips` −2.0 / −1.0 / −2.0, hslope −10.0 / −10.2 /
   −6.3, for2000 14 / 41 / 38 %; `lfa-accel` 2.0 / 5.4 / −2.1 at 5850–8550. Held, per1000 reads 20–23 dB: 6–9 dB of
   the gate's gap is the held condition, 12–15 dB stays (lines on 80 % of the 2–4 kHz half orders, real 14–46 %).
+- **The signature measured as the recordings are (2026-11-27)**: the LFA recordings' pull windows climb at 432 / 852 /
+  971 / 819 / 1508 rpm/s (median of each, `lfa-accel` / `flight` / `tips` / `k3t6` / `9AMH`); `--render sweep`
+  climbs at 731, the same pace. Through the recordings' pipeline (`sp_sim.run_scene(label, "sweep")`): the sin¹ cam
+  `cam6` E 5.46 (for4000 5.5 at 4950–5850 rpm, per1000 4.7; held 5.62), main `b2` 3.69 (held 4.35); `gears.wav`
+  pulls only reach 6750–9450 (cam6 4.09, b2 3.95) and the old verdict builds' gears 0–3 bins (no signature). Measured
+  alike, the sin¹ build still fails by 0.11, now on the half orders' lines at 4–8 kHz.
+- **physgate's crescendo over three ears (2026-11-27, user: "medir en igualdad")**: the slope on the energy mean of
+  the listener's ear and 15° to either side (`ear{deg}_held_*` renders, `engine-ear{deg}.yaml`), the deficit at the
+  listener. Main `b2` +5.0 (listener +6.3), the sin¹ cam `cam6` +3.1 (listener +2.3): both PASS; the ear's
+  failures keep failing on their holes at the listener (tapado deficit 2.64, fatal 2.92 > 2.0).
