@@ -769,3 +769,25 @@ without the intake −18.7, the block −19.2, the mechanical sources −18.9, t
 jets, valve jets, duct flow) −19.1, the combustion jitter −28.3 (−25.8). The cycle-to-cycle burn
 is the only random source the band hears; every turbulent one sits ≈ 28 dB under the orders. Real
 at load: 1 / 2 / 4 kHz 25 / 46 / 70 % random (LFA chassis dyno, above), −0.5…−1.7 dB (911, A4).
+
+## The tail's broadband at load: what each source gives (2026-11-27)
+
+- Davies scene (road 4-cylinders, FV, exhaust only, 0.25 m, held WOT; spike `davies_scene` dump,
+  `scratch-refs/davies/an.py`): broadband (A-weighted overall less every cycle line) at 6000 rpm
+  inline-4 / K20A / EJ25 79.8 / 90.0 / 94.0 dB(A) against Davies & Holland's 107 (1999 Fig. 1(c);
+  their 2nd order 88, ours 79.3 / 84.0 / 83.7). Above 500 Hz it is already ~95 % random: the tail
+  jet's. `sound.duct_flow` ×10 in pressure (K ×100) adds 0.1–4.2 dB; moving each chamber's
+  source from its inlet to its outlet (Davies & Holland 2001: the flow noise rises at the chamber
+  outlet/tailpipe junction) adds ≤ 2.6 dB more. At K = 2.5·10⁻⁵ the in-duct law sits far under
+  the jet everywhere.
+- Davies & Holland 2001 (JSV 239(4), §3.2): one chamber/tailpipe at M 0.2 (cold rig) radiated
+  25–30 mW, peaks at the tailpipe's resonances one to two orders over the background flow noise;
+  25 mW at 0.25 m spherical is ≈ 105 dB, Davies 1999's overall.
+- The LFA's tail jet is what its fitted 80 mm tips silence: three tips at ≈ 57 m/s (6000 rpm,
+  950 K) against the K20A's one 50 mm at 109. With 55 mm tips (the approved range's other end,
+  `ovr/cresc/t55.yaml`): 1–4 kHz random share −8.4 dB (80 mm −18.7), HNR 7.7 (19.7), per1000
+  pull median 5.9 dB (15.6), crescendo +4.6, but low-mid wind −7.2 dB (bound −18.4) and treble
+  broadband −13.5 (bound −21.1), and still per1000 16 dB at 4950–5850 rpm: the U⁸ jet is too
+  slow at low speed, too loud at the top and peaks at 0.2·U/D ≈ 150–250 Hz, in the wind band.
+  Tam's fine-scale shape (`FineScale`, already the valve and duct jets') puts 4.6 dB more of a
+  jet's power in 1–4 kHz against 150–500 Hz than the tail jet's Q 0.7 band-pass.
