@@ -1722,3 +1722,387 @@ trend (Young, SAE 810020: it rises slightly with speed, as modelled), the intake
 (the DC5's snorkel draws behind the grille, the bay's diffuse-field loss overstates it; worse by ear).
 A first version of `same_engine.py` masked lines 1.5 % wide, which covered the whole spectrum above
 ≈ 3.3 kHz at 6000 rpm; its self-test (a synthetic engine of known noise share) caught it.
+
+## The K20A "whistle": impulsive treble above 8 kHz, from two exhaust causes (2026-11-19)
+
+**Measure it:** the gates' bands stop at 8 kHz. Take the kurtosis per band above 8 kHz (real ≈ 3).
+
+**Symptom.** The user still heard a whistle (silbido) on the K20A render. Held 7000 rpm WOT (Reference)
+against the stock DC5 / EP3 clips, band energy in dB re total: 8–12 / 12–16 / 16–20 kHz model −10.6 /
+−8.9 / −11.2, real −12.8 / −17.0 / −27.4 and −22.5 / −26.0 / −33.3. The model's spectrum *rises* above
+8 kHz where the real one falls. The gates never saw it: their bands stop at 8 kHz.
+**Decisive measure: kurtosis per band** (50 ms blocks, median). Real clips: 3.0 in every band from 2 to
+16 kHz (Gaussian noise). Model: 3.2 / 4.9 at 2–4 / 4–8 kHz, but 20.6 / 19.3 at 8–12 / 12–16 kHz: the
+treble is clicks, not noise.
+**Not the cause (measured).** Aliasing in the decimation: a 16th-order anti-alias filter changed nothing.
+The slugs (main has it too). Switching one sound source off at a time did nothing either: two causes
+each carry the band.
+**Cause 1: the steepening waveguide.** Gas only (every `sound.*` at 0), its radiated pressure is a
+train of one-step shocks (kurtosis > 20). With linear pipes or the FV exhaust it is smooth (8–20 kHz
+≈ −45…−50 dB re total). The packed silencers pass them: by the 2D model they take 30–58 dB at
+1–2 kHz but only 3–8 dB at 11–20 kHz (the tube beams its highs), so they act as a high-pass on the
+shocks. The steepening line itself is right: one 0.6 m pipe carrying a 0.1–0.5 bar pulse matches
+Euler (FV at 1 mm) within 1–4 dB per octave band. The FV exhaust converges at 1 cm (1 cm and 5 mm
+agree): gas only, 4–8 kHz at −43.8 dB re total, against −24 for the steepening waveguide over the
+same linear designed path. **The pulses were too big.** At the K20A's port (7000 rpm WOT) the
+waveguide stood at 2.9 bar over the atmosphere, FV at 1.2. At the peak flow (0.25 kg/s) the valve's
+own Benson boundary held 0.90 bar, but the wave the net sent read 2.83. The valve end sent
+w⁺ = w⁻ + c·ṁ/A, which counts the gas at the reference density. Its waves are Blair's
+finite-amplitude ones (density ρ₀·X_s⁵), so a blowdown's wave carried up to 2.6 times the valve's
+mass. **Fix:** the valve end solves Blair's ṁ = 5ρ₀a₀A·(X⁺ − X⁻)·X_s⁵ for X⁺
+(`valve_boundary::sent_wave`). K20A, 7000 rpm, steepening on: gas only now matches FV's total
+(−55.1 dB). The whole render at 8–12 / 12–16 / 16–20 kHz is −23.6 / −26.5 / −29.8 dB re total,
+kurtosis 3.1 / 3.2, inside the real range.
+**Cause 2: the duct jets ran at an atmosphere's density.** `DuctFlow` took u = ṁ/(ρ_atm·A). In a
+1–2 bar blowdown pulse that ran the primaries' jets into the collector at 900–1060 m/s (Mach 1.5).
+Their noise goes as U⁴, above the cut-on as U⁶ with the shelf ×M/0.3, so it formed a hump at 10–20 kHz.
+**Fix (branch `fix/duct-jet-density`).** u = ṁ/(ρA) with ρ on the isentrope at the site's own
+pressure (`jet_noise::duct_jet_speed`). FV hands the cells' pressure; the waveguide's sites read
+their waves' (`Duct::node_pressure`, `far_pressure`). Duct flow alone over linear pipes:
+8–20 kHz −11.6 / −7.4 / −7.3 → −20.0 / −16.6 / −17.3 dB re total. With linear pipes and this fix,
+the whole K20A sits at −22 / −21 / −22 (kurtosis 3.5 / 4.8), inside the real range. 
+**The gates after the valve fix (2026-11-19).** `regress` against `b2` turned red on most presets
+(low-mid residual +1.2 to +2.7 dB, wind +1.5 on the I4 and EJ25) and `physgate` failed `load` on the V8
+crossplane (+5.5 → +2.5 dB(A)) and the single (+3.7 → +2.0). The duct-jet fix alone moved nothing
+(gates as `b2`); the valve fix did. Judged against the converged FV exhaust (4 cm and 1 cm agree), at
+each preset's `physgate` load speed, full throttle, the radiated level re FV is, linear valve → fixed
+valve: below 1 kHz +3.1 → +1.4 (K20A), +2.1 → +0.2 (single), +1.7 → −0.4 (V8 flat), +1.1 → −2.6
+(V8 cross), within ±1.5 dB on the rest except the K20C1 (−2.4) and the SDI (−2.0); 4–20 kHz, the old
+valve sat +7 to +24 dB over FV, the fixed one within ±2 dB. The old valve's pulses (port up to
+3.2–3.75 bar over the atmosphere against FV's 1.2) made the full-throttle sound louder than the gas
+dynamics give it, so the load contrast and the low-mid share the gates were fitted on carried that
+excess. Against stock K20A clips (`same_engine.py`, eight YouTube clips), the fixed build's low-mid
+(−8.5 / −5.4 / −3.8 dB at 5–6 / 6–7 / 7–8 krpm) and wind (−16.5 / −14.9 / −12.8) sit inside the real
+spread (low-mid −2.3 to −15, wind −7 to −42). Left: the V8 crossplane's low orders 3–4 dB under FV at
+full throttle, and the waveguide's overrun treble over FV's (LFA +7.8, V8 cross +10.9 dB at 4–20 kHz),
+which predates this fix.
+
+## Wind and lost harmonics after the valve fix: over-silencing, still silencers, coarse cells (2026-11-19)
+
+**Symptom.** With the valve's wave at its own density (above) the user heard the K20A "more like
+wind" and the LFA "losing harmonics, more synthetic". **Measure: order profile against same-engine
+recordings** (median level of firing harmonics 2–6 and of the other cycle orders re the firing
+order, tracked 0.2 s windows, `target/scratch-refs/ordc/oprof.py`). Real K20A (nine stock clips,
+5500–8000 rpm): −10 / −12 / −16 / −18 / −19 dB; the render −1 / −3 / −2 / −6 / −8 (main and the fix
+alike). Real LFA (12 clips, 6500–8500): −16 / −20 / −24 / −28 / −32, other orders −24.
+**Cause 1, over-silencing (found 2026-11-05 as spec A3, open since).** The K20A gas alone (every
+`sound.*` off) had the real profile; the full mix was 10 dB louder, the block and the flow noise on
+top of a tone the road exhaust had taken 33 dB off (production silencing: 18–20, Raff & Perry 1973
+Fig. 15, Davies 1999 Fig. 1c). `road_exhaust` now carries one packed rear silencer of 3.9 swept
+volumes (2+8 before): 22.8 dB off the open pipe, Davies' 2nd order at 104.8 dB (99 ± 6). The two
+anchors pull apart (2.5 volumes give 19.5 dB but a 107.8 dB 2nd order): only 3.9 is inside both.
+K20A after: −10 / −12 / −13 / −15 / −18, wind at 6–8 krpm −20 / −16 dB (real −7 … −18).
+**Cause 2, silencers at rest.** A perforate grazed by the mean flow resists 1 + 72·M times more
+(Rao & Munjal, JSV 108, 1986): the road silencer's dome falls 7–18 dB at 0.5–3 kHz at Mach 0.2–0.3
+(the K20A's tube runs near 0.27 at full throttle). The render's silencers are designed at their
+flow (Mach steps of 0.025, hysteresis: a flow riding a step boundary clicked as it switched).
+**Cause 3, coarse FV cells.** 4 cm cells hold a 3.7 kHz wave in four and damp it. LFA at 7400 rpm,
+harmonics 2–6: 4 cm −16 / −15 / −27 / −29 / −29, 1 cm −14 / −13 / −14 / −20 / −22 — but the gain was
+the FV intake's (its trumpets); the exhaust's alone moved nothing. On 1 cm intake cells the
+RENESIS starved and stalled at idle (not its port coupling's step: coupling every step still
+stalled), and the intake does not converge (5 mm: −11 / −3 / −21 / −22 / −16). The render keeps
+1 cm on the exhaust only, the intake on 4 cm: **open**, the LFA's upper harmonics with it.
+**Gotchas.** Render-derived insertion losses read 4–5 dB low against the engine's raw output (the
+render's floor): calibrate in-engine. `pgrep -f`/`pkill -f` on a pattern your own command line
+contains matches (or kills) your own shell.
+
+## The firing tone alone: a misread anchor shrank the road silencer (2026-11-19)
+
+The user heard the K20A as "wind" and the LFA as "missing harmonics" after the render moved to
+the converged FV exhaust. Measured against recordings of the same engines (two stock EP3 K20A
+clips, the LFA at its tips), cycle order by cycle order in tracked 0.2 s windows
+(`target/scratch-refs/look/ordtab.py`, `ordspec.py`), the firing harmonics matched, but
+everything else sat 10–17 dB under the firing tone where the recordings have it: the non-firing
+cycle orders (real −11…−15 dB re the firing line, ours −23…−28) and the floor between lines
+(real −14…−21, ours −25…−32). Total power over the firing line: K20A real +12.8 dB, render +4.2;
+LFA real +7.1, render −2.6. A tone that stands out of everything else like that is heard as a
+whistle or a howl ("silbido", "viento"), not as an engine.
+
+Part of it was the road silencer. Raff & Perry (JSV 28(3) 1973) Fig. 15 is the ISO drive-by of a
+5.9 L truck with and without exhaust silencing, 97.5 → 79.5 dB(A), and the silenced figure is
+the rest of the vehicle sounding under it: a floor for what a silencer takes off. Read as
+"production silencing takes 18–20 dB", it shrank the ten-swept-volume rule to one box of 3.9,
+which passes the 2nd order: Davies & Holland's production four-cylinder (JSV 223(3) 1999,
+Fig. 1c) reads 92.9 / 97.4 / 98.8 / 99.0 dB at 0.25 m over 4500–6000 rpm (mean 97.0); the three
+4-cylinders' mean over the same speeds is 97.1 with the ten-volume rule in two boxes, 104.4
+with one box of 6, 107.6 with one of 3.9. One chamber also passes the tone at every half wave
+of its length (0.45 m of hot gas: 556 and 1111 Hz), which is why production systems carry two
+boxes of unlike lengths. One speed alone is no anchor: the K20A's two-box exhaust reads 107.7 at
+4500 and 93.6 at 6000, its own standing waves.
+
+Ruled out on the way, with numbers: excited-jet amplification of the tail jet's broadband
+(Bechert & Pfizenmaier, JSV 43(3) 1975; Moore, JFM 80(2) 1977, Fig. 38: up to 0.42 dB per dB of
+excitation at St 0.35, Mach 0.2–0.3). The K20A's tail at 6000 rpm carries u'/U = 3.3 % at
+St 0.11 and 0.85 % at St 0.21 but under 0.1 % (Bechert's threshold) from St 0.3 up, where the
+jet responds: it adds little. Davies' broadband at 0.25 m (≈ 106 dB(A)) is not a far-field
+anchor either: 0.25 m is five diameters from the jet, in its hydrodynamic near field.
+
+Still open after the silencer: the non-firing orders. With N cylinders, each non-firing line
+over the firing line is ≈ σ²/(N − 1), σ the spread of the cylinders' complex pulse amplitudes at
+that frequency. The recordings' −21 dB (LFA) and −13 dB (K20A) need σ ≈ 0.27 and 0.4; the
+presets' primary-length deviations give ≈ 0.07.
+
+The sin^1.4 cam lift (Heywood Fig. 6.16c) of the same day is reverted, not discarded: the suite
+it had not been run against fails six fits with it (the LFA's torque band and the SDI's power
+against the published figures, the diesel's light-load burn, the flat-plane V8's idle and blip
+return, the launch in first). The presets' windows were fitted with the sin² lift; a real flank
+needs each preset's duration restated at its checking lift and refitted.
+
+## The LFA's open trumpets drowned its tips (2026-11-20)
+
+The LFA rendered after the road-silencer fix still sat 13–17 dB too tonal against four
+recordings of the car (rear exterior, in-car tips, YouTube, dyno; they agree within 4–8 dB on
+each measure). Held at 8000 rpm WOT, source by source (`target/scratch-refs/abl3`): flow
+noise, valve jets, duct flow, mechanical and block move nothing; without the intake the total
+falls 12 dB and the cycle orders read firing harmonics −12.2, other orders −18.5, floor −27.0
+dB re the firing line against the recording's −13.0, −22.4, −28.4. The ten ITB trumpets had
+been radiating straight to the air since 2026-10-30, the car's surge tank
+(`AirboxDef::lfa_v10_estimate`) left out because it cost 12 hp at the top and the render of
+that day sounded the same without it. With the tank: −14.5, −20.7, −29.2, and the Ultra guard
+against the real car's orders passes (it read 11.5 dB RMS against its 11.0 bound). The tank's
+size moves the power by 2 hp at most (20–30 L, 9–11 cm ducts): the 12 hp are its presence, on
+top of the 13 % the sin² lift already leaves at the top (`the_lfa_breathes_as_lexus_published`).
+
+## A real cam flank, kept on each preset's fit (format 4, 2026-11-20)
+
+Cams lift on sin^1.4 (Heywood Fig. 6.16c: 1.3, 4.5 and 8.9 mm of an 11 mm lift at 0.056, 0.177
+and 0.339 of the window; sin² gave 0.35, 3.1 and 8.4). Kept whole, the sin² windows broke six
+fits to published figures (LFA torque band, SDI power, diesel burn, flat-plane idle and blip,
+launch): the presets' windows were fitted to those figures with sin². Each window now keeps its
+duration above a tenth of the lift (Honda's 1 mm checking lift on a 10 mm valve) and its
+centre: 0.9074 of its old length, opening 0.0463 of it later (`valve::from_sin2_window`);
+v3 files migrate the same way, rotary ports (the rotor's edges, no cam) stay. Every published
+fit holds, and the LFA with its surge tank makes its power floor again. Tried and dropped,
+with the suite as judge: a 5 % or 7.5 % checking lift (each failed a different fit), and an
+exponent varying along the flank as Heywood's (1.17 + 1.23·u; it fits his three points to
+0.03 mm but cost the LFA 9 hp and raised its idle dilution).
+
+Two tests the conversion moved were measuring something else than they said:
+- The LFA's idle dilution (33.9 % against a bound set half a point over its own old value) was
+  measured 4 s after a cold start, the exhaust ports still at 320 K (their walls relax with
+  60 s and lose nothing outside): their gas, drawn back as the valve closed, left a 494 K
+  residual. On walls settled where the model puts them after minutes (the flow-weighted mean
+  temperature of the gas the valve sends out, 816 K), 25.9 %, inside Heywood's 20–30 %.
+  Renders start cold the same way: a clip is a cold engine's for its first minutes.
+- The air cleaner's insertion loss, Raff & Perry Fig. 14 (a truck's drive-by: open 89.0,
+  standard cleaner 80.5, special silencer 79.5 dB(A)), is again a floor: the special one gaining
+  1 dB says the rest of the truck sounded under them. One speed (3000 rpm) read 15.2 dB(A)
+  against an upper bound of 15; the mean over 2000–5000 rpm reads 18.7 with either cam, a car
+  intake box's usual 15–25 dB.
+- The VTEC blow-through test's share sits at 14.7/15.7 = 0.936 with no overlap at all (the ECU
+  meters the fresh charge as mixture, the throttle counts air); the overlap's blow-through is
+  the fall from there: the VTEC lobe 1.3 %, the low lobe 1.0 % at 6500 rpm unphased.
+
+## The LFA's lift-off "soplido": the sub muffler the patent names (2026-11-20)
+
+With the surge tank in, the LFA's closed throttle at 6800 rpm sounded 1.6 dB(A) over its full
+throttle, the treble 8–16 kHz 13 dB over (the "soplido al soltar" open since 2026-11-13: no
+synthesized source moves it, it is the exhaust gas at overrun, the cylinder at ~20 kPa drawing
+the pipe's gas back at each opening, 0.077 kg/s against 0.023 inducted, as a hand estimate
+gives). The bare trumpets' tone had hidden it. The valve opens on speed alone, as the patent
+says (JP 2008-169751 A ¶0034: above one speed, shut below another), so overrun at speed takes
+the open path. What the preset lacked is the sub muffler of ¶0041 ("takes the higher orders,
+mainly the 6th and above"): with a packed 105 mm can over 0.38 m on each bank line, closed
+throttle drops 8.7 dB(A) and full 2 (the flow through it at full load takes much of its loss),
++5.1 dB(A) full over closed, and the cycle orders within 2.5 dB of two recordings of the car.
+
+The real-time guards against the LFA's chassis-dyno clip measured one held speed (6700 rpm, its
+orders) and 8000 rpm (its harmonic share), though the clip spans 6060–7300 rpm: at 6700 the
+tips' comb left H4 and H5 20–40 dB under their neighbours and flattered the orders' RMS. Over
+the clip's own five speeds (`lfa_held_through_the_clips_speeds`) the real-time model reads
+12.2 dB without the sub muffler and 12.3 with it, its harmonic share 0.641 with it (0.67+
+without). The user re-based the two guards there (12.3, 0.64) and kept the sub muffler for what
+it does to the render.
+
+## The K20A's whistle is its block and valvetrain heard from behind; the LFA's missing harmonic its sub muffler (2026-11-20)
+
+Held at 7000 rpm WOT, the share of each band's energy on cycle lines (`look/hfmod.py`): stock EP3
+recordings 8–12 / 7 / 6–7 % at 0.8–2 / 2–5 / 5–10 kHz; the K20A render 29 / 17 / 9 %; the exhaust
+alone (block, impacts, intake off) 7 / 8 / 7 %. Source by source: the block (combustion through
+the structure) carries the 0.8–2 kHz lines and the firing harmonics (without it H2–H6 fall from
+−2.1 to −11.3 dB re H1; real −9.8), the impacts the 2–5 kHz ones. At the ear 3 m behind the tail
+the block is as loud as the whole exhaust (A-weighted), 3 dB over it at 0.8–2 kHz. The
+combustion's cycle-to-cycle spread is Heywood's (flame angles σ ≈ 12 %, Fig. 9-35), so the lines
+are not too periodic; they are unmasked. The body's screen (Maekawa over the roof's rear edge,
+re-applied) brings the bands to 20 / 8 / 7 %; what is left at 0.8–2 kHz is the block's level
+(its structure response is the median of nine diesels, ±8 dB).
+
+The LFA's "missing harmonic" was H3–H4 (1.7–3.3 kHz), 10–25 dB under four recordings of the car
+with a 105 mm sub-muffler can (TL 21–38 dB at 1.4–2.1 kHz by the 2D model). A 76 mm shell over
+the 70 mm pipe passes up to the 5th firing harmonic at 8000 rpm (≤ 4 dB to 2.1 kHz) and takes
+18–27 dB above 5.6 kHz, as the patent says the sub muffler does (Fig. 7A): H3 −12, H4 −20 against
+−12/−16 and −17/−13. Held closed throttle at 6800 rpm then sounds as full again (−0.4 dB(A)): the
+overrun's own treble spans 2–16 kHz, and a can that keeps H3–H4 cannot take it.
+
+Two checks on what is left of the K20A's whistle (the block's 0.8–2 kHz), 2026-11-20:
+- **The exhaust is not too quiet.** HKS publishes the stock cars' close exhaust noise (Japan's
+  stationary test: 0.5 m, 45° from the outlet, neutral, held at a share of the power speed):
+  Accord Euro R CL7 (K20A) 79 dB, FK8 82, FL5 80. The K20A here, exhaust's own sources, ground
+  under it, held with no load: 85.1 dB(A) at 4000 rpm, 76.9 at 6000. Within ±6 dB (the test
+  speed for an 8000 rpm engine is not certain here): the 15 dB Davies' broadband seemed to ask
+  for was his 0.25 m, the jet's near field.
+- **The combustion excitation is not too sharp.** One cylinder's pressure at 2000 rpm WOT: the
+  1 kHz line 68.8 dB under the cycle line; Anderton (SAE 790270, Fig. 2–3) measured 60.6 on a
+  1.6 L gasoline engine. He also finds gasoline engines' combustion noise under their mechanical
+  noise; here the block reads 7 dB over the valvetrain at 7000 rpm, which points at the block's
+  structure response (the median of nine diesels) for a light gasoline block.
+
+The default ear now stands 0.5 m up behind the tails (2026-11-20, by the user's choice), where
+the recordings are made: at 1.6 m it grazed the roof's rear edge and the body hid little of the
+block. K20A at 7000 rpm WOT: cycle-line share 10 / 7 / 7 % at 0.8–2 / 2–5 / 5–10 kHz (stock EP3
+recordings 8–12 / 7 / 6–7; standing ear 20 / 8 / 7), firing harmonics −10.9 dB re H1 (real
+−9.8), floor −21.3 (−21.9).
+
+## The K20A's "soplido grave": cycle-to-cycle flow passing straight-through silencers (2026-11-20)
+
+The user heard low wind under the K20A at high speed. Energy at 10–30 / 30–60 Hz re the total:
+stock EP3 recordings −36…−46 / −25…−42 dB, the render −15…−18 / −15…−17 (the LFA likewise, −16
+against −41). Held 7000 rpm WOT, exhaust sources only: without the combustion's cycle-to-cycle
+spread the 5–40 Hz band falls 18 dB and the floor under order 0.5 from −20 to −39 dB re the firing
+line (real −40). The spread itself is the measured one (work per cycle COV 1.6–2.0 %, p at EVO
+2.1 %, pmax 9–11 %; Heywood, Soltau): it moves the mean flow at the tail by ~1 % (≈ 1 m/s at
+116 m/s), while the road silencers leave the firing tone's swing there at ≈ 0.7 m/s. Straight-
+through packed boxes add no mean-flow resistance (exhaust-stroke cylinder pressure 71.4 kPa with
+them, 71.2 without), so nothing low-passes the slow flow (a production chambered muffler's
+back pressure with the boxes' compliance would, at a few Hz). Open: what the stock EP3 muffler
+is; not changed without its drawing. The stock pipe (54 mm, owners' measurements) took the
+treble wind off at 7000–8000 rpm but read Davies' 2nd order at 101.4 dB (bound 97 ± 3): held back.
+
+**Recordings cut the lows (2026-11-22).** Every reference recording falls far under its 200–400 Hz
+band below 40–120 Hz (third octaves re that band: the EP3 rolling road −16 dB at 100 Hz, −36 at
+50; a K20A dyno −24 at 50; two K20 clips −13…−20 at 25–31.5; the LFA's tips gentler, −9 dB/oct).
+The render stood flat at −13…−17 from 12.5 to 50 Hz: the exhaust's mean flow swinging cycle to
+cycle, physical, but no microphone the presets are judged against carries it, and the user
+heard it as a low wind. `sound.mic_low_cut_hz` (40 Hz by default, a second-order Butterworth on
+the engine's sound) is that recording chain; 0 hears the air as it moves.
+
+## The K20A's wind: a 4-into-1 side branch on its 2nd order; the treble's missing randomness (2026-11-23)
+
+User (2026-11-23): both presets carry a background wind. The K20A's is the tail jet (switching
+`sound.flow_noise` off took `same_engine.py`'s wind at 7500 rpm from −8.4 to −24.4 dB; ARP876 at
+the model's 136 m/s through 50 mm gives the jet's own level). The jet is not too loud; the tone
+under it fell. Against a stock EP3 rolling-road clip the firing line stands 8–11 dB over its
+5000 rpm level from 5500 to 8000 (VTEC); the render's fell 5–12 dB. Held, FV, at the tail: the
+valves' summed flow keeps a flat 2nd order with speed (the choked blowdown's peak does not grow
+with rpm), the road silencers' insertion loss climbs 17 dB from 133 to 233 Hz, and the 4-into-1
+of 0.624 m put the three primaries shut at their valves on the 2nd order as quarter-wave side
+branches: the Davies scene read 85.2 dB at 6500 rpm against 107.0 at 5000. That collapse is
+shared by the inline4 and the EJ25 on the same road exhaust (−15 and −7 dB from 4500 to 6000,
+where Davies' car rises 6): `a_production_exhaust_keeps_the_second_order_of_davies_from_4500_to_6000`
+averages four speeds and does not see the shape. Ruled out: the time step (48–192 kHz agree),
+the steepening, the pipe lengths between the boxes, an exhaust VTEC lobe.
+
+**Fix:** the stock cast 4-2-1 (`EngineDef::with_four_two_one`: pairs 1-4 and 2-3 into two
+secondaries that merge before the catalyst). Its lengths are unknown; swept on the FV exhaust
+(primaries 0.30–0.45, secondaries 0.30–0.60 m), the pair path shut at a valve is the side branch
+now, and short ones put it on the 2nd order at 6000–7500 rpm (0.40/0.45 m: `physgate` crescendo
+FAIL at 6200). 0.40/0.60 m follows the clip's shape (a dip at 5000, then up) and every gate but
+one passes: physgate, ear gate, blind2, spectral order 4.14 → 0.61, treble wind −11.9 → −25.7 dB.
+`the_tail_broadband_reads_the_jet_law_at_6000` now takes every cycle order out of the broadband,
+not the firing series alone: the two pairs are not alike and their orders between are lines.
+
+**Still failing, the next work:** the spectral tier's texture — periodic 2–4 kHz +9.4 dB and
+4–8 kHz +7.1 dB against the real clips' most extreme +3.1 and +0.4 (0.45/0.60 m: +17.7, +12.0 and
+the treble randomness 0.8 % against ≥ 1.6 %). The model's treble repeats cycle after cycle: while
+the jet covered the tone it supplied the randomness (heard as wind); with the tone back it is
+too clean. The same on the LFA: equal primaries (its ±3 cm delays scramble the treble's phases)
+put its firing series 5 dB over the other orders at 2–4 kHz and read better on every spectral
+number, and the user heard it as "fatal, no parece ni el coche real" (as "too clean" on
+2026-10-31); reverted. What a real engine has and the model lacks is cycle-to-cycle variation of
+the pulses' treble. Also seen on the LFA, not changed: on the FV exhaust its firing order falls
+11–17 dB at 6600–7500 rpm (the other primaries as three-quarter-wave side branches near 570 Hz;
+the waveguide 1–4 dB), and the ear gate's 150–500 Hz "wind" reads against that line.
+
+**Where the K20A's periodic treble comes from, and what it is measured against (later the same
+day).** Attribution (`attribute.sh`): the intake mouth carries it (intake off: periodic 1/2/4 kHz
+−15/−23/−18 dB); valve jets, duct flow, mechanical and block move it by ≤ 2 dB. Ruled out:
+- Screening the intake mouth by the body (no `.unscreened(mouth)`): texture passes (1.80/2.30),
+  but `physgate` load fails at 6300 rpm (+1.1 dB(A), bound +3): the exhaust alone has no load
+  contrast (−0.8 dB(A); on overrun its 4–16 kHz are 9–15 dB *over* full load, lines at 12–15 kHz
+  56 dB over the floor, no sound knob moves them: the open "Overrun ≈ full power at the tail").
+  The LFA fails three physgate checks that way.
+- The throttle's own flow noise (`DuctJet` at the bore's exit into the plenum, Davies & Holland
+  1999 Fig. 1): +0.0 dB at full load (≈ 40 m/s); +6…+15 dB at 2–8 kHz at 0.4 throttle. Not kept.
+Against the stock K20 dyno clips (`same_engine.py`, `yt/`), the render's treble is not too loud:
+1.5–4 kHz is 8–19 dB under the firing line against −6…+7 in most clips. Its 1.5–4 kHz line share
+is 76–88 % at 5000–7000 rpm against 37–72 %. Rendered as the clips were recorded, in a dyno cell
+(`room: 240 m³, RT60 1.2 s`), the share drops to 65 / 80 / 48 / 35 % at 5–9k rpm; low-mid −8.5…−13
+and wind −21…−27 dB sit in the clips' range. Most of the texture failure is the comparison's
+conditions (the free-field render against recordings carrying a room or the road): the
+reverberant tail of a sweep fills the gaps between the lines. What remains is 6000–7000 rpm
+(80 % against ≤ 72 %).
+
+**An open runner end reflected every frequency (2026-11-23, night).** The intake FV runners met the
+plenum (and the ITB trumpets met the air) through `junction_ghost`, a constant-pressure end: |R| = 1
+at every frequency. A real unflanged open end radiates its highs (Levine & Schwinger 1948, end
+correction 0.6133 a; Silva et al., JSV 322, 2009, fit |R| = 0.894 at ka 0.5, 0.346 at ka 2), so the
+runners rang at their HF standing waves on every cycle: the periodic 1–8 kHz texture that read as
+"soplido". `open_end_ghost` adds the radiation impedance as ρc in parallel with the end-correction
+inertance (|R| = 1/√(1+4(kl)²): 0.85 / 0.38 at ka 0.5 / 2), tested against Silva's values. The airbox
+ducts keep plain ends: their lengths already carry both end corrections (L + 0.85 a + 0.6 a), and
+adding the inertance again moved their Helmholtz test 57.75 → 61.59 Hz. Result, K20A 4-2-1: texture
+2.20/2.30 (was 3.42; periodic 2–4 kHz 17.7 dB pull → passing), spectral, expect, physgate and
+ear_gate pass. Still open: lift +5.1 dB ('soplido al soltar', the exhaust's overrun treble) and the
+LFA's low-mid over its approved build (−13.7 dB against −18.4).
+
+**The LFA's "wind" since its surge tank is exposed noise, not noisy gas (2026-11-23, night).** The
+ear gate's wind (150–500 Hz between the orders) went from −22.2 dB (main) to −2…−4 on this branch,
+the spectral low-mid −21 → −13; the step is `a69baa0` (the trumpets draw from the tank: lfa-ten
+−19.1 → lfa-tank −7.5). Measured on held renders: the gas dynamics alone (every synthesized source
+off) are periodic to −84 dB at 4500 and 6800 rpm; the floor between the lines is the stochastic
+sources (tail jet noise about half, then combustion jitter and the block), and it peaks at
+6000–7500 rpm (18 % of 150 Hz–2 kHz off the cycle lines at 6800, 0.04 % at 4500), where the firing
+line falls (−15.8 dB re the total at 6800 against −0.7 without the tank). Both sources are on
+their references: the jet's level is ARP876 applied pseudo-steadily to the instantaneous exit
+velocity, as Li, Dai & Zhu (JSV 167(3), 1993) do and match against a pulsating blow-off; the
+jitter is Soltau's COV (test `cycles_vary_as_measured_engines_do`). The bare trumpets' intake tone
+had masked them. What is short is the firing tone at 6000–7500 rpm (the real car's dominant line
+there: `lfaref/WWa441avBHs.wav`), the open "LFA FV firing notch". Also: the regress lift was a
+single event on main's K20A; `regress.py` now needs three lifts each side.
+
+**The LFA's firing tone sinks at 6500–7500 rpm on the FV exhaust: the bank lines resonate too
+sharply (2026-11-24; cause found the same day, below).** Two exterior recordings of the car (`lfaref/WWa441avBHs`,
+`cmP42s56PKc`) keep the firing line at −2.4…−3.0 dB of their 100 Hz–4 kHz from 5500 to 8000 rpm.
+The offline render's tails (d/dt of the exit flow, held WOT, jitter off) read −1.7 at 6000 and
+−10.7 at 7000. Probes (`order_probe`, Reference fidelity): the intake tank changes nothing; the
+sub muffler (0ff3e4c) moves the anti-resonance onto the firing order. Its own transmission is
+0.5 dB at 575 Hz; its graphic EQ's minimum phase lags 16° (3.9 cm) against the 2D model's own
+12.9° (3.0 cm), so the realisation is right. What is wrong is the sensitivity: ±0.38 m of bank
+line moves the firing order ±10 dB, 10 cm of either pipe 5–9 dB, and no geometry in a 0.3–0.7 ×
+0.7–1.0 m grid holds the share above −5 dB at 7000 (best −5.0). The real line is smooth to
+±0.3 dB, so the model's linear ducts are short of the damping a full-load exhaust has: candidates
+are turbulent absorption at M ≈ 0.18 in the bank lines and the junctions' and expansions'
+vortex losses with mean flow; neither is in the duct. Test kept as a patch until then
+(`target/scratch-refs/lfa-firing-test.patch`, `the_lfa_firing_tone_holds_its_share_through_six_to_seven_thousand`,
+RED: −1.7 / −10.7 dB; a fitted 0.85 m after the sub muffler reads −7.6).
+**Correction, same day: neither candidate was missing, and the bank lines were not the cause.**
+The linear duct already damps by turbulent friction (`Pipe::set_mean_flow`, α = f·M/(2D)), by the
+quasi-steady loss of its area changes with mean flow (`waveguide.rs`, Ronneberger / Davies 1988
+§3) and by the catalyst's capillaries, all fed at Reference (`engine.rs` → `ExhaustFv::set_mean_flow`).
+The trough is the primaries': while one cylinder fires, its bank's four shut primaries are
+side branches of the collector whose 3λ/4 zero (3c/4L ≈ 600 Hz at L = 0.8 m, c ≈ 640 m/s) sits on
+the firing order near 7000 rpm. Measured (`order_probe`, held WOT, order 5 dB at 6000…8500):
+0.80 m 30 26 20 23 35 39; 0.90 m 21 31 40 36 37 38 — the zero follows 1/L (zero rpm × L ≈ 5800).
+A joining-flow loss at the FV collector junction (Bassett, Winterbone & Pearson, Proc. IMechE C
+215, 2001, eqs. 3–6 generalised to N branches: R ≈ 0.54ρu_C on a shut primary) did not fill it
+(−17.5 at 7500 against −11.3) and was dropped. The firing-harmonic envelope of the road
+recordings is flat at −2…−3 dB from 400 to 700 Hz; the dyno clips dip at a different frequency
+each (their rooms); none at a fixed 550–600 Hz, which the render had (−12/−13 against −4).
+Blair's tuning estimate (0.675 m, ch. 6) leaves the held share at −0.5…−5.0 over 5500–8500 and
+the torque within 2 %, yet the driving scene's gates read it worse than 0.8 m (ear_gate wind
++1.4 against −4.0, bank +4.8 against +7.3, peak +20.9 against +13.6; lift −3.1 against −0.8;
+low-mid −13.6 against −13.7) and the real-time guard 15.7 against 14.1: the zeros only move
+(order 5 at ≈ 2840 and 8500 rpm, order 10 at ≈ 4270), so 0.8 m stays. Open: the zeros' depth
+(the 0D junction leaves the shut primaries ringing; the joining-flow loss above was not it),
+and the ear's wind is the 150–500 Hz band the tank's lost intake tone exposed (entry above),
+a separate gap. **Why it isn't obvious:** the bank-line lengths move the trough's depth (they
+load the junction), so fitting them looks promising and is chaotic; the zero's frequency only
+moves with the primaries, and moving it trades one rpm's hole for another's. Look for a fixed-frequency trough across rpm (the firing harmonics re the band total, binned by frequency over every rpm) before fitting.
+
+**On a merged exhaust, `Engine::exit_flows` is the muffler's inflow, not the tails' (2026-11-24).**
+`ExhaustFv::exit_flows` returns each branch duct's far-end flow; with a `merge` the branches end at the
+merge junction, so a probe that sums them and differentiates (`order_probe`) reads what enters the main
+muffler. Comparing two mufflers that way showed the LFA's taking 4.9 dB at H1 in the engine; the ear of
+held renders (every synthesized source and the intake off) shows 26 dB, and 26–31 at H2–H5, against the
+patent's ≈ 5–11 (FACTS). **Why it isn't obvious:** on an unmerged exhaust the same call is the tails'
+flow, and the probe's name says "exit". Measure a muffler's in-situ loss at the ear of a render.

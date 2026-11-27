@@ -1,9 +1,29 @@
 //! Poppet valve lift and effective flow area.
 //!
 //! Angles are in the 720° four-stroke cycle, 0° = TDC at the start of the power stroke.
-//! Lift profile: sin² bump over the opening window (smooth, zero velocity at the ends).
+//! Lift profile: a sin^n bump over the opening window (n = [`LIFT_EXPONENT`], a typical real
+//! cam's, unless the valve's cam is known to be fuller: [`ValveTiming::lift_exponent`]).
 
 use serde::{Deserialize, Serialize};
+
+/// Shape of a cam's lift over its window, sin^n: n = 1.4 fits the typical high-speed engine's
+/// curve of Heywood (*ICE Fundamentals*, 2nd ed., Fig. 6.16c; 1.23, 1.40 and 1.58 at 0.06,
+/// 0.18 and 0.34 of the window). The sin² bump it replaces (n = 2) lifted a quarter as far in
+/// the first degrees: each blowdown left over ~120° of crank, its pulse with no front.
+pub const LIFT_EXPONENT: f64 = 1.4;
+
+/// A window drawn for the sin² lift this model used until format 4, as the sin^1.4 window that
+/// keeps its duration above a tenth of the lift (Honda's 1 mm checking lift on a 10 mm valve)
+/// and its centre: (opening, duration), degrees. A tenth of the lift is reached at
+/// x₀ = asin(0.1^(1/n))/π of the window, so the duration above it is (1 − 2x₀) of it: 0.7952
+/// for sin², 0.8763 for sin^1.4; the window shrinks to 0.9074 of the old, opening
+/// 0.0463 of it later. The presets' windows, fitted to the published torque with sin²,
+/// keep their fits this way (a window kept whole lost six of them, 2026-11-19).
+pub fn from_sin2_window(open_deg: f64, duration_deg: f64) -> (f64, f64) {
+    let above = |n: f64| 1.0 - 2.0 * 0.1f64.powf(1.0 / n).asin() / std::f64::consts::PI;
+    let k = above(2.0) / above(LIFT_EXPONENT);
+    (open_deg + 0.5 * (1.0 - k) * duration_deg, k * duration_deg)
+}
 
 /// Discharge coefficient of a poppet valve at moderate L/D (Soriano et al., ENCIT 2012).
 pub const VALVE_CD: f64 = 0.7;
@@ -23,6 +43,24 @@ pub struct ValveTiming {
     /// A second lobe the valve rides while VTEC is engaged ([`Vtec`]); none: one lobe.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub high: Option<CamLobe>,
+    /// The flank of this valve's cam, the n of its sin^n lift ([`ValveTiming::lift`]):
+    /// [`LIFT_EXPONENT`] (Heywood's typical cam) unless the engine's cam is known to be fuller.
+    /// A rapid-acceleration cam reaches its lift sooner and dwells near it longer (smaller n);
+    /// 1 is the fullest this shape allows with the valve leaving its seat at a finite speed
+    /// (below 1 the slope at the window's edge is infinite).
+    #[serde(
+        default = "typical_lift_exponent",
+        skip_serializing_if = "is_typical_lift_exponent"
+    )]
+    pub lift_exponent: f64,
+}
+
+fn typical_lift_exponent() -> f64 {
+    LIFT_EXPONENT
+}
+
+fn is_typical_lift_exponent(n: &f64) -> bool {
+    *n == LIFT_EXPONENT
 }
 
 /// A cam lobe: where it starts opening its valve, for how long and how far.
@@ -129,6 +167,7 @@ impl ValveTiming {
             max_lift_m: lobe.max_lift_m,
             diameter_m: self.diameter_m,
             high: self.high,
+            lift_exponent: self.lift_exponent,
         }
     }
 }
@@ -141,7 +180,7 @@ impl ValveTiming {
             return 0.0;
         }
         let s = (std::f64::consts::PI * x).sin();
-        self.max_lift_m * s * s
+        self.max_lift_m * s.powf(self.lift_exponent)
     }
     /// The most this valve passes: its effective area at its peak lift, on its high lobe if it
     /// has one and that lifts it further, m².
@@ -203,6 +242,7 @@ mod tests {
             duration_deg: 244.0,
             max_lift_m: 0.0088,
             diameter_m: 0.035,
+            lift_exponent: LIFT_EXPONENT,
             high: Some(CamLobe {
                 open_deg: 340.0,
                 duration_deg: 280.0,
@@ -221,6 +261,7 @@ mod tests {
             duration_deg: 240.0,
             max_lift_m: 0.010,
             diameter_m: 0.035,
+            lift_exponent: LIFT_EXPONENT,
             high: None,
         };
         assert_relative_eq!(v.max_flow_area(), 6.3884e-4, max_relative = 1e-4);
@@ -244,6 +285,7 @@ mod tests {
             duration_deg: 200.0,
             max_lift_m: 0.01,
             diameter_m: 0.04,
+            lift_exponent: LIFT_EXPONENT,
             high: None,
         };
         let full = VALVE_CD * PI * 0.02 * 0.02;
@@ -420,6 +462,7 @@ mod tests {
             duration_deg: 235.0,
             max_lift_m: 0.009,
             diameter_m: 0.030,
+            lift_exponent: LIFT_EXPONENT,
             high: None,
         }
     }
@@ -466,18 +509,92 @@ mod tests {
     }
 
     #[test]
+    fn a_rapid_acceleration_cam_lifts_on_a_fuller_flank() {
+        // a sixth into the window sin 30° = 0.5 (hand): a flank of n = 1 lifts half the lift
+        // there, Heywood's typical n = 1.4 lifts 0.5^1.4 = e^(1.4·ln 0.5) = 0.378 93 of it
+        let mut v = ValveTiming {
+            open_deg: 0.0,
+            duration_deg: 240.0,
+            max_lift_m: 0.01,
+            diameter_m: 0.03,
+            high: None,
+            lift_exponent: 1.4,
+        };
+        assert_relative_eq!(v.lift(40.0), 0.003_789_3, max_relative = 1e-4);
+        v.lift_exponent = 1.0;
+        assert_relative_eq!(v.lift(40.0), 0.005, max_relative = 1e-12);
+        // the timing the engine runs keeps its cam's flank: advanced 30°, it lifts at 10°
+        // what it lifted at 40°
+        let now = v.effective(false, 30.0);
+        assert_eq!(now.lift_exponent, 1.0);
+        assert_relative_eq!(now.lift(10.0), 0.005, max_relative = 1e-12);
+    }
+
+    #[test]
     fn window_wraps_around_720() {
         let v = ValveTiming {
             open_deg: 700.0,
             duration_deg: 40.0,
             max_lift_m: 0.01,
             diameter_m: 0.03,
+            lift_exponent: LIFT_EXPONENT,
             high: None,
         };
         assert_relative_eq!(v.lift(0.0), 0.01, max_relative = 1e-12); // 20° into the window = middle
         assert_relative_eq!(v.lift(720.0), v.lift(0.0));
         assert_relative_eq!(v.lift(-720.0), v.lift(0.0));
         assert_eq!(v.lift(30.0), 0.0);
+    }
+
+    #[test]
+    fn a_cam_lifts_its_valve_as_a_typical_engines_does() {
+        // Heywood, ICE Fundamentals 2nd ed., Fig. 6.16c (a high-speed 2.2 L four-cylinder):
+        // its 11 mm lift curve read at the 0.15 mm points ±62° cam (a 124° cam window) gives
+        // 1.3 mm at 0.056 of the window, 4.5 mm at 0.177, 8.9 mm at 0.339 (read ±0.3 mm).
+        // A sin² bump over the same window lifts 0.35, 3.1 and 8.4: it opens a quarter as far
+        // in its first degrees, and the blowdown it lets out has no front.
+        let v = ValveTiming {
+            open_deg: 0.0,
+            duration_deg: 248.0,
+            max_lift_m: 0.011,
+            diameter_m: 0.031,
+            lift_exponent: LIFT_EXPONENT,
+            high: None,
+        };
+        for (x, want_mm) in [(0.056, 1.3), (0.177, 4.5), (0.339, 8.9)] {
+            let got = v.lift(x * 248.0) * 1e3;
+            assert!(
+                (got - want_mm).abs() < 0.25 * want_mm + 0.3,
+                "at {x} of the window: {got:.2} mm, Heywood {want_mm}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sin2_window_keeps_its_duration_above_a_tenth_of_the_lift_and_its_centre() {
+        // by hand: sin² reaches 0.1 at asin(√0.1)/π = 0.102 42 of its window, sin^1.4 at
+        // asin(0.1^(1/1.4))/π = 0.061 84: above it 0.795 17 and 0.876 31 of them; a 250°
+        // window opening at 340° becomes 250 · 0.907 40 = 226.85° opening at 351.57°
+        let (open, dur) = from_sin2_window(340.0, 250.0);
+        assert!((dur - 226.85).abs() < 0.01, "{dur}");
+        assert!((open - 351.57).abs() < 0.01, "{open}");
+        // the same span above a tenth of the lift, on the same centre
+        let lift = |open: f64, dur: f64, n: f64, deg: f64| {
+            let x = (deg - open) / dur;
+            if (0.0..1.0).contains(&x) {
+                (std::f64::consts::PI * x).sin().powf(n)
+            } else {
+                0.0
+            }
+        };
+        let span = |open: f64, dur: f64, n: f64| {
+            (0..7200)
+                .filter(|i| lift(open, dur, n, 300.0 + *i as f64 * 0.05) >= 0.1)
+                .count() as f64
+                * 0.05
+        };
+        assert!((span(340.0, 250.0, 2.0) - span(open, dur, LIFT_EXPONENT)).abs() < 0.2);
+        assert!((open + 0.5 * dur - 465.0).abs() < 1e-9);
     }
 
     #[test]

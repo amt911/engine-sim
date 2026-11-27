@@ -3,7 +3,7 @@
 //! (ITBs, like the LFA) or from a common **plenum** behind a single throttle. Gives intake (ram)
 //! tuning and induction sound. Spec: `docs/superpowers/specs/2026-10-22-intake-and-pipe-editor.md`.
 
-use crate::exhaust_fv::{CELL_M, PIPE_FRICTION, area, guard, junction_ghost, throttled_ghost};
+use crate::exhaust_fv::{CELL_M, PIPE_FRICTION, area, guard, junction_ghost, open_end_ghost};
 use crate::fv::{Boundary, Cons, Pipe1d, Prim, flux_boundary};
 use crate::gas::{GasVolume, R_AIR};
 use crate::units::ATM_PA;
@@ -67,6 +67,12 @@ pub struct AirboxDef {
     pub ducts: usize,
     pub duct_length_m: f64,
     pub duct_diameter_m: f64,
+    /// The air filter element between the ducts and the box, Pa per m³/s of the air through it
+    /// (0: none).
+    pub filter_resistance_pa_s_m3: f64,
+    /// The box's wall, breathing with the pressure inside and radiating to the air outside
+    /// ([`TankWall`]); none: a rigid box, heard only through its ducts' mouths.
+    pub wall: Option<TankWall>,
 }
 
 impl Default for AirboxDef {
@@ -76,8 +82,25 @@ impl Default for AirboxDef {
             ducts: 1,
             duct_length_m: 0.3,
             duct_diameter_m: 0.07,
+            filter_resistance_pa_s_m3: 0.0,
+            wall: None,
         }
     }
+}
+
+/// A surge tank's wall in its breathing mode: a plate of `thickness_m` of `density_kg_m3`
+/// over `area_m2`, its mode at `resonance_hz`, driven by the box's pressure over the air's
+/// and pushing the air outside as a monopole ([`crate::exhaust::Shell`]: Kinsler et al.,
+/// *Fundamentals of Acoustics* 4th ed., §6.4). Below the mode it is a spring, above it a mass
+/// whose radiated sound is flat with frequency (the mass law's −6 dB/octave against the
+/// monopole's +6).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TankWall {
+    pub thickness_m: f64,
+    pub density_kg_m3: f64,
+    pub area_m2: f64,
+    pub resonance_hz: f64,
 }
 
 impl AirboxDef {
@@ -93,14 +116,34 @@ impl AirboxDef {
     /// deep → ≈ 20 L (4 × the 4.8 L swept); each duct's mouth is as wide as the drawing's
     /// bank spacing over five cylinders → Ø 90 mm, ≈ 0.40 m along its curve. Helmholtz with
     /// both end corrections (L' = 0.465 m): (c/2π)√(2A/(L'V)) = 65 Hz lumped, 62 Hz as a
-    /// line. Yamaha tuned the case's walls to radiate the firing tone (250–500 Hz) — a path
-    /// this model does not have yet, which is why the preset does not use it (2026-10-29).
+    /// line. Yamaha tuned the case's walls to radiate the firing tone ("a powerful harmonic
+    /// sound structure centered around 250 Hz" at 3000 rpm, 500 Hz at 6000, more highs above:
+    /// Yamaha Corp. news release, 2009-10-21) and Okamoto et al. (SAE 2011-01-2024, Fig. 18)
+    /// mark the tank "400 Hz, tuned by surge tank": its wall's breathing mode at 400 Hz. The
+    /// wall's material and thickness are not published: 3 mm of glass-filled polyamide (1360
+    /// kg/m³), the middle of the 2.4–4 mm of Aydemir et al.'s polymer manifold (SAE
+    /// 2009-01-0345), ESTIMATE; its area the case's top, 0.5 × 0.35 m. The tank is the air
+    /// cleaner's case (Okamoto Fig. 18 labels it so; EPC 17190, "case, air cleaner"): the
+    /// filter element sits in it, restricting [`crate::air_cleaner::RATED_RESTRICTION_PA`] at
+    /// the engine's rated flow (4.805 L · 9000 rpm / 120).
     pub fn lfa_v10_estimate() -> Self {
         Self {
             volume_m3: 0.020,
             ducts: 2,
             duct_length_m: 0.40,
             duct_diameter_m: 0.09,
+            // to 0.1 Pa·s/m³: a file keeps it exactly
+            filter_resistance_pa_s_m3: (crate::air_cleaner::RATED_RESTRICTION_PA
+                / (4.805e-3 * 9000.0 / 120.0)
+                * 10.0)
+                .round()
+                / 10.0,
+            wall: Some(TankWall {
+                thickness_m: 0.003,
+                density_kg_m3: 1360.0,
+                area_m2: 0.175,
+                resonance_hz: 400.0,
+            }),
         }
     }
 }
@@ -173,6 +216,9 @@ pub struct IntakeFv {
     inducted_rate: f64,
     /// The FV step's rate before the last one (the interpolation's start).
     previous_rate: f64,
+    /// The surge tank wall's volume velocity over the last FV step and the one before, m³/s.
+    wall_rate: f64,
+    wall_previous: f64,
     /// Runners stepped elsewhere ([`IntakeFv::detach_runners`]); the ones from `first` on.
     remote: RemoteRunners,
     /// This step's left-end mass flux of every runner, per substep, and the local runners'
@@ -189,13 +235,20 @@ struct Airbox {
     gas: GasVolume,
     ducts: Vec<Pipe1d>,
     a_duct: f64,
+    /// Its wall ([`TankWall`]; a massless one for none: it never moves).
+    wall: crate::exhaust::Shell,
+    /// The volume the wall has pushed out since the FV step began, m³.
+    wall_swept: f64,
+    /// The filter element's resistance, Pa·s/m³, and the air through it last substep, m³/s.
+    filter: f64,
+    through: f64,
 }
 
 impl Airbox {
-    fn new(def: &AirboxDef, init: Prim) -> Self {
+    fn new(def: &AirboxDef, init: Prim, cell: f64) -> Self {
         let a_duct = area(def.duct_diameter_m.max(1e-3));
-        let length = def.effective_duct_length().max(2.0 * CELL_M);
-        let n = (length / CELL_M).round().max(2.0);
+        let length = def.effective_duct_length().max(2.0 * cell);
+        let n = (length / cell).round().max(2.0);
         let ducts = (0..def.ducts.max(1))
             .map(|_| {
                 let mut p = Pipe1d::segmented(&[(length, a_duct)], length / n, init);
@@ -204,10 +257,27 @@ impl Airbox {
                 p
             })
             .collect();
+        let w = def.wall.unwrap_or(TankWall {
+            thickness_m: 0.0,
+            density_kg_m3: 0.0,
+            area_m2: 0.0,
+            resonance_hz: 0.0,
+        });
+        let air = Upstream::ATMOSPHERE;
         Self {
             gas: GasVolume::at(ATM_PA, AMBIENT_T_K, def.volume_m3.max(1e-4)),
             ducts,
             a_duct,
+            wall: crate::exhaust::Shell::new(
+                w.thickness_m,
+                w.density_kg_m3,
+                w.area_m2,
+                w.resonance_hz,
+                air.rho * C_AIR,
+            ),
+            wall_swept: 0.0,
+            filter: def.filter_resistance_pa_s_m3.max(0.0),
+            through: 0.0,
         }
     }
 
@@ -224,19 +294,28 @@ impl Airbox {
     /// sound source c·Σρu.
     fn breathe(&mut self, h: f64, inlet: Upstream) -> (f64, f64) {
         let up = self.upstream();
-        let (mut inducted, mut at_mouths) = (0.0, 0.0);
+        // the ducts end on the element: the box's pressure plus the element's drop at the flow
+        // it passed last substep (Darcy: linear in the flow), shared by every duct
+        let end = up.p + self.filter * self.through;
+        let (mut inducted, mut at_mouths, mut into_box) = (0.0, 0.0, 0.0);
         for duct in &mut self.ducts {
+            // the ducts' lengths carry both end corrections (their inertance): plain ends
             let n = duct.cells.len();
             duct.left = Boundary::State(junction_ghost(duct.prim(0), inlet.p, inlet.rho, -1.0));
-            duct.right = Boundary::State(junction_ghost(duct.prim(n - 1), up.p, up.rho, 1.0));
+            duct.right = Boundary::State(junction_ghost(duct.prim(n - 1), end, up.rho, 1.0));
             duct.step(h);
             let (mouth, into) = duct.end_flux;
             inducted += mouth.rho * self.a_duct * h;
             at_mouths += C_AIR * mouth.rho;
+            into_box += into.rho * self.a_duct;
             self.gas.mass_kg += into.rho * self.a_duct * h;
             self.gas.energy_j += into.e * self.a_duct * h;
         }
+        self.through = into_box / up.rho;
         guard(&mut self.gas);
+        // the wall swells with the box's pressure over the air outside it (the atmosphere,
+        // also behind a compressor)
+        self.wall_swept += self.wall.step(self.gas.pressure() - ATM_PA, h) * h;
         (inducted, at_mouths)
     }
 
@@ -437,8 +516,7 @@ fn itb_runners_step(
     {
         set_valve_boundary(pipe, m, e, a, dt);
         for (fs, es) in f.iter_mut().zip(ef) {
-            let ghost = throttled_ghost(pipe.prim(0), up.p, up.rho, -1.0, psi);
-            pipe.left = Boundary::State(ghost);
+            pipe.left = open_end_ghost(pipe, false, up.p, up.rho, psi, h);
             pipe.step(h);
             *fs = pipe.end_flux.0.rho;
             *es = pipe.end_flux.0.e;
@@ -470,6 +548,18 @@ impl IntakeFv {
     }
 
     pub fn new(def: &IntakeDef, plenum_volume_m3: f64, cylinders: usize, dt: f64) -> Self {
+        Self::with_cells(def, plenum_volume_m3, cylinders, dt, CELL_M)
+    }
+
+    /// [`IntakeFv::new`] on cells of `cell` m (finer for offline renders: the trumpets' firing
+    /// harmonics a few kHz up, [`crate::exhaust_fv::ExhaustFv::with_cells`]).
+    pub fn with_cells(
+        def: &IntakeDef,
+        plenum_volume_m3: f64,
+        cylinders: usize,
+        dt: f64,
+        cell: f64,
+    ) -> Self {
         let init = Prim {
             rho: ATM_PA / (R_AIR * AMBIENT_T_K),
             u: 0.0,
@@ -478,7 +568,7 @@ impl IntakeFv {
         let a_runner = area(def.runner_diameter_m);
         let runners = (0..cylinders)
             .map(|_| {
-                let n = (def.runner_length_m / CELL_M).round().max(2.0);
+                let n = (def.runner_length_m / cell).round().max(2.0);
                 let mut p = Pipe1d::segmented(
                     &[(def.runner_length_m, a_runner)],
                     def.runner_length_m / n,
@@ -490,14 +580,14 @@ impl IntakeFv {
             })
             .collect();
         // cold air, |u| + c up to ~700 m/s at a choked trumpet: 0.8 · cell / 700
-        let dt_target = 0.8 * CELL_M / 700.0;
+        let dt_target = 0.8 * cell / 700.0;
         let substeps = ((dt_target / dt).floor() as usize).max(1);
         Self {
             runners,
             a_runner,
             individual: def.individual_throttles,
             plenum: GasVolume::at(ATM_PA, AMBIENT_T_K, plenum_volume_m3.max(1e-5)),
-            airbox: def.airbox.as_ref().map(|b| Airbox::new(b, init)),
+            airbox: def.airbox.as_ref().map(|b| Airbox::new(b, init, cell)),
             inlet: Upstream::ATMOSPHERE,
             trumpet_cd: 1.0 / (1.0 + def.trumpet_loss.max(0.0)).sqrt(),
             substeps,
@@ -513,6 +603,8 @@ impl IntakeFv {
             inducted: 0.0,
             inducted_rate: 0.0,
             previous_rate: 0.0,
+            wall_rate: 0.0,
+            wall_previous: 0.0,
             remote: RemoteRunners(None),
             flux: Vec::new(),
             eflux: Vec::new(),
@@ -701,6 +793,7 @@ impl IntakeFv {
             self.radiated = radiated;
             self.previous_rate = self.inducted_rate;
             self.inducted_rate = self.inducted / dt;
+            self.wall_step_done(dt);
             return radiated;
         }
         for (i, pipe) in self.runners.iter_mut().enumerate() {
@@ -723,6 +816,7 @@ impl IntakeFv {
         self.radiated = radiated;
         self.previous_rate = self.inducted_rate;
         self.inducted_rate = self.inducted / dt;
+        self.wall_step_done(dt);
         radiated
     }
 
@@ -767,8 +861,8 @@ impl IntakeFv {
                 p: self.plenum.pressure(),
             };
             for pipe in &mut self.runners {
-                let first = pipe.prim(0);
-                pipe.left = Boundary::State(junction_ghost(first, pl.p, pl.rho, -1.0));
+                // each runner opens into the plenum: its lows reflect, its highs leave
+                pipe.left = open_end_ghost(pipe, false, pl.p, pl.rho, f64::INFINITY, h);
                 pipe.step(h);
                 let f = pipe.end_flux.0;
                 self.plenum.mass_kg -= f.rho * a * h;
@@ -818,6 +912,23 @@ impl IntakeFv {
     pub fn drawn_rate(&self) -> f64 {
         let f = self.count as f64 / self.substeps as f64;
         self.previous_rate + (self.inducted_rate - self.previous_rate) * f
+    }
+
+    /// The volume velocity the surge tank's wall pushes into the air outside, m³/s (0 without
+    /// a wall), interpolated over the FV step as [`IntakeFv::drawn_rate`].
+    pub fn wall_rate(&self) -> f64 {
+        let f = self.count as f64 / self.substeps as f64;
+        self.wall_previous + (self.wall_rate - self.wall_previous) * f
+    }
+
+    /// An FV step of `dt` s is done: its wall's sweep becomes the rate.
+    fn wall_step_done(&mut self, dt: f64) {
+        let swept = self
+            .airbox
+            .as_mut()
+            .map_or(0.0, |b| std::mem::take(&mut b.wall_swept));
+        self.wall_previous = self.wall_rate;
+        self.wall_rate = swept / dt;
     }
 
     /// Step the runners from `first` on elsewhere (ITBs only: they are independent of each
@@ -999,6 +1110,17 @@ mod tests {
     use crate::gas::CP;
 
     const DT: f64 = 1.0 / 192_000.0;
+
+    #[test]
+    fn finer_cells_cut_the_runners_finer() {
+        // 0.3 m runners (the default): 8 cells of 4 cm (0.3/0.04 = 7.5, rounded), 30 of 1 cm
+        let d = IntakeDef::default();
+        assert_eq!(d.runner_length_m, 0.3);
+        let coarse = IntakeFv::with_cells(&d, 2e-3, 1, DT, 0.04);
+        let fine = IntakeFv::with_cells(&d, 2e-3, 1, DT, 0.01);
+        assert_eq!(coarse.runners[0].cells.len(), 8);
+        assert_eq!(fine.runners[0].cells.len(), 30);
+    }
 
     fn def(individual: bool) -> IntakeDef {
         IntakeDef {
@@ -1381,6 +1503,10 @@ mod tests {
         let yaml = serde_yaml_ng::to_string(&def).unwrap();
         assert_eq!(serde_yaml_ng::from_str::<IntakeDef>(&yaml).unwrap(), def);
         assert!(yaml.contains("duct_length_m: 0.4"));
+        assert!(yaml.contains("resonance_hz: 400.0"));
+        let rigid: AirboxDef = serde_yaml_ng::from_str("volume_m3: 0.02\nducts: 2\n").unwrap();
+        assert_eq!(rigid.wall, None);
+        assert_eq!(rigid.filter_resistance_pa_s_m3, 0.0);
         let old: IntakeDef =
             serde_yaml_ng::from_str("model: fv\nindividual_throttles: true\n").unwrap();
         assert_eq!(old.airbox, None);
@@ -1397,8 +1523,11 @@ mod tests {
         // λ/4 ≈ 1.4 m, so the distributed line's resonance (Kinsler §10.9: x·tan x = A_t·L'/V
         // = 0.29598, x = kL' = 0.51861) sits lower: f = c·x/(2π·L') = 61.59 Hz. A short draw
         // through the runners sets it ringing; the box pressure then swings at that frequency.
+        // The box without its filter element: the calculation has no loss to damp the ring.
         let dt = 1e-5;
-        let mut net = IntakeFv::new(&boxed(true), 1e-3, 1, dt);
+        let mut def = boxed(true);
+        def.airbox.as_mut().unwrap().filter_resistance_pa_s_m3 = 0.0;
+        let mut net = IntakeFv::new(&def, 1e-3, 1, dt);
         let a = net.a_runner;
         let mut p = Vec::new();
         for i in 0..(0.6 / dt) as usize {
@@ -1424,6 +1553,94 @@ mod tests {
             f += 0.25;
         }
         assert!((at / 61.59 - 1.0).abs() < 0.04, "rings at {at} Hz");
+    }
+
+    #[test]
+    fn the_surge_tanks_wall_swells_with_its_pressure() {
+        // The LFA's tank wall: 3 mm of polyamide (1360 kg/m³: m = 4.08 kg/m²) over 0.175 m²,
+        // its breathing mode at 400 Hz: k = (2π·400)²·m = 2.5771e7 Pa/m. Far below that mode it
+        // is a spring (Hooke): it swells by x = Δp/k, sweeping A·x = 6.791e-9 m³ per pascal over
+        // the air outside (the mass and damping terms are (f/f₀)² ≈ 2 % at the box's 62 Hz
+        // ring). The box rung as in the Helmholtz test: the volume the wall has pushed out at
+        // the end is A/k times the box's pressure over the air's. The draw is smooth (1 g over
+        // 50 ms, a raised cosine): a sharp one would ring the ducts' half-wave (≈ 370 Hz) at
+        // the wall's own mode, where it is no spring.
+        let dt = 1e-5;
+        let def = boxed(true);
+        // the tank is the air cleaner's case: its element restricts 1.5 kPa at the engine's
+        // rated flow, 4.805 L · 9000 rpm / 120 = 0.36038 m³/s: 4162.3 Pa·s/m³
+        let r = def.airbox.as_ref().unwrap().filter_resistance_pa_s_m3;
+        assert!((r - 4162.3).abs() < 0.5, "{r}");
+        let wall = def.airbox.as_ref().unwrap().wall.unwrap();
+        assert_eq!(
+            (
+                wall.thickness_m,
+                wall.density_kg_m3,
+                wall.area_m2,
+                wall.resonance_hz
+            ),
+            (0.003, 1360.0, 0.175, 400.0)
+        );
+        let mut net = IntakeFv::new(&def, 1e-3, 1, dt);
+        let a = net.a_runner;
+        let mut swept = 0.0;
+        let (mut worst, mut swing) = (0.0_f64, 0.0_f64);
+        for i in 0..(0.3 / dt) as usize {
+            let dm = if i < 5000 {
+                2e-7 * (1.0 - (2.0 * std::f64::consts::PI * i as f64 / 5000.0).cos())
+            } else {
+                0.0
+            };
+            net.add_valve_flow(0, dm, CP * 300.0);
+            net.step(a);
+            swept += net.wall_rate() * dt;
+            let gauge = net.airbox_pressure().unwrap() - ATM_PA;
+            if i >= 2000 {
+                worst = worst.max((swept - 6.791e-9 * gauge).abs());
+                swing = swing.max((6.791e-9 * gauge).abs());
+            }
+        }
+        assert!(swing > 1e-7, "the box barely rang: {swing} m³");
+        assert!(worst < 0.05 * swing, "off by {worst} m³ of {swing}");
+        // no wall: nothing radiates through it
+        let mut bare = boxed(true);
+        bare.airbox.as_mut().unwrap().wall = None;
+        let mut net = IntakeFv::new(&bare, 1e-3, 1, dt);
+        for i in 0..2000 {
+            net.add_valve_flow(0, if i < 1000 { 1e-6 } else { 0.0 }, CP * 300.0);
+            net.step(a);
+            assert_eq!(net.wall_rate(), 0.0);
+        }
+    }
+
+    #[test]
+    fn a_filter_in_the_box_drops_the_pressure_by_its_resistance() {
+        // A steady draw of 0.06 kg/s through the box (air at 300 K, 1 atm: ρ = 1.1768 kg/m³,
+        // Q = 0.05099 m³/s). An element of R = 4170 Pa·s/m³ (1.5 kPa at the LFA's rated
+        // 0.36 m³/s, [`crate::air_cleaner::RATED_RESTRICTION_PA`]) between the ducts and the
+        // box takes R·Q = 212.6 Pa more off the box's pressure than an empty box loses.
+        let dt = 1e-5;
+        let settled = |r: f64| {
+            let mut def = boxed(true);
+            def.airbox.as_mut().unwrap().filter_resistance_pa_s_m3 = r;
+            let mut net = IntakeFv::new(&def, 1e-3, 1, dt);
+            let a = net.a_runner;
+            let mut p = 0.0;
+            let n = (1.5 / dt) as usize;
+            for i in 0..n {
+                net.add_valve_flow(0, 0.06 * dt, CP * 300.0);
+                net.step(a);
+                if i >= n - 20_000 {
+                    p += net.airbox_pressure().unwrap() / 20_000.0;
+                }
+            }
+            p
+        };
+        let drop = settled(0.0) - settled(4170.0);
+        assert!(
+            (drop / 212.6 - 1.0).abs() < 0.05,
+            "the element takes {drop} Pa"
+        );
     }
 
     #[test]

@@ -1,4 +1,4 @@
-version: 3
+version: 4
 engine:
   name: Single 500
   geometry:
@@ -13,13 +13,13 @@ engine:
     bank_angle_deg: 0.0
     banks: []
   intake_valve:
-    open_deg: 345.0
-    duration_deg: 250.0
+    open_deg: 356.6
+    duration_deg: 226.9
     max_lift_m: 0.009
     diameter_m: 0.034
   exhaust_valve:
-    open_deg: 135.0
-    duration_deg: 245.0
+    open_deg: 146.3
+    duration_deg: 222.3
     max_lift_m: 0.008
     diameter_m: 0.029
   spark_advance_deg: 25.0
@@ -124,12 +124,14 @@ engine:
     compressor_whine: 1.0
     rolling: 0.0
     reverb: 0.0
+    room: null
     leveling: 0.0
     listener_distance_m: 3.0
     listener_angle_deg: 30.0
     ground: false
     tail_height_m: 0.3
-    listener_height_m: 1.6
+    listener_height_m: 0.5
+    mic_low_cut_hz: 40.0
     street_width_m: 0.0
     wall_reflection: 0.8
   exhaust_reverse_cd_ratio: 0.75
@@ -155,6 +157,7 @@ engine:
     shift_time_s: 0.0
     engine_ahead_m: 0.9
     engine_bay: null
+    body_height_m: 0.0
     shuffle_hz: 3.5
     shuffle_damping: 0.15
   turbo: null

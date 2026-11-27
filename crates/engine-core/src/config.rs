@@ -5,7 +5,7 @@ use crate::engine::EngineDef;
 use serde::{Deserialize, Serialize};
 
 /// Current file format version. Bump on a breaking change and add a migration + test.
-pub const FORMAT_VERSION: u32 = 3;
+pub const FORMAT_VERSION: u32 = 4;
 pub const MAX_CYLINDERS: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +82,9 @@ pub fn from_str(text: &str, format: Format) -> Result<EngineDef, ConfigError> {
     if version <= 2 {
         migrate_v2(&mut tree);
     }
+    if version <= 3 {
+        migrate_v3(&mut tree);
+    }
     let file: EngineFile = serde_json::from_value(tree).map_err(|e| parse(e.to_string()))?;
     validate(&file.engine)?;
     Ok(file.engine)
@@ -137,6 +140,43 @@ fn migrate_v2(tree: &mut serde_json::Value) {
     }
 }
 
+/// v3 → v4: cams lift on a real flank (sin^1.4, [`crate::valve::LIFT_EXPONENT`]) instead of
+/// sin²; each piston engine's lobe windows become the ones that keep their duration above a
+/// tenth of the lift and their centre ([`crate::valve::from_sin2_window`]). A rotary's port
+/// windows are the rotor's edges, no cam: they stay.
+fn migrate_v3(tree: &mut serde_json::Value) {
+    tree["version"] = 4.into();
+    let Some(engine) = tree.get_mut("engine") else {
+        return;
+    };
+    let rotary = engine
+        .get("geometry")
+        .and_then(|g| g.get("rotor"))
+        .is_some_and(|r| !r.is_null());
+    if rotary {
+        return;
+    }
+    let convert = |lobe: &mut serde_json::Value| {
+        let (Some(open), Some(dur)) = (
+            lobe.get("open_deg").and_then(serde_json::Value::as_f64),
+            lobe.get("duration_deg").and_then(serde_json::Value::as_f64),
+        ) else {
+            return;
+        };
+        let (open, dur) = crate::valve::from_sin2_window(open, dur);
+        lobe["open_deg"] = open.into();
+        lobe["duration_deg"] = dur.into();
+    };
+    for valve in ["intake_valve", "exhaust_valve"] {
+        if let Some(v) = engine.get_mut(valve) {
+            convert(v);
+            if let Some(high) = v.get_mut("high").filter(|h| !h.is_null()) {
+                convert(high);
+            }
+        }
+    }
+}
+
 /// Every problem found, so the editor can show them all at once.
 pub fn validate(def: &EngineDef) -> Result<(), ConfigError> {
     // Bounds are generous physical limits (wider than the editor's sliders); NaN fails all.
@@ -170,10 +210,13 @@ pub fn validate(def: &EngineDef) -> Result<(), ConfigError> {
         let ok = within(v.open_deg, -720.0, 720.0)
             && within(v.duration_deg, 1.0, 719.0)
             && within(v.max_lift_m, 0.0005, 0.05)
-            && within(v.diameter_m, 0.005, 0.2);
+            && within(v.diameter_m, 0.005, 0.2)
+            && within(v.lift_exponent, 1.0, 4.0);
         check(
             ok,
-            &format!("{name}: opening in ±720°, duration 1–719°, lift 0.5–50 mm, Ø 5–200 mm"),
+            &format!(
+                "{name}: opening in ±720°, duration 1–719°, lift 0.5–50 mm, Ø 5–200 mm, flank n 1–4"
+            ),
         );
     }
     check(
@@ -365,11 +408,37 @@ mod tests {
     }
 
     #[test]
+    fn a_cams_flank_round_trips_and_old_files_get_heywoods() {
+        let mut def = EngineDef::single();
+        def.intake_valve.lift_exponent = 1.0;
+        for f in [Format::Yaml, Format::Json] {
+            let back = from_str(&to_string(&def, f).unwrap(), f).unwrap();
+            assert_eq!(
+                (
+                    back.intake_valve.lift_exponent,
+                    back.exhaust_valve.lift_exponent
+                ),
+                (1.0, 1.4),
+                "{f:?}"
+            );
+        }
+        // the typical cam (Heywood's sin^1.4) stays out of the file, so files keep their text
+        let y = to_string(&EngineDef::single(), Format::Yaml).unwrap();
+        assert!(!y.contains("lift_exponent"), "{y}");
+        let old = from_str(
+            "version: 4\nengine:\n  intake_valve:\n    open_deg: 340.0\n    duration_deg: 250.0\n    max_lift_m: 0.0124\n    diameter_m: 0.0495\n",
+            Format::Yaml,
+        )
+        .unwrap();
+        assert_eq!(old.intake_valve.lift_exponent, 1.4);
+    }
+
+    #[test]
     fn written_file_carries_version() {
         let y = to_string(&EngineDef::single(), Format::Yaml).unwrap();
-        assert!(y.starts_with("version: 3\n"), "{y}");
+        assert!(y.starts_with("version: 4\n"), "{y}");
         let j = to_string(&EngineDef::single(), Format::Json).unwrap();
-        assert!(j.contains("\"version\": 3"), "{j}");
+        assert!(j.contains("\"version\": 4"), "{j}");
     }
 
     #[test]
@@ -484,6 +553,14 @@ mod tests {
                 "intake valve",
                 Box::new(|d| d.intake_valve.open_deg = f64::NAN),
             ),
+            (
+                "intake valve",
+                Box::new(|d| d.intake_valve.lift_exponent = 0.5),
+            ),
+            (
+                "exhaust valve",
+                Box::new(|d| d.exhaust_valve.lift_exponent = f64::NAN),
+            ),
             ("redline", Box::new(|d| d.redline_rpm = 1e9)),
             (
                 "tail spacing",
@@ -536,6 +613,39 @@ mod tests {
             from_str(bad, Format::Yaml),
             Err(ConfigError::Parse(_))
         ));
+    }
+
+    #[test]
+    fn version_3_cams_move_to_the_real_flank_and_rotary_ports_stay() {
+        // v3 windows were drawn for a sin² lift; v4 keeps each lobe's duration above a tenth
+        // of its lift and its centre on the sin^1.4 flank: by hand (see
+        // `valve::from_sin2_window`'s test) 340° + 250° → 351.57° + 226.85°, and the high lobe
+        // 322° + 301° → 335.94° + 273.13° (0.5 · (1 − 0.907 40) · 301 = 13.94)
+        let v3 = "version: 3\nengine:\n  intake_valve:\n    open_deg: 340.0\n    duration_deg: 250.0\n    max_lift_m: 0.0124\n    diameter_m: 0.0495\n    high:\n      open_deg: 322.0\n      duration_deg: 301.0\n      max_lift_m: 0.0177\n";
+        let d = from_str(v3, Format::Yaml).unwrap();
+        let near = |a: f64, b: f64| (a - b).abs() < 0.01;
+        assert!(
+            near(d.intake_valve.open_deg, 351.57),
+            "{:?}",
+            d.intake_valve
+        );
+        assert!(
+            near(d.intake_valve.duration_deg, 226.85),
+            "{:?}",
+            d.intake_valve
+        );
+        let high = d.intake_valve.high.unwrap();
+        assert!(
+            near(high.open_deg, 335.94) && near(high.duration_deg, 273.13),
+            "{high:?}"
+        );
+        // a rotary's ports are its rotor's edges, no cam's: kept as written
+        let mut rotary = to_string(&EngineDef::mazda_renesis(), Format::Yaml).unwrap();
+        rotary = rotary.replacen("version: 4", "version: 3", 1);
+        assert_eq!(
+            from_str(&rotary, Format::Yaml).unwrap().intake_valve,
+            EngineDef::mazda_renesis().intake_valve
+        );
     }
 
     #[test]

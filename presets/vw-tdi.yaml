@@ -1,4 +1,4 @@
-version: 3
+version: 4
 engine:
   name: VW 1.9 TDI (diesel inline-4, VNT turbo)
   geometry:
@@ -28,13 +28,13 @@ engine:
       - 0.000029
     spray_spread_deg: 4.0
   intake_valve:
-    open_deg: 350.0
-    duration_deg: 230.0
+    open_deg: 360.6
+    duration_deg: 208.7
     max_lift_m: 0.009
     diameter_m: 0.036
   exhaust_valve:
-    open_deg: 135.0
-    duration_deg: 235.0
+    open_deg: 145.9
+    duration_deg: 213.2
     max_lift_m: 0.0078
     diameter_m: 0.031
   spark_advance_deg: 25.0
@@ -143,12 +143,14 @@ engine:
     compressor_whine: 1.0
     rolling: 0.0
     reverb: 0.0
+    room: null
     leveling: 0.0
     listener_distance_m: 3.0
     listener_angle_deg: 30.0
     ground: false
     tail_height_m: 0.3
-    listener_height_m: 1.6
+    listener_height_m: 0.5
+    mic_low_cut_hz: 40.0
     street_width_m: 0.0
     wall_reflection: 0.8
   exhaust_reverse_cd_ratio: 0.75
@@ -177,6 +179,8 @@ engine:
       liner_thickness_m: 0.02
       liner_resistivity: 16000.0
       liner_coverage: 0.25
+      intake_inside: false
+    body_height_m: 1.45
     shuffle_hz: 3.5
     shuffle_damping: 0.15
   turbo:

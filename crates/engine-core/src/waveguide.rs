@@ -337,7 +337,34 @@ pub struct Pipe {
     chain: Option<Box<[Vec<Stage>; 2]>>,
     /// A silencer's transmission on each direction's waves as they enter (forward, backward).
     filter: Option<Box<[crate::silencer2d::Cascade; 2]>>,
+    /// The silencer behind `filter`, when its transmission may follow the mean flow.
+    flow_silencer: Option<Box<FlowSilencer>>,
 }
+
+/// Steps of the mean flow's Mach number a flow-following silencer is designed at, and the
+/// highest (Rao & Munjal measured to 0.2: [`crate::silencer2d::perforate_resistance`]).
+const SILENCER_MACH_STEP: f64 = 0.025;
+const SILENCER_MACH_MAX: f64 = 0.3;
+
+/// A packed silencer's transmission at the mean flow through it: designed at each Mach step
+/// the flow reaches (once: kept), retuned in place so the waves inside carry on.
+#[derive(Debug, Clone)]
+struct FlowSilencer {
+    silencer: crate::silencer2d::Silencer,
+    gas: crate::silencer2d::Gas,
+    fs: f64,
+    on: bool,
+    step: i32,
+    designed: Vec<(i32, crate::silencer2d::Cascade)>,
+    /// The design it left, still running on the same waves while the new one fades in
+    /// ([`SILENCER_FADE_S`]), and the steps left of the fade.
+    fade: Option<(Box<[crate::silencer2d::Cascade; 2]>, usize)>,
+}
+
+/// A flow-following silencer fades from one design to the next over this, s: switched at once,
+/// the new design's filters started from the old one's state and kicked the wave (a click at
+/// every Mach step of a gear's pull, heard 2026-11-19).
+const SILENCER_FADE_S: f64 = 0.03;
 
 /// A segment of a [`Pipe::steepening`] pipe: its share of the walls' loss, then its line.
 #[derive(Debug, Clone)]
@@ -481,6 +508,7 @@ impl Pipe {
             walls: None,
             chain: None,
             filter: None,
+            flow_silencer: None,
         }
     }
     /// The waves crossing this pipe, either way, pass `transmission` (a silencer's, as
@@ -488,6 +516,36 @@ impl Pipe {
     pub fn with_filter(mut self, transmission: crate::silencer2d::Cascade) -> Self {
         self.filter = Some(Box::new([transmission.clone(), transmission]));
         self
+    }
+
+    /// [`Pipe::with_filter`] with `still`, `silencer`'s transmission at rest in `gas` at
+    /// `fs`, kept so that it can follow the mean flow ([`Pipe::follow_flow`]).
+    pub fn with_flow_silencer(
+        self,
+        silencer: crate::silencer2d::Silencer,
+        gas: crate::silencer2d::Gas,
+        fs: f64,
+        still: crate::silencer2d::Cascade,
+    ) -> Self {
+        let mut p = self.with_filter(still.clone());
+        p.flow_silencer = Some(Box::new(FlowSilencer {
+            silencer,
+            gas,
+            fs,
+            on: false,
+            step: 0,
+            designed: vec![(0, still)],
+            fade: None,
+        }));
+        p
+    }
+
+    /// A silencer pipe's transmission follows the mean flow through it from now on
+    /// ([`Pipe::set_mean_flow`]); a plain pipe is left as it was.
+    pub fn follow_flow(&mut self) {
+        if let Some(f) = &mut self.flow_silencer {
+            f.on = true;
+        }
     }
     /// The pipe's waves steepen and its walls round them off together, as they do along a real
     /// pipe: it is cut into segments of at most [`STEEPENING_SEGMENT_M`], each its share of the
@@ -638,6 +696,36 @@ impl Pipe {
         let mach = (mass_flow / (rho_c * self.area_m2)).abs();
         let alpha = crate::exhaust_fv::PIPE_FRICTION * mach / (2.0 * self.diameter_m);
         self.gain = self.still_gain * (-alpha * self.length_m).exp();
+        if let (Some(fs), Some(filter)) = (&mut self.flow_silencer, &mut self.filter)
+            && fs.on
+        {
+            // a step moves once the flow is three quarters of one away (a mean flow riding a
+            // boundary would switch the design to and fro, a click each time)
+            let at = mach.min(SILENCER_MACH_MAX) / SILENCER_MACH_STEP;
+            let step = at.round() as i32;
+            if step != fs.step && (at - f64::from(fs.step)).abs() > 0.75 {
+                let eq = match fs.designed.iter().find(|(k, _)| *k == step) {
+                    Some((_, eq)) => eq.clone(),
+                    None => {
+                        let s = crate::silencer2d::Silencer {
+                            mach: f64::from(step) * SILENCER_MACH_STEP,
+                            ..fs.silencer
+                        };
+                        let eq = s.transmission_eq(fs.gas, fs.fs);
+                        fs.designed.push((step, eq.clone()));
+                        eq
+                    }
+                };
+                // the old design keeps running (with its state) and fades out under the new
+                fs.fade = Some((
+                    Box::new((**filter).clone()),
+                    (SILENCER_FADE_S * fs.fs) as usize,
+                ));
+                filter[0].retune(&eq);
+                filter[1].retune(&eq);
+                fs.step = step;
+            }
+        }
     }
 
     /// Wave arriving at the far end this step.
@@ -704,8 +792,21 @@ impl Pipe {
                 self.bwd.push(far);
             }
             Some([f, b]) => {
-                self.fwd.push(f.process(near));
-                self.bwd.push(b.process(far));
+                let (mut ahead, mut back) = (f.process(near), b.process(far));
+                if let Some(fs) = &mut self.flow_silencer
+                    && let Some((old, left)) = &mut fs.fade
+                {
+                    let total = (SILENCER_FADE_S * fs.fs) as usize;
+                    let w = *left as f64 / total.max(1) as f64;
+                    ahead = (1.0 - w) * ahead + w * old[0].process(near);
+                    back = (1.0 - w) * back + w * old[1].process(far);
+                    *left -= 1;
+                    if *left == 0 {
+                        fs.fade = None;
+                    }
+                }
+                self.fwd.push(ahead);
+                self.bwd.push(back);
             }
         }
     }
@@ -734,6 +835,10 @@ pub struct Duct {
     /// [`Duct::send`], kg/s of the waves' reference gas (ṁ = A·(p⁺ − p⁻)/c, + onward).
     node_flows: Vec<f64>,
     far_flow: f64,
+    /// The acoustic pressure (both waves) at each inner node and at the far end at the last
+    /// [`Duct::send`], Pa over the mean.
+    node_pressures: Vec<f64>,
+    far_pressure: f64,
 }
 
 /// A wall that breathes at a node of a duct: the packing behind a perforate, a pocket of pore
@@ -956,6 +1061,8 @@ impl Duct {
             segment_starts: Vec::new(),
             injected: Vec::new(),
             node_flows: Vec::new(),
+            node_pressures: Vec::new(),
+            far_pressure: 0.0,
             far_flow: 0.0,
         }
     }
@@ -1016,6 +1123,17 @@ impl Duct {
         self.far_flow
     }
 
+    /// The acoustic pressure at inner `node` at the last [`Duct::send`] (the waves meeting
+    /// there, both ways), Pa over the mean; 0 for an unknown node.
+    pub fn node_pressure(&self, node: usize) -> f64 {
+        self.node_pressures.get(node).copied().unwrap_or(0.0)
+    }
+
+    /// The acoustic pressure at the far end at the last [`Duct::send`], Pa over the mean.
+    pub fn far_pressure(&self) -> f64 {
+        self.far_pressure
+    }
+
     /// The areas either side of inner `node`, m² (upstream, downstream).
     pub fn node_areas(&self, node: usize) -> (f64, f64) {
         (self.pipes[node].area_m2, self.pipes[node + 1].area_m2)
@@ -1060,6 +1178,21 @@ impl Duct {
             p.set_mean_flow(mass_flow);
         }
     }
+
+    /// The Mach step each of its silencer pipes is designed at, in [`SILENCER_MACH_STEP`]s
+    /// (tests).
+    #[cfg(test)]
+    pub(crate) fn silencer_steps(&self) -> Vec<i32> {
+        self.pipes
+            .iter()
+            .filter_map(|p| p.flow_silencer.as_ref().map(|f| f.step))
+            .collect()
+    }
+
+    /// Its silencers' transmission follows the mean flow through them ([`Pipe::follow_flow`]).
+    pub fn follow_flow(&mut self) {
+        self.pipes.iter_mut().for_each(Pipe::follow_flow);
+    }
     /// Send this step's waves into the ends; the inner area changes scatter what arrives at
     /// them this step.
     pub fn send(&mut self, from_near: f64, from_far: f64) {
@@ -1094,8 +1227,10 @@ impl Duct {
                 }
                 if self.node_flows.len() != n - 1 {
                     self.node_flows = vec![0.0; n - 1];
+                    self.node_pressures = vec![0.0; n - 1];
                 }
                 self.node_flows[k] = areas[0] * (incoming[0] - out[0]) / self.pipes[k].sound_speed;
+                self.node_pressures[k] = incoming[0] + out[0];
                 if let Some(add) = self.injected.get_mut(k) {
                     out[0] += add[0];
                     out[1] += add[1];
@@ -1105,6 +1240,7 @@ impl Duct {
             } else {
                 let last = &self.pipes[k];
                 self.far_flow = last.area_m2 * (last.at_far() - from_far) / last.sound_speed;
+                self.far_pressure = last.at_far() + from_far;
                 (from_far, 0.0)
             };
             self.pipes[k].send(into_near, back);
@@ -1348,7 +1484,7 @@ const INFLOW_LOSS_CD: f64 = 2.0;
 #[cfg(test)]
 mod tests {
     #[test]
-    fn a_duct_reads_the_flow_through_its_node_and_out_of_its_end() {
+    fn a_duct_reads_the_flow_and_pressure_at_its_node_and_its_end() {
         // A steady 100 Pa wave into a lossless 1e-3 m² pipe, then a 3e-3 m² one, open far end
         // anechoic: at the step the pressure junction sends back r·p, r = (A₁ − A₂)/(A₁ + A₂)
         // = −½, so the flow there is A₁(p − r·p)/c = 1e-3·150/500 = 3e-4 kg/s; on goes
@@ -1369,6 +1505,19 @@ mod tests {
         );
         assert!((duct.far_flow() - 3e-4).abs() < 3e-6, "{}", duct.far_flow());
         assert_eq!(duct.node_flow(7), 0.0);
+        // and the pressure there, both waves: 100 + r·100 = 50 Pa at the step, the 50 Pa going
+        // on alone at the anechoic end
+        assert!(
+            (duct.node_pressure(0) - 50.0).abs() < 0.5,
+            "{}",
+            duct.node_pressure(0)
+        );
+        assert!(
+            (duct.far_pressure() - 50.0).abs() < 0.5,
+            "{}",
+            duct.far_pressure()
+        );
+        assert_eq!(duct.node_pressure(7), 0.0);
     }
 
     use super::*;

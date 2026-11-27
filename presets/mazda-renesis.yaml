@@ -1,4 +1,4 @@
-version: 3
+version: 4
 engine:
   name: Mazda 13B RENESIS (two-rotor)
   geometry:
@@ -139,12 +139,14 @@ engine:
     compressor_whine: 1.0
     rolling: 0.0
     reverb: 0.0
+    room: null
     leveling: 0.0
     listener_distance_m: 3.0
     listener_angle_deg: 30.0
     ground: false
     tail_height_m: 0.3
-    listener_height_m: 1.6
+    listener_height_m: 0.5
+    mic_low_cut_hz: 40.0
     street_width_m: 0.0
     wall_reflection: 0.8
   exhaust_reverse_cd_ratio: 0.75
@@ -173,6 +175,8 @@ engine:
       liner_thickness_m: 0.02
       liner_resistivity: 16000.0
       liner_coverage: 0.25
+      intake_inside: false
+    body_height_m: 1.45
     shuffle_hz: 3.5
     shuffle_damping: 0.15
   turbo: null

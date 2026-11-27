@@ -261,6 +261,11 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   H4 −17, half order 5 −20, 63/125 Hz +6. The 1D lining is under 2D below ~3 kHz and far over above
   (beaming): the lower tip's glass wool (Ø100 over 60 mm, 0.12 m) is 1.9 dB at 2 kHz in 1D, 12 dB in 2D, so
   it cancels the upper tips at f = c/(2ΔL) ≈ 2 kHz more than it should.
+  **Update 2026-11-20:** with the surge tank and the real cam flank the LFA's H2–H6 at its tips match two recordings
+  of the car only with a sub muffler in: a 105 mm can (the road silencers' smallest shell) over 0.38 m reads H2–H6
+  −15.3 dB re H1 (real −12.7/−13.3), the orders between −22.6 (−21.7), the floor −26.9 (−27.4/−29.5); without it
+  closed throttle at 6800 rpm sounds 1.6 dB(A) over full. At full throttle the flow through it (Rao & Munjal's
+  grazing flow, the render's flow-following silencers) takes much of the loss the 120 mm can had in still gas.
 - **Packed silencers by the 2D model (2026-10-29)**: `silencer2d.rs` ports `modal2d.py` (complex Bessel from the
   `complex-bessel` crate) and matches it to 0.01 dB (0.4 m can at 1 kHz 17.34, 0.8 m 33.82). Backward chamber waves
   must be referred to x = L or the evanescent modes overflow (the 0.8 m can failed everywhere, and 8 kHz+ on short
@@ -395,3 +400,423 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   now fitted once per pipe; silencer equalizers are memoized (`silencer2d::EqMemo`, carried across
   rebuilds). First block after an exhaust edit, release, loaded machine: K20A 178 → 26 ms,
   LFA ~1100 → 100 ms; whole K20A net 194 → 23 ms.
+- **The LFA's "wind" on fix/duct-jet-density is a missing firing line, not more noise (2026-11-24)**: ear_gate's
+  wind = aperiodic 150–500 Hz minus H1 (`scripts/realism/ear/ear_feat.py`), on the held renders at 6800/7500 rpm.
+  Aperiodic 150–500 Hz: main (b2) 48.6/49.2 dB, branch (rad1) 43.7/45.4, 0.675 m primaries 43.8/44.8; H1 at the
+  ear: 71.5/70.3, 35.7/49.6, 55.0/42.2. Main's H1 came from the open trumpets; with the surge tank only the
+  exhaust's is left.
+- **LFA designed path, valve open, impulse from an anechoic source vs a straight 70 mm pipe (2026-11-24)**: the
+  bank lines + Y alone 0–6 dB; the main muffler 24–25 dB at 300–475 Hz, 30–37 at 550–800. Of that, the spherical
+  chamber's published TL ≈ 20 dB flat (equal tips: 25–27 dB at every frequency) and the three unequal tips 5–11 dB
+  more at 550–1200 Hz (no chamber: 4–5 dB below 475 Hz, 10–17 above 550). Spike: `scratch-refs/spike-designed-path-tf.patch`
+  (needs a 1 s warm-up for the bypass valve's 0.3 s travel, and the zero-input run subtracted: the mean flow's DC).
+  **In the running engine it is as big** (held renders at the ear, every synthesized source and the intake off,
+  valve open; the main muffler against a 0.5 m × 85 mm pipe in its place): 26.2 / 31.4 / 26.6 / 30.0 / 25.6 dB at
+  orders 5 / 10 / 15 / 20 / 25 at 4800 rpm, 21.7–30.3 at 7500. The patent's Fig. 8 against its Fig. 7A dashed "engine
+  sound" (sub muffler only) reads ≈ 11 / 5 / – / 5 / 5.5. With the chamber element a plain 0.25 m × 85 mm pipe:
+  4.4 / 11.5 / 7.3 / 10.0 / 6.2 (the patent's); an empty 14 L expansion chamber in its place: 22.5 / 20.5 / 19.2 /
+  7.1 / 12.7. Inputs: `scratch-refs/wabl/{nomain,nochamber,reactive}`, `wabl/il.py`. **But the dashed curve is
+  not a measurement:** ¶0047 says the engine sound is "例示" (illustrated) with it, where the solid outlet curves
+  are "示されている" (shown); the in-situ figure above is no target. An empty chamber is reactive (its loss is
+  reflection), the `Segment::Measured` element absorbs both ways; at 7500 rpm both give the same H1 at the ear
+  (47.7 vs 47.4 dB in the held renders), so the realisation is not what keeps H1 low there.
+- **What the LFA's wind is made of (held 7500 rpm, rad1, 2026-11-24)**: aperiodic 150–500 Hz 45.4 dB against H1
+  49.6. Each source alone (the rest off): tail jet 43.7, combustion jitter 37.2, piston slap 36.0, main bearings 33.1,
+  the others ≤ 14 (they sum to 45.4); every one alone already fails the real bound (−22.4: `lfa-accel` −22.4,
+  `lfa-flight` −24.3). All off: 13.4 (wind −34). At the ear the intake's H1 is 5 dB over the exhaust's (−44.5 vs
+  −49.9 dBFS at 7500; at 6800 they meet at 168° and cancel to 35.7 dB). With the chamber element a plain pipe the
+  H1 rises 12–28 dB but the jitter's spread rides the pulses through and rises with it (aperiodic 58.0, wind −4.0;
+  jitter off: −17.3). The real exterior recordings' H2 sits 13–25 dB under H1 at 6400–8000 rpm (`look/ordtab.py`,
+  five `lfaref` clips); the model's exhaust alone has H2 1–6 dB over it.   Both corrections together (0.65 m primaries, the merge inflow's H1/H2 balance in `pscan/`, and a plain pipe for
+  the chamber element): wind −18.3 / −12.6 at 6800 / 7500 (from +8.0 / −4.1), H2 −28 / −6 re H1, floor −48 / −42.
+  Either alone: 0.65 m −12.1 / +3.8, no chamber −6.9 / −4.0. Inputs: `scratch-refs/wabl/`.
+- **The LFA's exhaust in pascals, and why it is quiet at the top (2026-11-24)**: exhaust only (intake off), held WOT,
+  Reference fidelity, the listener's 3 m (`scratch-refs/wabl/abs`, `abs_probe`): H1 85–88 dB SPL at 4800 rpm but
+  68–72 at 7500, the tail jet's broadband between the cycle lines (150–500 Hz) ≈ 70 dB there, so H1 ≈ floor. At
+  4800 the third octaves 125–315 Hz sit 23–39 dB under the 400 Hz one, as in the patent's measured Fig. 8
+  (24–41): the floor is right where H1 is strong. The fall is upstream of every silencer: with a straight 70 mm
+  pipe after the collectors the merge inflow's H1 (`order_probe`, 0.675 m primaries) reads 50 / 46.8 / 46.7 /
+  41.9 / 37.8 / 32.5 / 14.5 / 29.1 / 36.4 dB at 4800 / 5600 / 6400 / 6800 / 7200 / 7500 / 7800 / 8200 / 8600 rpm —
+  the shut primaries' third zero, 3c/4L with c ≈ 585 m/s, a −30 dB notch with −10 dB skirts 400 rpm wide (0.8 m:
+  at 7000–7500). Merge inflow share / H2 re H1 at 6500 / 7000 / 7500 / 8000 rpm: 0.575 m −1.5/−7, −0.9/−8,
+  −0.4/−17, −1.3/−20; 0.60 m −1.7/−6, −0.5/−13, −0.7/−21, −2.1/−12; 0.625 m −1.2/−8, −0.6/−19, −1.2/−16,
+  −2.7/−7; 0.65 m −0.6/−15, −1.3/−19, −2.3/−6, −3.4/−4 (`scratch-refs/pscan`). The combustion's own spread is
+  right where it starts (cylinder pressure at EVO COV 1.4–1.8 %, port peak 1.5–2.4 % at 6800–7500 — Soltau's
+  charge spread), but where H1 sits in a zero its per-cycle spread is −16 dB re its line at the merge inflow
+  (0.8 m, 7500) against −29…−33 elsewhere (`jitter_probe`).
+- **The LFA's exhaust source is flat with rpm (2026-11-24, 0.60 m primaries, Reference, held WOT)**: the ten
+  exhaust valves' summed flow at the firing order (cycle order 10) against its mean: −16.6 / −13.6 / −19.0 /
+  −19.0 / −24.3 dB at 3600 / 4800 / 6000 / 7200 / 8400 rpm, so its dQ/dt holds at 44–47 dB from 4800 to 8400
+  while the mean flow grows 4.8 dB (the pulses spread over more crank angle as the speed rises); valves to the
+  merge's inflow −10 / −10 / −8 / −12 / −15 dB (the shut primaries' third zero at 8800). The tail jet grows
+  with the mean flow (U^7.5) and the mechanical sources with the speed, so the firing line loses to them at the
+  top: the LFA's physgate crescendo −3.5 dB(A)/octave (rad1 +6.1, b2 passed with the open trumpets' intake).
+  Spike: `scratch-refs/probe-source-by-rpm.patch`. Gates of 209c393 (`gates-j60`): spectral PASS (low-mid
+  −18.6 vs −13.7 on rad1), blind2 hnr 10.7 (rad1 13.5), ear_gate wind −4.3, lift +5.4 (rad1 −0.8), peak +18.1.
+  Held renders: exhaust alone −11.8 / −10.5 at 6800 / 7500 (0.8 m: −2.9 / −2.1); with the intake −14.3 / −2.9 —
+  at 7500 the intake's H1 meets the exhaust's out of phase at the fixed ear (51.9 → 44.1 dB).
+- **Where the LFA's wind sits in rpm, and the lift (2026-11-24)**: the ear_gate's wind per 500 rpm bin, real
+  exterior (`lfa-accel`, `lfa-flight`): −19…−25 dB flat from 5500 to 8000. Renders: j60 (0.60 m) −20 at 5500–6000,
+  −14 at 6500, −2.5 / −3.1 at 7000 / 7500, −11 at 8000, −22 at 8500; rad1 worse (+7.9 at 6500); b2 (open trumpets)
+  −20…−26 throughout (`scratch-refs/wabl/windrpm.py`). In pascals at 3 m (`abs_probe`, `wabl/abs2`), exhaust only:
+  H1 87.2 / 81.9 / 74.2 / 77.6 / 75.9 / 72.9 / 75.0 dB at 5500…8500 rpm, the floor between the lines 64→71; with
+  the intake 85.7 / 81.1 / 80.2 / 78.2 / 68.0 / 73.5 / 79.9 (it meets the exhaust's out of phase at 7500, adds at
+  6500 and 8500 at the fixed free-field ear). Lift at Heywood's 12 % of the bore (630202f): H1 +2.5…+4 dB at
+  6000–8500, floor +0.5…+1.8; dyno 530 hp at 8000 (L/D 0.25: 497; 0.30: 525; 0.33: 534). EVO 7–21° earlier: +1…+2 %
+  at 8500 only. Gates (`gates-hey`): ear_gate wind −11.3 (j60 −4.3), bank +3.9 (j60 +7.0), lift +5.1, peak +16.5;
+  spectral PASS (low-mid −20.1); regress vs b2 PASS; blind2 hnr 13.8 @ bin 3 (b2 11.0, also failing); physgate
+  crescendo −3.2 dB(A)/octave (deepest hole 7500: the intake–exhaust cancellation) and load +0.0 (overrun as loud
+  as full; b2 +6.3 and +8.1 with the trumpets carrying the level).
+- **A merged exhaust's tail jet was counted twice (fixed 2026-11-24)**: the LFA's two tails (its banks' halves of
+  the one radiated signal) each blew a jet of all three tips' area at one bank's flow through its 70 mm pipe:
+  6 dB over one jet of the tips at the whole flow (65.8 vs 59.6 dB at 6000 rpm, 3 m). ARP876 at 7500 rpm, 3 m:
+  68 dB per old tail.
+- **JP 2008-169751 A ¶0048–0049 (2026-11-24)**: the long lower tip (52, ≥ 2× the others) cuts the 1st order at
+  ≈ 4800 rpm and its wool the ≥ 1 kHz; Fig. 8's combined tail sound has H2, H4, H5 over H1 by design. The model
+  at 4800 rpm sends H2/H4/H5 into the muffler at −10/−22/−34 dB re H1 (`order_probe`, the merge's inflow); with
+  no main muffler the ear's third octaves at 800 / 1250 / 1600 / 2000 Hz read −15 / −16 / −28 / −30 dB re the
+  400 Hz one, where Fig. 7A's dashed engine sound reads ≈ −1.5 / +2 / – / −4.5 (its curves are drawn through
+  third-octave points, so a reading, not a measurement; an A-weighting would explain ≤ 6 dB of it). At 0.5 m
+  the no-main H1 reads ≈ 126 dB against the dashed 122. The road recordings hold H1 dominant
+  (−2…−3 dB of 100 Hz–4 kHz, 400–700 Hz), so the exterior firing line must largely come from elsewhere than
+  the tail: the intake (Okamoto 2011 Fig. 18, "surge tank tuned 400 Hz, equal tone tuned intake") — the model's
+  tank ducts pass −17…−26 dB at 558 Hz (FINDINGS 2026-11-20).
+- **The LFA's treble in main was its doubled tail jet (2026-11-25)**: A-weighted octave bands of the held renders,
+  main (`b2`) against the branch after the double count's fix (`hey`): 4 kHz 54–59 vs 31–43, 8 kHz 43–53 vs
+  15–30 dB at 4500–9000 rpm (twice the speed through u⁸: ≈ +24 dB). With it gone the LFA lost its crescendo
+  (−3.2 dB(A)/octave), its load contrast (+0.0) and its "shrill" top. The exhaust alone barely follows the load:
+  the inline-4 at 4900 rpm, d/dt of the tail flow (`order_probe`, THR=0/1), firing order 2 drops 1.4 dB on
+  overrun (8.3 vs 9.7 dB), the 8 and 16 kHz octaves rise 4–7 dB, the cycle's lines 51 dB over the floor at 8–16 kHz
+  (28 at full load); 0.5 cm cells change nothing (not numerical). Screening the intake mouth with the body
+  (patch `scratch-refs/wabl/mouth-screen.patch`) fails physgate load or crescendo on 9 of 13 presets (inline-4
+  load +10.4 → +2.8 dB(A)): shelved until the exhaust follows the load. K20C1 (load +1.9, lift-off) and RENESIS
+  (crescendo −3.5) fail physgate on this branch before these changes too (`hey`), and pass on main: the ear by
+  the tails (3e8fde4) is the likeliest cause, the same lack of contrast.
+- **Tail gas temperature (2026-11-25)**: the tail jet left at a fixed 622 K (`C_TAIL` 500 m/s) whatever the load,
+  and the FV path (Reference renders) never walked `pipe_heat`; the walls settled on the 300 K the port
+  temperature starts from (304 K after 0.4 s at full load; hand balance ≈ 765 K). Now the walls settle once the
+  cycle means have run three cycles, the FV path walks the heat on its `jet_net`, and the jet leaves at the
+  tail's gas (`ExhaustNet::tail_gas_k`; LFA ≈ 950 K at full load, only presets with `gas_temperature`). Each
+  outlet blows its own jet (`ExhaustDef::jets`: the LFA's three 60 mm tips, St·u/d √3 higher than one 104 mm jet).
+  LFA gates (`gates-tj`): treble back (4 kHz +7…+16, 8 kHz +6…+21 dB re `hey`), physgate crescendo +0.7 and
+  load +1.8 (bounds 3.0), lift-off PASS; spectral low-mid wind −9.4 (bound −18.4) and ear-gate wind −3.4: the tail
+  jet carries it (`attribute.sh`: flow_noise off → −21.6 and −16.2). The jet's own level is ARP876 at ≈ 100 m/s;
+  the lines it sits under are what is weak. Against the chassis-dyno clip the waveguide's cycle orders 30–80 read
+  9–24 dB low, but the five exterior recordings hold H5–H8 at −19…−48 dB and the render inside them: no verdict
+  on the high harmonics yet. `tail_mach` still uses `C_TAIL`.
+- **Overrun at the port is real physics, not a bug (2026-11-25)**: FV, held, cylinder 0 (`scratch-refs/ovr/port-pulse-spike.patch`).
+  The inline-4 at 4900 rpm: full load 514 mg out per cycle, peak 120 g/s, port gauge −7…+71 kPa; overrun
+  (MAP 23 kPa, cylinder 21 kPa at EVO: a real fuel cut-off's) 81 mg back in (−34 g/s) and 133 mg out (+66 g/s),
+  port gauge −37…+46 kPa: the same ≈ 80 kPa swing (p = c·ṁ/A ≈ 31 kPa for the displacement alone). The summed
+  ports' firing harmonics on overrun re full: inline-4 +2.6/+3.8/+4.1 dB (H1–H3), the tail −0.6/+2.7/−0.4 and
+  −9…−21 at H4–H6; LFA at 6800 (MAP 13 kPa) the ports −15.9 dB at H1 but each primary's exit −9…−14, the
+  collectors −5.5, the merge −2.8 (`ovr/chain-spike.patch`, per expansion site): the cold overrun gas's
+  acoustics gain ≈ 13 dB along the chain. Part throttle: the inline-4's tail H1 dips −19.8 dB at 701 mg/cycle
+  (where the cylinder at EVO meets the exhaust's pressure: no blowdown, no reverse rush). FV pipes exchange no
+  heat with their walls (hand NTU of an LFA primary at full load ≈ 0.2: −60 K, c −2…3 %; not built).
+- **Real pull vs decel at matched rpm (2026-11-25, `scratch-refs/ovr/decel.py`, dyno clips)**: S2000 (two
+  clips): 1–4 kHz −5…−10 dB above 5000 rpm on the decel, H1 −1…−17, dB(A) −2…−8; Civic K20 ≈ 0 (a coast-down?).
+  Five LFA dyno clips (`yt/lfa/`): −11…+7 dB(A), the decel often as loud as the pull (camera gain control,
+  rollers): no load contrast to fit. Full-load share of the A total: real I4 dyno H1 −9…−30, 1–4 kHz −3…−8 dB;
+  the LFA render H1 −1…−6 (the exterior recordings also hold H1 dominant). JP 2008-169751 A states no
+  microphone distance: Fig. 7A gives no absolute level.
+- **The LFA's tip bore sets its wind floor (2026-11-25)**: the jet's level at a fixed mass flow goes as n^−6.5·d^−13
+  (ARP876: area × u^7.5, u ∝ 1/(n·d²)), and the 60 mm bore of the three tips is an ESTIMATE from the patent's
+  proportions (no published figure; the trims are ≈ 105 mm outside). Held WOT at 3 m (`abs_probe`, all sources,
+  `scratch-refs/wabl/tip`): 60 → 76 mm (3 in) exits lower the 150–500 Hz floor between the cycle lines by 7.7 / 8.6 /
+  8.3 / 8.3 dB at 6000 / 7000 / 7500 / 8000 rpm (not the 13.4 of the law: the peak St·u/d moves down into the band
+  and the jitter and mechanical sources stay); H1 moves +4.9 / +4.4 / −1.4 / −3.3 (the tips' acoustics). H1 over the
+  floor: 13.0 / 4.6 / 0.9 / 0.3 dB → 25.6 / 17.6 / 7.8 / 5.3. The model's LFA at full load reads 84–86 dB SPL at 3 m
+  (H1 78–85); no calibrated level of the real car was found (Japanese proximity and EU stationary figures searched;
+  the FK8 Civic's stock proximity level is 82 dB per HKS's catalogue, rpm not stated).
+- **The LFA's tips fitted at 70 mm (2026-11-25, user: fit only the ESTIMATE dimensions)**: grid of held WOT renders
+  (`scratch-refs/wabl/fit/grid.py`, ear_feat wind/bank at 5500–8500 rpm). Bore at 0.60 m primaries, wind 5500 /
+  6000 rpm: 55 mm −14.1 / −8.3, 60 −18.4 / −11.7, 65 −23.0 / −17.5, 70 −26.8 / −21.7, 76 −29.8 / −25.7, 80 −31.0 /
+  −27.3 (real −19…−25); 70 mm taken from the bins where the firing line is sound (80 overshoots them while 7500–8500
+  stay at −5…−10 for every bore: the tone, not the jet). Primaries at 80 mm tips, 0.60 / 0.65 / 0.70 / 0.80 / 0.90 m:
+  J 74 / 115 / 116 / 67 / 69, each with a hole somewhere in 6500–8500 (the zeros move): kept 0.60. Gates (`t70`,
+  LFA): spectral treble −27.0 (PASS; `tj` −17.2), low-mid −16.6 (bound −18.4; `tj` −9.4), ear_gate wind −5.9, bank
+  +4.3, lift +1.9, peak +16.5, physgate crescendo −3.7 dB(A)/octave and load +0.7 (`tj` +0.7 / +1.8): with the jet
+  quieter the tone's own fall with speed shows. Exhaust alone at the ear (held, every other source off, firing
+  harmonics): H1 88.5 / 88.9 / 80.1 / 73.8 dB SPL at 4800 / 6000 / 7500 / 8500, H2 −20.7 / −23.8 / −14.0 / −2.3 re
+  H1, while the main muffler's inflow keeps H1 flat (`chain_fv_spike`: 132 / 131 at 4800 / 7500). JP 2008-169751 A
+  ¶0046–0047: at high speed the final chamber and the short tips keep the engine's own order balance (no order cut
+  more than another); ¶0048–0049: only the long tip cuts the 1st order (and its wool ≥ 1 kHz), so the sum has the
+  2nd, 4th and 5th over the 1st (Fig. 8). The model's chamber and tips cut 625 Hz 7 dB and 800 Hz 11 dB more than
+  400 Hz: a low-pass where the patent describes a flat path.
+- **The tips' junction is not the main muffler's low-pass (2026-11-25, by hand)**: lossless transfer matrices of the
+  model's tips (85 mm duct into two 0.13 m and one 0.345 m tips of 70 mm, end corrections 0.6133a, c 560 m/s,
+  radiated ∝ f·U) against three equal short tips: +0.9 / +1.9 / +3.0 / +4.5 / +4.8 / +0.7 / −9.3 / −11.6 / −8.0 dB
+  at 300 / 400 / 475 / 550 / 625 / 700 / 800 / 1000 / 1200 Hz (the long tip's half-wave shorts the junction at
+  800–1200 only). A 14 L compliance at the junction (the sphere's volume) makes it worse: with the tips it is a
+  Helmholtz low-pass (equal tips −4.4 / −5.8 / −6.2 at 625 / 800 / 1000 re 400 Hz). The model's extra 7 dB at 625 Hz
+  (and the in-situ 5–11 dB at 550–1200) therefore comes from another element of the path (the long tip's wool
+  segment, the bypass's closed path in parallel, the merge): measure each against the patent's three measured
+  curves at 4800 rpm (Fig. 7A solid: short tips alone keep the engine's balance; Fig. 7B: the long tip alone
+  with the 1st and ≥ 5th orders cut; Fig. 8: the sum, 2nd/4th/5th over the 1st) before changing any geometry.
+- **What each LFA tip radiates (2026-11-25, `scratch-refs/wabl/ord/tipsplit-spike.patch`, held WOT, exhaust only)**:
+  firing harmonics, 4800 rpm: the short pair H1 −3.1 dB re the sum's, H2..H4 −11.7 / −8.3 / −15.9 re its own H1
+  (the muffler's inflow: H2 −10, so the short tips keep the inflow's balance, as ¶0047 says); the long tip H1 −10.2
+  (its own 1st order cut, as Fig. 7B shows), H2 −10.6; the sum H2 −20.1 re H1 (Fig. 8, measured: +4). The long
+  tip adds in phase at 400 Hz and against the short pair at 800 Hz (sum −5 dB under the pair). At 7500 rpm the
+  pair and the long tip are ≈ 117° apart at H1 (625 Hz): the sum 5–6 dB under their in-phase sum, the "low-pass"
+  of the main muffler. The patent's sum cuts the 1st order and keeps the 2nd/4th/5th over it: the long tip
+  against the pair at 400 Hz and with it at 800 Hz, a path difference ≈ c/(2·400 Hz) ≈ 0.7 m at 780 K, where the
+  model has 0.215 m (tip lengths 0.13 / 0.345 m from Fig. 1's proportions, L₂ ≈ 2.9·L₁, scaled to tips first taken
+  as 60 mm: an ESTIMATE).
+- **The LFA's tips' lengths fitted (2026-11-25, user: scale of Fig. 1's lengths)**: exhaust alone at 4800 rpm,
+  firing H2 / H4 / H5 re H1 against Fig. 8's measured +4 / +8 / +1, by scale of the tips' lengths (0.13 / 0.12 wool +
+  0.225 m at ×1): ×1 −20.7 / −21.2 / −23.4 (rms 26), ×1.5 rms 19.4, ×1.75 +0.3 / −9.9 / −10.6 (12.5), ×2 −3.2 /
+  −11.3 / −13.0 (14.4), ×2.25 15.6, ×2.5 14.4, ×3 17.3, ×4 22; the 1st order falls 11–14 dB at ×1.75–2 (the long tip
+  against the short pair at 400 Hz). Held ear J (wind ≤ −22.4, bank ≥ +13.4, 5500–8500 rpm) at 70 mm: ×1 142, ×1.5
+  135, ×1.75 162, ×2 116, ×2.5 130, ×3 126; at ×2 the bore again: 65 mm 153, 70 116, 76 119, 80 113 (5500 / 6000
+  wind −22.3 / −19.2, inside the real −19…−25). Taken: ×2 (short tips 0.26 m, long 0.24 wool + 0.45 m), 80 mm (the
+  range's top). Dyno 529 hp at 8000 (527 before). Gates (`s2`, LFA, against `t70`): ear wind −10.2 (−5.9), bank
+  +4.6 (+4.3), lift +6.8 (+1.9), peak +14.7 (+16.5); physgate crescendo +0.6 (−3.7), load −1.1 (+0.7); spectral
+  low-mid −16.9 (bound −18.4), treble −26.7 PASS; blind2 hnr over at bins 2–4 and echo 22.3 > 19.8 at bin 3 (the
+  long tip's 1.2 ms against the short pair, physgate's comb ripple 1.7 → 3.8 dB p-p, still a PASS).
+- **The LFA's load contrast across speed, and the held overrun's cold pipes (2026-11-25, `scratch-refs/ovr/load`,
+  `abs_probe` with THR / WARM, all sources, 3 m)**: full over closed throttle +9.7 / +9.4 / +4.6 / +2.8 / −1.2 /
+  −2.7 / −3.8 / +2.3 / +0.3 dB(A) at 5000 / 5500 / 6000 / 6500 / 6800 / 7000 / 7500 / 8000 / 8500 rpm. Full load
+  falls from 86.4 dB(A) at 5000 to 78.4 at 7500 (the tone's hole, the crescendo's failure too) while overrun
+  rises 72 → 82. Overrun at 7500 is no synthesized source (each off: ±0.1 dB(A)) and no firing (motored peaks
+  298–305 kPa, ±2 % between cylinders): the exhaust's own lines at cycle orders 4 / 12 / 20 / 19 / 11 (79.3 /
+  77.3 / 74.5 / 74.0 / 72.8 dB) over the firing order (68.4): each cylinder's reverse rush follows the waves at
+  its port, so the cylinders differ. A held closed-throttle render settles its pipes on overrun's own cold
+  steady state; after 1.5 s at full load (a real decel follows a pull) the span reads +3.2 / +2.3 / −0.7 / +1.0
+  at 6000 / 6800 / 7500 / 8000 (cold-settled +4.6 / −1.2 / −3.8 / +2.3).
+- **The LFA's full-load "hole" is a flat H1 with weak upper orders, plus an H3 spike at 5000 (2026-11-25,
+  `scratch-refs/ovr/hole`, `abs_probe`, held WOT, tips 80 mm ×2, Reference)**: exhaust alone 80.2 / 84.0 / 77.2 /
+  76.5 / 76.2 / 79.6 dB(A) at 4800 / 5000 / 6000 / 6800 / 7500 / 8000 rpm, with the intake on ±0.5 (2.0 at 7500): the
+  fall is the exhaust's, not intake–exhaust interference at the ear. Unweighted H1 stays 74–79 dB throughout and
+  carries the total from 6000 up; H2–H5 sit −8…−40 dB under it (Fig. 8 at 4800: +4 / ? / +8 / +1; ours −2.4 / +4.2 /
+  −12.4 / −12.1, rms 14.5 dB). The 5000 rpm peak is H3 (1250 Hz, cycle order 30, phase-locked) at +4 dB over H1:
+  primaries 0.66 m or the long tip's pipe 0.55 m take 4 dB off it, short tips 0.32 m nothing. Element by element at
+  5000 / 6000 / 7500: the published-loss final chamber (`Measured`) is a flat −20 dB (no shape); the long tip's wool
+  holds H1 up 5 dB; the closed (low-speed) path in parallel is a Herschel–Quincke branch notching H2 at 5000 rpm
+  (833 Hz: −15.4 re H1, +1.9 with its pipes choked to 8 mm; −2.4 at 4800), and its two inter-chamber pipes cut to
+  0.02 m (the patent's perforated partitions 20A / 22A, ¶0034) move nothing at 4800 / 6000 / 7500.
+- **Where the LFA's upper orders go (2026-11-25, same renders, 7500 / 4800 rpm, H2..H8 re H1)**: real dyno clip
+  at 6600 −9.6 / −7.6 / −12.1 / −9.7 / −13.9 / −20.7 / −22.0; model −7.6 / −15.3 / −22.1 / −27.6 / −42.9 / −42.9 /
+  −50.4 at 7500. A straight 70 mm pipe after the collectors (no catalyst, silencers or merge) −9.6 / −4.7 / −10.5 /
+  −17.1 / −16.1 / −20.3 / −25.8, H1 35 dB up: the source has them. Without the sub-mufflers little changes at 7500
+  (−6 dB at H4/H5 at 4800); without the catalysts −5.1 / −5.0 / −14.9 / −16.7 / −16.7 / −24.3 / −31.0, H1 +5.3
+  (+6.6 at 4800), +8.6 dB(A). The catalyst alone (`catalyst_brick`, 900 K, between 70 mm pipes) loses 6.3 / 7.4 /
+  6.4 / 8.0 / 9.3 / 8.7 dB at 625…3750 Hz, as narrow-tube theory gives (channels 3.0 → 5.9 dB over 0.13 m); an
+  empty chamber of its size in its place takes the same in situ (H1 76.2 vs 76.0, H6 −39.5 vs −42.9): the loss is
+  the 153 mm body's reflection against the source, not the monolith. The waveguide model shows the catalyst's
+  insertion loss 9–14 dB at H3–H7; the FV path 10–31 dB (FV without catalyst carries more upper orders than the
+  waveguide: steepening).
+- **The LFA's primaries refit with the crescendo (2026-11-25, tips 80 mm ×2, `scratch-refs/wabl/fit/grid_x2.py`,
+  held WOT, Reference, all sources at the ear)**: 0.60 / 0.70 / 0.80 / 0.90 m — ear J 113 / 149 / 81 / 79;
+  dB(A) slope 4500–9000 rpm +1.5 / +1.4 / +10.3 / +8.7 per octave, mean fall under the running maximum 5.8 / 8.4 /
+  4.7 / 3.4 (physgate: ≥ 3 and ≤ 2; every length is loud at 4500, 84–87 dB(A), and 11 dB down at 5500); dyno peak
+  529 / – / 533 / 529 hp; Fig. 8 rms at 4800 14.5 / – / 22.5 / 14.5 dB. The firing line's share of 100 Hz–4 kHz
+  at 5500 / 6000 / 6500 / 7000 / 7500 / 8000 (real exterior: −2.4…−3.0, flat): 0.60 m −1.6 / −0.9 / −2.1 / −7.3 /
+  −3.5 / −1.4; 0.80 m −4.8 / −10.2 / −10.9 / −26.6 / −8.6 / −1.3; 0.90 m −2.3 / −9.6 / −16.3 / −4.1 / −5.3 / −2.5:
+  the shut primaries' third zero walks through the band for every length in the range, so the recordings' steady
+  line keeps 0.60 m (Okamoto et al. 2011 call the manifold "long branch", length not given; its catalysts are
+  metal-substrate with fewer cells). No approved dimension fixes the crescendo without breaking the firing line.
+  The model's zero is −30 dB deep with lossless junctions; the real line shows none from 5500 to 8000.
+- **Gates of the warm-hold build (`pw`, 2026-11-25, all presets, base `b2` = main)**: physgate PASS inline4,
+  K20A, K20A-tuned, EJ25; FAIL LFA (crescendo +0.6 / deficit 5.2, load −1.1), K20C1 (load +2.1, lift-off +0.1),
+  V8 flat-plane (crescendo −0.3, load +2.0), V8 cross-plane (load +0.7), single (load +1.3, lift-off +0.6), Renesis
+  (crescendo −3.5), 13B bridgeport and both VW diesels (load; these fail on main too). Main passes the LFA, K20C1,
+  both V8s and Renesis. The held part-load renders' 1.5 s pull before them moves the load spans ≤ 0.3 dB on the
+  other presets. regress vs main: FAIL LFA lowmid −21.1 → −16.9, single −15.5 → −13.8, EJ25 wind −20.8 → −17.8,
+  VW TDI lowmid −16.6 → −9.6; blind2 LFA hnr 11.5 > 9.5 + 1 at bin 2.
+- **Junction loss does not fill the LFA's firing-line dip (2026-11-25, spike, reverted)**: a linear resistance
+  α·ρ·|U_collector|·(A_primary/A_collector) at each primary's mouth on the constant-pressure junction (the
+  grazing flow's damping of a side branch; Bassett et al. 2001 give joining-flow losses of this order) moves the
+  firing share at 7000 rpm (0.60 m) −7.3 → −7.0 / −6.3 dB for α 0.5 / 2, at 6500 −2.1 → −1.6: the dip is not a
+  lossless junction's. At 0.60 m the third zero sits at ≈ 8800 rpm, not 7000; at 7500 the intake takes 4 dB off
+  the exhaust's H1 at the ear (74.1 → 70.2) and at 6800 adds 3.3.
+- **The LFA's main muffler fit cannot carry the crescendo (2026-11-25, `scratch-refs/wabl/mfit`, user: fit the
+  muffler's ESTIMATE dimensions)**: a linear-waveguide transfer probe (`muffler_tf`, both banks driven alike)
+  applied as deltas to the FV exhaust-only harmonics predicts the FV ablations within 0–2 dB (long tip +0.10 m:
+  H1 +1.8 vs +2.1, H3 −2.7 vs −4.4; the closed path's 833 Hz notch shallower, +5.4 vs +15.3). One at a time, only
+  the tips' scale and the Y's 85 mm pipe move the result; the final chamber's length, the open path and the
+  closed path's pipes ±50 % move ≤ 0.6 dB. Best of tips ×(1–1.75) × Y pipe 0.1–0.5 m: Fig. 8 rms 10.5 dB (tips
+  ×1.5 of now, Y 0.30 m) from 14.5, with a new +10 dB peak at 6800 rpm. In every candidate the 5000 rpm peak
+  stays (82–84 dB(A), H3 at 1250 Hz): a 1200 Hz pass band of the primaries and collectors through the Y's filter
+  (linear sweep at 5000: 41.7 dB at 1200 Hz vs 21–35 around it; primaries 0.66 m move it to 1100–1150; collector
+  0.40 / 0.55 m to 1250 / 1300; without the merge flat 61–67). Not fitted: the gain on Fig. 8 is small and
+  unvalidated, and the crescendo's deficit is upstream of the muffler.
+- **What a real decel drops, and what ours does (2026-11-25, `scratch-refs/ovr/real/decel.py`)**: the Pantera's
+  BMW Alpina V8 on its exhaust microphone (Sonniss GDC 2017, `exhaust_close`, f0 tracked, accel vs decel frames at
+  ≈ 2000 rpm): A-weighted +10.9 dB; tracked lines H1..H4 +2.0 / +10.0 / +2.6 / +17.2; the floor between lines at
+  250 Hz / 1 kHz / 4 kHz +3.4 / +7.7 / +11.4 (the fundamental holds, the harmonics and the high floor go). An
+  Aprilia V-twin's dyno free revs show ±2 dB (no load on either side: not a load contrast). Ours, held full over
+  closed at physgate's mid speed, firing lines H1..H4 | floor: single (5600) +12.4 / +13.0 / +3.7 / −2.5 | +2.1 /
+  +0.1 / +0.2; K20C1 (5200) −0.8 / +2.6 / +5.1 / +25.1 | +15.2 / +12.0 / +21.6; V8 cross-plane (5000) +9.3 / +21.8
+  / +24.6 / +23.0 | +17.9 / +12.0 / +22.5 (load +0.7 dB(A) all the same: the overrun's non-firing cycle orders
+  carry it, as on the LFA); LFA (6800) +4.9 / +4.1 / +2.5 / −9.8 | +10.2 / +6.8 / +10.9. The single's floor does
+  not follow the load; the K20C1's full-load A-weighted total is its 173 Hz firing line (125 Hz octave), which
+  holds on overrun as the Pantera's fundamental does.
+- **The single's overrun floor is its mechanical noise (2026-11-25, `scratch-refs/ovr/single`, `pw` binary, held
+  5600 rpm, app renders)**: full / closed 64.3 / 63.0 dB(A) (span +1.4); every mechanical source off: 61.2 / 58.9
+  (+2.3) and the closed floor at 250 Hz / 1 kHz / 4 kHz falls 38 / 54 / 51 dB, the full one 4 / 18 / 15: the floor
+  between the lines is the impacts' at both loads. Alone: piston slap off −1.4 / −1.9 dB(A) (floor 1 kHz −4.5),
+  main bearings off −0.6 / −0.9, block, valvetrain and chamber ring ≤ 0.5. Each impact is pushed at the source's
+  fixed weight whatever the force that reverses (`Engine::step`, the side / rod force's sign change), the level
+  being Lalor et al.'s overall curve against speed — load-blind by design (Raff & Perry 1973: a motored engine as
+  loud as two fired ones at 4000 rpm). With the ear by the tails the engine's mechanical noise stands against an
+  exhaust whose floor would follow the load.
+- **A real decel's drop depends on the exhaust (2026-11-25, `scratch-refs/ovr/real/decel.py`, exhaust microphones,
+  rpm-rising vs rpm-falling frames at matched f0)**: Suzuki DRZ-400 single (Pole Position, gearshifts) +1.7 /
+  +4.4 dB(A) at ≈ 7400 / 8500 rpm, lines H1..H4 within ±6, floor 4 kHz +5.5; Dodge Viper GTS V10 race engine (ramps)
+  −0.1 / +1.1 / +0.5 dB(A) at ≈ 1000 / 1900 / 2800, lines and floor within ±9 (mostly ±3); Nissan R33 I6 turbo road
+  car (ramps) +4.2 / +13.9 / +10.6 / +12.7 at ≈ 800 / 1700 / 2600 / 3500, H1 +1…+6, H2..H4 +7…+20, floor 250 Hz /
+  1 kHz / 4 kHz +8…+11 / +9…+14 / +9…+19; the Pantera's road V8 +10.9 (above). Open exhausts barely drop; muffled
+  road cars drop 10–14 dB(A), mostly their harmonics above the first and their high floor. physgate's load bound
+  (≥ 3 dB(A), "real exhaust microphones −3.6 to −20.5") is not met by the single and the race V10. The model's
+  single (+1.3) and LFA (−1.1) sit with the open exhausts; the LFA, the K20C1 and the V8s are muffled road cars.
+- **A real decel keeps its order balance (2026-11-25, `scratch-refs/ovr/real/orders.py`, R33 exhaust microphone,
+  A-weighted lines, firing = every 6th cycle order)**: at ≈ 2500–3700 rpm accel / decel firing lines −19.2 / −28.7,
+  other cycle orders −29.7 / −39.9 dB: both fall ≈ 10 dB and the others stay 10 dB under the firing lines. Ours on
+  overrun: LFA other orders 45.0 → 55.2 dB(A) over firing 55.0 → 50.9; V8 cross-plane other orders 51.2 → 51.3,
+  firing 41.8 → 26.9; K20C1 firing 44.9 → 43.9; single firing 62.5 → 60.4 (held, physgate's mid speed).
+- **The LFA's overrun is not its reverse-flow Cd (2026-11-25, `scratch-refs/ovr/rcd`, `abs_probe` THR 0 WARM 1,
+  6800 rpm)**: `exhaust_reverse_cd_ratio` 0.75 / 0.4 / 0.2 → 73.4 / 72.2 / 72.2 dB(A) (full load 76.9). Recorded
+  0.3 s after the lift, the floor between lines reads 70.2 (62.8 at full load) whatever the synthesized sources
+  (all off 70.3): the cooling transient smears the lines; the app's held scenes settle 1 s first.
+- **The overrun's harmonics are made at the port (2026-11-25, single 5600 rpm, `xfer_probe` spike: cylinder 0's
+  port gauge and the radiated output together, warm hold, FV Reference)**: full over closed at the port H1 +15.0,
+  H2 +8.5, H3 +0.9, H4 −5.6, H5 −3.1, H10 −16.6, H24 −2.2, H30 −4.2, H40 −5.8 dB; radiated +12.4 / +13.0 / +3.7 /
+  −2.5 / +0.6 / +0.1 (H10) / +8.0 / +0.6 / +0.8; port-to-tail transfers differ by ≤ 5 dB except H10 and H24 —
+  the overrun's upper orders come from the port, not from undamped pipes. Phase-averaged port wave: full load −16
+  … +40 kPa, the blowdown's front +39 kPa/ms; overrun −17.6 … +26.9 kPa, the reverse rush's dip (−17 kPa at ≈ 460°)
+  then a rise as steep (+40 kPa/ms at ≈ 500°: the back-flow stopping as the cylinder fills, and the stroke's
+  push); cycle-to-cycle spread 0.50 vs 0.05 kPa. Without a measured overrun port trace (asked for in PAPERS.md)
+  the model's overrun pulse cannot be judged against reality. Separate from this: the impacts' level is a
+  four-cylinder's whatever the count (`mechanism_dba_at_1m_loaded` is the whole engine's): energy over n
+  cylinders would put the single 6 dB under it, V8 / V10 +3 / +4 dB (Lalor et al. scale by bore only).
+- **The LFA after Okamoto's catalyst can, the tank wall and filter, and the sub muffler fit (2026-11-26,
+  `scratch-refs/ovr/{sub,line,cres,tips}`, `abs_probe`, held WOT, 3 m, Reference)**: exhaust-only firing H2..H8
+  re H1 against the real dyno clip at 6600 / 7500 (rms dB): sub muffler 0.38 m 10.2 / 9.6, none 6.7 / 3.2, no
+  catalyst can 7.1 / 3.2, a straight pipe after the collectors 7.7 / 5.1; the fit took 0.25 m (8.7 / 5.6; the
+  6th–8th still cut 1.9 dB more than the 2nd–5th, JP 2008-169751 A ¶0041). Gates `sb` (LFA, base `b2`): physgate
+  crescendo +3.0 (just under; deficit 0.72), load +4.4, lift-off and comb PASS; spectral PASS; regress lowmid
+  −21.1 → −19.1; ear_gate bank +7.6, wind −13.9, lift +7.0, peak +14.7 (`b2` +9.5 / −22.2 / +9.0 / +15.2: main
+  fails ear_gate too); blind2 hnr over at bins 3–5. The intake is not the 7500 rpm dip (intake off: 83.3 vs 83.1
+  dB(A)). Against `b2` the firing H1 at the ear is 10–18 dB down at 6000–8200 (6800: −40.8 vs −22.6 dBFS) while
+  the 150–500 Hz floor between the orders fell 7–8: that is the wind failure, and it was already there in `hey`
+  (the jet fix), before this session's changes. Tip scale of Fig. 1 (×2 now) against the same build: ×2 / 2.5 / 3
+  / 3.5 — crescendo +3.01 / +2.45 / −1.69 / −0.88 dB(A)/octave, Fig. 8 rms at 4800 12.5 / 6.2 / 13.9 / 21.4 dB,
+  ear J (5500–8500) 53 / 36 / 24 / 22: every scale leaves a hole somewhere in 6000–9000 (the tips' comb moves
+  with it), as the primaries' and the main muffler's fits found. The real exterior line has none from 5500 to
+  8000.
+- **The LFA's exterior firing line is the tail's, and the model's hole moves with every length (2026-11-26,
+  `scratch-refs/ovr/src`, `abs_probe`, held WOT, all sources, 3 m)**: the dyno clip's phone stands straight behind
+  the tips (FACTS 2026-10-29) and holds H1 dominant at 6060–7300 rpm (H2 −9.6 dB), so the steady real line does
+  not need the intake (the model's intake moves the 6800 / 7500 totals ≤ 0.3 dB(A)). Model H1 at the ear,
+  6000 / 6800 / 7500 / 8200 rpm: as built 87.3 / 79.2 / 82.4 / 89.0 dB (H2 at 6800 86.4, over H1); primaries
+  0.15 m 85.5 / 77.1 / 87.0 / 88.2; collectors 0.10 m 86.9 / 82.0 / 88.2 / 88.3. The 6800 rpm hole (567 Hz)
+  stays with short primaries and fills 3 dB with short collectors; the tips' scale moves it (above). The
+  downstream path is the waveguide (Borda–Carnot at its junctions); the FV pipes' area steps carry no expansion
+  loss (geometric source only).
+- **Where the LFA's top-end power went, and the cam that brings it back (2026-11-26, `power_probe` spike, held
+  WOT, cylinder 0's p dV)**: at 8700 rpm on Heywood's sin^1.4 cam VE 0.973 (1.056 at 6800), PMEP −1.07, FMEP
+  1.77, BMEP 10.90 against the published 11.82 bar. The VVT maps were already at their best (intake 40° advance
+  ±10° moves ≤ 2 %), the lift does not matter (port-limited), and the catalyst can (−4 hp), sub muffler (−2 hp) and
+  surge-tank filter are physical. The flank does it: n = 1 on windows that keep the duration above a tenth of the
+  lift gives +4 / +2 / −6 % against Fig. 22 at 3800 / 7000 / 8700 (sin^1.4 +3 / +1 / −8; n = 1 on the whole
+  windows −6 / +1 / −4; narrowed to 96 % about the centres +1 / +3 / −5, but that moves the fitted events and
+  the overlap). Dyno 532 hp at 8000, 534 N·m at 6000.
+- **The cam pushes the LFA's crescendo under the gate, and why (2026-11-26, `scratch-refs/ovr/cresc`, held WOT
+  4500–9000, Reference)**: physgate crescendo +3.4 (tp) → +2.8 (cam on 96 % windows) → +2.3 (cam on kept
+  events); the fuller flank adds 2–4 dB(A) at every speed, most at 6000. All sources 86.9 / 88.6 / 88.6 / 87.5 /
+  91.3 dB(A) at 4500 / 6000 / 7500 / 8200 / 9000; intake off 83.5 / 88.3 / 89.3 / 87.4 / 87.1 (slope +3.6);
+  exhaust tonal alone 83.8 / 88.9 / 90.0 / 87.5 / 86.4 (+2.9). At 4500 the intake carries the firing order (375
+  Hz) 16 dB over the exhaust. Cylinder 0's port pressure at the firing order is flat, 77–80 dB re 1 Pa, from 4500
+  to 9000 (`xfer_probe`, exhaust only); the radiated firing order is −25.5 / −9.7 / −0.2 / −3.1 / −8.5 dB: the
+  path from port to ear swings 27 dB over 375–750 Hz with its peak at 625 Hz (7500 rpm). The source is flat (as
+  it should be at full load); the crescendo's shape is the path's.
+
+## Blair's measured SI cam profile on the LFA: smoother front, less power (2026-11-27)
+
+Blair (*Design and Simulation of Four-Stroke Engines*, 1999, §1.5.3–1.5.6, eqs. 1.5.24–1.5.47):
+40° ramps to 20 % of the lift, cubic ramp and main-lift fits to measured SI data
+(kr 0.011172/−0.080336/0.4686/0.6119, km −0.007858/1.7673/−0.45161/−0.31158), 2° dwell, ten
+3-point smoothing passes at 1°. The valve leaves its seat at zero speed, unlike sin¹ (a velocity
+step) or sin^1.4 (an infinite acceleration). On the LFA's 10 %-lift timing (full extents 367.27 +
+295.46° and 121.81 + 276.37°) its lift area and effective-flow-area integral equal sin¹'s
+(145.4 vs 146.0; 0.995 and 0.990 of it), and the lift's 1–2 kHz content at 6000 rpm is 16 dB
+lower (job script `ovr/blair/prof.py`, `flow.py`). Rendered (spike, not kept): 488 hp at
+8500 rpm (sin¹ 532, the dyno test asks ≥ 524.4), per1000 signature 4.60 (sin¹ 5.62, bound
+5.35), but crescendo +2.8, the load check failing (6800 rpm full over closed +1.8 dB(A)) and
+low-mid wind −17.3 dB (bound −18.4). Equal flow-area integrals, 7 % apart in power: the
+top end hangs on where the low-lift area sits around the overlap, not on the integral. Every
+build, main included, sits 15–20 dB over the real LFA's 1–2 kHz periodicity (per1000 2.0–2.9 dB
+in four recordings of the car; main 18.1, sin^1.4 20.1, sin¹ 22.5 at 5850–6750 rpm): the cam
+moves it 2–4 dB inside a gap no cam explains.
+
+## The LFA's crescendo is the fixed ear's intake–exhaust comb (2026-11-27)
+
+The intake's mouth sits `engine_ahead_m` 3.2 m ahead of the tails: at the default ear (3 m, 30°)
+its firing tone arrives ≈ 9 ms apart from the exhaust's, both from point sources in free field,
+so each speed's level moves ±2–4 dB with the phase between them. Held WOT, dB(A) at 4500 / 5200 /
+6000 / 6800 / 7500 / 8200 / 9000 rpm, the committed sin¹ cam (`bin-cam6`, `ovr/cresc/run3.sh`):
+ear at 30° 86.9 / 88.7 / 88.6 / 88.4 / 88.6 / 87.5 / 91.3 (physgate slope +2.27); 15° +4.37;
+45° +2.70; the energy mean of the three +3.07. Inlet ducts 0.30 m +1.54, 0.55 m +3.46 (0.40 m
+an ESTIMATE; their half wave, c/2L′ ≈ 369 Hz, meets the firing order at 4500 rpm). Without the
+intake +3.60; without the tank's wall +1.69. The same build passes or fails the crescendo
+(≥ 3) with a 15° turn of the ear or an unpublished duct length. The spectral gate's per1000 does
+not move with the ear (signature 5.62 / 5.90 / 5.85 at 30 / 15 / 45°): that excess is real.
+Where the LFA's 1–4 kHz randomness comes from (`scripts/authenticity.py`, held WOT, share of the
+band's energy not repeating cycle to cycle, `ovr/cresc/run5.sh`): 6000 rpm −18.7 dB (6800: −17.2);
+without the intake −18.7, the block −19.2, the mechanical sources −18.9, the flow noise (tail
+jets, valve jets, duct flow) −19.1, the combustion jitter −28.3 (−25.8). The cycle-to-cycle burn
+is the only random source the band hears; every turbulent one sits ≈ 28 dB under the orders. Real
+at load: 1 / 2 / 4 kHz 25 / 46 / 70 % random (LFA chassis dyno, above), −0.5…−1.7 dB (911, A4).
+
+## The tail's broadband at load: what each source gives (2026-11-27)
+
+- Davies scene (road 4-cylinders, FV, exhaust only, 0.25 m, held WOT; spike `davies_scene` dump,
+  `scratch-refs/davies/an.py`): broadband (A-weighted overall less every cycle line) at 6000 rpm
+  inline-4 / K20A / EJ25 79.8 / 90.0 / 94.0 dB(A) against Davies & Holland's 107 (1999 Fig. 1(c);
+  their 2nd order 88, ours 79.3 / 84.0 / 83.7). Above 500 Hz it is already ~95 % random: the tail
+  jet's. `sound.duct_flow` ×10 in pressure (K ×100) adds 0.1–4.2 dB; moving each chamber's
+  source from its inlet to its outlet (Davies & Holland 2001: the flow noise rises at the chamber
+  outlet/tailpipe junction) adds ≤ 2.6 dB more. At K = 2.5·10⁻⁵ the in-duct law sits far under
+  the jet everywhere.
+- Davies & Holland 2001 (JSV 239(4), §3.2): one chamber/tailpipe at M 0.2 (cold rig) radiated
+  25–30 mW, peaks at the tailpipe's resonances one to two orders over the background flow noise;
+  25 mW at 0.25 m spherical is ≈ 105 dB, Davies 1999's overall.
+- The LFA's tail jet is what its fitted 80 mm tips silence: three tips at ≈ 57 m/s (6000 rpm,
+  950 K) against the K20A's one 50 mm at 109. With 55 mm tips (the approved range's other end,
+  `ovr/cresc/t55.yaml`): 1–4 kHz random share −8.4 dB (80 mm −18.7), HNR 7.7 (19.7), per1000
+  pull median 5.9 dB (15.6), crescendo +4.6, but low-mid wind −7.2 dB (bound −18.4) and treble
+  broadband −13.5 (bound −21.1), and still per1000 16 dB at 4950–5850 rpm: the U⁸ jet is too
+  slow at low speed, too loud at the top and peaks at 0.2·U/D ≈ 150–250 Hz, in the wind band.
+  Tam's fine-scale shape (`FineScale`, already the valve and duct jets') puts 4.6 dB more of a
+  jet's power in 1–4 kHz against 150–500 Hz than the tail jet's Q 0.7 band-pass.
+- **The 1–2 kHz excess is the lines, not a missing floor (2026-11-27)**: the broadband's level against the total
+  is near the recordings' (treble −26.0 vs real median −24.7), while the firing harmonics fall −6.8 dB per octave
+  of harmonic number at 4950–5850 rpm against −14.3…−18.8 in the four LFA recordings (`hslope`), and `up1` (the
+  octave above the firing band) reads +3.5 dB against −13.8. Burying the lines in the tail jet's noise
+  (`bin-fine`, Tam's fine-scale shape in place of the Q 0.7 band-pass, spike `SPIKE_FINE`; tips 65 / 70 / 80 mm):
+  signature 4.82 / 5.05 / 5.57, but low-mid wind −14.3 / −17.0 / −19.5 (bound −18.4) and treble −18.1 / −21.5 /
+  −26.0 (bound −21.1); crescendo +2.55 / +2.41 / +2.32. The lines follow how fast the exhaust valve opens: Blair's
+  profile on the 10 %-lift timing (smoothed, `ovr/blair/`, spike `SPIKE_RAMP`) with ramps of 40 / 30 / 25 / 20 /
+  15° gives 488 / 505 / 513 / 520 / 526 hp, and signature 4.60 / – / – / 5.61 / 5.78 (sin¹ 532 hp, 5.62);
+  lengthening the 40° windows (+8…+32°) only loses power (487 → 465 hp at 8500). The rapid-acceleration flank the
+  top end needs is the flank that sharpens the lines; the real LFA has both, so what takes its lines down is on
+  the path, not the cam.
+- **Held renders against tracked pulls (2026-11-27)**: the spectral gate reads the model on `held:` renders at an exact
+  speed and the recordings on pulls tracked from their own audio (`sp_refs`: comb Viterbi at 50 Hz, 32-rev windows
+  resampled to crank angle). The same build's `gears.wav` (free crank, the car) through the recordings' pipeline
+  (`scratch-refs/ovr/trk/trackcheck.py`): per1000 14.2 / 12.3 / 13.3 dB at 6750–7650 / 7650–8550 / 8550–9450 rpm,
+  hslope −9.3 / −12.9 / −17.6, for2000 79 / 85 / 80 %; real `lfa-tips` −2.0 / −1.0 / −2.0, hslope −10.0 / −10.2 /
+  −6.3, for2000 14 / 41 / 38 %; `lfa-accel` 2.0 / 5.4 / −2.1 at 5850–8550. Held, per1000 reads 20–23 dB: 6–9 dB of
+  the gate's gap is the held condition, 12–15 dB stays (lines on 80 % of the 2–4 kHz half orders, real 14–46 %).
+- **The signature measured as the recordings are (2026-11-27)**: the LFA recordings' pull windows climb at 432 / 852 /
+  971 / 819 / 1508 rpm/s (median of each, `lfa-accel` / `flight` / `tips` / `k3t6` / `9AMH`); `--render sweep`
+  climbs at 731, the same pace. Through the recordings' pipeline (`sp_sim.run_scene(label, "sweep")`): the sin¹ cam
+  `cam6` E 5.46 (for4000 5.5 at 4950–5850 rpm, per1000 4.7; held 5.62), main `b2` 3.69 (held 4.35); `gears.wav`
+  pulls only reach 6750–9450 (cam6 4.09, b2 3.95) and the old verdict builds' gears 0–3 bins (no signature). Measured
+  alike, the sin¹ build still fails by 0.11, now on the half orders' lines at 4–8 kHz.
+- **physgate's crescendo over three ears (2026-11-27, user: "medir en igualdad")**: the slope on the energy mean of
+  the listener's ear and 15° to either side (`ear{deg}_held_*` renders, `engine-ear{deg}.yaml`), the deficit at the
+  listener. Main `b2` +5.0 (listener +6.3), the sin¹ cam `cam6` +3.1 (listener +2.3): both PASS; the ear's
+  failures keep failing on their holes at the listener (tapado deficit 2.64, fatal 2.92 > 2.0).

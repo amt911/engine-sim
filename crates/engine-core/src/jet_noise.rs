@@ -301,6 +301,20 @@ pub fn duct_flow_power_w(k: f64, rho: f64, a_jet: f64, u: f64, c: f64) -> f64 {
     k * rho * a_jet * u2 * u2 / c
 }
 
+/// Speed of the gas carrying `m_dot` kg/s through `a_jet` m², m/s: u = ṁ/(ρA), its density
+/// ρ = (γ·p₀/c²)·(p/p₀)^(1/γ) at `p` Pa on the isentrope of gas whose sound speed at an atmosphere
+/// p₀ is `c` (a pressure pulse compresses the gas it carries; ideal gas, Anderson, *Modern
+/// Compressible Flow*, §3.2). Gas taken at an atmosphere's density instead runs a 2-bar blowdown
+/// pulse 1.6 times too fast — faster than sound in a primary — and its U⁴–U⁶ noise 8–12 dB loud.
+pub fn duct_jet_speed(m_dot: f64, p: f64, c: f64, a_jet: f64) -> f64 {
+    use crate::gas::GAMMA;
+    use crate::units::ATM_PA;
+    let rho_atm = GAMMA * ATM_PA / (c * c);
+    // a deep rarefaction never empties the gas: its density bottoms at a tenth of an atmosphere's
+    let ratio = (p / ATM_PA).max(0.1);
+    m_dot / (rho_atm * ratio.powf(1.0 / GAMMA) * a_jet)
+}
+
 /// First cut-on of a round duct of diameter `d`, Hz: 1.84·c/(π·d), the first diametral mode
 /// (Munjal, *Acoustics of Ducts and Mufflers*); below it only plane waves propagate.
 pub fn duct_cut_on_hz(c: f64, d: f64) -> f64 {
@@ -454,6 +468,32 @@ mod tests {
         }
     }
     use approx::assert_relative_eq;
+
+    #[test]
+    fn a_duct_jets_speed_is_its_mass_flow_through_the_gas_as_dense_as_its_pressure_makes_it() {
+        // 0.3 kg/s through a 40 mm bore (1.256637e-3 m²) of gas whose sound speed at an
+        // atmosphere is 600 m/s: there ρ = γ·p/c² = 1.4·101325/600² = 0.394042 kg/m³ and
+        // u = 0.3/(0.394042·1.256637e-3) = 605.86 m/s; squeezed to 2 bar along its isentrope,
+        // ρ = 0.394042·(2e5/101325)^(1/1.4) = 0.394042·1.625342 = 0.640456 kg/m³ and
+        // u = 0.3/(0.640456·1.256637e-3) = 372.76 m/s (a blowdown pulse's gas is denser, not
+        // faster). Backflow keeps its sign.
+        let a = PI * 0.25 * 0.04 * 0.04;
+        assert_relative_eq!(
+            duct_jet_speed(0.3, 101_325.0, 600.0, a),
+            605.86,
+            max_relative = 1e-4
+        );
+        assert_relative_eq!(
+            duct_jet_speed(0.3, 2e5, 600.0, a),
+            372.76,
+            max_relative = 1e-4
+        );
+        assert_relative_eq!(
+            duct_jet_speed(-0.3, 2e5, 600.0, a),
+            -372.76,
+            max_relative = 1e-4
+        );
+    }
 
     #[test]
     fn no_outflow_makes_no_jet_noise() {

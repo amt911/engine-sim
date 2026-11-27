@@ -1,4 +1,4 @@
-version: 3
+version: 4
 engine:
   name: Honda K20C1 2.0 turbo (Civic Type R)
   geometry:
@@ -16,13 +16,13 @@ engine:
     bank_angle_deg: 0.0
     banks: []
   intake_valve:
-    open_deg: 340.0
-    duration_deg: 265.0
+    open_deg: 352.3
+    duration_deg: 240.5
     max_lift_m: 0.0124
     diameter_m: 0.0495
   exhaust_valve:
-    open_deg: 140.5
-    duration_deg: 242.5
+    open_deg: 151.7
+    duration_deg: 220.0
     max_lift_m: 0.0106
     diameter_m: 0.0424
   intake_phaser:
@@ -171,12 +171,14 @@ engine:
     compressor_whine: 1.0
     rolling: 0.0
     reverb: 0.0
+    room: null
     leveling: 0.0
     listener_distance_m: 3.0
     listener_angle_deg: 30.0
     ground: false
     tail_height_m: 0.3
-    listener_height_m: 1.6
+    listener_height_m: 0.5
+    mic_low_cut_hz: 40.0
     street_width_m: 0.0
     wall_reflection: 0.8
   exhaust_reverse_cd_ratio: 0.75
@@ -206,6 +208,8 @@ engine:
       liner_thickness_m: 0.02
       liner_resistivity: 16000.0
       liner_coverage: 0.25
+      intake_inside: false
+    body_height_m: 1.434
     shuffle_hz: 3.5
     shuffle_damping: 0.15
   turbo:
@@ -220,7 +224,7 @@ engine:
     turbine_area_m2: 0.0004
     vnt_open_area_m2: 0.0
     inertia_kgm2: 0.00002
-    wastegate_pa: 160000.0
+    wastegate_pa: 135000.0
     wastegate_area_m2: 0.001
     intercooler_effectiveness: 0.75
     intercooler_drop_k: 250000.0

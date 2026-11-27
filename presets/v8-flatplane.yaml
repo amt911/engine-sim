@@ -1,4 +1,4 @@
-version: 3
+version: 4
 engine:
   name: Flat-plane V8 4.5
   geometry:
@@ -28,13 +28,13 @@ engine:
       - 7
       - 8
   intake_valve:
-    open_deg: 340.0
-    duration_deg: 270.0
+    open_deg: 352.5
+    duration_deg: 245.0
     max_lift_m: 0.0115
     diameter_m: 0.05
   exhaust_valve:
-    open_deg: 125.0
-    duration_deg: 265.0
+    open_deg: 137.3
+    duration_deg: 240.5
     max_lift_m: 0.0105
     diameter_m: 0.043
   spark_advance_deg: 28.0
@@ -147,12 +147,14 @@ engine:
     compressor_whine: 1.0
     rolling: 0.0
     reverb: 0.0
+    room: null
     leveling: 0.0
     listener_distance_m: 3.0
     listener_angle_deg: 30.0
     ground: false
     tail_height_m: 0.3
-    listener_height_m: 1.6
+    listener_height_m: 0.5
+    mic_low_cut_hz: 40.0
     street_width_m: 0.0
     wall_reflection: 0.8
   exhaust_reverse_cd_ratio: 0.75
@@ -183,6 +185,8 @@ engine:
       liner_thickness_m: 0.02
       liner_resistivity: 16000.0
       liner_coverage: 0.25
+      intake_inside: false
+    body_height_m: 1.21
     shuffle_hz: 3.5
     shuffle_damping: 0.15
   turbo: null

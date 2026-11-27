@@ -401,6 +401,37 @@ fn inflow(phi: f64, lambda: f64, hint: &mut f64) -> (f64, f64) {
     (a, (lambda - a) / KM)
 }
 
+/// The wave (strength, Pa: [`wave_pressure`]) a valve end sends into its pipe when `mass_flow`
+/// (kg/s, + into the pipe) crosses it and `arriving` stands on it, in a pipe of `area` m² whose
+/// reference gas has sound speed `c` at `p0`. Blair's finite-amplitude waves carry the gas at
+/// ρ₀·X_s⁵ and particle speed 5a₀·(X⁺ − X⁻), X_s = X⁺ + X⁻ − 1 (Blair, *Design and Simulation of
+/// Four-Stroke Engines*, 1999, §2.2), so the flow sets X⁺ by
+/// ṁ = 5·ρ₀·a₀·A·(X⁺ − X⁻)·(X⁺ + X⁻ − 1)⁵. The linear end, w⁺ = w⁻ + c·ṁ/A, counts the gas at ρ₀:
+/// a blowdown pulse of 0.25 kg/s in a 40 mm primary then stood at 2.0 bar over the atmosphere
+/// where the valve's own boundary held 0.9 (and its fronts shocked into clicks at the tail).
+/// An inflow larger than the pipe's gas can deliver stops at its limit, X⁺ − X⁻ = −(2X⁻ − 1)/6.
+pub fn sent_wave(arriving: f64, mass_flow: f64, area: f64, c: f64, p0: f64) -> f64 {
+    let g = f64::from(P_EXP) * p0;
+    let x_in = 1.0 + arriving / g;
+    let base = (2.0 * x_in - 1.0).max(1e-6);
+    let rho = KAPPA * p0 / (c * c);
+    let q = mass_flow / (5.0 * rho * c * area);
+    // f(d) = d·(b + d)⁵ rises from its least value at d = −b/6: Newton from the linear answer
+    let floor = -base / 6.0;
+    let mut d = (q / base.powi(5)).max(floor);
+    for _ in 0..8 {
+        let s = base + d;
+        let s4 = s * s * s * s;
+        let f = d * s4 * s - q;
+        let df = s4 * (base + 6.0 * d);
+        if df <= 0.0 {
+            break;
+        }
+        d = (d - f / df).max(floor);
+    }
+    g * (x_in + d - 1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,6 +459,32 @@ mod tests {
     fn quiet(p_c: f64, p: f64, t: f64) -> (f64, f64) {
         let a = sound(t);
         (lambda_in(p_c, p, 0.0, a), a * (p_c / p).powf(1.0 / 7.0))
+    }
+
+    #[test]
+    fn a_valve_sends_the_wave_that_carries_its_flow_at_the_waves_own_density() {
+        // 40 mm primary (1.256637e-3 m²), reference gas 600 m/s at 101325 Pa: ρ₀ = 0.394042,
+        // 5ρ₀a₀A = 1.485523 kg/s. Solved by bisection outside the code (d·(2X⁻ − 1 + d)⁵ = ṁ/1.485523,
+        // w⁺ = 7p₀(X⁻ + d − 1)):
+        // 0.25 kg/s on a quiet pipe: w⁺ = 73095.7 Pa (1.000 bar over the atmosphere; the linear
+        // end said 119366, 2.0 bar); on an arriving 30 kPa: 85978.2; a 0.05 kg/s reversion
+        // against an arriving 20 kPa: −903.6; a trickle stays linear, 47.7; an inflow beyond what
+        // the pipe can give stops at d = −1/6: −118212.5.
+        let a = std::f64::consts::PI * 0.25 * 0.04 * 0.04;
+        let sent = |m: f64, w: f64| sent_wave(w, m, a, 600.0, 101_325.0);
+        for (m, w, want) in [
+            (0.25, 0.0, 73_095.7),
+            (0.25, 3e4, 85_978.2),
+            (-0.05, 2e4, -903.6),
+            (1e-4, 0.0, 47.7),
+            (-1.0, 0.0, -118_212.5),
+        ] {
+            assert!(
+                (sent(m, w) - want).abs() < 0.5,
+                "{m} kg/s on {w}: {}",
+                sent(m, w)
+            );
+        }
     }
 
     #[test]

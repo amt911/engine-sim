@@ -166,6 +166,9 @@ pub struct Pipe1d {
     /// Each cell's slow mean velocity ū (time constant [`MEAN_FLOW_TAU_S`]), for the acoustic
     /// loss.
     u_mean: Vec<f64>,
+    /// The radiation state of each end (left, right) where it opens into a space
+    /// ([`crate::exhaust_fv::EndRadiation`]); unused at other ends.
+    pub(crate) radiation: [crate::exhaust_fv::EndRadiation; 2],
     /// The wall loss above 200 Hz ([`WALL_CORNERS_HZ`]): each cell's high-passed u − ū (the last
     /// input and the four outputs) and the velocity its √f loss acts on this step.
     wall_hp: Vec<[f64; 5]>,
@@ -223,6 +226,7 @@ impl Pipe1d {
             friction: 0.0,
             acoustic_loss: 0.0,
             u_mean: Vec::new(),
+            radiation: Default::default(),
             wall_hp: Vec::new(),
             wall_u: Vec::new(),
         }

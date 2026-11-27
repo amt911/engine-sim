@@ -1,4 +1,4 @@
-version: 3
+version: 4
 engine:
   name: Lexus LFA V10
   geometry:
@@ -32,15 +32,17 @@ engine:
       - 9
       - 10
   intake_valve:
-    open_deg: 380.0
-    duration_deg: 270.0
-    max_lift_m: 0.0124
+    open_deg: 400.34
+    duration_deg: 229.32
+    max_lift_m: 0.01493
     diameter_m: 0.0496
+    lift_exponent: 1.0
   exhaust_valve:
-    open_deg: 137.0
-    duration_deg: 246.0
-    max_lift_m: 0.0103
+    open_deg: 155.53
+    duration_deg: 208.93
+    max_lift_m: 0.01493
     diameter_m: 0.0412
+    lift_exponent: 1.0
   intake_phaser:
     range_deg: 40.0
     rate_deg_s: 60.0
@@ -69,7 +71,7 @@ engine:
   idle_throttle: 0.0
   idle_rpm: 900.0
   exhaust:
-    primary_length_m: 0.8
+    primary_length_m: 0.6
     primary_diameter_m: 0.042
     collectors:
     - - 1
@@ -110,20 +112,67 @@ engine:
       porosity: 0.95
     tail_spacing_m: 0.0
     after_collector:
-    - kind: catalyst
-      length_m: 0.13
-      diameter_m: 0.1534
-      cells_per_in2: 400.0
-      wall_m: 0.000165
     - kind: pipe
-      length_m: 1.88
+      length_m: 0.02
+      diameter_m: 0.0805
+    - kind: pipe
+      length_m: 0.02
+      diameter_m: 0.1015
+    - kind: pipe
+      length_m: 0.035
+      diameter_m: 0.112
+    - kind: catalyst
+      length_m: 0.08
+      diameter_m: 0.112
+      cells_per_in2: 200.0
+      wall_m: 0.00005
+    - kind: pipe
+      length_m: 0.0275
+      diameter_m: 0.1064
+    - kind: pipe
+      length_m: 0.0275
+      diameter_m: 0.0952
+    - kind: pipe
+      length_m: 0.02
+      diameter_m: 0.0896
+    - kind: pipe
+      length_m: 0.0275
+      diameter_m: 0.0952
+    - kind: pipe
+      length_m: 0.0275
+      diameter_m: 0.1064
+    - kind: catalyst
+      length_m: 0.08
+      diameter_m: 0.112
+      cells_per_in2: 200.0
+      wall_m: 0.00005
+    - kind: pipe
+      length_m: 0.03
+      diameter_m: 0.105
+    - kind: pipe
+      length_m: 0.03
+      diameter_m: 0.091
+    - kind: pipe
+      length_m: 0.03
+      diameter_m: 0.077
+    - kind: pipe
+      length_m: 0.175
+      diameter_m: 0.07
+    - kind: muffler
+      length_m: 0.25
+      diameter_m: 0.076
+      tube_diameter_m: 0.07
+      packing_resistivity: 16000.0
+      packing_porosity: 0.95
+    - kind: pipe
+      length_m: 1.13
       diameter_m: 0.07
     merge:
       segments:
       - kind: pipe
         length_m: 0.15625
         diameter_m: 0.085
-      outlet_diameter_m: 0.10392304845413262
+      outlet_diameter_m: 0.13856406460551018
       bypass:
         closed:
         - kind: muffler
@@ -180,20 +229,20 @@ engine:
             - 19.0
         outlets:
         - - kind: pipe
-            length_m: 0.13
-            diameter_m: 0.06
+            length_m: 0.2925
+            diameter_m: 0.08
         - - kind: pipe
-            length_m: 0.13
-            diameter_m: 0.06
+            length_m: 0.2925
+            diameter_m: 0.08
         - - kind: muffler
-            length_m: 0.12
+            length_m: 0.27
             diameter_m: 0.1
-            tube_diameter_m: 0.06
+            tube_diameter_m: 0.08
             packing_resistivity: 16000.0
             packing_porosity: 0.95
           - kind: pipe
-            length_m: 0.225
-            diameter_m: 0.06
+            length_m: 0.50625
+            diameter_m: 0.08
         baffle_open_area: 0.03
         open_rpm: 3000.0
         travel_s: 0.3
@@ -212,7 +261,17 @@ engine:
     trumpet_loss: 0.1
     film_fraction: 0.18
     film_tau_s: 1.0
-    airbox: null
+    airbox:
+      volume_m3: 0.02
+      ducts: 2
+      duct_length_m: 0.4
+      duct_diameter_m: 0.09
+      filter_resistance_pa_s_m3: 4162.3
+      wall:
+        thickness_m: 0.003
+        density_kg_m3: 1360.0
+        area_m2: 0.175
+        resonance_hz: 400.0
     air_cleaner:
       fitted: false
       volume_m3: 0.0
@@ -247,12 +306,14 @@ engine:
     compressor_whine: 1.0
     rolling: 0.0
     reverb: 0.0
+    room: null
     leveling: 0.0
     listener_distance_m: 3.0
     listener_angle_deg: 30.0
     ground: false
     tail_height_m: 0.3
-    listener_height_m: 1.6
+    listener_height_m: 0.5
+    mic_low_cut_hz: 40.0
     street_width_m: 0.0
     wall_reflection: 0.8
   exhaust_reverse_cd_ratio: 0.75
@@ -282,6 +343,8 @@ engine:
       liner_thickness_m: 0.02
       liner_resistivity: 16000.0
       liner_coverage: 0.25
+      intake_inside: false
+    body_height_m: 1.22
     shuffle_hz: 3.5
     shuffle_damping: 0.15
   turbo: null

@@ -1,4 +1,4 @@
-version: 3
+version: 4
 engine:
   name: Honda K20A 2.0 (inline-4)
   geometry:
@@ -16,17 +16,17 @@ engine:
     bank_angle_deg: 0.0
     banks: []
   intake_valve:
-    open_deg: 340.0
-    duration_deg: 265.0
+    open_deg: 352.3
+    duration_deg: 240.5
     max_lift_m: 0.0124
     diameter_m: 0.0495
     high:
-      open_deg: 322.0
-      duration_deg: 301.0
+      open_deg: 335.9
+      duration_deg: 273.1
       max_lift_m: 0.01774
   exhaust_valve:
-    open_deg: 140.5
-    duration_deg: 242.5
+    open_deg: 151.7
+    duration_deg: 220.0
     max_lift_m: 0.0106
     diameter_m: 0.0424
   vtec:
@@ -81,11 +81,15 @@ engine:
   idle_throttle: 0.0
   idle_rpm: 800.0
   exhaust:
-    primary_length_m: 0.624
+    primary_length_m: 0.4
     primary_diameter_m: 0.04
-    collectors: []
-    collector_length_m: 0.25
-    collector_diameter_m: 0.055
+    collectors:
+    - - 1
+      - 4
+    - - 2
+      - 3
+    collector_length_m: 0.55
+    collector_diameter_m: 0.045
     collector_extra_length_m: []
     primary_length_deviation_m:
     - 0.0224
@@ -105,35 +109,41 @@ engine:
     tail_spacing_m: 0.9
     after_collector:
     - kind: pipe
-      length_m: 0.4
-      diameter_m: 0.05
-    - kind: catalyst
-      length_m: 0.13
-      diameter_m: 0.1399
-      cells_per_in2: 400.0
-      wall_m: 0.000165
-    - kind: pipe
-      length_m: 1.0
-      diameter_m: 0.05
-    - kind: muffler
-      length_m: 0.35
-      diameter_m: 0.1206
-      tube_diameter_m: 0.05
-      packing_resistivity: 16000.0
-      packing_porosity: 0.95
-    - kind: pipe
-      length_m: 0.8
-      diameter_m: 0.05
-    - kind: muffler
-      length_m: 0.45
-      diameter_m: 0.2127
-      tube_diameter_m: 0.05
-      packing_resistivity: 16000.0
-      packing_porosity: 0.95
-    - kind: pipe
-      length_m: 0.3
-      diameter_m: 0.05
-    merge: null
+      length_m: 0.05
+      diameter_m: 0.045
+    merge:
+      segments:
+      - kind: pipe
+        length_m: 0.4
+        diameter_m: 0.05
+      - kind: catalyst
+        length_m: 0.13
+        diameter_m: 0.1399
+        cells_per_in2: 400.0
+        wall_m: 0.000165
+      - kind: pipe
+        length_m: 1.0
+        diameter_m: 0.05
+      - kind: muffler
+        length_m: 0.35
+        diameter_m: 0.1206
+        tube_diameter_m: 0.05
+        packing_resistivity: 16000.0
+        packing_porosity: 0.95
+      - kind: pipe
+        length_m: 0.8
+        diameter_m: 0.05
+      - kind: muffler
+        length_m: 0.45
+        diameter_m: 0.2127
+        tube_diameter_m: 0.05
+        packing_resistivity: 16000.0
+        packing_porosity: 0.95
+      - kind: pipe
+        length_m: 0.3
+        diameter_m: 0.05
+      outlet_diameter_m: 0.05
+      bypass: null
     steepening: true
     gas_temperature: false
   intake:
@@ -179,12 +189,14 @@ engine:
     compressor_whine: 1.0
     rolling: 0.0
     reverb: 0.0
+    room: null
     leveling: 0.0
     listener_distance_m: 3.0
     listener_angle_deg: 30.0
     ground: false
     tail_height_m: 0.3
-    listener_height_m: 1.6
+    listener_height_m: 0.5
+    mic_low_cut_hz: 40.0
     street_width_m: 0.0
     wall_reflection: 0.8
   exhaust_reverse_cd_ratio: 0.75
@@ -213,6 +225,8 @@ engine:
       liner_thickness_m: 0.02
       liner_resistivity: 16000.0
       liner_coverage: 0.25
+      intake_inside: false
+    body_height_m: 1.45
     shuffle_hz: 3.5
     shuffle_damping: 0.15
   turbo: null

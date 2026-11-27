@@ -21,7 +21,8 @@ pub enum Quality {
     /// 4× the audio rate (192 kHz at 48 kHz), finite-volume intake and exhaust whatever the
     /// engine asks: the best real time.
     Ultra,
-    /// 8× the audio rate, the engine's own pipe models, for offline renders only (never real time, never Auto's).
+    /// Offline renders only (never real time, never Auto's): the FV exhaust, its packed silencers at
+    /// the flow through them, the finest silencer linings, at Ultra's rate.
     Reference,
 }
 
@@ -34,8 +35,9 @@ impl Quality {
         match self {
             Quality::Low | Quality::Medium => 2,
             Quality::High => 3,
-            Quality::Ultra => 4,
-            Quality::Reference => 8,
+            // the offline render's FV exhaust is as fine as its cells and its own steps; 8× (the
+            // waveguide's steepening wanted it) stalled the bridge-port 13B's idle on FV pipes
+            Quality::Ultra | Quality::Reference => 4,
         }
     }
 
@@ -44,8 +46,14 @@ impl Quality {
         match self {
             Quality::Ultra => Fidelity::default(),
             // offline: half Ultra's segments, as it steps at twice Ultra's rate
+            // and its packed silencers at the flow through them (each Mach step designed once,
+            // tenths of a second a real-time step cannot spare)
+            // its FV exhaust on 1 cm cells, where the gas's harmonics a few kHz up converge (the
+            // K20A's 1 cm and 5 mm agree; 4 cm hold a 3.7 kHz wave in four cells)
             Quality::Reference => Fidelity {
                 lining_segment_m: 0.005,
+                silencer_flow: true,
+                fv_cell_m: 0.01,
                 ..Fidelity::default()
             },
             // silencers' packing in 2 cm segments (17 % off at 4 kHz, where it has cut 30 dB)
@@ -56,6 +64,8 @@ impl Quality {
             Quality::Medium | Quality::Low => Fidelity {
                 pipe_scheme: Scheme::MusclRk2,
                 lining_segment_m: 0.04,
+                silencer_flow: false,
+                fv_cell_m: engine_core::exhaust_fv::CELL_M,
             },
         }
     }
@@ -75,10 +85,15 @@ impl Quality {
                 d.intake.model = IntakeModel::Fv;
                 d.exhaust.model = ExhaustModel::Fv;
             }
-            // Reference keeps the engine's own pipes: on FV exhaust pipes the LFA lost the shock
-            // fronts its approved sound carries ("desastroso", 2026-11-16), and the bridge-port
-            // 13B's idle sank to a stall at the 8x rate
-            Quality::Medium | Quality::High | Quality::Reference => {}
+            // the offline render: the finite-volume exhaust, the most complete gas dynamics
+            // (since the valve sends its wave at the wave's own density the waveguide's pulses
+            // match it: the shock fronts the LFA's approved sound carried on the waveguide came
+            // from pulses 2.6 times too big, docs/FINDINGS.md 2026-11-19); the engine's own
+            // intake (the bridge-port 13B's idle sank to a stall on FV intake pipes at 8x)
+            Quality::Reference => {
+                d.exhaust.model = ExhaustModel::Fv;
+            }
+            Quality::Medium | Quality::High => {}
         }
         d
     }
@@ -209,8 +224,9 @@ mod tests {
         assert_eq!(Quality::High.substeps(), 3);
         assert_eq!(Quality::Medium.substeps(), 2);
         assert_eq!(Quality::Low.substeps(), 2);
-        // offline only: twice Ultra's rate, and Auto never picks it
-        assert_eq!(Quality::Reference.substeps(), 8);
+        // offline only, at Ultra's rate (its FV exhaust is as fine as its own cells), and Auto
+        // never picks it
+        assert_eq!(Quality::Reference.substeps(), 4);
         assert!(!Quality::ALL.contains(&Quality::Reference));
         assert_eq!(Quality::Reference.lower(), Some(Quality::Ultra));
         assert_eq!(
@@ -266,9 +282,35 @@ mod tests {
         back.intake.model = IntakeModel::ZeroD;
         back.exhaust.model = ExhaustModel::Waveguide;
         assert_eq!(back, def, "{q:?}");
-        // High, Medium and Reference keep the engine's own
-        for q in [Quality::Medium, Quality::High, Quality::Reference] {
+        // High and Medium keep the engine's own
+        for q in [Quality::Medium, Quality::High] {
             assert_eq!(q.apply(&def), def, "{q:?}");
+        }
+    }
+
+    #[test]
+    fn the_offline_render_runs_the_finite_volume_exhaust_and_silencers_at_their_flow() {
+        // Reference (`--render`): the FV exhaust whatever the file says, the engine's own
+        // intake, and the packed silencers designed at the mean flow through them
+        let mut def = EngineDef::honda_k20a();
+        def.intake.model = IntakeModel::ZeroD;
+        let d = Quality::Reference.apply(&def);
+        assert_eq!(
+            (d.intake.model, d.exhaust.model),
+            (IntakeModel::ZeroD, ExhaustModel::Fv)
+        );
+        let mut back = d.clone();
+        back.exhaust.model = ExhaustModel::Waveguide;
+        assert_eq!(back, def);
+        assert!(Quality::Reference.fidelity().silencer_flow);
+        // on 1 cm FV cells, real time on the default 4 cm
+        assert_eq!(Quality::Reference.fidelity().fv_cell_m, 0.01);
+        assert_eq!(Quality::Ultra.fidelity().fv_cell_m, 0.04);
+        for q in Quality::ALL {
+            assert!(
+                !q.fidelity().silencer_flow,
+                "{q:?}: real time keeps them at rest"
+            );
         }
     }
 
