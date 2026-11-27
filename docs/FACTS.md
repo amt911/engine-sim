@@ -750,3 +750,22 @@ top end hangs on where the low-lift area sits around the overlap, not on the int
 build, main included, sits 15–20 dB over the real LFA's 1–2 kHz periodicity (per1000 2.0–2.9 dB
 in four recordings of the car; main 18.1, sin^1.4 20.1, sin¹ 22.5 at 5850–6750 rpm): the cam
 moves it 2–4 dB inside a gap no cam explains.
+
+## The LFA's crescendo is the fixed ear's intake–exhaust comb (2026-11-27)
+
+The intake's mouth sits `engine_ahead_m` 3.2 m ahead of the tails: at the default ear (3 m, 30°)
+its firing tone arrives ≈ 9 ms apart from the exhaust's, both from point sources in free field,
+so each speed's level moves ±2–4 dB with the phase between them. Held WOT, dB(A) at 4500 / 5200 /
+6000 / 6800 / 7500 / 8200 / 9000 rpm, the committed sin¹ cam (`bin-cam6`, `ovr/cresc/run3.sh`):
+ear at 30° 86.9 / 88.7 / 88.6 / 88.4 / 88.6 / 87.5 / 91.3 (physgate slope +2.27); 15° +4.37;
+45° +2.70; the energy mean of the three +3.07. Inlet ducts 0.30 m +1.54, 0.55 m +3.46 (0.40 m
+an ESTIMATE; their half wave, c/2L′ ≈ 369 Hz, meets the firing order at 4500 rpm). Without the
+intake +3.60; without the tank's wall +1.69. The same build passes or fails the crescendo
+(≥ 3) with a 15° turn of the ear or an unpublished duct length. The spectral gate's per1000 does
+not move with the ear (signature 5.62 / 5.90 / 5.85 at 30 / 15 / 45°): that excess is real.
+Where the LFA's 1–4 kHz randomness comes from (`scripts/authenticity.py`, held WOT, share of the
+band's energy not repeating cycle to cycle, `ovr/cresc/run5.sh`): 6000 rpm −18.7 dB (6800: −17.2);
+without the intake −18.7, the block −19.2, the mechanical sources −18.9, the flow noise (tail
+jets, valve jets, duct flow) −19.1, the combustion jitter −28.3 (−25.8). The cycle-to-cycle burn
+is the only random source the band hears; every turbulent one sits ≈ 28 dB under the orders. Real
+at load: 1 / 2 / 4 kHz 25 / 46 / 70 % random (LFA chassis dyno, above), −0.5…−1.7 dB (911, A4).
