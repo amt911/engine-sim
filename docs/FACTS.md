@@ -791,3 +791,15 @@ at load: 1 / 2 / 4 kHz 25 / 46 / 70 % random (LFA chassis dyno, above), −0.5�
   slow at low speed, too loud at the top and peaks at 0.2·U/D ≈ 150–250 Hz, in the wind band.
   Tam's fine-scale shape (`FineScale`, already the valve and duct jets') puts 4.6 dB more of a
   jet's power in 1–4 kHz against 150–500 Hz than the tail jet's Q 0.7 band-pass.
+- **The 1–2 kHz excess is the lines, not a missing floor (2026-11-27)**: the broadband's level against the total
+  is near the recordings' (treble −26.0 vs real median −24.7), while the firing harmonics fall −6.8 dB per octave
+  of harmonic number at 4950–5850 rpm against −14.3…−18.8 in the four LFA recordings (`hslope`), and `up1` (the
+  octave above the firing band) reads +3.5 dB against −13.8. Burying the lines in the tail jet's noise
+  (`bin-fine`, Tam's fine-scale shape in place of the Q 0.7 band-pass, spike `SPIKE_FINE`; tips 65 / 70 / 80 mm):
+  signature 4.82 / 5.05 / 5.57, but low-mid wind −14.3 / −17.0 / −19.5 (bound −18.4) and treble −18.1 / −21.5 /
+  −26.0 (bound −21.1); crescendo +2.55 / +2.41 / +2.32. The lines follow how fast the exhaust valve opens: Blair's
+  profile on the 10 %-lift timing (smoothed, `ovr/blair/`, spike `SPIKE_RAMP`) with ramps of 40 / 30 / 25 / 20 /
+  15° gives 488 / 505 / 513 / 520 / 526 hp, and signature 4.60 / – / – / 5.61 / 5.78 (sin¹ 532 hp, 5.62);
+  lengthening the 40° windows (+8…+32°) only loses power (487 → 465 hp at 8500). The rapid-acceleration flank the
+  top end needs is the flank that sharpens the lines; the real LFA has both, so what takes its lines down is on
+  the path, not the cam.
