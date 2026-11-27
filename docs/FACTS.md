@@ -803,3 +803,10 @@ at load: 1 / 2 / 4 kHz 25 / 46 / 70 % random (LFA chassis dyno, above), −0.5�
   lengthening the 40° windows (+8…+32°) only loses power (487 → 465 hp at 8500). The rapid-acceleration flank the
   top end needs is the flank that sharpens the lines; the real LFA has both, so what takes its lines down is on
   the path, not the cam.
+- **Held renders against tracked pulls (2026-11-27)**: the spectral gate reads the model on `held:` renders at an exact
+  speed and the recordings on pulls tracked from their own audio (`sp_refs`: comb Viterbi at 50 Hz, 32-rev windows
+  resampled to crank angle). The same build's `gears.wav` (free crank, the car) through the recordings' pipeline
+  (`scratch-refs/ovr/trk/trackcheck.py`): per1000 14.2 / 12.3 / 13.3 dB at 6750–7650 / 7650–8550 / 8550–9450 rpm,
+  hslope −9.3 / −12.9 / −17.6, for2000 79 / 85 / 80 %; real `lfa-tips` −2.0 / −1.0 / −2.0, hslope −10.0 / −10.2 /
+  −6.3, for2000 14 / 41 / 38 %; `lfa-accel` 2.0 / 5.4 / −2.1 at 5850–8550. Held, per1000 reads 20–23 dB: 6–9 dB of
+  the gate's gap is the held condition, 12–15 dB stays (lines on 80 % of the 2–4 kHz half orders, real 14–46 %).
