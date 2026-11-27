@@ -732,3 +732,21 @@ period on a V10 unless the rpm search range is narrow (the sim idles at ≈ 1130
   to 9000 (`xfer_probe`, exhaust only); the radiated firing order is −25.5 / −9.7 / −0.2 / −3.1 / −8.5 dB: the
   path from port to ear swings 27 dB over 375–750 Hz with its peak at 625 Hz (7500 rpm). The source is flat (as
   it should be at full load); the crescendo's shape is the path's.
+
+## Blair's measured SI cam profile on the LFA: smoother front, less power (2026-11-27)
+
+Blair (*Design and Simulation of Four-Stroke Engines*, 1999, §1.5.3–1.5.6, eqs. 1.5.24–1.5.47):
+40° ramps to 20 % of the lift, cubic ramp and main-lift fits to measured SI data
+(kr 0.011172/−0.080336/0.4686/0.6119, km −0.007858/1.7673/−0.45161/−0.31158), 2° dwell, ten
+3-point smoothing passes at 1°. The valve leaves its seat at zero speed, unlike sin¹ (a velocity
+step) or sin^1.4 (an infinite acceleration). On the LFA's 10 %-lift timing (full extents 367.27 +
+295.46° and 121.81 + 276.37°) its lift area and effective-flow-area integral equal sin¹'s
+(145.4 vs 146.0; 0.995 and 0.990 of it), and the lift's 1–2 kHz content at 6000 rpm is 16 dB
+lower (job script `ovr/blair/prof.py`, `flow.py`). Rendered (spike, not kept): 488 hp at
+8500 rpm (sin¹ 532, the dyno test asks ≥ 524.4), per1000 signature 4.60 (sin¹ 5.62, bound
+5.35), but crescendo +2.8, the load check failing (6800 rpm full over closed +1.8 dB(A)) and
+low-mid wind −17.3 dB (bound −18.4). Equal flow-area integrals, 7 % apart in power: the
+top end hangs on where the low-lift area sits around the overlap, not on the integral. Every
+build, main included, sits 15–20 dB over the real LFA's 1–2 kHz periodicity (per1000 2.0–2.9 dB
+in four recordings of the car; main 18.1, sin^1.4 20.1, sin¹ 22.5 at 5850–6750 rpm): the cam
+moves it 2–4 dB inside a gap no cam explains.
